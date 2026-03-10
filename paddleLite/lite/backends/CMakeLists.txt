@@ -1,0 +1,7 @@
+add_subdirectory(opencl)
+add_subdirectory(arm)
+add_subdirectory(x86)
+add_subdirectory(host)
+add_subdirectory(xpu)
+add_subdirectory(metal)
+add_subdirectory(nnadapter)

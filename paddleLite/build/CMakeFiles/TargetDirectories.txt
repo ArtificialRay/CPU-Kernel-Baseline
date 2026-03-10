@@ -1,0 +1,4 @@
+/home/rthu/l3/kernel-extraction/paddleLite/build/CMakeFiles/test_arm_kernels_standalone.dir
+/home/rthu/l3/kernel-extraction/paddleLite/build/CMakeFiles/test_arm_kernels_real.dir
+/home/rthu/l3/kernel-extraction/paddleLite/build/CMakeFiles/edit_cache.dir
+/home/rthu/l3/kernel-extraction/paddleLite/build/CMakeFiles/rebuild_cache.dir

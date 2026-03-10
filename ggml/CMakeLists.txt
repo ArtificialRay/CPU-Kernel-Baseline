@@ -1,0 +1,40 @@
+cmake_minimum_required(VERSION 3.10)
+project(llama_neon_ops CXX)
+set(CMAKE_CXX_STANDARD 11)
+
+option(NEON_FALLBACK "Force scalar fallback" OFF)
+option(ENABLE_DOTPROD "Enable ARM dotprod extension" OFF)
+option(ENABLE_I8MM    "Enable ARM i8mm extension" OFF)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-O2 -Wall)
+endif()
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "armv7")
+    add_compile_options(-mfpu=neon -mfloat-abi=hard)
+endif()
+
+if(NEON_FALLBACK)
+    add_compile_definitions(LLAMA_NO_NEON)
+elseif(ENABLE_I8MM)
+    add_compile_options(-march=armv8.6-a+dotprod+i8mm)
+elseif(ENABLE_DOTPROD)
+    add_compile_options(-march=armv8.2-a+dotprod)
+endif()
+
+add_executable(test_llama_ops test/test_llama_ops.cpp)
+target_include_directories(test_llama_ops PRIVATE include)
+
+enable_testing()
+add_test(NAME llama_ops_tests COMMAND test_llama_ops)
+
+message(STATUS "")
+message(STATUS "Quick-start:")
+message(STATUS "  # ARM64 native:")
+message(STATUS "  mkdir build && cd build && cmake .. && make && ./test_llama_ops")
+message(STATUS "  # ARM64 + dotprod (Cortex-A55/A75+, Apple M1+):")
+message(STATUS "  cmake .. -DENABLE_DOTPROD=ON && make && ./test_llama_ops")
+message(STATUS "  # ARM64 + i8mm (Neoverse V1, Apple M2+):")
+message(STATUS "  cmake .. -DENABLE_I8MM=ON && make && ./test_llama_ops")
+message(STATUS "  # x86 host (scalar fallback, for CI):")
+message(STATUS "  cmake .. -DNEON_FALLBACK=ON && make && ./test_llama_ops")
