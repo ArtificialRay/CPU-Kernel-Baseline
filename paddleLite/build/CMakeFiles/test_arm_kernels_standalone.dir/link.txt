@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_arm_kernels_standalone.dir/test_arm_kernels_standalone.cc.o -o test_arm_kernels_standalone  -lm 
