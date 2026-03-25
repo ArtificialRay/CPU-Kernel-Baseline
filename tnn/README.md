@@ -1,4 +1,4 @@
-This baseline contains 2-levels of kernel implementations:
+This repo includes cpu kernels from tnn, containing 2-levels of kernel implementations:
 - cpu-partially-optimized: C/C++ naive or partially-optimized kernels in 10 categories, some kernels (like convolution and linear) call implementation in `naive-impl-and utils`:
 
 | Category | Operator Name | Description |

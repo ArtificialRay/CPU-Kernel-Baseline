@@ -1,4 +1,4 @@
-This repo includes all cpu kernels for Large Language Model inference. Only attention has ARM instruction set optimized code in `cpu_attn_neon.hpp` and `cpu_attn_neon_bfmmla.hpp`. sgl kernels are cpu kernel implemtation for some components (attention, moe) in naive C/C++ or AVX instruction set extension.
+This repo includes cpu kernels from vllm for Large Language Model inference. Only attention has ARM instruction set optimized code in `cpu_attn_neon.hpp` and `cpu_attn_neon_bfmmla.hpp`. sgl kernels are cpu kernel implemtation for some components (attention, moe) in naive C/C++ or AVX instruction set extension.
 
 | Category | Operator Name | Description |
 |----------|---------------|-------------|
