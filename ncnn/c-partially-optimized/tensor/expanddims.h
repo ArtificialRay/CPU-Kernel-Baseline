@@ -4,7 +4,7 @@
 #ifndef LAYER_EXPANDDIMS_H
 #define LAYER_EXPANDDIMS_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

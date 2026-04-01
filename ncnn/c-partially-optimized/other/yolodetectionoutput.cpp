@@ -3,7 +3,7 @@
 
 #include "yolodetectionoutput.h"
 
-#include "layer_type.h"
+#include "../../framework/layer_type.h"
 
 namespace ncnn {
 

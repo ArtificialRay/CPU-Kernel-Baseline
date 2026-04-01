@@ -4,7 +4,7 @@
 #ifndef LAYER_DECONVOLUTION3D_H
 #define LAYER_DECONVOLUTION3D_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

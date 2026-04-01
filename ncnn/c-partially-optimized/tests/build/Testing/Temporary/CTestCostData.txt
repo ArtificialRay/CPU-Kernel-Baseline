@@ -1,0 +1,11 @@
+test_activation 2 0.00169393
+test_conv 2 0.00130805
+test_gemm 2 0.000886524
+test_norm 2 0.0012451
+test_recurrent 2 0.00141019
+test_reduction 2 0.00120125
+test_tensor 2 0.00145045
+test_quant 2 0.00121057
+test_other 2 0.00117805
+test_attention 2 0.00162404
+---

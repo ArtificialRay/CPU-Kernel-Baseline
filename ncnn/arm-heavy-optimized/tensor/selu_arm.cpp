@@ -4,7 +4,7 @@
 #include "selu_arm.h"
 
 #if __ARM_NEON
-#include "neon_mathfun.h"
+#include "../common/neon_mathfun.h"
 
 #include <arm_neon.h>
 #endif // __ARM_NEON

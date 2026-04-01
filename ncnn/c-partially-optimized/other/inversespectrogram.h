@@ -4,7 +4,7 @@
 #ifndef LAYER_INVERSESPECTROGRAM_H
 #define LAYER_INVERSESPECTROGRAM_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

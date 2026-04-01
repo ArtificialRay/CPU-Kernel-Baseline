@@ -4,7 +4,7 @@
 #ifndef LAYER_ERF_H
 #define LAYER_ERF_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

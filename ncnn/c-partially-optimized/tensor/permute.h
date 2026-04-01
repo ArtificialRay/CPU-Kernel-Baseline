@@ -4,7 +4,7 @@
 #ifndef LAYER_PERMUTE_H
 #define LAYER_PERMUTE_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

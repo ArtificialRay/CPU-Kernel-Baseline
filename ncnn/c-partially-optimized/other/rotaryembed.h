@@ -4,7 +4,7 @@
 #ifndef LAYER_ROTARYEMBED_H
 #define LAYER_ROTARYEMBED_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

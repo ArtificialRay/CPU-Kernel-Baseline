@@ -7,7 +7,7 @@
 
 #if __ARM_NEON
 #include <arm_neon.h>
-#include "arm_usability.h"
+#include "../common/arm_usability.h"
 #endif // __ARM_NEON
 
 namespace ncnn {

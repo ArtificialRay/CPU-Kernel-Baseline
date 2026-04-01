@@ -1,0 +1,16 @@
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/ncnn_stub.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/attention_impl.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test_activation.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test_conv.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test_gemm.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test_norm.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test_recurrent.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test_reduction.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test_tensor.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test_quant.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test_other.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test_attention.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/run_all_tests.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/test.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/edit_cache.dir
+/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/tests/build/CMakeFiles/rebuild_cache.dir

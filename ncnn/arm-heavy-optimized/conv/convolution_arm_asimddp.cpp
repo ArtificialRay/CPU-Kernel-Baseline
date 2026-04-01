@@ -1,8 +1,8 @@
 // Copyright 2021 Tencent
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include "cpu.h"
-#include "mat.h"
+#include "../../framework/cpu.h"
+#include "../../framework/mat.h"
 
 namespace ncnn {
 

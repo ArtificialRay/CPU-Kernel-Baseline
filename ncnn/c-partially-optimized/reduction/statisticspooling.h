@@ -4,7 +4,7 @@
 #ifndef LAYER_STATISTICSPOOLING_H
 #define LAYER_STATISTICSPOOLING_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

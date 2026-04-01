@@ -3,8 +3,8 @@
 
 #include "multiheadattention_arm.h"
 
-#include "cpu.h"
-#include "layer_type.h"
+#include "../../framework/cpu.h"
+#include "../../framework/layer_type.h"
 
 namespace ncnn {
 

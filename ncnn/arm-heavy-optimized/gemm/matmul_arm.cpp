@@ -3,9 +3,9 @@
 
 #include "matmul_arm.h"
 
-#include "layer_type.h"
+#include "../../framework/layer_type.h"
 
-#include "cpu.h"
+#include "../../framework/cpu.h"
 
 namespace ncnn {
 

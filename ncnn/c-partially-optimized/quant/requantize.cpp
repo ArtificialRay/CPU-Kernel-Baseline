@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "requantize.h"
-#include "fused_activation.h"
+#include "../../c-partially-optimized/common/fused_activation.h"
 
 namespace ncnn {
 

@@ -4,7 +4,7 @@
 #ifndef LAYER_PROPOSAL_H
 #define LAYER_PROPOSAL_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

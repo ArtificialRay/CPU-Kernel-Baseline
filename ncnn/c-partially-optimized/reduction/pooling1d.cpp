@@ -3,7 +3,7 @@
 
 #include "pooling1d.h"
 
-#include "layer_type.h"
+#include "../../framework/layer_type.h"
 
 #include <float.h>
 

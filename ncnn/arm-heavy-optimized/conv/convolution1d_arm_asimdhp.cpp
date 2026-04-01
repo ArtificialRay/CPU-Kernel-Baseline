@@ -7,10 +7,10 @@
 #include <arm_neon.h>
 #endif // __ARM_NEON
 
-#include "arm_activation.h"
-#include "arm_usability.h"
+#include "../common/arm_activation.h"
+#include "../common/arm_usability.h"
 
-#include "cpu.h"
+#include "../../framework/cpu.h"
 
 namespace ncnn {
 

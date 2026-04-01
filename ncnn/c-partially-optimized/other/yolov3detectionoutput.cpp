@@ -3,7 +3,7 @@
 
 #include "yolov3detectionoutput.h"
 
-#include "layer_type.h"
+#include "../../framework/layer_type.h"
 
 #include <float.h>
 

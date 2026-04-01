@@ -4,7 +4,7 @@
 #ifndef LAYER_DIAG_H
 #define LAYER_DIAG_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

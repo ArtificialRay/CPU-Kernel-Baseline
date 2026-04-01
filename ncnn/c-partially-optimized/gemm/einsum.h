@@ -4,7 +4,7 @@
 #ifndef LAYER_EINSUM_H
 #define LAYER_EINSUM_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

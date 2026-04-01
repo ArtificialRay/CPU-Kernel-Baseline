@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "split.h"
-#include "cpu.h"
+#include "../../framework/cpu.h"
 
 namespace ncnn {
 

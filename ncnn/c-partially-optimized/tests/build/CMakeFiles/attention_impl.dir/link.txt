@@ -1,0 +1,2 @@
+/usr/bin/ar qc libattention_impl.a "CMakeFiles/attention_impl.dir/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/attention/sdpa.cpp.o" "CMakeFiles/attention_impl.dir/home/rthu/l3/kernel-extraction/ncnn/c-partially-optimized/attention/multiheadattention.cpp.o"
+/usr/bin/ranlib libattention_impl.a

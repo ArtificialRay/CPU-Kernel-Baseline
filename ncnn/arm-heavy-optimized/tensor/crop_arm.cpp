@@ -7,7 +7,7 @@
 #include <arm_neon.h>
 #endif // __ARM_NEON
 
-#include "cpu.h"
+#include "../../framework/cpu.h"
 
 namespace ncnn {
 

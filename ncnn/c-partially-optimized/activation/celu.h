@@ -4,7 +4,7 @@
 #ifndef LAYER_CELU_H
 #define LAYER_CELU_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

@@ -4,7 +4,7 @@
 #ifndef LAYER_PSROIPOOLING_H
 #define LAYER_PSROIPOOLING_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

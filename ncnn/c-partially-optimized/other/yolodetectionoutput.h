@@ -4,7 +4,7 @@
 #ifndef LAYER_YOLODETECTIONOUTPUT_H
 #define LAYER_YOLODETECTIONOUTPUT_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

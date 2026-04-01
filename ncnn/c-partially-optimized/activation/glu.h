@@ -4,7 +4,7 @@
 #ifndef LAYER_GLU_H
 #define LAYER_GLU_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

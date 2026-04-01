@@ -3,7 +3,7 @@
 
 #include "reshape.h"
 
-#include "expression.h"
+#include "../../framework/expression.h"
 
 namespace ncnn {
 

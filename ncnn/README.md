@@ -1,3 +1,13 @@
+Remember to configure your working directory to `/your-clone-dir/ncnn`
+Analyze dependency with claude code skills: [`.claude/skills/analyze-ncnn-dependency/SKILL.md`](.claude/skills/analyze-ncnn-dependency/SKILL.md). Remember to parse argument when call the skill: 
+```bash
+/analyze-ncnn-dependency working-directory
+```
+which could be: `c-partially-optimized` or `arm-heavy-optimized`
+
+Generate testcases with claude code skills: [`.claude/skills/generate-testcase/SKILL.md`](.claude/skills/generate-testcase/SKILL.md)
+
+
 This repo includes cpu kernels from ncnn, containing 2-levels of kernel implementations:
 - cpu-partially-optimized: C/C++ naive or partially-optimized kernels in 9 categories
 
@@ -117,25 +127,6 @@ This repo includes cpu kernels from ncnn, containing 2-levels of kernel implemen
 
 - Arm-heavy-optimized: heavily optimized cpu kernels with ARM intrinsics or ARM assembly in 9 categories. Some kernels call utility in `ncnn/arm-heavy-optimized/common`
 
-Read [](file:///home/rthu/l3/kernel-extraction/ncnn/arm-heavy-optimized)
-
-Read [](file:///home/rthu/l3/kernel-extraction/ncnn/arm-heavy-optimized/attention)
-
-Read [](file:///home/rthu/l3/kernel-extraction/ncnn/arm-heavy-optimized/common)
-
-Read [](file:///home/rthu/l3/kernel-extraction/ncnn/arm-heavy-optimized/conv)
-
-Read [](file:///home/rthu/l3/kernel-extraction/ncnn/arm-heavy-optimized/gemm)
-
-Read [](file:///home/rthu/l3/kernel-extraction/ncnn/arm-heavy-optimized/norm)
-
-Read [](file:///home/rthu/l3/kernel-extraction/ncnn/arm-heavy-optimized/quant)
-
-Read [](file:///home/rthu/l3/kernel-extraction/ncnn/arm-heavy-optimized/recurrent)
-
-Read [](file:///home/rthu/l3/kernel-extraction/ncnn/arm-heavy-optimized/reduction)
-
-Read [](file:///home/rthu/l3/kernel-extraction/ncnn/arm-heavy-optimized/tensor)
 
 | Category | Operator Name | Description |
 |----------|---------------|-------------|

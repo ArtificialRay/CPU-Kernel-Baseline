@@ -4,7 +4,7 @@
 #ifndef LAYER_SHRINK_H
 #define LAYER_SHRINK_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

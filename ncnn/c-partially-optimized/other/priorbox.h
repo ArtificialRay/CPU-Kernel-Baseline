@@ -4,7 +4,7 @@
 #ifndef LAYER_PRIORBOX_H
 #define LAYER_PRIORBOX_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

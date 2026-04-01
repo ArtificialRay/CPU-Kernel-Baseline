@@ -4,7 +4,7 @@
 #ifndef LAYER_DEEPCOPY_H
 #define LAYER_DEEPCOPY_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

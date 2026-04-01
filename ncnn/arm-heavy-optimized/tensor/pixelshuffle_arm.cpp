@@ -3,13 +3,13 @@
 
 #include "pixelshuffle_arm.h"
 
-#include "layer_type.h"
+#include "../../framework/layer_type.h"
 
 #if __ARM_NEON
 #include <arm_neon.h>
 #endif // __ARM_NEON
 
-#include "cpu.h"
+#include "../../framework/cpu.h"
 
 namespace ncnn {
 

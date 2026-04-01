@@ -5,10 +5,10 @@
 
 #if __ARM_NEON
 #include <arm_neon.h>
-#include "arm_usability.h"
-#include "neon_mathfun.h"
+#include "../common/arm_usability.h"
+#include "../common/neon_mathfun.h"
 #if __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
-#include "neon_mathfun_fp16s.h"
+#include "../common/neon_mathfun_fp16s.h"
 #endif
 #endif // __ARM_NEON
 

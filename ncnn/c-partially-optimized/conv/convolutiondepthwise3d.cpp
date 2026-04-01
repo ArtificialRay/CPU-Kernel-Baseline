@@ -3,7 +3,7 @@
 
 #include "convolutiondepthwise3d.h"
 
-#include "fused_activation.h"
+#include "../../c-partially-optimized/common/fused_activation.h"
 
 namespace ncnn {
 

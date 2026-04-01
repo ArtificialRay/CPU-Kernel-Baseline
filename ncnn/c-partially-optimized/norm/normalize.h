@@ -4,7 +4,7 @@
 #ifndef LAYER_NORMALIZE_H
 #define LAYER_NORMALIZE_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

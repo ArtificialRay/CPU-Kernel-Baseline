@@ -4,7 +4,7 @@
 #ifndef LAYER_SPECTROGRAM_H
 #define LAYER_SPECTROGRAM_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

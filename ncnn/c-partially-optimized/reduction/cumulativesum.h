@@ -4,7 +4,7 @@
 #ifndef LAYER_CUMULATIVESUM_H
 #define LAYER_CUMULATIVESUM_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

@@ -3,9 +3,9 @@
 
 #include "convolutiondepthwise1d.h"
 
-#include "layer_type.h"
+#include "../../framework/layer_type.h"
 
-#include "fused_activation.h"
+#include "../../c-partially-optimized/common/fused_activation.h"
 
 namespace ncnn {
 

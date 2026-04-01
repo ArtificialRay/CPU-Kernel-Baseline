@@ -4,7 +4,7 @@
 #ifndef LAYER_YOLOV3DETECTIONOUTPUT_H
 #define LAYER_YOLOV3DETECTIONOUTPUT_H
 
-#include "layer.h"
+#include "../../framework/layer.h"
 
 namespace ncnn {
 

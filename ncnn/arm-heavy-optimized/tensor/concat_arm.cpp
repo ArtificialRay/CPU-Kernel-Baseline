@@ -3,7 +3,7 @@
 
 #include "concat_arm.h"
 
-#include "cpu.h"
+#include "../../framework/cpu.h"
 
 namespace ncnn {
 
