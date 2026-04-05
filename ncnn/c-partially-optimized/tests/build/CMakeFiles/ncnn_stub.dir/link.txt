@@ -1,2 +1,0 @@
-/usr/bin/ar qc libncnn_stub.a CMakeFiles/ncnn_stub.dir/ncnn_framework_stub.cpp.o
-/usr/bin/ranlib libncnn_stub.a

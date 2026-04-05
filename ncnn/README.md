@@ -7,6 +7,10 @@ which could be: `c-partially-optimized` or `arm-heavy-optimized`
 
 Generate testcases with claude code skills: [`.claude/skills/generate-testcase/SKILL.md`](.claude/skills/generate-testcase/SKILL.md)
 
+```bash
+generate-testcase working-directory
+```
+which could be: `c-partially-optimized` or `arm-heavy-optimized`
 
 This repo includes cpu kernels from ncnn, containing 2-levels of kernel implementations:
 - cpu-partially-optimized: C/C++ naive or partially-optimized kernels in 9 categories

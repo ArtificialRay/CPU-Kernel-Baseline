@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_reduction.dir/test_reduction.cpp.o -o test_reduction  -lm 

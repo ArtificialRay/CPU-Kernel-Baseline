@@ -134,7 +134,7 @@ paramdict.h -> paramdict.cpp;
 - only fetch the most relevant impl for header file
 
 ## step4: move dependecy to specific location
-Move all framework dependency, including header and impl, to `/ncnn/framework`; Move all cross-folder dependency, including header and impl, to `/ncnn/$ARGUMENTS/common`.
+Move(not copy) all framework dependency, including header and impl, to `/ncnn/framework`; Move all cross-folder dependency, including header and impl, to `/ncnn/$ARGUMENTS/common`.
 
 ```
 working on directory: /ncnn/c-partially-optimized

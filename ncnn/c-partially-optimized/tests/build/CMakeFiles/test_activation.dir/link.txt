@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_activation.dir/test_activation.cpp.o -o test_activation  -lm 
