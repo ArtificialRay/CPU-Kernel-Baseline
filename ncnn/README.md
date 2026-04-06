@@ -39,6 +39,19 @@ ctest --output-on-failure
 # Or use the summary target
 make run_all_tests
 ```
+These instructions set in `t4g.large` machine is comiled:
+  ┌──────────────────────────────────────┬────────────────────┬───────────────────────────────────┐                                    
+  │            Macro defined             │     Extension      │         Intrinsic family          │                                      
+  ├──────────────────────────────────────┼────────────────────┼───────────────────────────────────┤
+  │ __ARM_NEON / __aarch64__             │ NEON baseline      │ float32x4_t, int8x16_t, int32x4_t │                                      
+  ├──────────────────────────────────────┼────────────────────┼───────────────────────────────────┤                                    
+  │ __ARM_FEATURE_FP16_VECTOR_ARITHMETIC │ ASIMD FP16         │ float16x8_t, vld1q_f16, vfmaq_f16 │                                      
+  ├──────────────────────────────────────┼────────────────────┼───────────────────────────────────┤                                      
+  │ __ARM_FEATURE_DOTPROD                │ ASIMD dot product  │ vdotq_s32                         │                                      
+  ├──────────────────────────────────────┼────────────────────┼───────────────────────────────────┤                                      
+  │ __ARM_FEATURE_FMA                    │ Fused multiply-add │ vfmaq_f32                         │                                    
+  └──────────────────────────────────────┴────────────────────┴───────────────────────────────────┘
+
 
 This repo includes cpu kernels from ncnn, containing 2-levels of kernel implementations:
 - cpu-partially-optimized: C/C++ naive or partially-optimized kernels in 9 categories
