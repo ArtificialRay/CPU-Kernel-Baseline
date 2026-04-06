@@ -232,6 +232,9 @@ void test_batchnorm_arm()
     bn.mean_data  = make_weight({ 2.f, 5.f });
     bn.var_data   = make_weight({ 1.f, 1.f });
     bn.bias_data  = make_weight({ 0.f, 0.f });
+    // Compute a_data/b_data as load_model() normally would
+    bn.a_data = make_weight({ -2.f, -5.f });
+    bn.b_data = make_weight({ 1.f, 1.f });
     ncnn::Option opt = make_opt();
     ASSERT_EQ(bn.forward_inplace(m, opt), 0);
     std::vector<float> out; read_mat(m, out);

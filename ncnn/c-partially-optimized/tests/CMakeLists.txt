@@ -10,6 +10,11 @@ endif()
 
 add_compile_options(-Wall -Wextra -O2)
 
+# OpenMP — apply globally so all impl libraries get -fopenmp
+find_package(OpenMP REQUIRED)
+add_compile_options(${OpenMP_CXX_FLAGS})
+link_libraries(OpenMP::OpenMP_CXX)
+
 # Include paths:
 #  - tests/     : for test_utils.h, ncnn_helpers.h
 #  - ../ (c-partially-optimized/) : so that "../framework/layer.h" resolves
@@ -25,7 +30,8 @@ include_directories(
 
 add_library(ncnn_stub STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/ncnn_framework_stub.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../../framework/expression.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../framework/expression.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../framework/mat.cpp
 )
 target_include_directories(ncnn_stub PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -159,6 +165,7 @@ add_library(tensor_impl STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../tensor/shufflechannel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../tensor/pixelshuffle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../tensor/eltwise.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tensor/gridsample.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../tensor/interp.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../tensor/packing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../tensor/copyto.cpp

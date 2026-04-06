@@ -201,6 +201,7 @@ void test_lstm_arm_zero_weights()
     lstm.hidden_size     = H;
     lstm.direction       = 0;
     lstm.int8_scale_term = 0;
+    lstm.weight_data_size = H * 4 * I;
     lstm.weight_xc_data  = make_mat(I, H*4, 1, wx);
     lstm.weight_hc_data  = make_mat(H, H*4, 1, wh);
     lstm.bias_c_data     = make_mat(H, 4,   1, bias);
@@ -208,6 +209,7 @@ void test_lstm_arm_zero_weights()
     ncnn::Mat bottom = make_mat_2d(I, T, x);
     ncnn::Mat top;
     ncnn::Option opt = make_opt();
+    if (lstm.create_pipeline(opt) != 0) { g_failed++; return; }
     ASSERT_EQ(lstm.forward(bottom, top, opt), 0);
 
     std::vector<float> got; read_mat(top, got);
@@ -235,6 +237,7 @@ void test_lstm_arm_matches_ref()
     lstm.hidden_size     = H;
     lstm.direction       = 0;
     lstm.int8_scale_term = 0;
+    lstm.weight_data_size = H * 4 * I;
     lstm.weight_xc_data  = make_mat(I, H*4, 1, wx);
     lstm.weight_hc_data  = make_mat(H, H*4, 1, wh);
     lstm.bias_c_data     = make_mat(H, 4,   1, bias);
@@ -242,6 +245,7 @@ void test_lstm_arm_matches_ref()
     ncnn::Mat bottom = make_mat_2d(I, T, x);
     ncnn::Mat top;
     ncnn::Option opt = make_opt();
+    if (lstm.create_pipeline(opt) != 0) { g_failed++; return; }
     ASSERT_EQ(lstm.forward(bottom, top, opt), 0);
 
     std::vector<float> got; read_mat(top, got);
@@ -262,6 +266,7 @@ void test_gru_arm_zero_weights()
     gru.num_output      = H;
     gru.direction       = 0;
     gru.int8_scale_term = 0;
+    gru.weight_data_size = H * 3 * I;
     gru.weight_xc_data  = make_mat(I, H*3, 1, wx);
     gru.weight_hc_data  = make_mat(H, H*3, 1, wh);
     gru.bias_c_data     = make_mat(H, 4,   1, bias);
@@ -269,6 +274,7 @@ void test_gru_arm_zero_weights()
     ncnn::Mat bottom = make_mat_2d(I, T, x);
     ncnn::Mat top;
     ncnn::Option opt = make_opt();
+    if (gru.create_pipeline(opt) != 0) { g_failed++; return; }
     ASSERT_EQ(gru.forward(bottom, top, opt), 0);
 
     std::vector<float> got; read_mat(top, got);
@@ -295,6 +301,7 @@ void test_gru_arm_matches_ref()
     gru.num_output      = H;
     gru.direction       = 0;
     gru.int8_scale_term = 0;
+    gru.weight_data_size = H * 3 * I;
     gru.weight_xc_data  = make_mat(I, H*3, 1, wx);
     gru.weight_hc_data  = make_mat(H, H*3, 1, wh);
     gru.bias_c_data     = make_mat(H, 4,   1, bias);
@@ -302,6 +309,7 @@ void test_gru_arm_matches_ref()
     ncnn::Mat bottom = make_mat_2d(I, T, x);
     ncnn::Mat top;
     ncnn::Option opt = make_opt();
+    if (gru.create_pipeline(opt) != 0) { g_failed++; return; }
     ASSERT_EQ(gru.forward(bottom, top, opt), 0);
 
     std::vector<float> got; read_mat(top, got);
@@ -321,6 +329,7 @@ void test_rnn_arm_zero_weights()
     ncnn::RNN_arm rnn;
     rnn.num_output      = H;
     rnn.direction       = 0;
+    rnn.weight_data_size = H * I;
     rnn.weight_xc_data  = make_mat(I, H, 1, wx);
     rnn.weight_hc_data  = make_mat(H, H, 1, wh);
     rnn.bias_c_data     = make_mat(H, 1, 1, bias);
@@ -328,6 +337,7 @@ void test_rnn_arm_zero_weights()
     ncnn::Mat bottom = make_mat_2d(I, T, x);
     ncnn::Mat top;
     ncnn::Option opt = make_opt();
+    if (rnn.create_pipeline(opt) != 0) { g_failed++; return; }
     ASSERT_EQ(rnn.forward(bottom, top, opt), 0);
 
     // Output should be tanh(0) = 0 for all units since weights are zero

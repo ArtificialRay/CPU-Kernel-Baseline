@@ -1,16 +1,44 @@
 Remember to configure your working directory to `/your-clone-dir/ncnn`
+### Analyze dependency with claude code 
 Analyze dependency with claude code skills: [`.claude/skills/analyze-ncnn-dependency/SKILL.md`](.claude/skills/analyze-ncnn-dependency/SKILL.md). Remember to parse argument when call the skill: 
 ```bash
 /analyze-ncnn-dependency working-directory
 ```
 which could be: `c-partially-optimized` or `arm-heavy-optimized`
 
+### Generate testcases with claude code
 Generate testcases with claude code skills: [`.claude/skills/generate-testcase/SKILL.md`](.claude/skills/generate-testcase/SKILL.md)
 
 ```bash
 generate-testcase working-directory
 ```
 which could be: `c-partially-optimized` or `arm-heavy-optimized`
+
+### Build & Run c-partially-optimized Tests
+The following command is run on AWS `t4g.large` machine under ubuntu system
+```bash
+cd c-partially-optimized/tests
+mkdir -p build && cd build
+cmake ..
+make -j$(nproc)
+# Run all tests
+ctest --output-on-failure
+# Or use the summary target
+make run_all_tests
+```
+
+### Build & Run arm-heavy-optimized Tests
+The following command is run on AWS `t4g.large` machine under ubuntu system
+```bash
+cd arm-heavy-optimized/tests
+mkdir -p build && cd build
+cmake ..
+make -j$(nproc)
+# Run all tests
+ctest --output-on-failure
+# Or use the summary target
+make run_all_tests
+```
 
 This repo includes cpu kernels from ncnn, containing 2-levels of kernel implementations:
 - cpu-partially-optimized: C/C++ naive or partially-optimized kernels in 9 categories
@@ -130,7 +158,6 @@ This repo includes cpu kernels from ncnn, containing 2-levels of kernel implemen
 | **Common** | fused_activation | Fused activation utilities |
 
 - Arm-heavy-optimized: heavily optimized cpu kernels with ARM intrinsics or ARM assembly in 9 categories. Some kernels call utility in `ncnn/arm-heavy-optimized/common`
-
 
 | Category | Operator Name | Description |
 |----------|---------------|-------------|

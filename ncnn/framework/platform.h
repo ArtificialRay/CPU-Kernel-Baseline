@@ -22,7 +22,7 @@
 #define NCNN_SIMPLEVK          0
 #define NCNN_SYSTEM_GLSLANG    0
 #define NCNN_RUNTIME_CPU       0
-#define NCNN_GNU_INLINE_ASM    0
+#define NCNN_GNU_INLINE_ASM    1
 #define NCNN_AVX               0
 #define NCNN_XOP               0
 #define NCNN_FMA               0

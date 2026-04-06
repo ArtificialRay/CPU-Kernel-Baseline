@@ -1,9 +1,8 @@
 // ncnn_framework_stub.cpp
-// Minimal implementations of ncnn framework symbols needed to compile and link
-// sdpa.cpp and multiheadattention.cpp without the full ncnn CMake build.
-//
-// Provides: Mat::create (all variants), Allocator, Layer, ParamDict, ModelBin,
-//           Option, and cpu helpers (get_omp_thread_num, get_physical_big_cpu_count).
+// Minimal stub implementations of ncnn framework symbols not provided by the
+// framework source files compiled into ncnn_stub (mat.cpp, modelbin.cpp,
+// expression.cpp). Provides: Allocator, Layer, ParamDict, Option,
+// cpu helpers, and layer factory stubs.
 
 // Include order matters: platform.h must resolve before everything else.
 #include "../../framework/platform.h"
@@ -22,139 +21,6 @@ namespace ncnn {
 // ── Allocator ─────────────────────────────────────────────────────────────────
 
 Allocator::~Allocator() {}
-
-// ── Mat::create ───────────────────────────────────────────────────────────────
-// Copied verbatim from ncnn/mat.cpp (the create() bodies only use inline
-// helpers fastMalloc / alignSize / release() / total() from allocator.h and
-// mat.h, so no extra dependencies arise).
-
-void Mat::create(int _w, size_t _elemsize, Allocator* _allocator)
-{
-    if (dims == 1 && w == _w && elemsize == _elemsize && elempack == 1 && allocator == _allocator)
-        return;
-    release();
-    elemsize = _elemsize; elempack = 1; allocator = _allocator;
-    dims = 1; w = _w; h = 1; d = 1; c = 1;
-    cstep = alignSize(w * elemsize, 16) / elemsize;
-    size_t totalsize = alignSize(total() * elemsize, 4);
-    if (totalsize > 0)
-        data = _allocator ? _allocator->fastMalloc(totalsize + sizeof(*refcount))
-                          : fastMalloc(totalsize + sizeof(*refcount));
-    if (data) { refcount = (int*)((unsigned char*)data + totalsize); *refcount = 1; }
-}
-
-void Mat::create(int _w, int _h, size_t _elemsize, Allocator* _allocator)
-{
-    if (dims == 2 && w == _w && h == _h && elemsize == _elemsize && elempack == 1 && allocator == _allocator)
-        return;
-    release();
-    elemsize = _elemsize; elempack = 1; allocator = _allocator;
-    dims = 2; w = _w; h = _h; d = 1; c = 1;
-    cstep = alignSize((size_t)w * h * elemsize, 16) / elemsize;
-    size_t totalsize = alignSize(total() * elemsize, 4);
-    if (totalsize > 0)
-        data = _allocator ? _allocator->fastMalloc(totalsize + sizeof(*refcount))
-                          : fastMalloc(totalsize + sizeof(*refcount));
-    if (data) { refcount = (int*)((unsigned char*)data + totalsize); *refcount = 1; }
-}
-
-void Mat::create(int _w, int _h, int _c, size_t _elemsize, Allocator* _allocator)
-{
-    if (dims == 3 && w == _w && h == _h && c == _c && elemsize == _elemsize && elempack == 1 && allocator == _allocator)
-        return;
-    release();
-    elemsize = _elemsize; elempack = 1; allocator = _allocator;
-    dims = 3; w = _w; h = _h; d = 1; c = _c;
-    cstep = alignSize((size_t)w * h * elemsize, 16) / elemsize;
-    size_t totalsize = alignSize(total() * elemsize, 4);
-    if (totalsize > 0)
-        data = _allocator ? _allocator->fastMalloc(totalsize + sizeof(*refcount))
-                          : fastMalloc(totalsize + sizeof(*refcount));
-    if (data) { refcount = (int*)((unsigned char*)data + totalsize); *refcount = 1; }
-}
-
-void Mat::create(int _w, int _h, int _d, int _c, size_t _elemsize, Allocator* _allocator)
-{
-    if (dims == 4 && w == _w && h == _h && d == _d && c == _c && elemsize == _elemsize && elempack == 1 && allocator == _allocator)
-        return;
-    release();
-    elemsize = _elemsize; elempack = 1; allocator = _allocator;
-    dims = 4; w = _w; h = _h; d = _d; c = _c;
-    cstep = alignSize((size_t)w * h * d * elemsize, 16) / elemsize;
-    size_t totalsize = alignSize(total() * elemsize, 4);
-    if (totalsize > 0)
-        data = _allocator ? _allocator->fastMalloc(totalsize + sizeof(*refcount))
-                          : fastMalloc(totalsize + sizeof(*refcount));
-    if (data) { refcount = (int*)((unsigned char*)data + totalsize); *refcount = 1; }
-}
-
-void Mat::create(int _w, size_t _elemsize, int _elempack, Allocator* _allocator)
-{
-    if (dims == 1 && w == _w && elemsize == _elemsize && elempack == _elempack && allocator == _allocator)
-        return;
-    release();
-    elemsize = _elemsize; elempack = _elempack; allocator = _allocator;
-    dims = 1; w = _w; h = 1; d = 1; c = 1;
-    cstep = alignSize(w * elemsize, 16) / elemsize;
-    size_t totalsize = alignSize(total() * elemsize, 4);
-    if (totalsize > 0)
-        data = _allocator ? _allocator->fastMalloc(totalsize + sizeof(*refcount))
-                          : fastMalloc(totalsize + sizeof(*refcount));
-    if (data) { refcount = (int*)((unsigned char*)data + totalsize); *refcount = 1; }
-}
-
-void Mat::create(int _w, int _h, size_t _elemsize, int _elempack, Allocator* _allocator)
-{
-    if (dims == 2 && w == _w && h == _h && elemsize == _elemsize && elempack == _elempack && allocator == _allocator)
-        return;
-    release();
-    elemsize = _elemsize; elempack = _elempack; allocator = _allocator;
-    dims = 2; w = _w; h = _h; d = 1; c = 1;
-    cstep = alignSize((size_t)w * h * elemsize, 16) / elemsize;
-    size_t totalsize = alignSize(total() * elemsize, 4);
-    if (totalsize > 0)
-        data = _allocator ? _allocator->fastMalloc(totalsize + sizeof(*refcount))
-                          : fastMalloc(totalsize + sizeof(*refcount));
-    if (data) { refcount = (int*)((unsigned char*)data + totalsize); *refcount = 1; }
-}
-
-void Mat::create(int _w, int _h, int _c, size_t _elemsize, int _elempack, Allocator* _allocator)
-{
-    if (dims == 3 && w == _w && h == _h && c == _c && elemsize == _elemsize && elempack == _elempack && allocator == _allocator)
-        return;
-    release();
-    elemsize = _elemsize; elempack = _elempack; allocator = _allocator;
-    dims = 3; w = _w; h = _h; d = 1; c = _c;
-    cstep = alignSize((size_t)w * h * elemsize, 16) / elemsize;
-    size_t totalsize = alignSize(total() * elemsize, 4);
-    if (totalsize > 0)
-        data = _allocator ? _allocator->fastMalloc(totalsize + sizeof(*refcount))
-                          : fastMalloc(totalsize + sizeof(*refcount));
-    if (data) { refcount = (int*)((unsigned char*)data + totalsize); *refcount = 1; }
-}
-
-void Mat::create(int _w, int _h, int _d, int _c, size_t _elemsize, int _elempack, Allocator* _allocator)
-{
-    if (dims == 4 && w == _w && h == _h && d == _d && c == _c && elemsize == _elemsize && elempack == _elempack && allocator == _allocator)
-        return;
-    release();
-    elemsize = _elemsize; elempack = _elempack; allocator = _allocator;
-    dims = 4; w = _w; h = _h; d = _d; c = _c;
-    cstep = alignSize((size_t)w * h * d * elemsize, 16) / elemsize;
-    size_t totalsize = alignSize(total() * elemsize, 4);
-    if (totalsize > 0)
-        data = _allocator ? _allocator->fastMalloc(totalsize + sizeof(*refcount))
-                          : fastMalloc(totalsize + sizeof(*refcount));
-    if (data) { refcount = (int*)((unsigned char*)data + totalsize); *refcount = 1; }
-}
-
-void Mat::create_like(const Mat& m, Allocator* _allocator)
-{
-    if      (m.dims == 1) create(m.w,                   m.elemsize, m.elempack, _allocator);
-    else if (m.dims == 2) create(m.w, m.h,               m.elemsize, m.elempack, _allocator);
-    else if (m.dims == 3) create(m.w, m.h, m.c,          m.elemsize, m.elempack, _allocator);
-    else                  create(m.w, m.h, m.d, m.c,     m.elemsize, m.elempack, _allocator);
-}
 
 // ── Option ────────────────────────────────────────────────────────────────────
 
@@ -282,6 +148,30 @@ Mat ModelBin::load(int /*w*/, int /*type*/) const { return Mat(); }
 Mat ModelBin::load(int /*w*/, int /*h*/, int /*type*/) const { return Mat(); }
 Mat ModelBin::load(int /*w*/, int /*h*/, int /*c*/, int /*type*/) const { return Mat(); }
 Mat ModelBin::load(int /*w*/, int /*h*/, int /*d*/, int /*c*/, int /*type*/) const { return Mat(); }
+
+class ModelBinFromMatArrayPrivate
+{
+public:
+    ModelBinFromMatArrayPrivate(const Mat* _weights) : weights(_weights) {}
+    mutable const Mat* weights;
+};
+
+ModelBinFromMatArray::ModelBinFromMatArray(const Mat* _weights)
+    : ModelBin(), d(new ModelBinFromMatArrayPrivate(_weights)) {}
+
+ModelBinFromMatArray::~ModelBinFromMatArray() { delete d; }
+
+ModelBinFromMatArray::ModelBinFromMatArray(const ModelBinFromMatArray&) : d(0) {}
+
+ModelBinFromMatArray& ModelBinFromMatArray::operator=(const ModelBinFromMatArray&) { return *this; }
+
+Mat ModelBinFromMatArray::load(int /*w*/, int /*type*/) const
+{
+    if (!d->weights) return Mat();
+    Mat m = d->weights[0];
+    d->weights++;
+    return m;
+}
 
 // ── Layer factory stubs ───────────────────────────────────────────────────────
 // Returns a heap-allocated base Layer (no-op forward) for any type index.

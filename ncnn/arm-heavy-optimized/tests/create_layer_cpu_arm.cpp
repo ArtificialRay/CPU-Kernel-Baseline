@@ -28,15 +28,15 @@ namespace ncnn {
 
 Layer* create_layer_cpu(int index)
 {
-    // ncnn LayerType enum values (from layer.h / layer_type.h)
-    // These are the numeric indices used internally by ncnn.
-    // Gemm=29, InnerProduct=14, Softmax=46, Convolution=3 (approximate)
-    // Since we don't have the full enum here, we use a generous default.
-    // Sub-layers in MHA use Gemm_arm; MatMul_arm sub-layer uses Gemm_arm.
-    (void)index;
-    // Default: return a Gemm_arm since that's the most common sub-layer
-    // created by MultiHeadAttention_arm and MatMul_arm.
-    return new Gemm_arm();
+    // Dispatch based on ncnn LayerType enum values (from framework/layer_type_enum.h):
+    //   Convolution = 8, Gemm = 40, Softmax = 93
+    switch (index)
+    {
+        case  8: return new Convolution_arm(); // Convolution
+        case 40: return new Gemm_arm();        // Gemm
+        case 93: return new Softmax_arm();     // Softmax
+        default: return new Gemm_arm();
+    }
 }
 
 } // namespace ncnn

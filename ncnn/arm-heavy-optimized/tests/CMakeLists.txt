@@ -10,6 +10,11 @@ endif()
 
 add_compile_options(-Wall -Wextra -O2)
 
+# OpenMP — apply globally so all impl libraries get -fopenmp
+find_package(OpenMP REQUIRED)
+add_compile_options(${OpenMP_CXX_FLAGS})
+link_libraries(OpenMP::OpenMP_CXX)
+
 # ARM-specific flags
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm")
     add_compile_options(-march=armv8.2-a+fp16+dotprod)
@@ -201,7 +206,11 @@ add_library(layer_cpu_arm STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/create_layer_cpu_arm.cpp
 )
 target_include_directories(layer_cpu_arm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
-target_link_libraries(layer_cpu_arm gemm_impl gemm_base ncnn_stub)
+target_link_libraries(layer_cpu_arm
+    gemm_impl gemm_base
+    reduction_impl reduction_base
+    conv_impl conv_base
+    ncnn_stub)
 
 # ── Helper macro ──────────────────────────────────────────────────────────────
 macro(add_ncnn_test name)

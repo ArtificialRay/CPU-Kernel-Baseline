@@ -351,7 +351,7 @@ void test_rmsnorm_ncnn()
 void test_batchnorm_ncnn()
 {
     // 2 channels, 3 spatial positions: (x - mean) / sqrt(var + eps) * slope + bias
-    // Use slope=1, mean=0, var=1, bias=0 → identity-ish
+    // Use slope=1, mean=2/5, var=1, bias=0 → (x-mean)/1
     int channels = 2;
     std::vector<float> flat = { 1.f, 2.f, 3.f,   4.f, 5.f, 6.f };  // [c=2, h=1, w=3]
     ncnn::Mat m = make_mat(3, 1, 2, flat);
@@ -362,6 +362,11 @@ void test_batchnorm_ncnn()
     bn.mean_data  = make_weight({ 2.f, 5.f });
     bn.var_data   = make_weight({ 1.f, 1.f });
     bn.bias_data  = make_weight({ 0.f, 0.f });
+    // BatchNorm::forward_inplace uses a_data/b_data pre-computed by load_model:
+    //   b[i] = slope[i] / sqrt(var[i] + eps)
+    //   a[i] = bias[i] - slope[i] * mean[i] / sqrt(var[i] + eps)
+    bn.b_data = make_weight({ 1.f, 1.f });          // 1/sqrt(1) = 1
+    bn.a_data = make_weight({ -2.f, -5.f });        // 0 - 1*mean/1
     ncnn::Option opt = make_opt();
     ASSERT_EQ(bn.forward_inplace(m, opt), 0);
     std::vector<float> out; read_mat(m, out);

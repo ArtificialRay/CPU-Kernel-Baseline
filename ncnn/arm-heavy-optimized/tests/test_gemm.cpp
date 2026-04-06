@@ -103,6 +103,7 @@ void test_matmul_arm_square()
     ncnn::MatMul_arm mm;
     mm.transB = 0;
     ncnn::Option opt = make_opt();
+    if (mm.create_pipeline(opt) != 0) { g_failed++; return; }
     int ret = mm.forward(bottom, top, opt);
     if (ret != 0) { g_failed++; return; }
 
@@ -123,6 +124,7 @@ void test_matmul_arm_rect()
     std::vector<ncnn::Mat> top(1);
     ncnn::MatMul_arm mm; mm.transB = 0;
     ncnn::Option opt = make_opt();
+    if (mm.create_pipeline(opt) != 0) { g_failed++; return; }
     int ret = mm.forward(bottom, top, opt);
     if (ret != 0) { g_failed++; return; }
     std::vector<float> out; read_mat(top[0], out);
@@ -142,6 +144,7 @@ void test_matmul_arm_transB()
     std::vector<ncnn::Mat> top(1);
     ncnn::MatMul_arm mm; mm.transB = 1;
     ncnn::Option opt = make_opt();
+    if (mm.create_pipeline(opt) != 0) { g_failed++; return; }
     int ret = mm.forward(bottom, top, opt);
     if (ret != 0) { g_failed++; return; }
     std::vector<float> out; read_mat(top[0], out);
