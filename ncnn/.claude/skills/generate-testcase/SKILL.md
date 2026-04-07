@@ -9,7 +9,8 @@ description: Step-by-step tutorial to generate test cases for ncnn kernel implem
 Generate test cases for ncnn kernel implementations (e.g. `sdpa.cpp`, `multiheadattention.cpp`) using the new test setup that compiles and links the actual .cpp files.
 
 ## Notice
-Do not changes of the original kernel and dependency implementation
+- Do not changes of the original kernel and dependency implementation
+- Make sure number of test cases file equals to number of type of kernel in both `ncnn/mapped/` and `ncnn/unmapped/`, for example, if there are 5 types of kernels in `ncnn/mapped/` and 3 types of kernels in `ncnn/unmapped/`, there should be 5 test case files in total in `ncnn/mapped/tests/` and 3 test case files in `ncnn/unmapped/tests/`
 
 ## Directory structure
 ```ncnn/
@@ -43,10 +44,11 @@ Fetch all kernel implementation directories (e.g. `attention/`, `activation/`, `
 
 
 ## Step 2: Write per kernel reference test cases in `ncnn/tests/`
-Based on the understanding of kernel implementations, initialize reference test cases in `ncnn/tests/` for each type of kernel in both `ncnn/mapped/` and `ncnn/unmapped/`. 
-For kernels in `ncnn/mapped/`, each kernel has a corresponding arm baseline , you can use the arm baseline as reference and write a test case to compare the output of c-partially-optimized ncnn kernelw with the arm baseline.
+Based on the understanding of kernel implementations, initialize reference test cases for each type of kernel in both `ncnn/mapped/` and `ncnn/unmapped/`. 
+For kernels in `ncnn/mapped/`, each kernel has a corresponding arm baseline , you can use the arm baseline as reference and write a test case to compare the output of c-partially-optimized ncnn kernelw with the arm baseline. Write your test to `ncnn/mapped/tests`
 
-For kernels in `ncnn/unmapped/`, since there is no arm baseline, you can write a reference implementation in the test case based on the kernel implementation and use it as reference to compare with the output of ncnn kernel implementations. Here is an example:
+For kernels in `ncnn/unmapped/`, since there is no arm baseline, you need to write a reference implementation in the test case based on the kernel implementation and use it as reference to compare with the output of ncnn kernel implementations. Write your test to `ncnn/unmapped/tests`
+Here is an example:
 
 ```cpp
 static void ref_sdpa(const float* Q, const float* K, const float* V,
@@ -83,7 +85,7 @@ static void ref_sdpa(const float* Q, const float* K, const float* V,
 ```
 
 **key points:**
-- Make sure each kernel has its own reference test case
+- Make sure each kernel has its own reference test case **in separate file**, for example, `/ncnn/mapped/attention` has testcase file
 - The reference test cases should be self-contained, do not add any dependency on ncnn codebase
 - Write all reference testcases for each kernel in a single file
 - After the ref cases are ready, verify if it could be compiled and run successfully 
@@ -163,57 +165,72 @@ static bool run_sdpa_test(int num_heads, int tgt_len, int src_len,
 - Make sure the testcases starter code compare the output of real ncnn kernel implementations with the reference implementation with a reasonable tolerance (e.g. 1e-4 for float)
 
 ## step 4: Enrich test cases to dynamic input size
-Enrich the test cases with dynamic input size, and make sure the testcases could be run successfully with different input sizes. 
+Enrich the test cases with dynamic input size, and make sure the testcases could be run successfully with different input sizes. The implementation varies between different types of kernels. For example, for convolution kernels, you can write test cases with different input/output channels, kernel sizes, strides, etc. For gemm kernels, you can write test cases with different matrix sizes. For attention kernels, you can write test cases with different number of heads, sequence lengths, head dimensions, etc.
+Here is an example of convolution test case with dynamic input size:
 
-## step 4: Configure CMakeLists.txt to compile and link the real implementations
+```cpp
+// Run Convolution_arm, compare against ref; returns false on mismatch.
+static bool run_conv2d_arm(int in_c, int out_c,
+                            int in_h, int in_w,
+                            int kh, int kw,
+                            int stride_h, int stride_w,
+                            int pad_top,  int pad_left,
+                            int dil_h = 1, int dil_w = 1,
+                            bool with_bias = false) {
+    int wsize = out_c * in_c * kh * kw;
+    std::vector<float> weight = make_weights(wsize);
+    std::vector<float> bias;
+    if (with_bias) { bias.resize(out_c); for (int i = 0; i < out_c; ++i) bias[i] = i * 0.1f; }
 
-Configure `ncnn/tests/CMakeLists.txt` to compile and link the real implementations with the test case starter code.
+    TestMat in(in_w, in_h, in_c);
+    in.fill_range();
 
-```cmake
-add_library(ncnn_stub STATIC ncnn_framework_stub.cpp) # adding ncnn framework dependency stubs, could be real implementations if the dependency is not heavy
-target_include_directories(ncnn_stub PUBLIC ..)   # c-partially-optimized/
+    ncnn::Mat bottom = make_mat(in.w, in.h, in.c, in.data);
+    ncnn::Mat top;
 
-add_library(attention_impl STATIC
-    ../attention/sdpa.cpp
-    ../attention/multiheadattention.cpp)
-target_include_directories(attention_impl PUBLIC ..)
+    ncnn::Convolution_arm conv;
+    conv.num_output       = out_c;
+    conv.kernel_w         = kw;  conv.kernel_h  = kh;
+    conv.dilation_w       = dil_w; conv.dilation_h = dil_h;
+    conv.stride_w         = stride_w; conv.stride_h = stride_h;
+    conv.pad_left         = pad_left; conv.pad_right  = pad_left;
+    conv.pad_top          = pad_top;  conv.pad_bottom = pad_top;
+    conv.pad_value        = 0.f;
+    conv.bias_term        = with_bias ? 1 : 0;
+    conv.weight_data_size = wsize;
+    conv.int8_scale_term  = 0;
+    conv.activation_type  = 0;
+    conv.dynamic_weight   = 0;
+    conv.weight_data      = make_weight(weight);
+    if (with_bias) conv.bias_data = make_weight(bias);
 
-# test_attention links the REAL implementations
-add_executable(test_attention test_attention.cpp)
-target_link_libraries(test_attention attention_impl ncnn_stub m)
+    ncnn::Option opt = make_opt();
+    if (conv.create_pipeline(opt) != 0) {
+        fprintf(stderr, "  FAIL create_pipeline in_c=%d out_c=%d %dx%d k=%dx%d s=%dx%d p=%d,%d d=%dx%d\n",
+                in_c, out_c, in_h, in_w, kh, kw, stride_h, stride_w, pad_top, pad_left, dil_h, dil_w);
+        g_failed++; return false;
+    }
+    if (conv.forward(bottom, top, opt) != 0) {
+        fprintf(stderr, "  FAIL forward in_c=%d out_c=%d %dx%d k=%dx%d s=%dx%d p=%d,%d d=%dx%d\n",
+                in_c, out_c, in_h, in_w, kh, kw, stride_h, stride_w, pad_top, pad_left, dil_h, dil_w);
+        g_failed++; return false;
+    }
+
+    TestMat ref = ref_conv2d(in, weight, bias, out_c, kh, kw,
+                              stride_h, stride_w, pad_top, pad_left, dil_h, dil_w);
+    std::vector<float> got; read_mat(top, got);
+    int before = g_failed;
+    ASSERT_VEC_NEAR(got, ref.data.data(), ref.total(), 1e-3f);
+    return g_failed == before;
+}
 ```
 
 **key points:**
-- Make sure the real implementations are compiled and linked in the test target
-- If there are framework dependencies, add stubs or real implementations to allow compiling and linking without the full ncnn framework build
-- If an optimized kernel implementation depends on its partially optimized version (e.g. `arm-heavy-optimized/conv/convolution_arm.cpp` depends on `c-partially-optimized/conv/convolution.cpp`), make sure to compile and link both implementations in the test target
-- Make sure all optimization skills (not only ARM SIMD intrinsics/assembly, but also multi-threading, cache optimization, etc.) are properly tested with the real implementations in the test target. 
+- Setting dynamic input size inside the test file
 
-## step 5: Build and test your generated test cases with CMakeList.txt
-
-Build the test target with CMake and run the generated test cases to verify they pass successfully.
-
-```bash
-# configure
-# cd /your-clone-di/ncnn/$ARGUMENTS/tests/
-mkdir -p build && cd build
-cmake ..
-make -j$(nproc)
-# Run all tests
-ctest --output-on-failure
-# Or use the summary target
-make run_all_tests
-```
-
-**key points:**
-- Make sure the testcases for all types of kernel (e.g. attention, convolution, gemm) are built and run successfully
-- If there are any test failures, debug and fix the issues on generated test cases until all tests pass successfully
-- Double check if all optimization skills are properly compiled and tested, you can find warning messages in the build output (e.g. warning: ignoring ‘#pragma omp parallel’) helpful.
-
-→ **For ncnn dependency analysis guide, see  [`.claude/skills/analyze-ncnn-dependency/SKILL.md`](../analyze-ncnn-dependency/SKILL.md)**
+→ **For ncnn kernel maps with arm baseline guide, see  [`.claude/skills/map-kernels-with-arm-baseline/SKILL.md`](../map-kernels-with-arm-baseline/SKILL.md)**
 
 ## Summary of Directory/File changes
 ```
-ncnn/$ARGUMENTS/tests/ # NEW: test cases for kernel implementations
-ncnn/$ARGUMENTS/tests/CMakeLists.txt # NEW: compile and link real kernel implementations
+ncnn/tests/ # NEW: test cases for kernel implementations
 ```
