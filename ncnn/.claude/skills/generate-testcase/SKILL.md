@@ -25,14 +25,28 @@ Do not changes of the original kernel and dependency implementation
 │   ├── gemm/
 │   ├── common/
 │   ├── ...
+├── framework/
+├── mapped/ 
+│   ├── batchnorm/
+│   ├── cast/
+│   ├── attention/
+│   ├── ...
+├── unmapped/
+│   ├── argmax/
+│   ├── bnll/
+│   ├── deconvollution1d/
+│   ├── ...
 ```
 
 ## Step 1: Identify kernel implementations 
-Fetch all kernel implementation directories (e.g. `attention/`, `activation/`, `convolution/`) in $ARGUMENTS and read the implementations (e.g. `attention/sdpa.cpp`, `conv/deconvolution.cpp`) to understand their functionality and expected behavior. 
+Fetch all kernel implementation directories (e.g. `attention/`, `activation/`, `convolution/`) in both `ncnn/mapped/` and `ncnn/unmapped/` and read the implementations to understand their functionality and expected behavior. 
 
 
-## Step 2: Write reference test cases in `ncnn/$ARGUMENTS/tests/`
-Based on the understanding of kernel implementations, initialize reference test cases in `ncnn/$ARGUMENTS/tests/`
+## Step 2: Write per kernel reference test cases in `ncnn/tests/`
+Based on the understanding of kernel implementations, initialize reference test cases in `ncnn/tests/` for each type of kernel in both `ncnn/mapped/` and `ncnn/unmapped/`. 
+For kernels in `ncnn/mapped/`, each kernel has a corresponding arm baseline , you can use the arm baseline as reference and write a test case to compare the output of c-partially-optimized ncnn kernelw with the arm baseline.
+
+For kernels in `ncnn/unmapped/`, since there is no arm baseline, you can write a reference implementation in the test case based on the kernel implementation and use it as reference to compare with the output of ncnn kernel implementations. Here is an example:
 
 ```cpp
 static void ref_sdpa(const float* Q, const float* K, const float* V,
@@ -69,11 +83,13 @@ static void ref_sdpa(const float* Q, const float* K, const float* V,
 ```
 
 **key points:**
+- Make sure each kernel has its own reference test case
 - The reference test cases should be self-contained, do not add any dependency on ncnn codebase
+- Write all reference testcases for each kernel in a single file
 - After the ref cases are ready, verify if it could be compiled and run successfully 
 
 ## step 3: Configure testcase starter code to call the real implementations
-Fetch dependencies of kernel implementations in `/ncnn/framework` ,`/ncnn/$ARGUMENTS/common`; Initialize the test case starter code to call the real implementations. 
+Fetch dependencies of kernel implementations in `/ncnn/framework` ,`/ncnn/common`; Initialize the test case starter code to call the real implementations. 
 
 ```cpp
 // Runs the real ncnn::SDPA::forward() and checks it matches ref_sdpa().
@@ -141,9 +157,13 @@ static bool run_sdpa_test(int num_heads, int tgt_len, int src_len,
 ```
 
 **key points:**
-- Make sure the testcases starter code contains real ncnn kernel implementation calls
-- Make sure the testcases starter code compare the output of real ncnn kernel implementations with the reference implementation with a reasonable tolerance (e.g. 1e-4 for float)
+- To make your work simple, try to implement starter code that could be reused for different kernels, and put your implementation in a common directory or file (e.g. `ncnn/tests/test_utils.cpp/h`)
 - If you think the dependency implementation is too heavy, you are free to provide a **Minimal implementations of ncnn framework symbols** needed to compile and link with real kernel implementations without full ncnn framework build.
+- Make sure the testcases starter code calls real ncnn kernel implementation 
+- Make sure the testcases starter code compare the output of real ncnn kernel implementations with the reference implementation with a reasonable tolerance (e.g. 1e-4 for float)
+
+## step 4: Enrich test cases to dynamic input size
+Enrich the test cases with dynamic input size, and make sure the testcases could be run successfully with different input sizes. 
 
 ## step 4: Configure CMakeLists.txt to compile and link the real implementations
 

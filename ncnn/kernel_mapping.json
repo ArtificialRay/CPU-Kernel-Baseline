@@ -1,0 +1,555 @@
+{
+  "note": "Maps each kernel in c-partially-optimized to its ARM-optimized baseline in arm-heavy-optimized. 'arm_baseline' is null when no counterpart exists. Category rename: activation/ in c-partially-optimized was folded into tensor/ in arm-heavy-optimized.",
+  "kernels": [
+    {
+      "name": "absval",
+      "c_partially_optimized": "activation/absval",
+      "arm_baseline": "tensor/absval_arm"
+    },
+    {
+      "name": "bnll",
+      "c_partially_optimized": "activation/bnll",
+      "arm_baseline": null
+    },
+    {
+      "name": "celu",
+      "c_partially_optimized": "activation/celu",
+      "arm_baseline": null
+    },
+    {
+      "name": "clip",
+      "c_partially_optimized": "activation/clip",
+      "arm_baseline": "tensor/clip_arm"
+    },
+    {
+      "name": "elu",
+      "c_partially_optimized": "activation/elu",
+      "arm_baseline": null
+    },
+    {
+      "name": "erf",
+      "c_partially_optimized": "activation/erf",
+      "arm_baseline": null
+    },
+    {
+      "name": "exp",
+      "c_partially_optimized": "activation/exp",
+      "arm_baseline": null
+    },
+    {
+      "name": "gelu",
+      "c_partially_optimized": "activation/gelu",
+      "arm_baseline": "tensor/gelu_arm"
+    },
+    {
+      "name": "glu",
+      "c_partially_optimized": "activation/glu",
+      "arm_baseline": null
+    },
+    {
+      "name": "hardsigmoid",
+      "c_partially_optimized": "activation/hardsigmoid",
+      "arm_baseline": "tensor/hardsigmoid_arm"
+    },
+    {
+      "name": "hardswish",
+      "c_partially_optimized": "activation/hardswish",
+      "arm_baseline": "tensor/hardswish_arm"
+    },
+    {
+      "name": "log",
+      "c_partially_optimized": "activation/log",
+      "arm_baseline": null
+    },
+    {
+      "name": "mish",
+      "c_partially_optimized": "activation/mish",
+      "arm_baseline": "tensor/mish_arm"
+    },
+    {
+      "name": "power",
+      "c_partially_optimized": "activation/power",
+      "arm_baseline": null
+    },
+    {
+      "name": "prelu",
+      "c_partially_optimized": "activation/prelu",
+      "arm_baseline": "tensor/prelu_arm"
+    },
+    {
+      "name": "relu",
+      "c_partially_optimized": "activation/relu",
+      "arm_baseline": "tensor/relu_arm"
+    },
+    {
+      "name": "selu",
+      "c_partially_optimized": "activation/selu",
+      "arm_baseline": "tensor/selu_arm"
+    },
+    {
+      "name": "shrink",
+      "c_partially_optimized": "activation/shrink",
+      "arm_baseline": null
+    },
+    {
+      "name": "sigmoid",
+      "c_partially_optimized": "activation/sigmoid",
+      "arm_baseline": "tensor/sigmoid_arm"
+    },
+    {
+      "name": "softplus",
+      "c_partially_optimized": "activation/softplus",
+      "arm_baseline": null
+    },
+    {
+      "name": "swish",
+      "c_partially_optimized": "activation/swish",
+      "arm_baseline": "tensor/swish_arm"
+    },
+    {
+      "name": "tanh",
+      "c_partially_optimized": "activation/tanh",
+      "arm_baseline": "tensor/tanh_arm"
+    },
+    {
+      "name": "threshold",
+      "c_partially_optimized": "activation/threshold",
+      "arm_baseline": null
+    },
+    {
+      "name": "multiheadattention",
+      "c_partially_optimized": "attention/multiheadattention",
+      "arm_baseline": "attention/multiheadattention_arm"
+    },
+    {
+      "name": "sdpa",
+      "c_partially_optimized": "attention/sdpa",
+      "arm_baseline": null
+    },
+    {
+      "name": "convolution",
+      "c_partially_optimized": "conv/convolution",
+      "arm_baseline": "conv/convolution_arm"
+    },
+    {
+      "name": "convolution1d",
+      "c_partially_optimized": "conv/convolution1d",
+      "arm_baseline": "conv/convolution1d_arm"
+    },
+    {
+      "name": "convolution3d",
+      "c_partially_optimized": "conv/convolution3d",
+      "arm_baseline": null
+    },
+    {
+      "name": "convolutiondepthwise",
+      "c_partially_optimized": "conv/convolutiondepthwise",
+      "arm_baseline": "conv/convolutiondepthwise_arm"
+    },
+    {
+      "name": "convolutiondepthwise1d",
+      "c_partially_optimized": "conv/convolutiondepthwise1d",
+      "arm_baseline": null
+    },
+    {
+      "name": "convolutiondepthwise3d",
+      "c_partially_optimized": "conv/convolutiondepthwise3d",
+      "arm_baseline": null
+    },
+    {
+      "name": "deconvolution",
+      "c_partially_optimized": "conv/deconvolution",
+      "arm_baseline": "conv/deconvolution_arm"
+    },
+    {
+      "name": "deconvolution1d",
+      "c_partially_optimized": "conv/deconvolution1d",
+      "arm_baseline": null
+    },
+    {
+      "name": "deconvolution3d",
+      "c_partially_optimized": "conv/deconvolution3d",
+      "arm_baseline": null
+    },
+    {
+      "name": "deconvolutiondepthwise",
+      "c_partially_optimized": "conv/deconvolutiondepthwise",
+      "arm_baseline": "conv/deconvolutiondepthwise_arm"
+    },
+    {
+      "name": "deconvolutiondepthwise1d",
+      "c_partially_optimized": "conv/deconvolutiondepthwise1d",
+      "arm_baseline": null
+    },
+    {
+      "name": "deconvolutiondepthwise3d",
+      "c_partially_optimized": "conv/deconvolutiondepthwise3d",
+      "arm_baseline": null
+    },
+    {
+      "name": "deformableconv2d",
+      "c_partially_optimized": "conv/deformableconv2d",
+      "arm_baseline": null
+    },
+    {
+      "name": "einsum",
+      "c_partially_optimized": "gemm/einsum",
+      "arm_baseline": null
+    },
+    {
+      "name": "gemm",
+      "c_partially_optimized": "gemm/gemm",
+      "arm_baseline": "gemm/gemm_arm"
+    },
+    {
+      "name": "innerproduct",
+      "c_partially_optimized": "gemm/innerproduct",
+      "arm_baseline": "gemm/innerproduct_arm"
+    },
+    {
+      "name": "matmul",
+      "c_partially_optimized": "gemm/matmul",
+      "arm_baseline": "gemm/matmul_arm"
+    },
+    {
+      "name": "batchnorm",
+      "c_partially_optimized": "norm/batchnorm",
+      "arm_baseline": "norm/batchnorm_arm"
+    },
+    {
+      "name": "groupnorm",
+      "c_partially_optimized": "norm/groupnorm",
+      "arm_baseline": "norm/groupnorm_arm"
+    },
+    {
+      "name": "instancenorm",
+      "c_partially_optimized": "norm/instancenorm",
+      "arm_baseline": "norm/instancenorm_arm"
+    },
+    {
+      "name": "layernorm",
+      "c_partially_optimized": "norm/layernorm",
+      "arm_baseline": "norm/layernorm_arm"
+    },
+    {
+      "name": "lrn",
+      "c_partially_optimized": "norm/lrn",
+      "arm_baseline": "norm/lrn_arm"
+    },
+    {
+      "name": "mvn",
+      "c_partially_optimized": "norm/mvn",
+      "arm_baseline": null
+    },
+    {
+      "name": "normalize",
+      "c_partially_optimized": "norm/normalize",
+      "arm_baseline": null
+    },
+    {
+      "name": "rmsnorm",
+      "c_partially_optimized": "norm/rmsnorm",
+      "arm_baseline": "norm/rmsnorm_arm"
+    },
+    {
+      "name": "detectionoutput",
+      "c_partially_optimized": "other/detectionoutput",
+      "arm_baseline": null
+    },
+    {
+      "name": "embed",
+      "c_partially_optimized": "other/embed",
+      "arm_baseline": null
+    },
+    {
+      "name": "input",
+      "c_partially_optimized": "other/input",
+      "arm_baseline": null
+    },
+    {
+      "name": "inversespectrogram",
+      "c_partially_optimized": "other/inversespectrogram",
+      "arm_baseline": null
+    },
+    {
+      "name": "memorydata",
+      "c_partially_optimized": "other/memorydata",
+      "arm_baseline": null
+    },
+    {
+      "name": "noop",
+      "c_partially_optimized": "other/noop",
+      "arm_baseline": null
+    },
+    {
+      "name": "priorbox",
+      "c_partially_optimized": "other/priorbox",
+      "arm_baseline": null
+    },
+    {
+      "name": "proposal",
+      "c_partially_optimized": "other/proposal",
+      "arm_baseline": null
+    },
+    {
+      "name": "psroipooling",
+      "c_partially_optimized": "other/psroipooling",
+      "arm_baseline": null
+    },
+    {
+      "name": "roialign",
+      "c_partially_optimized": "other/roialign",
+      "arm_baseline": null
+    },
+    {
+      "name": "roipooling",
+      "c_partially_optimized": "other/roipooling",
+      "arm_baseline": null
+    },
+    {
+      "name": "rotaryembed",
+      "c_partially_optimized": "other/rotaryembed",
+      "arm_baseline": null
+    },
+    {
+      "name": "spectrogram",
+      "c_partially_optimized": "other/spectrogram",
+      "arm_baseline": null
+    },
+    {
+      "name": "yolodetectionoutput",
+      "c_partially_optimized": "other/yolodetectionoutput",
+      "arm_baseline": null
+    },
+    {
+      "name": "yolov3detectionoutput",
+      "c_partially_optimized": "other/yolov3detectionoutput",
+      "arm_baseline": null
+    },
+    {
+      "name": "dequantize",
+      "c_partially_optimized": "quant/dequantize",
+      "arm_baseline": "quant/dequantize_arm"
+    },
+    {
+      "name": "quantize",
+      "c_partially_optimized": "quant/quantize",
+      "arm_baseline": "quant/quantize_arm"
+    },
+    {
+      "name": "requantize",
+      "c_partially_optimized": "quant/requantize",
+      "arm_baseline": "quant/requantize_arm"
+    },
+    {
+      "name": "gru",
+      "c_partially_optimized": "recurrent/gru",
+      "arm_baseline": "recurrent/gru_arm"
+    },
+    {
+      "name": "lstm",
+      "c_partially_optimized": "recurrent/lstm",
+      "arm_baseline": "recurrent/lstm_arm"
+    },
+    {
+      "name": "rnn",
+      "c_partially_optimized": "recurrent/rnn",
+      "arm_baseline": "recurrent/rnn_arm"
+    },
+    {
+      "name": "argmax",
+      "c_partially_optimized": "reduction/argmax",
+      "arm_baseline": null
+    },
+    {
+      "name": "cumulativesum",
+      "c_partially_optimized": "reduction/cumulativesum",
+      "arm_baseline": null
+    },
+    {
+      "name": "pooling",
+      "c_partially_optimized": "reduction/pooling",
+      "arm_baseline": "reduction/pooling_arm"
+    },
+    {
+      "name": "pooling1d",
+      "c_partially_optimized": "reduction/pooling1d",
+      "arm_baseline": null
+    },
+    {
+      "name": "pooling3d",
+      "c_partially_optimized": "reduction/pooling3d",
+      "arm_baseline": null
+    },
+    {
+      "name": "reduction",
+      "c_partially_optimized": "reduction/reduction",
+      "arm_baseline": null
+    },
+    {
+      "name": "softmax",
+      "c_partially_optimized": "reduction/softmax",
+      "arm_baseline": "reduction/softmax_arm"
+    },
+    {
+      "name": "spp",
+      "c_partially_optimized": "reduction/spp",
+      "arm_baseline": null
+    },
+    {
+      "name": "statisticspooling",
+      "c_partially_optimized": "reduction/statisticspooling",
+      "arm_baseline": null
+    },
+    {
+      "name": "bias",
+      "c_partially_optimized": "tensor/bias",
+      "arm_baseline": "tensor/bias_arm"
+    },
+    {
+      "name": "binaryop",
+      "c_partially_optimized": "tensor/binaryop",
+      "arm_baseline": "tensor/binaryop_arm"
+    },
+    {
+      "name": "cast",
+      "c_partially_optimized": "tensor/cast",
+      "arm_baseline": "tensor/cast_arm"
+    },
+    {
+      "name": "concat",
+      "c_partially_optimized": "tensor/concat",
+      "arm_baseline": "tensor/concat_arm"
+    },
+    {
+      "name": "copyto",
+      "c_partially_optimized": "tensor/copyto",
+      "arm_baseline": null
+    },
+    {
+      "name": "crop",
+      "c_partially_optimized": "tensor/crop",
+      "arm_baseline": "tensor/crop_arm"
+    },
+    {
+      "name": "deepcopy",
+      "c_partially_optimized": "tensor/deepcopy",
+      "arm_baseline": null
+    },
+    {
+      "name": "diag",
+      "c_partially_optimized": "tensor/diag",
+      "arm_baseline": null
+    },
+    {
+      "name": "dropout",
+      "c_partially_optimized": "tensor/dropout",
+      "arm_baseline": "tensor/dropout_arm"
+    },
+    {
+      "name": "eltwise",
+      "c_partially_optimized": "tensor/eltwise",
+      "arm_baseline": "tensor/eltwise_arm"
+    },
+    {
+      "name": "expanddims",
+      "c_partially_optimized": "tensor/expanddims",
+      "arm_baseline": null
+    },
+    {
+      "name": "flatten",
+      "c_partially_optimized": "tensor/flatten",
+      "arm_baseline": "tensor/flatten_arm"
+    },
+    {
+      "name": "flip",
+      "c_partially_optimized": "tensor/flip",
+      "arm_baseline": null
+    },
+    {
+      "name": "fold",
+      "c_partially_optimized": "tensor/fold",
+      "arm_baseline": null
+    },
+    {
+      "name": "gridsample",
+      "c_partially_optimized": "tensor/gridsample",
+      "arm_baseline": null
+    },
+    {
+      "name": "interp",
+      "c_partially_optimized": "tensor/interp",
+      "arm_baseline": "tensor/interp_arm"
+    },
+    {
+      "name": "packing",
+      "c_partially_optimized": "tensor/packing",
+      "arm_baseline": "tensor/packing_arm"
+    },
+    {
+      "name": "padding",
+      "c_partially_optimized": "tensor/padding",
+      "arm_baseline": "tensor/padding_arm"
+    },
+    {
+      "name": "permute",
+      "c_partially_optimized": "tensor/permute",
+      "arm_baseline": null
+    },
+    {
+      "name": "pixelshuffle",
+      "c_partially_optimized": "tensor/pixelshuffle",
+      "arm_baseline": "tensor/pixelshuffle_arm"
+    },
+    {
+      "name": "reorg",
+      "c_partially_optimized": "tensor/reorg",
+      "arm_baseline": null
+    },
+    {
+      "name": "reshape",
+      "c_partially_optimized": "tensor/reshape",
+      "arm_baseline": "tensor/reshape_arm"
+    },
+    {
+      "name": "scale",
+      "c_partially_optimized": "tensor/scale",
+      "arm_baseline": "tensor/scale_arm"
+    },
+    {
+      "name": "shufflechannel",
+      "c_partially_optimized": "tensor/shufflechannel",
+      "arm_baseline": "tensor/shufflechannel_arm"
+    },
+    {
+      "name": "slice",
+      "c_partially_optimized": "tensor/slice",
+      "arm_baseline": "tensor/slice_arm"
+    },
+    {
+      "name": "split",
+      "c_partially_optimized": "tensor/split",
+      "arm_baseline": null
+    },
+    {
+      "name": "squeeze",
+      "c_partially_optimized": "tensor/squeeze",
+      "arm_baseline": null
+    },
+    {
+      "name": "tile",
+      "c_partially_optimized": "tensor/tile",
+      "arm_baseline": null
+    },
+    {
+      "name": "unaryop",
+      "c_partially_optimized": "tensor/unaryop",
+      "arm_baseline": "tensor/unaryop_arm"
+    },
+    {
+      "name": "unfold",
+      "c_partially_optimized": "tensor/unfold",
+      "arm_baseline": null
+    }
+  ]
+}
