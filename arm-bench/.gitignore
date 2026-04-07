@@ -1,0 +1,36 @@
+build/
+
+# macOS
+.DS_Store
+
+# Claude Code session data
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Eval runtime outputs (generated at runtime, not checked in)
+generations/*
+results/*
+baselines/*
+!generations/.gitkeep
+!results/.gitkeep
+!baselines/.gitkeep
+
+# SSH credentials — never commit these
+eval/eval_config.json
+
+# Large binary/analysis files
+*.pdf
+
+# Terraform — state contains live AWS resource info, providers are large binaries
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/.terraform.lock.hc
+terraform

@@ -1,0 +1,14 @@
+{
+  "instances": {
+    "c7g": {
+      "host": "1.2.3.4",
+      "user": "ubuntu",
+      "key_file": "~/.ssh/id_rsa"
+    },
+    "c8g": {
+      "host": "",
+      "user": "ubuntu",
+      "key_file": "~/.ssh/id_rsa"
+    }
+  }
+}
