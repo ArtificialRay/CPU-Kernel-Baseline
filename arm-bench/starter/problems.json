@@ -7,6 +7,7 @@
     "isa_target": "sve",
     "instance_type": "c7g.large",
     "starter": "convolution.cpp",
+    "candidate_source":"mapped/convolution/convolution.cpp",
     "tags": [
       "sve"
     ]
@@ -19,6 +20,7 @@
     "isa_target": "sve",
     "instance_type": "c7g.large",
     "starter": "convolutiondepthwise.cpp",
+    "candidate_source":"mapped/convolutiondepthwise/convolutiondepthwise.cpp",
     "tags": [
       "sve"
     ]
@@ -31,6 +33,7 @@
     "isa_target": "sve",
     "instance_type": "c7g.large",
     "starter": "deconvolution.cpp",
+    "candidate_source":"mapped/deconvolution/deconvolution.cpp",
     "tags": [
       "sve"
     ]
@@ -42,7 +45,8 @@
     "description": "Use of depthwise deconvolution with arm baseline",
     "isa_target": "sve",
     "instance_type": "c7g.large",
-    "starter": "convolutiondepthwise.cpp",
+    "starter": "deconvolutiondepthwise.cpp",
+    "candidate_source":"mapped/deconvolutiondepthwise/deconvolutiondepthwise.cpp",
     "tags": [
       "sve"
     ]
@@ -55,6 +59,7 @@
     "isa_target": "sve",
     "instance_type": "c7g.large",
     "starter": "convolution1d.cpp",
+    "candidate_source":"mapped/convolution1d/convolution1d.cpp",
     "tags": [
       "sve"
     ]

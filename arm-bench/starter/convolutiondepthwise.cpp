@@ -50,6 +50,7 @@ static bool run_depthwise_conv2d(int c, int in_h, int in_w,
 }
 // CANDIDATE_INJECT_END
 
+// BASELINE_INJECT_START
 // Generic runner for ConvolutionDepthWise_arm
 static bool run_depthwise_conv2d_arm(int c, int in_h, int in_w,
                                       int kh, int kw, int stride_h, int stride_w,
@@ -97,6 +98,7 @@ static bool run_depthwise_conv2d_arm(int c, int in_h, int in_w,
     ASSERT_VEC_NEAR(got, ref.data.data(), ref.total(), 1e-3f);
     return g_failed == before;
 }
+// BASELINE_INJECT_END
 
 // CANDIDATE_TESTCASE_START
 // ── ConvolutionDepthWise (base) ───────────────────────────────────
