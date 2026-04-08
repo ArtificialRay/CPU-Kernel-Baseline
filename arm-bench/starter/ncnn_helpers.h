@@ -1,7 +1,7 @@
 // ncnn_helpers.h — shared helpers for test files that link real ncnn kernels.
 #pragma once
-#include "../framework/mat.h"
-#include "../framework/option.h"
+#include "../../ncnn/framework/mat.h"
+#include "../../ncnn/framework/option.h"
 #include <cstring>
 #include <vector>
 

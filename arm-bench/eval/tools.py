@@ -13,11 +13,26 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-
-from eval.config import ISA_MAKE_TARGET, REPO_ROOT, load_baselines, load_problem_sizes, ISA_TIER
+from eval.config import ISA_MAKE_TARGET, REPO_ROOT, ISA_TIER
 
 CANDIDATE_START = "// CANDIDATE_INJECT_START"
 CANDIDATE_END = "// CANDIDATE_INJECT_END"
+BASELINE_START = "// BASELINE_INJECT_START"
+BASELINE_END = "// BASELINE_INJECT_END"
+CANDIDATE_TESTCASE_START = "// CANDIDATE_TESTCASE_START"
+CANDIDATE_TESTCASE_END = "// CANDIDATE_TESTCASE_END"
+BASELINE_TESTCASE_START = "// BASELINE_TESTCASE_START"
+BASELINE_TESTCASE_END = "// BASELINE_TESTCASE_END"
+
+# Mapping: starter .cpp filename → (cmake library targets, extra ncnn include subdirs).
+# Used by _compile_ncnn to link the correct pre-built cmake libraries.
+NCNN_STARTER_DEPS: dict[str, tuple[list[str], list[str]]] = {
+    "convolution.cpp":            (["mapped_conv_arm", "mapped_conv_base"], ["arm-heavy-optimized/conv"]),
+    "convolution1d.cpp":          (["mapped_conv_arm", "mapped_conv_base"], ["arm-heavy-optimized/conv"]),
+    "convolutiondepthwise.cpp":   (["mapped_conv_arm", "mapped_conv_base"], ["arm-heavy-optimized/conv"]),
+    "decovolution.cpp":           (["mapped_conv_arm", "mapped_conv_base"], ["arm-heavy-optimized/conv"]),
+    "deconvolutiondepthwise.cpp": (["mapped_conv_arm", "mapped_conv_base"], ["arm-heavy-optimized/conv"]),
+}
 
 
 @dataclass
@@ -35,13 +50,15 @@ class CompileResult:
 @dataclass
 class RunResult:
     correct: bool
-    runtime_ms: float | None = None
+    candidate_runtime_ms: float | None = None
+    baseline_runtime_ms:float | None = None
     output: str = ""
 
     def to_tool_result(self) -> dict:
         return {
             "correct": self.correct,
-            "runtime_ms": self.runtime_ms,
+            "candidate runtime_ms": self.candidate_runtime_ms,
+            "baseline runtime_ms": self.baseline_runtime_ms,
             "output": self.output.strip(),
         }
 
@@ -112,22 +129,20 @@ class SIMDTools:
         self.handle = handle
         self.problem_id = problem_id
         self.isa = isa
-        self.loop_num = problem_id.split("_")[1]   # "loop_001" → "001"
         self.make_target = ISA_MAKE_TARGET[isa]
         self._last_compile_ok = False
         self._tool_calls = 0
-        self._last_candidate_code: str | None = None  # stored for size-specific recompiles
-        self._default_size: int | None = None          # parsed once from source on first use
+        self._last_candidate_code: str | None = None
 
-        # Remote paths (on the instance)
-        self.remote_root = "~/simd-loops"
-        self.remote_loop_file = f"{self.remote_root}/loops/loop_{self.loop_num}.c"
-        self.remote_binary = (
-            f"{self.remote_root}/build/{self.make_target}/bin/simd_loops"
-        )
+        # Remote paths for ncnn starter files
+        #TODO: User name for remote instance may vary, hard-code ubuntu here
+        self.remote_project_root = "/home/ubuntu/Remote/CPU-Kernel-Baseline" # in local test, don't pollute main working dir; 
+        self.remote_ncnn_root = f"{self.remote_project_root}/ncnn"
+        self.remote_ncnn_build = f"{self.remote_ncnn_root}/mapped/tests/build"
+        self.remote_starter_dir = f"{self.remote_project_root}/arm-bench/starter"
+        self.remote_binary: str | None = None           # set by compile()
+        self.remote_baseline_binary: str | None = None  # set by compile()
 
-        # Per-problem test sizes (loaded directly from problem.py, not the full index)
-        self._edge_sizes, self._perf_sizes = load_problem_sizes(problem_id)
 
     # ─── SSH / local execution helpers ──────────────────────────────────────
 
@@ -150,171 +165,349 @@ class SIMDTools:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(local_path, dst)
 
+    # ─── Upload helpers ────────────────────────────────────────────────────────
+
+    def upload_ncnn_tree(self) -> None:
+        """
+        Sync the local ncnn source tree and arm-bench/starter directory to the
+        remote instance under ``self.remote_project_root``.
+
+        Uses rsync when an SSH handle is available (incremental, fast on
+        subsequent calls).  Falls back to shutil.copytree for local-only
+        testing (handle is None).
+        """
+        local_ncnn = str(REPO_ROOT.parent / "ncnn")            # CPU-Kernel-Baseline/ncnn
+        local_starter = str(REPO_ROOT / "starter")              # arm-bench/starter
+
+        remote_ncnn = self.remote_ncnn_root                     # ~/Remote/.../ncnn
+        remote_starter = self.remote_starter_dir                # ~/Remote/.../arm-bench/starter
+
+        rsync_excludes = ["build", "__pycache__", "*.o", "*.d", ".git"]
+
+        if self.handle is not None:
+            # Ensure remote directories exist
+            self.handle.run(f"mkdir -p {remote_ncnn} {remote_starter}")
+            self.handle.rsync_to(local_ncnn, remote_ncnn, excludes=rsync_excludes)
+            self.handle.rsync_to(local_starter, remote_starter, excludes=rsync_excludes)
+        else:
+            # Local-only: expand ~ and copy trees
+            for src, dst in [(local_ncnn, remote_ncnn), (local_starter, remote_starter)]:
+                dst_expanded = os.path.expanduser(dst)
+                if os.path.exists(dst_expanded):
+                    shutil.rmtree(dst_expanded)
+                shutil.copytree(src, dst_expanded,
+                                ignore=shutil.ignore_patterns(*rsync_excludes))
+
     # ─── Tool: compile ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _strip_block(source: str, start_marker: str, end_marker: str) -> str:
+        """Remove everything between (and including) *start_marker* … *end_marker*."""
+        return re.sub(
+            re.escape(start_marker) + ".*?" + re.escape(end_marker),
+            "",
+            source,
+            flags=re.DOTALL,
+        )
+
+    @staticmethod
+    def _extract_test_functions(source: str, start_marker: str, end_marker: str) -> list[str]:
+        """Extract test function names from a TESTCASE block."""
+        m = re.search(
+            re.escape(start_marker) + r"(.*?)" + re.escape(end_marker),
+            source, flags=re.DOTALL,
+        )
+        if not m:
+            return []
+        block = m.group(1)
+        return re.findall(r"void\s+(test_\w+)\s*\(\s*\)", block)
+
+    @staticmethod
+    def _generate_main(test_funcs: list[str], suite_name: str) -> str:
+        """Generate a main() function that runs each test with RUN_TEST."""
+        lines = ["\n// ── Auto-generated main ──────────────────────────────────────"]
+        for fn in test_funcs:
+            lines.append(f"void {fn}();")
+        lines.append("")
+        lines.append("int main() {")
+        for fn in test_funcs:
+            lines.append(f"    RUN_TEST({fn});")
+        lines.append(f'    print_summary("{suite_name}");')
+        lines.append("    return g_failed ? 1 : 0;")
+        lines.append("}")
+        lines.append("")
+        return "\n".join(lines)
 
     def compile(self, file: str) -> CompileResult:
         """
-        Inject `code` as the HAVE_CANDIDATE implementation and compile.
+        Compile an ncnn starter .cpp file into **two** binaries:
+
+          <stem>       – candidate code only  (BASELINE block stripped)
+          <stem>_arm   – baseline code only   (CANDIDATE block stripped)
+
+        For example ``file="convolution.cpp"`` produces::
+
+            starter/build/convolution      (candidate)
+            starter/build/convolution_arm  (baseline / ARM-optimised)
+
+        ``self.remote_binary`` is set to the candidate binary and
+        ``self.remote_baseline_binary`` to the baseline binary so that
+        ``run()`` / ``perf()`` / ``disassemble()`` work with the candidate
+        by default.
 
         Args:
-            file: NN operator source code dir
+            file: Starter filename, e.g. "convolution.cpp".
 
         Returns:
             CompileResult with success flag and any errors/warnings.
         """
         self._tool_calls += 1
 
-        # 1. Patch the source file locally and upload it
-        local_loop_file = REPO_ROOT / "starter" / file
-        source = local_loop_file.read_text()
+        local_file = REPO_ROOT / "starter" / file
+        if not local_file.exists():
+            return CompileResult(success=False, errors=f"Starter file not found: {local_file}")
 
+        source = local_file.read_text()
         if CANDIDATE_START not in source:
             return CompileResult(
                 success=False,
-                errors=f"CANDIDATE_INJECT_START marker missing from loop_{self.loop_num}.c. "
-                       f"Run: python scripts/extract_dataset.py --add-candidate-blocks",
+                errors=f"CANDIDATE_INJECT_START marker missing from {file}.",
             )
 
-        new_block = f"{CANDIDATE_START}\n{source}\n{CANDIDATE_END}"
-        patched = re.sub(
-            re.escape(CANDIDATE_START) + ".*?" + re.escape(CANDIDATE_END),
-            new_block,
-            source,
-            flags=re.DOTALL,
+        stem = file.rsplit(".", 1)[0]  # "convolution.cpp" → "convolution"
+
+        # ── Generate two source variants ─────────────────────────────
+        # candidate-only: keep CANDIDATE block, strip BASELINE block
+        candidate_src = source
+        if BASELINE_START in source:
+            candidate_src = self._strip_block(source, BASELINE_START, BASELINE_END)
+        if BASELINE_TESTCASE_START in candidate_src:
+            candidate_src = self._strip_block(candidate_src, BASELINE_TESTCASE_START, BASELINE_TESTCASE_END)
+
+        # baseline-only: keep BASELINE block, strip CANDIDATE block
+        baseline_src = self._strip_block(source, CANDIDATE_START, CANDIDATE_END)
+        if CANDIDATE_TESTCASE_START in baseline_src:
+            baseline_src = self._strip_block(baseline_src, CANDIDATE_TESTCASE_START, CANDIDATE_TESTCASE_END)
+
+        # ── Auto-generate main() for each variant ───────────────────
+        candidate_tests = self._extract_test_functions(source, CANDIDATE_TESTCASE_START, CANDIDATE_TESTCASE_END)
+        baseline_tests = self._extract_test_functions(source, BASELINE_TESTCASE_START, BASELINE_TESTCASE_END)
+
+        if candidate_tests:
+            candidate_src += self._generate_main(candidate_tests, f"{stem}_candidate")
+        if baseline_tests:
+            baseline_src += self._generate_main(baseline_tests, f"{stem}_baseline")
+
+        # ── Upload both variants ─────────────────────────────────────
+        candidate_remote = f"{self.remote_starter_dir}/{stem}_candidate.cpp"
+        baseline_remote = f"{self.remote_starter_dir}/{stem}_baseline.cpp"
+
+        for src_text, remote_path in [
+            (candidate_src, candidate_remote),
+            (baseline_src, baseline_remote),
+        ]:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".cpp", delete=False) as f:
+                f.write(src_text)
+                tmp_path = f.name
+            try:
+                self._upload(tmp_path, remote_path)
+            finally:
+                os.unlink(tmp_path)
+
+        # # ── Ensure include symlink ───────────────────────────────────
+        # # arm-bench/ncnn → ncnn/ so #include "../ncnn/mapped/..." resolves
+        # symlink_cmd = (
+        #     f"ln -sfn {self.remote_ncnn_root} "
+        #     f"{self.remote_project_root}/arm-bench/ncnn"
+        # )
+        # self._run(symlink_cmd)
+
+        # ── Ensure cmake libraries are built ─────────────────────────
+        lib_targets, extra_inc_dirs = NCNN_STARTER_DEPS.get(
+            file, (["mapped_conv_arm", "mapped_conv_base"], [])
+        )
+        all_cmake_targets = ["ncnn_stub"] + lib_targets
+        cmake_build_cmd = (
+            f"mkdir -p {self.remote_ncnn_build} && "
+            f"cd {self.remote_ncnn_build} && "
+            f"cmake .. -DCMAKE_BUILD_TYPE=Release 2>&1 && "
+            f"make -j$(nproc) {' '.join(all_cmake_targets)} 2>&1"
+        )
+        rc, output, _ = self._run(cmake_build_cmd, timeout=180)
+        if rc != 0:
+            self._last_compile_ok = False
+            errors = "\n".join(
+                l for l in output.splitlines() if "error:" in l.lower()
+            )
+            return CompileResult(
+                success=False, errors=errors or f"ncnn cmake build failed:\n{output}"
+            )
+
+        # ── Shared compiler / linker flags ───────────────────────────
+        include_flags = (
+            f"-I {self.remote_starter_dir} "
+            f"-I {self.remote_ncnn_root} "
+            f"-I {self.remote_ncnn_root}/framework"
+        )
+        for subdir in extra_inc_dirs:
+            include_flags += f" -I {self.remote_ncnn_root}/{subdir}"
+
+        lib_flags = " ".join(
+            f"{self.remote_ncnn_build}/lib{t}.a" for t in all_cmake_targets
         )
 
-        # Write to a temp file and upload
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".c", delete=False) as f:
-            f.write(patched)
-            tmp_path = f.name
-        try:
-            self._upload(tmp_path, self.remote_loop_file)
-        finally:
-            os.unlink(tmp_path)
-
-        # 2. Compile with HAVE_CANDIDATE flag
-        # Remove stale object/symlink for this loop so make doesn't fail on
-        # "ln: File exists" when the previous build was interrupted mid-way.
-        obj_base = f"{self.remote_root}/build/{self.make_target}/_obj"
-        make_cmd = (
-            f"cd {self.remote_root} && "
-            f"rm -f {obj_base}/loops/loop_{self.loop_num}.o "
-            f"       {obj_base}/_lnk/loop_{self.loop_num}.o && "
-            f"make {self.make_target} "
-            f"EXTRA_FLAGS='-DHAVE_CANDIDATE' "
-            f"2>&1"
+        binary_dir = f"{self.remote_starter_dir}/build"
+        cxx_base = (
+            f"clang++ -O2 -std=c++14 -march=armv8.2-a+fp16+dotprod -fopenmp "
+            f"{include_flags}"
         )
-        rc, combined, _ = self._run(make_cmd, timeout=120)
+        link_tail = f"{lib_flags} -lm -lstdc++"
 
-        warnings = "\n".join(
+        all_warnings: list[str] = []
+
+        # ── Compile candidate binary → <stem> ────────────────────────
+        candidate_bin = f"{binary_dir}/{stem}"
+        candidate_cmd = (
+            f"mkdir -p {binary_dir} && "
+            f"{cxx_base} {candidate_remote} {link_tail} "
+            f"-o {candidate_bin} 2>&1"
+        )
+        rc, combined, _ = self._run(candidate_cmd, timeout=120)
+
+        all_warnings.extend(
             l for l in combined.splitlines()
             if "warning:" in l.lower() and "error:" not in l.lower()
         )
-        errors = "\n".join(
-            l for l in combined.splitlines()
-            if "error:" in l.lower()
-        )
-
         if rc != 0:
             self._last_compile_ok = False
-            return CompileResult(success=False, errors=errors or combined)
+            errors = "\n".join(
+                l for l in combined.splitlines() if "error:" in l.lower()
+            )
+            return CompileResult(
+                success=False,
+                errors=f"[{stem}] " + (errors or combined),
+            )
 
+        # ── Compile baseline binary → <stem>_arm ─────────────────────
+        baseline_bin = f"{binary_dir}/{stem}_arm"
+        baseline_cmd = (
+            f"{cxx_base} {baseline_remote} {link_tail} "
+            f"-o {baseline_bin} 2>&1"
+        )
+        rc, combined, _ = self._run(baseline_cmd, timeout=120)
+
+        all_warnings.extend(
+            l for l in combined.splitlines()
+            if "warning:" in l.lower() and "error:" not in l.lower()
+        )
+        if rc != 0:
+            self._last_compile_ok = False
+            errors = "\n".join(
+                l for l in combined.splitlines() if "error:" in l.lower()
+            )
+            return CompileResult(
+                success=False,
+                errors=f"[{stem}_arm] " + (errors or combined),
+            )
+
+        # ── Success — update state ───────────────────────────────────
         self._last_compile_ok = True
         self._last_candidate_code = source
-        return CompileResult(success=True, warnings=warnings)
+        self.remote_binary = candidate_bin           # candidate for run()/perf()/disassemble()
+        self.remote_baseline_binary = baseline_bin   # baseline for comparison
+        return CompileResult(
+            success=True,
+            warnings="\n".join(all_warnings) if all_warnings else "",
+        )
 
     # ─── Tool: run ───────────────────────────────────────────────────────────
 
-    def run(self, n: int = 100, size: int | None = None) -> RunResult:
+    def run(self, n: int = 1) -> RunResult:
         """
-        Run the compiled binary for this loop and report correctness + timing.
+        Run both the candidate and baseline binaries and report correctness + timing.
+
+        Each binary contains fixed test cases (no size parameter needed).
+        The binary exits 0 if all tests pass, non-zero if any fail.
 
         Args:
-            n:    Number of iterations (more = more stable timing, slower).
-            size: If given, recompile at this input size before running, then
-                  restore the default-size binary afterwards. Useful for testing
-                  correctness and timing at non-default array lengths.
+            n:    Number of iterations to run for timing (the binary is invoked
+                  n times and the total wall-clock time is measured).
 
         Returns:
-            RunResult with correct flag and runtime_ms.
+            RunResult with correct flag, runtime_ms (candidate), and output
+            showing results from both candidate and baseline runs.
         """
         self._tool_calls += 1
         if not self._last_compile_ok:
             return RunResult(correct=False, output="No compiled binary — run compile() first.")
 
-        if size is not None:
-            return self._run_at_explicit_size(n, size)
+        outputs: list[str] = []
+        all_correct = True
 
-        loop_hex = int(self.loop_num)
-        time_cmd = (
+        # Run candidate binary
+        candidate_time_cmd = (
             f"t0=$(date +%s%N); "
-            f"{self.remote_binary} -k {loop_hex} -n {n}; "
-            f"rc=$?; "
+            f"for i in $(seq 1 {n}); do {self.remote_binary}; rc=$?; "
+            f"if [ $rc -ne 0 ]; then exit $rc; fi; done; "
             f"t1=$(date +%s%N); "
-            f'echo "TIME_NS=$((t1-t0))"; '
-            f"exit $rc"
+            f'echo "TIME_NS=$((t1-t0))"'
         )
-        rc, stdout, stderr = self._run(time_cmd, timeout=300)
-        correct = "Checksum correct." in stdout
-
-        runtime_ms = None
+        rc, stdout, _ = self._run(candidate_time_cmd, timeout=300)
+        candidate_correct = (rc == 0) and ("FAIL" not in stdout)
+        candidate_ms = None
         m = re.search(r"TIME_NS=(\d+)", stdout)
         if m:
-            total_ns = int(m.group(1))
-            runtime_ms = round(total_ns / 1e6, 3)
-
-        output_clean = stdout.replace(f"TIME_NS={m.group(0) if m else ''}", "").strip()
-        return RunResult(correct=correct, runtime_ms=runtime_ms, output=output_clean)
-
-    def _run_at_explicit_size(self, n: int, size: int) -> RunResult:
-        """
-        Compile candidate at `size`, run n iterations, restore default binary.
-
-        Correctness is reported as "did not abort/crash" rather than matching
-        the hardcoded checksum (which is only valid at the default compiled size).
-        The binary's own output (LOOP_RESULT line) is included for context.
-        """
-        if self._last_candidate_code is None:
-            return RunResult(correct=False, output="No candidate code stored — run compile() first.")
-
-        bin_path = self._compile_at_size(size, have_candidate=True)
-        if bin_path is None:
-            return RunResult(correct=False, output=f"size={size}: compile failed")
-
-        loop_decimal = int(self.loop_num)
-        time_cmd = (
-            f"t0=$(date +%s%N); "
-            f"{bin_path} -k {loop_decimal} -n {n}; "
-            f"rc=$?; "
-            f"t1=$(date +%s%N); "
-            f'echo "TIME_NS=$((t1-t0))"; '
-            f"exit $rc"
-        )
-        rc, stdout, _ = self._run(time_cmd, timeout=300)
-
-        # rc==2 means explicit ABORT (no implementation for this target/size).
-        # Any other non-zero rc or crash is also a failure.
-        # We do NOT use the hardcoded checksum here — it is only valid at the
-        # default SIZE. The binary's LOOP_RESULT output is included for context.
-        ran_ok = (rc != 2 and "ABORT" not in stdout)
-
-        runtime_ms = None
-        m = re.search(r"TIME_NS=(\d+)", stdout)
-        if m:
-            runtime_ms = round(int(m.group(1)) / 1e6, 3)
-
+            candidate_ms = round(int(m.group(1)) / 1e6, 3)
         output_clean = re.sub(r"TIME_NS=\d+", "", stdout).strip()
+        # Show only the last iteration's output (avoid n repetitions)
+        last_summary = ""
+        for line in output_clean.splitlines():
+            if line.strip().startswith("[") and "passed" in line:
+                last_summary = line.strip()
+        outputs.append(f"[candidate] {'PASS' if candidate_correct else 'FAIL'}  {last_summary}  time={candidate_ms}ms")
+        if not candidate_correct:
+            outputs.append(f"  output: {output_clean[-500:]}")
+            all_correct = False
 
-        # Restore default binary so subsequent run()/perf() calls work correctly
-        self._compile_at_size(self._get_default_size() or size, have_candidate=True)
+        # Run baseline binary
+        baseline_ms=None
+        if self.remote_baseline_binary:
+            baseline_time_cmd = (
+                f"t0=$(date +%s%N); "
+                f"for i in $(seq 1 {n}); do {self.remote_baseline_binary}; rc=$?; "
+                f"if [ $rc -ne 0 ]; then exit $rc; fi; done; "
+                f"t1=$(date +%s%N); "
+                f'echo "TIME_NS=$((t1-t0))"'
+            )
+            rc, stdout, _ = self._run(baseline_time_cmd, timeout=300)
+            baseline_correct = (rc == 0) and ("FAIL" not in stdout)
+            baseline_ms = None
+            m = re.search(r"TIME_NS=(\d+)", stdout)
+            if m:
+                baseline_ms = round(int(m.group(1)) / 1e6, 3)
+            output_clean = re.sub(r"TIME_NS=\d+", "", stdout).strip()
+            last_summary = ""
+            for line in output_clean.splitlines():
+                if line.strip().startswith("[") and "passed" in line:
+                    last_summary = line.strip()
+            outputs.append(f"[baseline]  {'PASS' if baseline_correct else 'FAIL'}  {last_summary}  time={baseline_ms}ms")
+            if not baseline_correct:
+                outputs.append(f"  output: {output_clean[-500:]}")
+                all_correct = False
 
-        return RunResult(correct=ran_ok, runtime_ms=runtime_ms, output=output_clean)
+        return RunResult(
+            correct=all_correct,
+            candidate_runtime_ms=candidate_ms,
+            baseline_runtime_ms=baseline_ms,
+            output="\n".join(outputs),
+        )
 
     # ─── Tool: perf ──────────────────────────────────────────────────────────
 
-    def perf(self, n: int = 100, size: int | None = None) -> PerfResult:
+    def perf(self, n: int = 1) -> PerfResult:
         """
-        Run perf stat to collect hardware PMU counters.
+        Run perf stat on both candidate and baseline binaries to collect
+        hardware PMU counters and compare performance.
 
         Available on Graviton3/4 via Nitro:
           - cycles, instructions, IPC
@@ -323,59 +516,53 @@ class SIMDTools:
         Note: L2/L3 counters are not exposed by the Nitro hypervisor.
 
         Args:
-            n:    Iteration count.
-            size: If given, recompile at this input size before running, then
-                  restore the default-size binary afterwards.
+            n:    Number of times to invoke the binary under perf stat.
 
         Returns:
-            PerfResult with cycles, instructions, IPC, L1D miss %.
+            PerfResult with cycles, instructions, IPC, L1D miss % for the
+            candidate, plus raw_output containing both candidate and baseline
+            results for comparison.
         """
         self._tool_calls += 1
         if not self._last_compile_ok:
             return PerfResult(raw_output="No compiled binary — run compile() first.")
 
-        if size is not None:
-            return self._perf_at_explicit_size(n, size)
+        perf_probe = (
+            "PERF=$(ls /usr/lib/linux-aws-*-tools-*/perf 2>/dev/null | head -1); "
+            "PERF=${PERF:-perf}; "
+        )
 
-        loop_hex = int(self.loop_num)
-        # The kernel-versioned perf binary under /usr/lib has PMU support on
-        # Graviton.  Probe for the first one that exists; fall back to the
-        # system 'perf' wrapper (which may warn but still work).
-        perf_cmd = (
-            f"PERF=$(ls /usr/lib/linux-aws-*-tools-*/perf 2>/dev/null | head -1); "
-            f"PERF=${{PERF:-perf}}; "
+        # ── Candidate perf ──
+        run_loop = f"for i in $(seq 1 {n}); do {self.remote_binary}; done" if n > 1 else self.remote_binary
+        candidate_cmd = (
+            f"{perf_probe}"
             f"sudo $PERF stat "
             f"-e cycles,instructions,r04,r03 "
-            f"{self.remote_binary} -k {loop_hex} -n {n} "
+            f"bash -c '{run_loop}' "
             f"2>&1"
         )
-        rc, output, _ = self._run(perf_cmd, timeout=300)
-        return self._parse_perf_output(output)
+        rc, candidate_output, _ = self._run(candidate_cmd, timeout=300)
+        candidate_perf = self._parse_perf_output(candidate_output)
+        candidate_perf.raw_output = f"=== CANDIDATE ===\n{candidate_output}"
+        #raw_parts = [f"=== CANDIDATE ===\n{candidate_output}"]
 
-    def _perf_at_explicit_size(self, n: int, size: int) -> PerfResult:
-        """Compile candidate at `size`, run perf stat, restore default binary."""
-        if self._last_candidate_code is None:
-            return PerfResult(raw_output="No candidate code stored — run compile() first.")
+        # ── Baseline perf ──
+        if self.remote_baseline_binary:
+            run_loop_bl = f"for i in $(seq 1 {n}); do {self.remote_baseline_binary}; done" if n > 1 else self.remote_baseline_binary
+            baseline_cmd = (
+                f"{perf_probe}"
+                f"sudo $PERF stat "
+                f"-e cycles,instructions,r04,r03 "
+                f"bash -c '{run_loop_bl}' "
+                f"2>&1"
+            )
+            rc, baseline_output, _ = self._run(baseline_cmd, timeout=300)
+            baseline_perf = self._parse_perf_output(baseline_output)
+            baseline_perf.raw_output = f"=== BASELINE ===\n{baseline_output}"
+            #raw_parts.append(f"\n=== BASELINE ===\n{baseline_output}")
 
-        bin_path = self._compile_at_size(size, have_candidate=True)
-        if bin_path is None:
-            return PerfResult(raw_output=f"size={size}: compile failed")
-
-        loop_decimal = int(self.loop_num)
-        perf_cmd = (
-            f"PERF=$(ls /usr/lib/linux-aws-*-tools-*/perf 2>/dev/null | head -1); "
-            f"PERF=${{PERF:-perf}}; "
-            f"sudo $PERF stat "
-            f"-e cycles,instructions,r04,r03 "
-            f"{bin_path} -k {loop_decimal} -n {n} "
-            f"2>&1"
-        )
-        rc, output, _ = self._run(perf_cmd, timeout=300)
-
-        # Restore default binary
-        self._compile_at_size(self._get_default_size() or size, have_candidate=True)
-
-        return self._parse_perf_output(output)
+        #candidate_perf.raw_output = "\n".join(raw_parts)
+        return candidate_perf,baseline_perf
 
     @staticmethod
     def _parse_perf_output(output: str) -> PerfResult:
@@ -430,10 +617,9 @@ class SIMDTools:
             rc, output, stderr = self._run(_objdump_fn(fn), timeout=60)
             if rc != 0:
                 return DisasmResult(asm=f"objdump failed: {stderr}")
-            # If the requested symbol was inlined, fall back to the outer loop wrapper
+            # If the requested symbol was inlined, fall back to main
             if not output.strip():
-                fallback = f"loop_{self.loop_num}"
-                rc, output, stderr = self._run(_objdump_fn(fallback), timeout=60)
+                rc, output, stderr = self._run(_objdump_fn("main"), timeout=60)
                 if rc != 0:
                     return DisasmResult(asm=f"objdump failed: {stderr}")
         else:
@@ -459,18 +645,18 @@ class SIMDTools:
 
     def submit(self, code: str) -> EvalResult:
         """
-        Final submission: compile, run 1000 iterations, and score against baselines.
+        Final submission: compile, run correctness checks, and compare
+        candidate vs ARM baseline performance.
 
         Args:
-            code: The optimized C implementation to submit.
+            code: The starter .cpp filename (e.g. "convolution.cpp").
 
         Returns:
-            EvalResult with correctness, speedup levels, final score, and per-size
-            performance data (perf_by_size).
+            EvalResult with correctness, speedup vs baseline, and timing.
         """
         self._tool_calls += 1
 
-        # Compile
+        # Compile both candidate and baseline
         cr = self.compile(code)
         if not cr.success:
             return EvalResult(
@@ -480,8 +666,8 @@ class SIMDTools:
                 tool_calls=self._tool_calls,
             )
 
-        # Run correctness check at default size
-        rr = self.run(n=10)
+        # Run correctness check
+        rr = self.run(n=1)
         if not rr.correct:
             return EvalResult(
                 correct=False,
@@ -489,230 +675,51 @@ class SIMDTools:
                 tool_calls=self._tool_calls,
             )
 
-        # Edge-case correctness: sizes from per-problem EDGE_SIZES
-        edge_fail = self._check_edge_sizes()
-        if edge_fail:
-            return EvalResult(
-                correct=False,
-                level=0,
-                compile_error=f"Edge-case correctness failure: {edge_fail}",
-                tool_calls=self._tool_calls,
+        # Authoritative timing: run both candidate and baseline multiple times
+        n_iters = 10
+        # Candidate timing
+        candidate_cmd = (
+            f"t0=$(date +%s%N); "
+            f"for i in $(seq 1 {n_iters}); do {self.remote_binary} > /dev/null 2>&1; done; "
+            f"t1=$(date +%s%N); "
+            f'echo "TIME_NS=$((t1-t0))"'
+        )
+        _, stdout, _ = self._run(candidate_cmd, timeout=600)
+        candidate_ms = None
+        m = re.search(r"TIME_NS=(\d+)", stdout)
+        if m:
+            candidate_ms = round(int(m.group(1)) / 1e6, 3)
+
+        # Baseline timing
+        baseline_ms = None
+        if self.remote_baseline_binary:
+            baseline_cmd = (
+                f"t0=$(date +%s%N); "
+                f"for i in $(seq 1 {n_iters}); do {self.remote_baseline_binary} > /dev/null 2>&1; done; "
+                f"t1=$(date +%s%N); "
+                f'echo "TIME_NS=$((t1-t0))"'
             )
+            _, stdout, _ = self._run(baseline_cmd, timeout=600)
+            m = re.search(r"TIME_NS=(\d+)", stdout)
+            if m:
+                baseline_ms = round(int(m.group(1)) / 1e6, 3)
 
-        # Performance at larger sizes: collect timing at each PERF_SIZE
-        perf_by_size = self._collect_perf_sizes()
-
-        # Authoritative timing: 1000 iterations at default size
-        rr_final = self.run(n=1000)
-        runtime_ms = rr_final.runtime_ms
-
-        # Load baselines
-        tier = ISA_TIER.get(self.isa, "c7g")
-        baselines = load_baselines(tier)
-        baseline = baselines.get(self.problem_id, {})
-        scalar_ms = baseline.get("scalar_ms")
-        autovec_ms = baseline.get("autovec_ms")
-        ref_ms = baseline.get("ref_ms")  # hand-written SVE/SVE2/SME2 reference
-
-        speedup_vs_scalar = None
-        speedup_vs_autovec = None
+        # Compute speedup: baseline / candidate (>1 means candidate is faster)
         speedup_vs_ref = None
         level = 1  # correct
-
-        if runtime_ms and scalar_ms:
-            speedup_vs_scalar = round(scalar_ms / runtime_ms, 2)
-            if speedup_vs_scalar > 1.0:
-                level = 2
-
-        if runtime_ms and autovec_ms:
-            speedup_vs_autovec = round(autovec_ms / runtime_ms, 2)
-            if level >= 2 and speedup_vs_autovec > 1.0:
-                level = 3
-
-        if runtime_ms and ref_ms:
-            speedup_vs_ref = round(ref_ms / runtime_ms, 2)
-            if level >= 3 and speedup_vs_ref > 1.0:
-                level = 4  # beats hand-written SVE reference
+        if candidate_ms and baseline_ms and candidate_ms > 0:
+            speedup_vs_ref = round(baseline_ms / candidate_ms, 2)
+            if speedup_vs_ref > 1.0:
+                level = 2  # faster than ARM baseline
 
         return EvalResult(
             correct=True,
-            speedup_vs_scalar=speedup_vs_scalar,
-            speedup_vs_autovec=speedup_vs_autovec,
             speedup_vs_ref=speedup_vs_ref,
             level=level,
-            runtime_ms=runtime_ms,
+            runtime_ms=candidate_ms,
             tool_calls=self._tool_calls,
-            perf_by_size=perf_by_size if perf_by_size else None,
         )
 
-    # ─── Edge-case and perf-size helpers ─────────────────────────────────────
-
-    def _get_default_size(self) -> int | None:
-        """Parse the default SIZE from the local loop source file (cached)."""
-        if self._default_size is not None:
-            return self._default_size
-        local_loop_file = REPO_ROOT / "loops" / f"loop_{self.loop_num}.c"
-        m = re.search(r"#define SIZE\s+(\d+)", local_loop_file.read_text())
-        if m:
-            self._default_size = int(m.group(1))
-        return self._default_size
-
-    def _run_at_size(self, binary: str, size: int) -> str | None:
-        """
-        Run `binary` compiled with -DSIZE=<size>, return the LOOP_RESULT value
-        string from stdout, or None if the binary aborted.
-        """
-        loop_decimal = int(self.loop_num)
-        cmd = f"{binary} -k {loop_decimal} -n 1 2>&1"
-        rc, stdout, _ = self._run(cmd, timeout=60)
-        if rc == 2:  # ABORT exit code
-            return None
-        m = re.search(r"LOOP_RESULT:\s*(.+)", stdout)
-        return m.group(1).strip() if m else None
-
-    def _compile_at_size(self, size: int, have_candidate: bool) -> str | None:
-        """
-        Compile with -DSIZE=<size>. Returns the binary path on success, None on failure.
-        Uses HAVE_CANDIDATE or HAVE_NATIVE depending on have_candidate flag.
-
-        Strategy: first ensure the target binary exists with all *other* loops'
-        .o files already built (a plain make with no custom EXTRA_FLAGS).  Then
-        recompile only the specific loop .o at the requested size and relink.
-        This avoids triggering a full rebuild where other loops may reject the
-        custom SIZE via _Static_assert (e.g. loop_023 requires SIZE % 16 == 0).
-        """
-        if have_candidate:
-            extra = f"-DHAVE_CANDIDATE -DSIZE={size}"
-            target = self.make_target
-            base_extra = "-DHAVE_CANDIDATE"
-        else:
-            extra = f"-DHAVE_NATIVE -U__ARM_NEON -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SVE2 -U__ARM_FEATURE_SME -DSIZE={size}"
-            target = "c-scalar"
-            base_extra = "-DHAVE_NATIVE -U__ARM_NEON -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SVE2 -U__ARM_FEATURE_SME"
-
-        obj_dir = f"{self.remote_root}/build/{target}/_obj"
-        loop_o  = f"{obj_dir}/loops/loop_{self.loop_num}.o"
-        lnk_o   = f"{obj_dir}/_lnk/loop_{self.loop_num}.o"
-
-        # Step 1: ensure all OTHER loops are already compiled (plain build,
-        # no custom SIZE).  This is a no-op if the binary is already up to date.
-        warmup_cmd = f"cd {self.remote_root} && make {target} EXTRA_FLAGS='{base_extra}' 2>&1"
-        rc, _, _ = self._run(warmup_cmd, timeout=120)
-        if rc != 0:
-            return None  # even the baseline build failed
-
-        # Step 2: recompile only this loop's .o at the requested size, then relink.
-        clean_cmd  = f"rm -f {loop_o} {lnk_o}"
-        relink_cmd = (
-            f"cd {self.remote_root} && {clean_cmd} && "
-            f"make {target} EXTRA_FLAGS='{extra}' 2>&1"
-        )
-        rc, output, _ = self._run(relink_cmd, timeout=120)
-        if rc != 0:
-            return None
-        return f"{self.remote_root}/build/{target}/bin/simd_loops"
-
-    def _check_edge_sizes(self) -> str | None:
-        """
-        Test correctness at each size in EDGE_SIZES (from problem metadata).
-
-        For each size, compares the candidate result against the c-scalar reference.
-        Returns an error string on the first failure, None if all pass.
-        """
-        if not self._edge_sizes:
-            return None  # no edge sizes defined for this problem
-
-        for size in self._edge_sizes:
-            # Compile scalar reference at this size
-            scalar_bin = self._compile_at_size(size, have_candidate=False)
-            if scalar_bin is None:
-                continue  # scalar build failed at this size (e.g. size too large), skip
-
-            # Compile candidate at this size
-            candidate_bin = self._compile_at_size(size, have_candidate=True)
-            if candidate_bin is None:
-                return f"size={size}: candidate failed to compile"
-
-            scalar_result = self._run_at_size(scalar_bin, size)
-            candidate_result = self._run_at_size(candidate_bin, size)
-
-            if candidate_result is None:
-                return f"size={size}: candidate aborted"
-
-            if scalar_result is None:
-                continue  # scalar aborted at this size, can't compare
-
-            # Compare: parse as floats if possible, else string compare
-            try:
-                sv = float(scalar_result.split()[0])
-                cv = float(candidate_result.split()[0])
-                tolerance = max(abs(sv) * 1e-4, 1e-6)
-                if abs(sv - cv) > tolerance:
-                    return f"size={size}: scalar={sv:.6g} candidate={cv:.6g} (mismatch)"
-            except (ValueError, IndexError):
-                if scalar_result != candidate_result:
-                    return f"size={size}: scalar={scalar_result!r} candidate={candidate_result!r} (mismatch)"
-
-        # Restore default-size binary so run()/perf() work after submit
-        default_size = self._get_default_size()
-        if default_size is not None:
-            self._compile_at_size(default_size, have_candidate=True)
-
-        return None  # all edge cases passed
-
-    def _collect_perf_sizes(self) -> dict[int, float | None]:
-        """
-        Run the candidate at each PERF_SIZE and collect timing (ms per iteration).
-        Also verifies correctness at each large size.
-        Returns {size: runtime_ms} for sizes that ran successfully.
-        """
-        if not self._perf_sizes:
-            return {}
-
-        results: dict[int, float | None] = {}
-        loop_decimal = int(self.loop_num)
-
-        for size in self._perf_sizes:
-            bin_path = self._compile_at_size(size, have_candidate=True)
-            if bin_path is None:
-                results[size] = None
-                continue
-
-            # Quick sanity: ensure the binary doesn't abort at this size.
-            # (Full correctness vs scalar is already covered by _check_edge_sizes;
-            # the hardcoded checksum is only valid at the default SIZE.)
-            result_str = self._run_at_size(bin_path, size)
-            if result_str is None:
-                results[size] = None  # aborted
-                continue
-
-            # Timing: 100 iterations
-            time_cmd = (
-                f"t0=$(date +%s%N); "
-                f"{bin_path} -k {loop_decimal} -n 100; "
-                f"rc=$?; "
-                f"t1=$(date +%s%N); "
-                f'echo "TIME_NS=$((t1-t0))"; '
-                f"exit $rc"
-            )
-            rc, stdout, _ = self._run(time_cmd, timeout=600)
-            if rc == 2 or "ABORT" in stdout:
-                results[size] = None  # aborted at this size
-                continue
-
-            m = re.search(r"TIME_NS=(\d+)", stdout)
-            if m:
-                total_ms = int(m.group(1)) / 1e6
-                results[size] = round(total_ms / 100, 4)  # ms per iteration
-            else:
-                results[size] = None
-
-        # Restore default-size binary
-        default_size = self._get_default_size()
-        if default_size is not None:
-            self._compile_at_size(default_size, have_candidate=True)
-
-        return results
 
     # ─── OpenAI-compatible tool schemas ──────────────────────────────────────
 
@@ -748,24 +755,17 @@ class SIMDTools:
                 "function": {
                     "name": "run",
                     "description": (
-                        "Run the last compiled binary and check correctness + timing. "
+                        "Run both candidate and baseline binaries and check correctness + timing. "
                         "Must call compile() successfully first. "
-                        "Pass size= to test at a different input array length (recompiles automatically)."
+                        "Test cases are fixed in the starter file."
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "n": {
                                 "type": "integer",
-                                "description": "Number of iterations (default 100; more = more stable timing).",
-                                "default": 100,
-                            },
-                            "size": {
-                                "type": "integer",
-                                "description": (
-                                    "Input array size to test (overrides the default compiled size). "
-                                    "Useful for verifying edge cases (e.g. size=1) or large inputs."
-                                ),
+                                "description": "Number of iterations (default 1; more = more stable timing).",
+                                "default": 1,
                             },
                         },
                     },
@@ -776,9 +776,9 @@ class SIMDTools:
                 "function": {
                     "name": "perf",
                     "description": (
-                        "Run perf stat to collect hardware PMU counters: "
-                        "cycles, instructions, IPC, L1D cache miss rate. "
-                        "Pass size= to profile at a larger input size (recompiles automatically). "
+                        "Run perf stat on both candidate and baseline binaries to collect "
+                        "hardware PMU counters: cycles, instructions, IPC, L1D cache miss rate. "
+                        "Compares performance between candidate and ARM baseline. "
                         "Note: L2/L3 counters are not available on Nitro-based Graviton instances."
                     ),
                     "parameters": {
@@ -787,14 +787,7 @@ class SIMDTools:
                             "n": {
                                 "type": "integer",
                                 "description": "Number of iterations.",
-                                "default": 100,
-                            },
-                            "size": {
-                                "type": "integer",
-                                "description": (
-                                    "Input array size to test (overrides the default compiled size). "
-                                    "Useful for measuring performance at larger inputs."
-                                ),
+                                "default": 1,
                             },
                         },
                     },
@@ -851,9 +844,9 @@ class SIMDTools:
         if name == "compile":
             return self.compile(args["code"]).to_tool_result()
         elif name == "run":
-            return self.run(args.get("n", 100), size=args.get("size")).to_tool_result()
+            return self.run(args.get("n", 1)).to_tool_result()
         elif name == "perf":
-            return self.perf(args.get("n", 100), size=args.get("size")).to_tool_result()
+            return self.perf(args.get("n", 1)).to_tool_result()
         elif name == "disassemble":
             return self.disassemble(args.get("fn")).to_tool_result()
         elif name == "submit":

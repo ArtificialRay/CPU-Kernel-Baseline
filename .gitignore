@@ -1,3 +1,5 @@
 *.zip
 */build/
 *.cmake
+.venv/
+.vscode/

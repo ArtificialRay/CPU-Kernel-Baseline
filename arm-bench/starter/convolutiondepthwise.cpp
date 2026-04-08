@@ -1,8 +1,8 @@
 #include "test_utils.h"
 #include "ncnn_helpers.h"
-
-#include "../ncnn/mapped/convolutiondepthwise/convolutiondepthwise.h"
-#include "../mapped/convolutiondepthwise/convolutiondepthwise_arm.h"
+#include "ref_conv.h"
+#include "../../ncnn/mapped/convolutiondepthwise/convolutiondepthwise.h"
+#include "../../ncnn/mapped/convolutiondepthwise/convolutiondepthwise_arm.h"
 
 // CANDIDATE_INJECT_START
 // Generic runner for ConvolutionDepthWise (base)
@@ -42,7 +42,11 @@ static bool run_depthwise_conv2d(int c, int in_h, int in_w,
     int ret = dw.forward(bottom, top, opt);
     if (ret != 0) { fprintf(stderr, "  ConvolutionDepthWise::forward failed %d\n", ret); g_failed++; return false; }
 
+    TestMat ref = ref_depthwise_conv2d(in, weight, bias, kh, kw, stride_h, stride_w, pad_top, pad_left, dil_h, dil_w);
     std::vector<float> got; read_mat(top, got);
+    int before = g_failed;
+    ASSERT_VEC_NEAR(got, ref.data.data(), ref.total(), 1e-3f);
+    return g_failed == before;
 }
 // CANDIDATE_INJECT_END
 
@@ -87,5 +91,43 @@ static bool run_depthwise_conv2d_arm(int c, int in_h, int in_w,
     int ret = dw.forward(bottom, top, opt);
     if (ret != 0) { fprintf(stderr, "  ConvolutionDepthWise_arm::forward failed %d\n", ret); g_failed++; return false; }
 
+    TestMat ref = ref_depthwise_conv2d(in, weight, bias, kh, kw, stride_h, stride_w, pad_top, pad_left, dil_h, dil_w);
     std::vector<float> got; read_mat(top, got);
+    int before = g_failed;
+    ASSERT_VEC_NEAR(got, ref.data.data(), ref.total(), 1e-3f);
+    return g_failed == before;
 }
+
+// CANDIDATE_TESTCASE_START
+// ── ConvolutionDepthWise (base) ───────────────────────────────────
+void test_dw_base_3x3() {
+    ASSERT_TRUE(run_depthwise_conv2d(2, 6, 6, 3, 3, 1, 1, 0, 0));
+    ASSERT_TRUE(run_depthwise_conv2d(4, 8, 8, 3, 3, 1, 1, 1, 1));
+    ASSERT_TRUE(run_depthwise_conv2d(8, 12, 12, 3, 3, 2, 2, 0, 0));
+}
+
+void test_dw_base_5x5() {
+    ASSERT_TRUE(run_depthwise_conv2d(4, 8, 8, 5, 5, 1, 1, 2, 2));
+}
+
+void test_dw_base_bias() {
+    ASSERT_TRUE(run_depthwise_conv2d(4, 8, 8, 3, 3, 1, 1, 1, 1, 1, 1, true));
+}
+// CANDIDATE_TESTCASE_END
+
+// BASELINE_TESTCASE_START
+// ── ConvolutionDepthWise_arm ──────────────────────────────────────
+void test_dw_arm_3x3() {
+    ASSERT_TRUE(run_depthwise_conv2d_arm(2, 6, 6, 3, 3, 1, 1, 0, 0));
+    ASSERT_TRUE(run_depthwise_conv2d_arm(4, 8, 8, 3, 3, 1, 1, 1, 1));
+    ASSERT_TRUE(run_depthwise_conv2d_arm(8, 12, 12, 3, 3, 2, 2, 0, 0));
+}
+
+void test_dw_arm_5x5() {
+    ASSERT_TRUE(run_depthwise_conv2d_arm(4, 8, 8, 5, 5, 1, 1, 2, 2));
+}
+
+void test_dw_arm_bias() {
+    ASSERT_TRUE(run_depthwise_conv2d_arm(4, 8, 8, 3, 3, 1, 1, 1, 1, 1, 1, true));
+}
+// BASELINE_TESTCASE_END

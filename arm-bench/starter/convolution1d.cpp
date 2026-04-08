@@ -1,7 +1,8 @@
 #include "test_utils.h"
 #include "ncnn_helpers.h"
-#include "../ncnn/mapped/convolution1d/convolution1d.h"
-#include "../ncnn/mapped/convolution1d/convolution1d_arm.h"
+#include "ref_conv.h"
+#include "../../ncnn/mapped/convolution1d/convolution1d.h"
+#include "../../ncnn/mapped/convolution1d/convolution1d_arm.h"
 // CANDIDATE_INJECT_START
 // The ncnn Convolution1D treats the input as [w=length, h=channels] (2D mat)
 static bool run_conv1d(int in_c, int out_c, int in_w, int kw,
@@ -39,6 +40,7 @@ static bool run_conv1d(int in_c, int out_c, int in_w, int kw,
 
     // Reference uses TestMat (h=in_c, w=in_w)
     TestMat in_tm(in_w, in_c, 1, in_flat);
+    TestMat ref = ref_conv1d(in_tm, weight, bias, out_c, kw, stride_w, pad_left, dil_w);
 
     // Output: h=out_c, w=out_len (2D mat)
     std::vector<float> got;
@@ -51,9 +53,14 @@ static bool run_conv1d(int in_c, int out_c, int in_w, int kw,
         read_mat(top, got);
     }
 
+    int before = g_failed;
+    ASSERT_VEC_NEAR(got, ref.data.data(), (int)got.size(), 1e-3f);
+    return g_failed == before;
+
 }
 // CANDIDATE_INJECT_END
 
+// BASELINE_INJECT_START
 // Convolution1D_arm
 static bool run_conv1d_arm(int in_c, int out_c, int in_w, int kw,
                              int stride_w, int pad_left, int dil_w = 1,
@@ -92,6 +99,7 @@ static bool run_conv1d_arm(int in_c, int out_c, int in_w, int kw,
     if (ret != 0) { fprintf(stderr, "  Convolution1D_arm::forward failed %d\n", ret); g_failed++; return false; }
 
     TestMat in_tm(in_w, in_c, 1, in_flat);
+    TestMat ref = ref_conv1d(in_tm, weight, bias, out_c, kw, stride_w, pad_left, dil_w);
 
     std::vector<float> got;
     if (top.dims == 2) {
@@ -103,4 +111,40 @@ static bool run_conv1d_arm(int in_c, int out_c, int in_w, int kw,
         read_mat(top, got);
     }
 
+    int before = g_failed;
+    ASSERT_VEC_NEAR(got, ref.data.data(), (int)got.size(), 1e-3f);
+    return g_failed == before;
 }
+// BASELINE_INJECT_END
+
+// CANDIDATE_TESTCASE_START
+void test_conv1d_base_k3() {
+    ASSERT_TRUE(run_conv1d(2, 4, 8, 3, 1, 0));
+    ASSERT_TRUE(run_conv1d(4, 8, 16, 3, 1, 1));
+    ASSERT_TRUE(run_conv1d(8, 4, 12, 3, 2, 0));
+}
+
+void test_conv1d_base_k1() {
+    ASSERT_TRUE(run_conv1d(3, 4, 8, 1, 1, 0));
+}
+
+void test_conv1d_base_bias() {
+    ASSERT_TRUE(run_conv1d(4, 8, 8, 3, 1, 1, 1, true));
+}
+// CANDIDATE_TESTCASE_END
+
+// BASELINE_TESTCASE_START
+void test_conv1d_arm_k3() {
+    ASSERT_TRUE(run_conv1d_arm(2, 4, 8, 3, 1, 0));
+    ASSERT_TRUE(run_conv1d_arm(4, 8, 16, 3, 1, 1));
+    ASSERT_TRUE(run_conv1d_arm(8, 4, 12, 3, 2, 0));
+}
+
+void test_conv1d_arm_k1() {
+    ASSERT_TRUE(run_conv1d_arm(3, 4, 8, 1, 1, 0));
+}
+
+void test_conv1d_arm_bias() {
+    ASSERT_TRUE(run_conv1d_arm(4, 8, 8, 3, 1, 1, 1, true));
+}
+// BASELINE_TESTCASE_END

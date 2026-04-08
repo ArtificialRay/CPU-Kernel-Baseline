@@ -3,18 +3,18 @@
 // ModelBin, Option, CPU helpers, and layer factory stubs.
 // Does NOT pull in ARM-specific code.
 
-#include "../framework/platform.h"
-#include "../framework/allocator.h"
-#include "../framework/mat.h"
-#include "../framework/option.h"
-#include "../framework/paramdict.h"
-#include "../framework/modelbin.h"
-#include "../framework/layer.h"
-#include "../framework/layer_type.h"
-#include "../framework/cpu.h"
+#include "../../ncnn/framework/platform.h"
+#include "../../ncnn/framework/allocator.h"
+#include "../../ncnn/framework/mat.h"
+#include "../../ncnn/framework/option.h"
+#include "../../ncnn/framework/paramdict.h"
+#include "../../ncnn/framework/modelbin.h"
+#include "../../ncnn/framework/layer.h"
+#include "../../ncnn/framework/layer_type.h"
+#include "../../ncnn/framework/cpu.h"
 
 // Real Padding layer for copy_make_border support
-#include "../mapped/padding/padding.h"
+#include "../../ncnn/mapped/padding/padding.h"
 
 #include <string.h>
 #include <map>

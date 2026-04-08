@@ -21,7 +21,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm")
 endif()
 
 # ── Directory aliases ─────────────────────────────────────────────
-set(ROOT_DIR       ${CMAKE_CURRENT_SOURCE_DIR}/..)
+set(ROOT_DIR       ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(FRAMEWORK_DIR  ${ROOT_DIR}/framework)
 set(MAPPED_DIR     ${ROOT_DIR}/mapped)
 set(UNMAPPED_DIR   ${ROOT_DIR}/unmapped)
