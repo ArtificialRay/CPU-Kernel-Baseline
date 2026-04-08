@@ -1,8 +1,9 @@
 """
-eval/evaluator.py — Agentic LLM evaluation orchestrator for simd-loops.
+eval/evaluator.py — Agentic LLM evaluation orchestrator for ncnn kernel optimization.
 
-Runs an agent loop where the LLM iteratively uses compile/run/perf/disassemble
-tools over SSH, then scores the final submission against pre-collected baselines.
+Runs an agent loop where the LLM iteratively reads, modifies, and benchmarks
+ncnn kernel implementations (candidate vs ARM baseline) using
+compile/run/perf/disassemble tools.
 
 Compatible with any LiteLLM-supported model.
 """
@@ -10,116 +11,157 @@ Compatible with any LiteLLM-supported model.
 import copy
 import json
 import os
+import tempfile
 import time
-from pathlib import Path
 
+from dotenv import load_dotenv
 import litellm
 
-from eval.config import DATASET_PATH, load_problems, ISA_INSTANCE_DESC
-from eval.provision import InstanceHandle, get_or_provision
+from eval.config import REPO_ROOT, ISA_INSTANCE_DESC
 from eval.tools import SIMDTools, EvalResult
 
-REPO_ROOT = Path(__file__).parent.parent
+# Load .env from arm-bench/ root
+load_dotenv(REPO_ROOT / ".env")
 
-# System prompt for the LLM agent
+STARTER_DIR = REPO_ROOT / "starter"
+STARTER_PROBLEMS_JSON = STARTER_DIR / "problems.json"
+BASELINES_FILE = REPO_ROOT / "baselines" / "arm_baselines.json"
+
+
+# ─── Problem / baseline loaders ──────────────────────────────────────────────
+
+def load_starter_problems() -> dict[str, dict]:
+    """Load starter/problems.json, keyed by problem ID."""
+    raw = json.loads(STARTER_PROBLEMS_JSON.read_text())
+    return {p["id"]: p for p in raw}
+
+
+def load_arm_baselines() -> dict:
+    """Load baselines/arm_baselines.json."""
+    if BASELINES_FILE.exists():
+        return json.loads(BASELINES_FILE.read_text())
+    return {}
+
+
+# ─── System prompt ───────────────────────────────────────────────────────────
+
 SYSTEM_PROMPT = """\
-You are an expert AArch64 SIMD programmer. Your task is to write an optimized
-implementation of a given loop kernel for {isa_desc}.
+You are an expert AArch64 programmer specializing in ARM NEON/SVE optimizations
+for neural network kernels. Your task is to optimize an ncnn kernel implementation
+to run faster than the hand-tuned ARM baseline.
 
-You have access to four tools:
-  - compile(code): Inject and compile your C implementation. Check for errors.
-  - run(n): Run the compiled binary (n iterations). Check correctness (checksum).
-  - perf(n): Collect hardware PMU counters (cycles, IPC, L1D miss rate).
-  - disassemble(fn): See the generated assembly for a specific function.
-  - submit(code): Submit your final implementation for scoring.
+You are given:
+  - The current candidate kernel source code (a base C++ implementation)
+  - ARM baseline performance numbers (the target to beat)
+  - A test harness that validates correctness and measures performance
+
+You have access to five tools:
+  - compile(code): Replace the candidate kernel source with your optimized code,
+    rebuild the cmake libraries, and compile the test binary. The code must be a
+    complete replacement for the candidate source file.
+  - run(n): Run both candidate and baseline binaries (n iterations). Check
+    correctness and compare timing.
+  - perf(n): Collect hardware PMU counters (cycles, instructions, IPC, L1D miss
+    rate) for both candidate and baseline.
+  - disassemble(fn): Inspect generated AArch64 assembly for a specific function.
+  - submit(code): Submit your final optimized implementation for scoring.
 
 Guidelines:
-  - The function signature must be preserved exactly.
-  - The `res` field in the data struct is the checksum — it must match the scalar output.
-  - Use compile() first, then run() to verify correctness, then optimize.
-  - Use disassemble() to inspect generated instructions and verify vectorization.
-  - Call submit() when you are satisfied — this triggers final scoring.
+  - Correctness first: your optimized kernel must produce the same output as the
+    reference implementation within tolerance (1e-3).
+  - Start by calling compile() with the original source to establish a baseline,
+    then iterate.
+  - Use perf() and disassemble() to understand bottlenecks and verify vectorization.
+  - Common optimization strategies: NEON intrinsics, loop tiling, cache-friendly
+    access patterns, packing weights, reducing branches.
+  - Call submit() when you are satisfied with your optimization.
   - Be efficient: fewer tool calls is better, but correctness comes first.
 """
 
-# One-shot example shown in the user prompt
-ONE_SHOT_EXAMPLE = """\
-Example — FP32 SAXPY optimized with SVE:
 
-  // Scalar reference:
-  void inner_loop_saxpy(struct saxpy_data *d) {
-      for (int i = 0; i < d->n; i++) d->y[i] += d->a * d->x[i];
-      float res = 0.f; for (int i = 0; i < d->n; i++) res += d->y[i]; d->res = res;
-  }
+# ─── User prompt builder ────────────────────────────────────────────────────
 
-  // SVE implementation:
-  #include <arm_sve.h>
-  void inner_loop_saxpy(struct saxpy_data *d) {
-      svbool_t pg;
-      svfloat32_t va = svdup_f32(d->a);
-      int i = 0;
-      for (; svptest_first(svptrue_b32(), pg = svwhilelt_b32(i, d->n)); i += svcntw())
-          svst1(pg, d->y + i, svmla_m(pg, svld1(pg, d->y + i), va, svld1(pg, d->x + i)));
-      svfloat32_t acc = svdup_f32(0.f);
-      for (i = 0; svptest_first(svptrue_b32(), pg = svwhilelt_b32(i, d->n)); i += svcntw())
-          acc = svadd_m(pg, acc, svld1(pg, d->y + i));
-      d->res = svaddv(svptrue_b32(), acc);
-  }
+def build_user_prompt(problem: dict, candidate_source: str, baselines: dict, isa: str) -> str:
+    """Build the initial user message shown to the LLM."""
+    pid = problem["id"]
+    isa_desc = ISA_INSTANCE_DESC.get(isa, isa)
+    baseline = baselines.get(pid, {})
+
+    baseline_section = ""
+    if baseline:
+        baseline_section = (
+            f"\nARM baseline performance (the target to beat):\n"
+            f"  - Runtime: {baseline.get('baseline_ms', 'N/A')} ms/iter\n"
+        )
+        perf = baseline.get("perf", {})
+        if perf:
+            baseline_section += (
+                f"  - Cycles: {perf.get('cycles', 'N/A')}\n"
+                f"  - Instructions: {perf.get('instructions', 'N/A')}\n"
+                f"  - IPC: {perf.get('ipc', 'N/A')}\n"
+                f"  - L1D miss rate: {perf.get('l1d_miss_pct', 'N/A')}%\n"
+            )
+
+    return f"""\
+Problem: {problem["name"]}
+Description: {problem.get("description", "")}
+ISA target: {isa.upper()} on {isa_desc}
+Candidate source file: {problem["candidate_source"]}
+Starter test file: {problem["starter"]}
+{baseline_section}
+Current candidate kernel implementation:
+```cpp
+{candidate_source}
+```
+
+Your task: optimize this kernel implementation to be faster than the ARM baseline.
+Start by calling compile() with the source code above (unmodified) to verify the
+build works, then iterate with optimizations. Call submit() when done.
 """
 
+
+# ─── History compression ────────────────────────────────────────────────────
 
 def _compress_history(messages: list[dict], keep_full_turns: int = 2) -> list[dict]:
     """
     Compress old turns to keep context size bounded.
 
     The last `keep_full_turns` complete assistant+tool pairs are kept verbatim.
-    Older turns have large payloads replaced with compact summaries:
-      - compile/submit code: replaced with placeholder IF the compile succeeded.
-        Failed compile code is kept verbatim so the model remembers what to avoid.
-      - disassemble asm: always compressed (large, not needed after inspection)
-      - run/perf results: already small, always kept verbatim
-
-    Message structure is preserved exactly (tool_call_ids remain valid).
-    messages[0] = system, messages[1] = initial user — always kept verbatim.
+    Older turns have large payloads replaced with compact summaries.
     """
-    # Find indices of all assistant messages (each marks the start of a turn)
     assistant_indices = [i for i, m in enumerate(messages) if m["role"] == "assistant"]
 
     if len(assistant_indices) <= keep_full_turns:
-        return messages  # nothing old enough to compress
+        return messages
 
-    # Build map: tool_call_id → compile success (True/False/None for non-compile)
+    # Build map: tool_call_id → compile success (True/False/None)
     compile_success: dict[str, bool] = {}
     for msg in messages:
         if msg["role"] == "tool":
             try:
                 content = json.loads(msg["content"])
-                if "success" in content:  # compile result
+                if "success" in content:
                     compile_success[msg["tool_call_id"]] = content["success"]
             except (json.JSONDecodeError, KeyError):
                 pass
 
-    # Everything from this index onward is kept verbatim
     keep_from = assistant_indices[-keep_full_turns]
 
     result = []
     for i, msg in enumerate(messages):
-        if i < keep_from and i >= 2:  # compress; never touch system or initial user
+        if i < keep_from and i >= 2:
             msg = copy.deepcopy(msg)
             if msg["role"] == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     if tc["function"]["name"] in ("compile", "submit"):
-                        # Only compress code if the compile succeeded — failed
-                        # attempts must stay visible so the model doesn't repeat them
                         if compile_success.get(tc["id"], True):
                             try:
                                 args = json.loads(tc["function"]["arguments"])
                                 code = args.get("code", "")
-                                if len(code) > 100:
+                                if len(code) > 200:
                                     args["code"] = (
-                                        "/* [prior successful attempt: "
-                                        f"{len(code)} chars omitted — "
-                                        "do not resubmit this placeholder] */"
+                                        "/* [prior attempt: "
+                                        f"{len(code)} chars omitted] */"
                                     )
                                     tc["function"]["arguments"] = json.dumps(args)
                             except (json.JSONDecodeError, KeyError):
@@ -127,7 +169,7 @@ def _compress_history(messages: list[dict], keep_full_turns: int = 2) -> list[di
             elif msg["role"] == "tool":
                 try:
                     content = json.loads(msg["content"])
-                    if "asm" in content and len(content["asm"]) > 100:
+                    if "asm" in content and len(content["asm"]) > 200:
                         lines = content["asm"].count("\n")
                         content["asm"] = f"[{lines} lines — omitted from history]"
                         msg["content"] = json.dumps(content)
@@ -137,77 +179,234 @@ def _compress_history(messages: list[dict], keep_full_turns: int = 2) -> list[di
     return result
 
 
-def build_user_prompt(problem: dict, isa: str) -> str:
-    """Build the initial user message shown to the LLM."""
-    scalar_code = problem.get("scalar_code", "")
-    struct_def = problem.get("struct_def", "")
-    description = problem.get("description", "")
-    isa_desc = ISA_INSTANCE_DESC.get(isa, isa)
+# ─── Tool dispatch with candidate source injection ─────────────────────────
 
-    neon_code = problem.get("neon_code", "")
-    neon_section = (
-        f"\nNEON reference implementation (shows vectorisation structure):\n"
-        f"```c\n{neon_code}\n```\n"
-        if neon_code else ""
-    )
+def _write_candidate_source(tools: SIMDTools, problem: dict, code: str) -> None:
+    """
+    Write the agent's optimized code to the candidate source file on the remote.
 
-    return f"""\
-Problem: {problem["name"]}
-Purpose: {description}
-ISA target: {isa.upper()} on {isa_desc}
+    This updates e.g. ncnn/mapped/convolution/convolution.cpp so the next cmake
+    rebuild picks up the changes.
+    """
+    candidate_rel = problem["candidate_source"]
+    remote_path = f"{tools.remote_ncnn_root}/{candidate_rel}"
 
-Struct definition (data layout):
-```c
-{struct_def}
-```
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".cpp", delete=False) as f:
+        f.write(code)
+        tmp_path = f.name
+    try:
+        tools._upload(tmp_path, remote_path)
+    finally:
+        os.unlink(tmp_path)
 
-Scalar reference implementation (your task: replace with {isa.upper()}):
-```c
-{scalar_code}
-```
-{neon_section}
-{ONE_SHOT_EXAMPLE}
 
-Write an optimized {isa.upper()} implementation. Start by calling compile() with your first attempt.
-"""
+def dispatch_tool(tools: SIMDTools, problem: dict, name: str, args: dict) -> dict:
+    """
+    Dispatch a tool call, injecting candidate source for compile/submit.
 
+    For compile(code) and submit(code):
+      1. Write the agent's code to the remote candidate source file
+      2. Trigger cmake rebuild + starter compile via SIMDTools
+    Other tools delegate directly to SIMDTools.
+    """
+    starter = problem["starter"]
+
+    if name == "compile":
+        code = args.get("code", "")
+        _write_candidate_source(tools, problem, code)
+        return tools.compile(starter).to_tool_result()
+
+    elif name == "submit":
+        code = args.get("code", "")
+        _write_candidate_source(tools, problem, code)
+        return tools.submit(starter).to_dict()
+
+    elif name == "run":
+        return tools.run(args.get("n", 1)).to_tool_result()
+
+    elif name == "perf":
+        result = tools.perf(args.get("n", 1))
+        if isinstance(result, tuple):
+            candidate_perf, baseline_perf = result
+            return {
+                "candidate": candidate_perf.to_tool_result(),
+                "baseline": baseline_perf.to_tool_result(),
+            }
+        return result.to_tool_result()
+
+    elif name == "disassemble":
+        return tools.disassemble(args.get("fn")).to_tool_result()
+
+    else:
+        return {"error": f"Unknown tool: {name}"}
+
+
+# ─── Tool schemas ───────────────────────────────────────────────────────────
+
+def tool_schemas() -> list[dict]:
+    """Return OpenAI-compatible function tool definitions for the agent."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "compile",
+                "description": (
+                    "Replace the candidate kernel source file with your optimized code, "
+                    "rebuild the cmake libraries, and compile both candidate and baseline "
+                    "test binaries. Returns whether compilation succeeded and any errors."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": (
+                                "Your complete optimized C++ source file for the candidate "
+                                "kernel. Must be a full replacement — include all headers, "
+                                "namespace, class methods, etc."
+                            ),
+                        },
+                    },
+                    "required": ["code"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run",
+                "description": (
+                    "Run both candidate and baseline binaries and check correctness + timing. "
+                    "Must call compile() successfully first."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "n": {
+                            "type": "integer",
+                            "description": "Number of iterations (default 1; more = more stable timing).",
+                            "default": 1,
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "perf",
+                "description": (
+                    "Run perf stat on both candidate and baseline binaries to collect "
+                    "hardware PMU counters: cycles, instructions, IPC, L1D cache miss rate."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "n": {
+                            "type": "integer",
+                            "description": "Number of iterations.",
+                            "default": 1,
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "disassemble",
+                "description": (
+                    "Disassemble the compiled candidate binary. Filter to a specific "
+                    "function to see the generated AArch64 instructions."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fn": {
+                            "type": "string",
+                            "description": (
+                                "Function name to filter to. "
+                                "If omitted, returns full disassembly (may be large)."
+                            ),
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "submit",
+                "description": (
+                    "Submit your final optimized implementation for scoring. "
+                    "Compiles, verifies correctness, runs timing comparison against "
+                    "ARM baseline, and computes speedup. Call when satisfied."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": "Your final optimized C++ kernel source.",
+                        },
+                    },
+                    "required": ["code"],
+                },
+            },
+        },
+    ]
+
+
+# ─── Main agent loop ────────────────────────────────────────────────────────
 
 def run_agentic_eval(
     problem_id: str,
     isa: str,
     model: str,
-    handle: InstanceHandle,
+    handle,
     max_turns: int = 20,
     verbose: bool = True,
 ) -> EvalResult:
     """
-    Run one agentic evaluation session.
+    Run one agentic evaluation session for an ncnn kernel optimization problem.
 
-    The LLM gets tools (compile, run, perf, disassemble, submit) and iterates
-    until it calls submit() or hits max_turns.
+    The LLM gets the candidate kernel source, ARM baseline perf numbers, and
+    tools (compile, run, perf, disassemble, submit) to iteratively optimize.
 
     Args:
-        problem_id: e.g. "loop_001"
-        isa: "neon", "sve", "sve2", or "sme2"
+        problem_id: e.g. "conv2d"
+        isa: "neon", "sve", or "sve2"
         model: LiteLLM model string, e.g. "anthropic/claude-opus-4-6"
-        handle: SSH handle to the provisioned instance
+        handle: SSH handle to the provisioned instance, or None for local
         max_turns: Maximum agent turns before forced submit
         verbose: Print conversation turns
 
     Returns:
-        EvalResult from the submit() call (or a failed result if max_turns hit)
+        EvalResult from the submit() call (or forced scoring if max_turns hit)
     """
-    problems = load_problems()
+    # Load problem metadata
+    problems = load_starter_problems()
     if problem_id not in problems:
-        raise KeyError(f"Problem {problem_id!r} not found in problems.json")
+        raise KeyError(f"Problem {problem_id!r} not found in {STARTER_PROBLEMS_JSON}")
     problem = problems[problem_id]
 
-    tools = SIMDTools(handle=handle, problem_id=problem_id, isa=isa)
-    schemas = SIMDTools.tool_schemas()
+    # Load ARM baselines
+    baselines = load_arm_baselines()
 
-    isa_desc = ISA_INSTANCE_DESC.get(isa, isa)
-    system = SYSTEM_PROMPT.format(isa_desc=isa_desc)
-    user_msg = build_user_prompt(problem, isa)
+    # Read the candidate source file
+    candidate_src_path = REPO_ROOT.parent / "ncnn" / problem["candidate_source"]
+    if not candidate_src_path.exists():
+        raise FileNotFoundError(f"Candidate source not found: {candidate_src_path}")
+    candidate_source = candidate_src_path.read_text()
+
+    # Initialize tools and upload source tree
+    tools = SIMDTools(handle=handle, problem_id=problem_id, isa=isa)
+    tools.upload_ncnn_tree()
+
+    schemas = tool_schemas()
+
+    system = SYSTEM_PROMPT
+    user_msg = build_user_prompt(problem, candidate_source, baselines, isa)
 
     messages = [
         {"role": "system", "content": system},
@@ -216,7 +415,13 @@ def run_agentic_eval(
 
     if verbose:
         print(f"\n{'='*60}")
-        print(f"Problem: {problem_id} | ISA: {isa} | Model: {model}")
+        print(f"Problem: {problem_id} ({problem['name']})")
+        print(f"ISA: {isa} | Model: {model}")
+        print(f"Candidate: {problem['candidate_source']}")
+        print(f"Starter: {problem['starter']}")
+        baseline = baselines.get(problem_id, {})
+        if baseline:
+            print(f"ARM baseline: {baseline.get('baseline_ms')}ms/iter")
         print(f"{'='*60}")
 
     final_result: EvalResult | None = None
@@ -243,6 +448,7 @@ def run_agentic_eval(
                 time.sleep(wait)
         else:
             raise RuntimeError("Exceeded retry budget for rate limit")
+
         msg = response.choices[0].message
         messages.append(msg.model_dump())
 
@@ -258,31 +464,16 @@ def run_agentic_eval(
             fn_args = json.loads(tc.function.arguments)
 
             if verbose:
-                arg_preview = {k: (v[:80] + "..." if isinstance(v, str) and len(v) > 80 else v)
-                               for k, v in fn_args.items()}
-                print(f"  → {fn_name}({arg_preview})")
+                arg_preview = {
+                    k: (v[:80] + "..." if isinstance(v, str) and len(v) > 80 else v)
+                    for k, v in fn_args.items()
+                }
+                print(f"  -> {fn_name}({arg_preview})")
 
-            result_dict = tools.dispatch_tool_call(fn_name, fn_args)
+            result_dict = dispatch_tool(tools, problem, fn_name, fn_args)
 
             if verbose:
-                if fn_name == "submit":
-                    print(f"  ← {result_dict}")
-                elif fn_name == "compile":
-                    status = "OK" if result_dict.get("success") else "FAILED"
-                    print(f"  ← compile: {status}")
-                    if not result_dict.get("success"):
-                        err_preview = result_dict.get("errors", "")[:200]
-                        print(f"     {err_preview}")
-                elif fn_name == "run":
-                    correct = result_dict.get("correct")
-                    ms = result_dict.get("runtime_ms")
-                    print(f"  ← run: correct={correct}, {ms}ms")
-                elif fn_name == "perf":
-                    ipc = result_dict.get("ipc")
-                    miss = result_dict.get("l1d_miss_pct")
-                    print(f"  ← perf: IPC={ipc}, L1D_miss={miss}%")
-                else:
-                    print(f"  ← {fn_name}: {str(result_dict)[:100]}")
+                _print_tool_result(fn_name, result_dict)
 
             messages.append({
                 "role": "tool",
@@ -292,57 +483,83 @@ def run_agentic_eval(
 
             # Capture submit result
             if fn_name == "submit":
-                er = EvalResult(**{k: result_dict[k] for k in EvalResult.__dataclass_fields__
-                                   if k in result_dict})
+                er = EvalResult(**{
+                    k: result_dict[k]
+                    for k in EvalResult.__dataclass_fields__
+                    if k in result_dict
+                })
                 er.tool_calls = tools._tool_calls
                 final_result = er
 
-    # If agent never called submit, force a final run with last compiled code
+    # If agent never called submit, force final scoring
     if final_result is None:
         if verbose:
-            print("\n[Max turns reached — forcing final scoring run]")
-        # Try a no-op submit with the current compiled state
-        rr = tools.run(n=1000)
-        from eval.config import load_baselines, ISA_TIER
-        tier = ISA_TIER.get(isa, "c7g")
-        baselines = load_baselines(tier)
-        baseline = baselines.get(problem_id, {})
-        scalar_ms = baseline.get("scalar_ms")
-        autovec_ms = baseline.get("autovec_ms")
-        ref_ms = baseline.get("ref_ms")
-
-        speedup_vs_scalar = None
-        speedup_vs_autovec = None
-        speedup_vs_ref = None
-        level = 0
-
-        if rr.correct:
-            level = 1
-            if rr.runtime_ms and scalar_ms:
-                speedup_vs_scalar = round(scalar_ms / rr.runtime_ms, 2)
-                if speedup_vs_scalar > 1.0:
-                    level = 2
-            if rr.runtime_ms and autovec_ms:
-                speedup_vs_autovec = round(autovec_ms / rr.runtime_ms, 2)
-                if level >= 2 and speedup_vs_autovec > 1.0:
-                    level = 3
-            if rr.runtime_ms and ref_ms:
-                speedup_vs_ref = round(ref_ms / rr.runtime_ms, 2)
-                if level >= 3 and speedup_vs_ref > 1.0:
-                    level = 4
-
-        final_result = EvalResult(
-            correct=rr.correct,
-            speedup_vs_scalar=speedup_vs_scalar,
-            speedup_vs_autovec=speedup_vs_autovec,
-            speedup_vs_ref=speedup_vs_ref,
-            level=level,
-            runtime_ms=rr.runtime_ms,
-            tool_calls=tools._tool_calls,
-        )
+            print("\n[Max turns reached — forcing final scoring]")
+        final_result = _force_final_score(tools, problem, baselines)
 
     if verbose:
         print(f"\n[Final Result]")
         print(json.dumps(final_result.to_dict(), indent=2))
 
     return final_result
+
+
+def _print_tool_result(fn_name: str, result_dict: dict) -> None:
+    """Pretty-print a tool result for verbose output."""
+    if fn_name == "submit":
+        print(f"  <- {result_dict}")
+    elif fn_name == "compile":
+        status = "OK" if result_dict.get("success") else "FAILED"
+        print(f"  <- compile: {status}")
+        if not result_dict.get("success"):
+            err = result_dict.get("errors", "")[:200]
+            print(f"     {err}")
+    elif fn_name == "run":
+        correct = result_dict.get("correct")
+        c_ms = result_dict.get("candidate runtime_ms")
+        b_ms = result_dict.get("baseline runtime_ms")
+        print(f"  <- run: correct={correct}, candidate={c_ms}ms, baseline={b_ms}ms")
+    elif fn_name == "perf":
+        if "candidate" in result_dict:
+            cp = result_dict["candidate"]
+            bp = result_dict.get("baseline", {})
+            print(f"  <- perf: candidate IPC={cp.get('ipc')}, baseline IPC={bp.get('ipc')}")
+        else:
+            print(f"  <- perf: IPC={result_dict.get('ipc')}")
+    else:
+        print(f"  <- {fn_name}: {str(result_dict)[:120]}")
+
+
+def _force_final_score(
+    tools: SIMDTools,
+    problem: dict,
+    baselines: dict,
+) -> EvalResult:
+    """Force a final scoring run when the agent hits max_turns without submitting."""
+    if not tools._last_compile_ok:
+        return EvalResult(correct=False, level=0, tool_calls=tools._tool_calls)
+
+    rr = tools.run(n=10)
+    if not rr.correct:
+        return EvalResult(correct=False, level=0, tool_calls=tools._tool_calls)
+
+    pid = problem["id"]
+    baseline = baselines.get(pid, {})
+    baseline_ms = baseline.get("baseline_ms")
+
+    speedup_vs_ref = None
+    level = 1  # correct
+    if rr.candidate_runtime_ms and baseline_ms and rr.candidate_runtime_ms > 0:
+        # Normalize to per-iteration (run returns total for n iterations)
+        candidate_per_iter = rr.candidate_runtime_ms / 10
+        speedup_vs_ref = round(baseline_ms / candidate_per_iter, 2)
+        if speedup_vs_ref > 1.0:
+            level = 2
+
+    return EvalResult(
+        correct=True,
+        speedup_vs_ref=speedup_vs_ref,
+        level=level,
+        runtime_ms=rr.candidate_runtime_ms,
+        tool_calls=tools._tool_calls,
+    )

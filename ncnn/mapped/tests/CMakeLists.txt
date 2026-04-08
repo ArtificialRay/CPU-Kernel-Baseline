@@ -24,7 +24,6 @@ endif()
 set(ROOT_DIR       ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(FRAMEWORK_DIR  ${ROOT_DIR}/framework)
 set(MAPPED_DIR     ${ROOT_DIR}/mapped)
-set(UNMAPPED_DIR   ${ROOT_DIR}/unmapped)
 set(ARM_CONV_DIR   ${ROOT_DIR}/arm-heavy-optimized/conv)
 
 # ── ncnn framework stub library ───────────────────────────────────
@@ -84,21 +83,6 @@ add_library(mapped_ip_arm STATIC
 )
 target_include_directories(mapped_ip_arm PUBLIC ${ROOT_DIR})
 
-# ── Unmapped implementations ──────────────────────────────────────
-# Plain c-partially-optimized kernels with no ARM variant.
-# They use unmapped/common/fused_activation.h (via ../common/).
-
-add_library(unmapped_conv_impl STATIC
-    ${UNMAPPED_DIR}/convolution3d/convolution3d.cpp
-    ${UNMAPPED_DIR}/convolutiondepthwise1d/convolutiondepthwise1d.cpp
-    ${UNMAPPED_DIR}/convolutiondepthwise3d/convolutiondepthwise3d.cpp
-    ${UNMAPPED_DIR}/deconvolution1d/deconvolution1d.cpp
-    ${UNMAPPED_DIR}/deconvolution3d/deconvolution3d.cpp
-    ${UNMAPPED_DIR}/deconvolutiondepthwise1d/deconvolutiondepthwise1d.cpp
-    ${UNMAPPED_DIR}/deconvolutiondepthwise3d/deconvolutiondepthwise3d.cpp
-    ${UNMAPPED_DIR}/deformableconv2d/deformableconv2d.cpp
-)
-target_include_directories(unmapped_conv_impl PUBLIC ${ROOT_DIR})
 
 # ── Helper macro: add a test executable ──────────────────────────
 macro(add_ncnn_test name)
@@ -121,16 +105,6 @@ macro(add_mapped_kernel_test kernel)
     )
 endmacro()
 
-# ── Helper macro: per-kernel unmapped test (base only) ───────────
-macro(add_unmapped_kernel_test kernel)
-    add_library(unmapped_${kernel}_impl STATIC
-        ${UNMAPPED_DIR}/${kernel}/${kernel}.cpp
-    )
-    target_include_directories(unmapped_${kernel}_impl PUBLIC ${ROOT_DIR})
-    add_ncnn_test(test_unmapped_${kernel}
-        unmapped_${kernel}_impl
-    )
-endmacro()
 
 # ── Test targets ──────────────────────────────────────────────────
 enable_testing()
@@ -147,10 +121,6 @@ add_ncnn_test(test_mapped_ip
     mapped_ip_base
 )
 
-# test_unmapped_conv: all unmapped conv kernels
-add_ncnn_test(test_unmapped_conv
-    unmapped_conv_impl
-)
 
 # ── Per-kernel mapped tests ───────────────────────────────────────
 add_mapped_kernel_test(absval)
@@ -194,24 +164,12 @@ add_library(mapped_scale_impl STATIC
 target_include_directories(mapped_scale_impl PUBLIC ${ROOT_DIR})
 add_ncnn_test(test_mapped_scale mapped_scale_impl)
 
-# ── Per-kernel unmapped tests ─────────────────────────────────────
-add_unmapped_kernel_test(sdpa)
-add_unmapped_kernel_test(reduction)
-add_unmapped_kernel_test(flip)
-add_unmapped_kernel_test(tile)
-
-# pooling1d uses layer_type.h (for copy_make_border via Padding)
-add_library(unmapped_pooling1d_impl STATIC
-    ${UNMAPPED_DIR}/pooling1d/pooling1d.cpp
-)
-target_include_directories(unmapped_pooling1d_impl PUBLIC ${ROOT_DIR})
-add_ncnn_test(test_unmapped_pooling1d unmapped_pooling1d_impl)
 
 # ── Summary target ────────────────────────────────────────────────
 add_custom_target(run_all_tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     DEPENDS
-        test_mapped_conv test_mapped_ip test_unmapped_conv
+        test_mapped_conv test_mapped_ip
         test_mapped_absval test_mapped_relu test_mapped_sigmoid
         test_mapped_tanh test_mapped_clip test_mapped_gelu
         test_mapped_swish test_mapped_mish test_mapped_hardsigmoid
@@ -220,7 +178,5 @@ add_custom_target(run_all_tests
         test_mapped_bias test_mapped_layernorm test_mapped_binaryop
         test_mapped_eltwise test_mapped_softmax test_mapped_flatten
         test_mapped_concat test_mapped_pooling test_mapped_scale
-        test_unmapped_sdpa test_unmapped_reduction test_unmapped_pooling1d
-        test_unmapped_flip test_unmapped_tile
     COMMENT "Running all ncnn kernel tests"
 )
