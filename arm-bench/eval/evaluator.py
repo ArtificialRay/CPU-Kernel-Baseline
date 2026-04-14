@@ -9,6 +9,7 @@ Compatible with any LiteLLM-supported model.
 """
 
 import copy
+import datetime
 import json
 import os
 import tempfile
@@ -19,6 +20,7 @@ import litellm
 
 from eval.config import REPO_ROOT, ISA_INSTANCE_DESC
 from eval.tools import SIMDTools, EvalResult
+from eval.context import _compress_history_with_code,_compress_history
 
 # Load .env from arm-bench/ root
 load_dotenv(REPO_ROOT / ".env")
@@ -120,63 +122,60 @@ build works, then iterate with optimizations. Call submit() when done.
 """
 
 
-# ─── History compression ────────────────────────────────────────────────────
+# ─── Perf history persistence ────────────────────────────────────────────────
 
-def _compress_history(messages: list[dict], keep_full_turns: int = 2) -> list[dict]:
+def _save_perf_history(
+    tools: SIMDTools,
+    problem: dict,
+    code: str,
+    result_dict: dict,
+    speedup: float | None,
+    turn: int,
+) -> None:
     """
-    Compress old turns to keep context size bounded.
+    Save the code and perf counters for this perf() call to
+    ``{remote_ncnn_root}/history/`` on the remote instance.
 
-    The last `keep_full_turns` complete assistant+tool pairs are kept verbatim.
-    Older turns have large payloads replaced with compact summaries.
+    Creates two files per call:
+      perf_turn{NNN}_{timestamp}.cpp   — the compiled candidate source
+      perf_turn{NNN}_{timestamp}.json  — perf counters + speedup metadata
     """
-    assistant_indices = [i for i, m in enumerate(messages) if m["role"] == "assistant"]
+    timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    history_dir = f"{tools.remote_ncnn_root}/history"
+    tools._run(f"mkdir -p {history_dir}")
 
-    if len(assistant_indices) <= keep_full_turns:
-        return messages
+    entry: dict = {
+        "turn": turn,
+        "timestamp": timestamp,
+        "problem_id": problem["id"],
+        "speedup_vs_baseline": speedup,
+    }
+    if "candidate" in result_dict:
+        cp = result_dict["candidate"]
+        entry["candidate_cycles"] = cp.get("cycles")
+        entry["candidate_ipc"] = cp.get("ipc")
+        entry["candidate_l1d_miss_pct"] = cp.get("l1d_miss_pct")
+    if "baseline" in result_dict:
+        bp = result_dict["baseline"]
+        entry["baseline_cycles"] = bp.get("cycles")
+        entry["baseline_ipc"] = bp.get("ipc")
 
-    # Build map: tool_call_id → compile success (True/False/None)
-    compile_success: dict[str, bool] = {}
-    for msg in messages:
-        if msg["role"] == "tool":
-            try:
-                content = json.loads(msg["content"])
-                if "success" in content:
-                    compile_success[msg["tool_call_id"]] = content["success"]
-            except (json.JSONDecodeError, KeyError):
-                pass
+    stem = f"perf_turn{turn:03d}_{timestamp}"
+    meta_remote = f"{history_dir}/{stem}.json"
+    code_remote = f"{history_dir}/{stem}.cpp"
 
-    keep_from = assistant_indices[-keep_full_turns]
-
-    result = []
-    for i, msg in enumerate(messages):
-        if i < keep_from and i >= 2:
-            msg = copy.deepcopy(msg)
-            if msg["role"] == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    if tc["function"]["name"] in ("compile", "submit"):
-                        if compile_success.get(tc["id"], True): # only add successful compiled code
-                            try:
-                                args = json.loads(tc["function"]["arguments"])
-                                code = args.get("code", "")
-                                if len(code) > 200: # reduce code length to less than 200
-                                    args["code"] = (
-                                        "/* [prior attempt: "
-                                        f"{len(code)} chars omitted] */"
-                                    )
-                                    tc["function"]["arguments"] = json.dumps(args) # TODO: only assistant message has older code
-                            except (json.JSONDecodeError, KeyError):
-                                pass
-            elif msg["role"] == "tool":
-                try:
-                    content = json.loads(msg["content"])
-                    if "asm" in content and len(content["asm"]) > 200:  # if use disassemble, add asm to the msg content
-                        lines = content["asm"].count("\n")
-                        content["asm"] = f"[{lines} lines — omitted from history]"
-                        msg["content"] = json.dumps(content)
-                except (json.JSONDecodeError, KeyError):
-                    pass
-        result.append(msg)
-    return result
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(entry, f, indent=2)
+        tmp_meta = f.name
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".cpp", delete=False) as f:
+        f.write(code)
+        tmp_code = f.name
+    try:
+        tools._upload(tmp_meta, meta_remote)
+        tools._upload(tmp_code, code_remote)
+    finally:
+        os.unlink(tmp_meta)
+        os.unlink(tmp_code)
 
 
 # ─── Tool dispatch with candidate source injection ─────────────────────────
@@ -366,7 +365,7 @@ def run_agentic_eval(
     handle,
     max_turns: int = 20,
     verbose: bool = True,
-) -> EvalResult:
+) -> tuple[EvalResult, list[dict]]:
     """
     Run one agentic evaluation session for an ncnn kernel optimization problem.
 
@@ -382,7 +381,9 @@ def run_agentic_eval(
         verbose: Print conversation turns
 
     Returns:
-        EvalResult from the submit() call (or forced scoring if max_turns hit)
+        (EvalResult, perf_speedup_buffer) where perf_speedup_buffer is a list of
+        {"turn": int, "speedup_vs_baseline": float} entries, one per perf() call
+        that produced a measurable speedup.
     """
     # Load problem metadata
     problems = load_starter_problems()
@@ -426,11 +427,15 @@ def run_agentic_eval(
 
     final_result: EvalResult | None = None
 
+    # Latest compiled code; updated on every compile call so perf always snapshots the right code.
+    # Also substituted into the compressed user prompt after each perf call.
+    latest_perf_code: str = candidate_source
+
     for turn in range(max_turns):
         if verbose:
             print(f"\n[Turn {turn+1}/{max_turns}]")
 
-        compressed = _compress_history(messages)
+        compressed = _compress_history_with_code(messages, latest_perf_code=latest_perf_code)
         for _retry in range(6):
             try:
                 response = litellm.completion(
@@ -474,6 +479,24 @@ def run_agentic_eval(
 
             if verbose:
                 _print_tool_result(fn_name, result_dict)
+
+            # Keep latest_perf_code current so perf always snapshots the right code
+            if fn_name == "compile":
+                latest_perf_code = fn_args.get("code", "")
+
+            # On perf: compute speedup, persist history, update buffer
+            if fn_name == "perf":
+                speedup: float | None = None
+                if "candidate" in result_dict and "baseline" in result_dict:
+                    c_cycles = result_dict["candidate"].get("cycles")
+                    b_cycles = result_dict["baseline"].get("cycles")
+                    if c_cycles and b_cycles and c_cycles > 0:
+                        speedup = round(b_cycles / c_cycles, 3)
+                if speedup is not None:
+                    tools.perf_speedup_buffer.append({"turn": turn + 1, "speedup_vs_baseline": speedup})
+                _save_perf_history(tools, problem, latest_perf_code, result_dict, speedup, turn + 1)
+                if verbose:
+                    print(f"  [perf history saved, speedup_vs_baseline={speedup}]")
 
             messages.append({
                 "role": "tool",
@@ -536,11 +559,11 @@ def _force_final_score(
     baselines: dict,
 ) -> EvalResult:
     """Force a final scoring run when the agent hits max_turns without submitting."""
-    if not tools._last_compile_ok:
+    if not tools._last_compile_ok: # check if last compiled code succeed
         return EvalResult(correct=False, level=0, tool_calls=tools._tool_calls)
 
     rr = tools.run(n=10)
-    if not rr.correct:
+    if not rr.correct: # check if last compiled code is current
         return EvalResult(correct=False, level=0, tool_calls=tools._tool_calls)
 
     pid = problem["id"]

@@ -133,6 +133,8 @@ class SIMDTools:
         self._last_compile_ok = False
         self._tool_calls = 0
         self._last_candidate_code: str | None = None
+        # Speedup vs ARM baseline at each perf() call: [{"turn": int, "speedup_vs_baseline": float | None}]
+        self.perf_speedup_buffer: list[dict] = []
 
         # Remote paths for ncnn starter files
         #TODO: User name for remote instance may vary, hard-code ubuntu here
