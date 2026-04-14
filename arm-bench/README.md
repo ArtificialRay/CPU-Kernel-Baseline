@@ -31,8 +31,16 @@ Score:  Level 0  compile fail / wrong checksum
 
 ### 1. Install dependencies
 
+Python:
 ```bash
 pip install litellm
+```
+
+System packages (required on any host that actually runs `SIMDTools.compile()` — i.e. locally when `handle=None`, or on the remote when using `--provision`; `terraform/setup.sh` covers the remote case):
+```bash
+sudo apt-get install -y cmake clang-18 llvm-18 libomp-18-dev g++
+# tools.py invokes bare `clang++` and `llvm-objdump-18`; symlink clang++ if missing:
+sudo ln -sf /usr/bin/clang++-18 /usr/local/bin/clang++
 ```
 
 ### 2. Provision an instance

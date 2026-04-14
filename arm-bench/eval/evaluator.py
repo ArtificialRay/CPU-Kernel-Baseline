@@ -154,22 +154,22 @@ def _compress_history(messages: list[dict], keep_full_turns: int = 2) -> list[di
             if msg["role"] == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     if tc["function"]["name"] in ("compile", "submit"):
-                        if compile_success.get(tc["id"], True):
+                        if compile_success.get(tc["id"], True): # only add successful compiled code
                             try:
                                 args = json.loads(tc["function"]["arguments"])
                                 code = args.get("code", "")
-                                if len(code) > 200:
+                                if len(code) > 200: # reduce code length to less than 200
                                     args["code"] = (
                                         "/* [prior attempt: "
                                         f"{len(code)} chars omitted] */"
                                     )
-                                    tc["function"]["arguments"] = json.dumps(args)
+                                    tc["function"]["arguments"] = json.dumps(args) # TODO: only assistant message has older code
                             except (json.JSONDecodeError, KeyError):
                                 pass
             elif msg["role"] == "tool":
                 try:
                     content = json.loads(msg["content"])
-                    if "asm" in content and len(content["asm"]) > 200:
+                    if "asm" in content and len(content["asm"]) > 200:  # if use disassemble, add asm to the msg content
                         lines = content["asm"].count("\n")
                         content["asm"] = f"[{lines} lines — omitted from history]"
                         msg["content"] = json.dumps(content)
