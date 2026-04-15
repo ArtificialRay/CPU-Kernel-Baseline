@@ -121,11 +121,11 @@ def _compress_history(messages: list[dict], keep_full_turns: int = 2) -> list[di
             if msg["role"] == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     if tc["function"]["name"] in ("compile", "submit"):
-                        if compile_success.get(tc["id"], True): # only add successful compiled code
+                        if compile_success.get(tc["id"], True): # only replace successful compiled code
                             try:
                                 args = json.loads(tc["function"]["arguments"])
                                 code = args.get("code", "")
-                                if len(code) > 200: # reduce code length to less than 200
+                                if len(code) > 200: # reduce large code to short placehoulder
                                     args["code"] = (
                                         "/* [prior attempt: "
                                         f"{len(code)} chars omitted] */"

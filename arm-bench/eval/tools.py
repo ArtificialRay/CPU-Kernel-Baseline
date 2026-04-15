@@ -329,10 +329,16 @@ class SIMDTools:
             file, (["mapped_conv_arm", "mapped_conv_base"], [])
         )
         all_cmake_targets = ["ncnn_stub"] + lib_targets
+        march = {
+            "neon":  "armv8.2-a+fp16+dotprod",
+            "sve":   "armv8.2-a+fp16+dotprod+sve",
+            "sve2":  "armv8.2-a+fp16+dotprod+sve2",
+        }.get(self.isa, "armv8.2-a+fp16+dotprod")
         cmake_build_cmd = (
             f"mkdir -p {self.remote_ncnn_build} && "
             f"cd {self.remote_ncnn_build} && "
-            f"cmake .. -DCMAKE_BUILD_TYPE=Release 2>&1 && "
+            f"cmake .. -DCMAKE_BUILD_TYPE=Release "
+            f"-DCMAKE_CXX_FLAGS='-march={march}' 2>&1 && "
             f"make -j$(nproc) {' '.join(all_cmake_targets)} 2>&1"
         )
         rc, output, _ = self._run(cmake_build_cmd, timeout=180)
@@ -359,8 +365,9 @@ class SIMDTools:
         )
 
         binary_dir = f"{self.remote_starter_dir}/build"
+        # match isa with different compile flag
         cxx_base = (
-            f"clang++ -O2 -std=c++14 -march=armv8.2-a+fp16+dotprod -fopenmp "
+            f"clang++ -O2 -std=c++14 -march={march} -fopenmp "
             f"{include_flags}"
         )
         link_tail = f"{lib_flags} -lm -lstdc++"
@@ -382,9 +389,13 @@ class SIMDTools:
         )
         if rc != 0:
             self._last_compile_ok = False
-            errors = "\n".join(
-                l for l in combined.splitlines() if "error:" in l.lower()
-            )
+            lines = combined.splitlines()
+            is_linker_error = any("linker command failed" in l for l in lines)
+            if is_linker_error:
+                # Return full output — linker errors span multiple non-"error:" lines
+                errors = combined
+            else:
+                errors = "\n".join(l for l in lines if "error:" in l.lower())
             return CompileResult(
                 success=False,
                 errors=f"[{stem}] " + (errors or combined),
