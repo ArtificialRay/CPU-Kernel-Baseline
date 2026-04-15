@@ -152,12 +152,19 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "") -> Inst
     print(f"[provision] Instance ready at {host}, waiting for SSH...")
     _wait_for_ssh(handle)
 
-    print(f"[provision] Rsyncing source to {host}:~/simd-loops/...")
+    remote_root = "/home/ubuntu/Remote/CPU-Kernel-Baseline"
+    print(f"[provision] Rsyncing source to {host}:{remote_root}/...")
+    handle.run(f"mkdir -p {remote_root}")
     handle.rsync_to(
-        str(REPO_ROOT),
-        "~/simd-loops",
+        str(REPO_ROOT / "starter"),
+        f"{remote_root}/arm-bench/starter",
         excludes=["build", ".git", "terraform", "generations", "results",
                   "__pycache__", "*.pyc"],
+    )
+    handle.rsync_to(
+        str(REPO_ROOT.parent / "ncnn"),
+        f"{remote_root}/ncnn",
+        excludes=["build", "__pycache__", "*.o", "*.d", ".git"],
     )
 
     _save_config(handle)

@@ -128,21 +128,21 @@ def _print_summary(results: dict[str, EvalResult], isa: str, model: str):
     print(f"  Model: {model}  |  ISA: {isa}")
     print(f"{'='*60}")
     print(f"  Total problems:               {n}")
-    print(f"  Correct (level >= 1):          {n_correct}/{n}")
+    print(f"  Last compiled code Correctness (level >= 1):          {n_correct}/{n}")
     print(f"  Beats ARM baseline (level 2):  {n_beats_baseline}/{n}")
     if avg_speedup is not None:
         print(f"  Avg speedup vs ARM baseline:   {avg_speedup}x")
     print(f"{'='*60}")
 
     # Per-problem table
-    print(f"\n{'Problem':<20} {'Correct':<10} {'Speedup':<12} {'Runtime ms':<12} {'Turns'}")
+    print(f"\n{'Problem':<20} {'Correct(last compiled code)':<10} {'Speedup(best version)':<12} {'Runtime ms':<12} {'Turns'} {'Metadata location for code with best speedup'}")
     print("-" * 66)
     for pid, r in results.items():
         correct = "PASS" if r.correct else "FAIL"
         speedup = f"{r.speedup_vs_ref}x" if r.speedup_vs_ref else "N/A"
         ms = str(r.runtime_ms) if r.runtime_ms else "N/A"
         turns = str(r.tool_calls)
-        print(f"{pid:<20} {correct:<10} {speedup:<12} {ms:<12} {turns}")
+        print(f"{pid:<20} {correct:<10} {speedup:<12} {ms:<12} {turns} {r.best_history_file}")
 
 
 if __name__ == "__main__":

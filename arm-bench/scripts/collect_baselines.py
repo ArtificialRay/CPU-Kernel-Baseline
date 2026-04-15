@@ -128,9 +128,10 @@ def main():
     print(f"{'='*60}\n")
 
     tools = SIMDTools(handle=handle, problem_id="baseline_collection", isa=args.isa)
-    print("Uploading ncnn tree...")
-    tools.upload_ncnn_tree()
-    print(f"Synced to {tools.remote_project_root}\n")
+    if handle==None:
+        print("Uploading ncnn tree...")
+        tools.upload_ncnn_tree()
+        print(f"Synced to {tools.remote_project_root}\n")
 
     results = {}
     for prob in problems:

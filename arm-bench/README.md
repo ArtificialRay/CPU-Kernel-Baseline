@@ -36,11 +36,15 @@ Python:
 pip install litellm
 ```
 
-System packages (required on any host that actually runs `SIMDTools.compile()` — i.e. locally when `handle=None`, or on the remote when using `--provision`; `terraform/setup.sh` covers the remote case):
+System packages (required on any host that actually runs `SIMDTools.compile()` — i.e. locally when `handle=None`, or on the remote when using `--provision`):
+
 ```bash
+wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm-18.list
+sudo apt-get update -y
 sudo apt-get install -y cmake clang-18 llvm-18 libomp-18-dev g++
-# tools.py invokes bare `clang++` and `llvm-objdump-18`; symlink clang++ if missing:
 sudo ln -sf /usr/bin/clang++-18 /usr/local/bin/clang++
+sudo ln -sf /usr/bin/llvm-objdump-18 /usr/local/bin/llvm-objdump-18
 ```
 
 ### 2. Provision an instance

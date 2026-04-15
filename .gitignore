@@ -4,3 +4,6 @@
 .venv/
 .vscode/
 .env
+logs/
+Guide.md
+plot.ipynb

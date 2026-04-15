@@ -47,25 +47,25 @@ def run_smoke_test(problem_id: str, isa: str, teardown: bool):
     print(f"  problem={problem_id}  isa={isa}")
     print(f"{'='*60}\n")
 
-    # # 1. Provision (or reuse) instance
-    # print("[1/5] Provisioning instance...")
-    # handle = get_or_provision(isa)
-    # print(f"      Host: {handle.host}\n")
+    # 1. Provision (or reuse) instance
+    print("[1/5] Provisioning instance...")
+    handle = get_or_provision(isa)
+    print(f"      Host: {handle.host}\n")
 
     candidate = DUMMY_CANDIDATES.get(problem_id)
     if candidate is None:
         print(f"No dummy candidate defined for {problem_id}. Add one to DUMMY_CANDIDATES.")
         sys.exit(1)
 
-    tools = SIMDTools(handle=None, problem_id=problem_id, isa=isa)
+    tools = SIMDTools(handle=handle, problem_id=problem_id, isa=isa)
 
-    # 1. Upload ncnn source tree + starter files to remote work dir
-    print("[1/4]  Uploading ncnn tree...")
-    tools.upload_ncnn_tree()
-    print(f"      Synced to {tools.remote_project_root}\n")
+    # # 1. Upload ncnn source tree + starter files to remote work dir
+    # print("[2/5]  Uploading ncnn tree...")
+    # tools.upload_ncnn_tree()
+    # print(f"      Synced to {tools.remote_project_root}\n")
 
     # 2. Compile
-    print("[2/4] compile()...")
+    print("[2/5] compile()...")
     cr = tools.compile(candidate)
     print(f"      success={cr.success}")
     if not cr.success:
@@ -76,7 +76,7 @@ def run_smoke_test(problem_id: str, isa: str, teardown: bool):
     print()
 
     # 3. Run (candidate + baseline)
-    print("[3/4] run()...")
+    print("[3/5] run()...")
     rr = tools.run(n=1)
     print(f"      correct={rr.correct}  candidate_runtime_ms={rr.candidate_runtime_ms}  baseline_runtime_ms={rr.baseline_runtime_ms}")
     print(f"      {rr.output}")
@@ -85,22 +85,22 @@ def run_smoke_test(problem_id: str, isa: str, teardown: bool):
     print()
 
     # 4. Perf (candidate + baseline, output returns only the candidate perf info)
-    print("[4/4] perf()...")
+    print("[4/5] perf()...")
     pr_candidate,pr_baseline = tools.perf(n=1)
     print(f"      Candidates: cycles={pr_candidate.cycles}  instructions={pr_candidate.instructions}  ipc={pr_candidate.ipc}  l1d_miss%={pr_candidate.l1d_miss_pct}")
     print(f"      Baseline: cycles={pr_baseline.cycles}  instructions={pr_baseline.instructions}  ipc={pr_baseline.ipc}  l1d_miss%={pr_baseline.l1d_miss_pct}")
     print()
 
-    # # 5. Disassemble
-    # fn = f"inner_loop_{tools.loop_num}"
-    # print(f"[5/5] disassemble(fn='{fn}')...")
-    # dr = tools.disassemble(fn=fn)
-    # lines = dr.asm.splitlines()
-    # preview = "\n      ".join(lines[:20])
-    # print(f"      {preview}")
-    # if len(lines) > 20:
-    #     print(f"      ... ({len(lines)} lines total)")
-    # print()
+    # 5. Disassemble
+    fn = f"inner_loop_{tools.loop_num}"
+    print(f"[5/5] disassemble(fn='{fn}')...")
+    dr = tools.disassemble(fn=fn)
+    lines = dr.asm.splitlines()
+    preview = "\n      ".join(lines[:20])
+    print(f"      {preview}")
+    if len(lines) > 20:
+        print(f"      ... ({len(lines)} lines total)")
+    print()
 
     # Summary
     print(f"{'='*60}")

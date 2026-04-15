@@ -34,3 +34,5 @@ terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
 terraform/.terraform.lock.hc
 terraform
+*.csv
+history/

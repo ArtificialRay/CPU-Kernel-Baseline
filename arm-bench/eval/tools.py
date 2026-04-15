@@ -93,8 +93,6 @@ class DisasmResult:
 @dataclass
 class EvalResult:
     correct: bool
-    speedup_vs_scalar: float | None = None
-    speedup_vs_autovec: float | None = None
     speedup_vs_ref: float | None = None
     level: int = 0
     compile_error: str = ""
@@ -102,18 +100,20 @@ class EvalResult:
     tool_calls: int = 0
     # Timing at each PERF_SIZE: {size: runtime_ms}. Populated at submit time.
     perf_by_size: dict | None = None
+    # Best intermediate result seen during perf() calls (may differ from final score
+    # when the agent's last compile attempt failed).
+    best_history_file: str | None = None
 
     def to_dict(self) -> dict:
         return {
             "correct": self.correct,
-            "speedup_vs_scalar": self.speedup_vs_scalar,
-            "speedup_vs_autovec": self.speedup_vs_autovec,
             "speedup_vs_ref": self.speedup_vs_ref,
             "level": self.level,
             "compile_error": self.compile_error,
             "runtime_ms": self.runtime_ms,
             "tool_calls": self.tool_calls,
             "perf_by_size": self.perf_by_size,
+            "best_history_file": self.best_history_file,
         }
 
 
@@ -132,7 +132,6 @@ class SIMDTools:
         self.make_target = ISA_MAKE_TARGET[isa]
         self._last_compile_ok = False
         self._tool_calls = 0
-        self._last_candidate_code: str | None = None
         # Speedup vs ARM baseline at each perf() call: [{"turn": int, "speedup_vs_baseline": float | None}]
         self.perf_speedup_buffer: list[dict] = []
 
@@ -151,7 +150,7 @@ class SIMDTools:
     def _run(self, cmd: str, timeout: int = 120) -> tuple[int, str, str]:
         """Run a shell command via SSH if a handle is set, else locally."""
         if self.handle is not None:
-            return self._run(cmd, timeout=timeout)
+            return self.handle.run(cmd, timeout=timeout)
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=timeout
         )
@@ -247,7 +246,7 @@ class SIMDTools:
           <stem>       – candidate code only  (BASELINE block stripped)
           <stem>_arm   – baseline code only   (CANDIDATE block stripped)
 
-        For example ``file="convolution.cpp"`` produces::
+        For example ``file="starter/convolution.cpp"`` produces::
 
             starter/build/convolution      (candidate)
             starter/build/convolution_arm  (baseline / ARM-optimised)
@@ -425,7 +424,6 @@ class SIMDTools:
 
         # ── Success — update state ───────────────────────────────────
         self._last_compile_ok = True
-        self._last_candidate_code = source
         self.remote_binary = candidate_bin           # candidate for run()/perf()/disassemble()
         self.remote_baseline_binary = baseline_bin   # baseline for comparison
         return CompileResult(
