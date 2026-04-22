@@ -97,7 +97,7 @@ def save_generation(problem_id: str, isa: str, code: str, run_id: int = 0):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Single-shot LLM generation for simd-loops")
+    parser = argparse.ArgumentParser(description="Single-shot LLM generation for arm-bench")
     grp = parser.add_mutually_exclusive_group(required=True)
     grp.add_argument("--problem", help="Problem ID, e.g. loop_001")
     grp.add_argument("--all", action="store_true", help="Generate for all problems")

@@ -22,8 +22,10 @@ EXTRA_CFLAGS :=
 # Number of loop iterations for standalone target
 STANDALONE_ITERS ?= 20
 
-# Limit for global allocator
-MAX_MEMORY_KIB ?= 16384
+# Limit for global allocator.
+# 524288 KiB = 512 MB — enough for PERF_SIZE runs with working sets up to ~256 MB
+# (e.g. fp32 inner product at SIZE=16M uses 2×16M×4B = 128 MB).
+MAX_MEMORY_KIB ?= 524288
 
 # Tuning problems sizes to default configuration (512 vector length and 64KiB buffer sizes)
 TUNE_PBSIZE ?=

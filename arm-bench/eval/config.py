@@ -1,5 +1,5 @@
 """
-eval/config.py — Configuration loader for the simd-loops benchmark.
+eval/config.py — Configuration loader for the arm-bench benchmark.
 
 Reads eval_config.json (or eval_config.json.example) and exposes helpers
 for loading problem metadata and baseline timings.
@@ -13,6 +13,9 @@ EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 DATASET_PATH = REPO_ROOT / "dataset"
 PROBLEMS_JSON = DATASET_PATH / "problems.json"
 BASELINES_DIR = REPO_ROOT / "baselines"
+STARTER_PATH = REPO_ROOT / "starter"
+NCNN_PROBLEMS_JSON = STARTER_PATH / "ncnn" / "problems.json"
+NCNN_BASELINES_JSON = BASELINES_DIR / "ncnn.json"
 
 # ISA → instance tier mapping
 ISA_TIER = {
@@ -158,10 +161,14 @@ def _extract_neon_code(loop_src: Path) -> str | None:
     return "".join(func_lines) if func_lines else None
 
 
-def load_problem_sizes(problem_id: str) -> tuple[list[int], list[int]]:
+def load_problem_sizes(problem_id: str, isa: str = "") -> tuple[list[int], list[int]]:
     """
     Return (edge_sizes, perf_sizes) for a single problem without loading the
     entire problems index. Reads only that problem's problem.py.
+
+    If isa is "sve2" (c8g tier) and the problem defines PERF_SIZES_C8G, that
+    list is used instead of PERF_SIZES so scoring is DRAM-bound on Graviton4's
+    larger 64MB L3 cache.
     """
     if not PROBLEMS_JSON.exists():
         return [], []
@@ -174,7 +181,13 @@ def load_problem_sizes(problem_id: str) -> tuple[list[int], list[int]]:
         return [], []
     text = problem_py.read_text()
     edge = _extract_int_list(text, "EDGE_SIZES") or []
-    perf = _extract_int_list(text, "PERF_SIZES") or []
+
+    # Use c8g-specific sizes when available and targeting c8g
+    perf = None
+    if isa in ("sve2", "sme2"):
+        perf = _extract_int_list(text, "PERF_SIZES_C8G")
+    if perf is None:
+        perf = _extract_int_list(text, "PERF_SIZES") or []
     return edge, perf
 
 
@@ -187,6 +200,57 @@ def load_baselines(tier: str) -> dict:
     if not path.exists():
         return {}
     return json.loads(path.read_text())
+
+
+def load_ncnn_problems() -> dict:
+    """
+    Load starter/ncnn/problems.json and augment each entry with:
+      - scalar_code: current candidates_src/ncnn/*.cpp (what the agent optimizes)
+      - struct_def:  starter/ncnn/candidate/*.h       (class + kernel decl)
+
+    Paths in problems.json are expected to be relative to the arm-bench repo root.
+
+    Returns dict keyed by problem ID.
+    """
+    if not NCNN_PROBLEMS_JSON.exists():
+        raise FileNotFoundError(
+            f"starter/ncnn/problems.json not found at {NCNN_PROBLEMS_JSON}. "
+            f"Make sure arm-bench/starter/ncnn/ is populated."
+        )
+    problems_raw = json.loads(NCNN_PROBLEMS_JSON.read_text())
+    result = {}
+
+    for meta in problems_raw:
+        pid = meta["id"]
+        entry = dict(meta)
+
+        candidate_rel = meta.get("candidate_source", "")
+        candidate_path = REPO_ROOT / candidate_rel
+        if candidate_path.exists():
+            entry["scalar_code"] = candidate_path.read_text()
+        else:
+            entry["scalar_code"] = f"// Source not found locally at {candidate_rel}"
+
+        header_rel = meta.get("starter_header", "")
+        header_path = REPO_ROOT / header_rel
+        if header_path.exists():
+            entry["struct_def"] = header_path.read_text()
+        else:
+            entry["struct_def"] = f"// Header not found locally at {header_rel}"
+
+        result[pid] = entry
+
+    return result
+
+
+def load_ncnn_baselines() -> dict:
+    """
+    Load baselines/ncnn.json. Returns dict:
+      { "conv2d": { "scalar_ms": 123.4, "autovec_ms": 45.6, "ref_ms": null }, ... }
+    """
+    if not NCNN_BASELINES_JSON.exists():
+        return {}
+    return json.loads(NCNN_BASELINES_JSON.read_text())
 
 
 def problem_path(problem_id: str) -> Path:

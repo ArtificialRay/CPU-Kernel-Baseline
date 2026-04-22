@@ -1,5 +1,5 @@
 """
-eval/provision.py — Terraform lifecycle wrapper for simd-loops benchmark.
+eval/provision.py — Terraform lifecycle wrapper for arm-bench benchmark.
 
 Provisions an Arm EC2 instance (Graviton3/4), waits for it to be ready,
 rsyncs source, and optionally does an initial build. Returns an InstanceHandle
@@ -14,7 +14,6 @@ Usage:
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -85,11 +84,6 @@ class InstanceHandle:
 
 
 def _tf(*args, capture: bool = False) -> subprocess.CompletedProcess:
-    if shutil.which("terraform") is None:
-        raise RuntimeError(
-            "Terraform CLI not found in PATH. Install terraform and retry. "
-            "Example: sudo apt-get install terraform (or use HashiCorp install instructions)."
-        )
     cmd = ["terraform"] + list(args)
     return subprocess.run(
         cmd,
@@ -97,12 +91,6 @@ def _tf(*args, capture: bool = False) -> subprocess.CompletedProcess:
         capture_output=capture,
         text=True,
     )
-
-
-def _tf_init():
-    result = _tf("init", "-input=false", capture=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"terraform init failed:\n{result.stderr}")
 
 
 def _tf_output() -> dict:
@@ -121,25 +109,35 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "") -> Inst
         instance_type: EC2 instance type string (e.g. "c7g.large", "c8g.large")
         initial_build: make target for initial build, e.g. "c-scalar". Empty = skip.
     """
+    is_c8g = "c8g" in instance_type
     print(f"[provision] Provisioning {instance_type} via Terraform...")
 
-    skip_build = initial_build == ""
-    vars = [
-        f"-var=instance_type={instance_type}",
-        f"-var=skip_initial_build={'true' if skip_build else 'false'}",
-    ]
-    if not skip_build:
-        vars.append(f"-var=build_target={initial_build}")
+    if is_c8g:
+        # c8g has its own fixed resource block — target it directly
+        result = _tf("apply", "-auto-approve",
+                     "-target=aws_instance.c8g",
+                     "-target=null_resource.deploy_c8g")
+    else:
+        skip_build = initial_build == ""
+        vars = [
+            f"-var=instance_type={instance_type}",
+            f"-var=skip_initial_build={'true' if skip_build else 'false'}",
+        ]
+        if not skip_build:
+            vars.append(f"-var=build_target={initial_build}")
+        result = _tf("apply", "-auto-approve", *vars)
 
-    _tf_init()
-    result = _tf("apply", "-auto-approve", *vars)
     if result.returncode != 0:
-        raise RuntimeError(f"terraform apply failed in {TERRAFORM_DIR}")
+        raise RuntimeError("terraform apply failed")
 
     outputs = _tf_output()
-    host = outputs["instance_public_ip"]["value"]
+    if is_c8g:
+        host = outputs["c8g_public_ip"]["value"]
+        instance_id = outputs.get("c8g_instance_id", {}).get("value")
+    else:
+        host = outputs["instance_public_ip"]["value"]
+        instance_id = outputs.get("instance_id", {}).get("value")
     key_file = outputs.get("ssh_key_path", {}).get("value", "~/.ssh/id_rsa")
-    instance_id = outputs.get("instance_id", {}).get("value")
 
     handle = InstanceHandle(
         host=host,
@@ -152,19 +150,12 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "") -> Inst
     print(f"[provision] Instance ready at {host}, waiting for SSH...")
     _wait_for_ssh(handle)
 
-    remote_root = "/home/ubuntu/Remote/CPU-Kernel-Baseline"
-    print(f"[provision] Rsyncing source to {host}:{remote_root}/...")
-    handle.run(f"mkdir -p {remote_root}")
+    print(f"[provision] Rsyncing source to {host}:~/arm-bench/...")
     handle.rsync_to(
-        str(REPO_ROOT / "starter"),
-        f"{remote_root}/arm-bench/starter",
+        str(REPO_ROOT),
+        "~/arm-bench",
         excludes=["build", ".git", "terraform", "generations", "results",
                   "__pycache__", "*.pyc"],
-    )
-    handle.rsync_to(
-        str(REPO_ROOT.parent / "ncnn"),
-        f"{remote_root}/ncnn",
-        excludes=["build", "__pycache__", "*.o", "*.d", ".git"],
     )
 
     _save_config(handle)
@@ -172,13 +163,91 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "") -> Inst
     return handle
 
 
+def provision_codebase(instance_type: str = "c7g.large", initial_build: str = "", codebase: str = "") -> InstanceHandle:
+    """
+    Sync the codebase to the remote instance for cpu kernel codebase evaluation.
+
+    The codebase source is expected at CPU-Kernel-Baseline/{codebase}/ relative to arm-bench's
+    parent directory. It is rsynced to ~/{codebase}/ on the remote instance, which is
+    the path that NCNNTools expects.
+
+    Args:
+        handle: An InstanceHandle already connected to the remote instance.
+    """
+    is_c8g = "c8g" in instance_type
+    print(f"[provision] Provisioning {instance_type} via Terraform...")
+
+    if is_c8g:
+        # c8g has its own fixed resource block — target it directly
+        result = _tf("apply", "-auto-approve",
+                     "-target=aws_instance.c8g",
+                     "-target=null_resource.deploy_c8g")
+    else:
+        skip_build = initial_build == ""
+        vars = [
+            f"-var=instance_type={instance_type}",
+            f"-var=skip_initial_build={'true' if skip_build else 'false'}",
+        ]
+        if not skip_build:
+            vars.append(f"-var=build_target={initial_build}")
+        result = _tf("apply", "-auto-approve",
+             "-target=aws_instance.kernel_testing",
+             "-target=null_resource.deploy",
+             *vars)
+
+
+    if result.returncode != 0:
+        raise RuntimeError("terraform apply failed")
+
+    outputs = _tf_output()
+    if is_c8g:
+        host = outputs["c8g_public_ip"]["value"]
+        instance_id = outputs.get("c8g_instance_id", {}).get("value")
+    else:
+        host = outputs["instance_public_ip"]["value"]
+        instance_id = outputs.get("instance_id", {}).get("value")
+    key_file = outputs.get("ssh_key_path", {}).get("value", "~/.ssh/id_rsa")
+
+    handle = InstanceHandle(
+        host=host,
+        user="ubuntu",
+        key_file=key_file,
+        instance_type=instance_type,
+        instance_id=instance_id,
+    )
+
+    print(f"[provision] Instance ready at {host}, waiting for SSH...")
+    _wait_for_ssh(handle)
+
+    # Look for ncnn/ in the CPU-Kernel-Baseline repo next to arm-bench
+    codebase_dir = REPO_ROOT.parent / "CPU-Kernel-Baseline" / codebase
+    if not codebase_dir.exists():
+        # Fallback: look for ncnn/ directly next to arm-bench
+        codebase_dir = REPO_ROOT.parent / codebase
+        if not codebase_dir.exists():
+            raise FileNotFoundError(
+                f"ncnn codebase not found. Looked at:\n"
+                f"  {REPO_ROOT.parent / 'CPU-Kernel-Baseline' / codebase}\n"
+                f"  {REPO_ROOT.parent / codebase}\n"
+                f"Make sure CPU-Kernel-Baseline/{codebase} exists relative to arm-bench."
+            )
+
+    print(f"[provision_codebase] Rsyncing {codebase_dir} → {handle.host}:~/{codebase}/ ...")
+    handle.rsync_to(
+        str(codebase_dir),
+        f"~/{codebase}",
+        excludes=["build", ".git", "__pycache__", "*.o", "*.d", "*.pyc"],
+    )
+    _save_config(handle)
+    print(f"[provision_codebase] {codebase} codebase synced.")
+    return handle
+
 def teardown():
     """Run terraform destroy to terminate the instance."""
     print("[teardown] Running terraform destroy...")
-    _tf_init()
     result = _tf("destroy", "-auto-approve")
     if result.returncode != 0:
-        raise RuntimeError(f"terraform destroy failed in {TERRAFORM_DIR}")
+        raise RuntimeError("terraform destroy failed")
     if EVAL_CONFIG_PATH.exists():
         config = json.loads(EVAL_CONFIG_PATH.read_text())
         # Clear host entries but keep structure
@@ -196,7 +265,7 @@ def get_running_instance(isa: str) -> InstanceHandle | None:
     if not EVAL_CONFIG_PATH.exists():
         return None
     config = json.loads(EVAL_CONFIG_PATH.read_text())
-    tier = "c8g" if isa == "sme2" else "c7g"
+    tier = "c8g" if isa in ("sve2", "sme2") else "c7g"
     inst = config.get("instances", {}).get(tier, {})
     host = inst.get("host", "")
     if not host:
@@ -281,12 +350,17 @@ if __name__ == "__main__":
     parser.add_argument("--status", action="store_true", help="Show instance status")
     parser.add_argument("--initial-build", default="",
                         help="Run make <target> after provision (default: skip)")
+    parser.add_argument("--codebase",default="ncnn",help="CPU kernel baseline codebase selection")
     args = parser.parse_args()
 
     if args.status:
         status()
     elif args.teardown:
         teardown()
+    elif args.codebase:
+        instance_type = ISA_INSTANCE_MAP.get(args.isa, args.instance) if args.isa else args.instance
+        handle = provision_codebase(instance_type, args.initial_build, args.codebase)
+        print(f"\nInstance handle: {handle}")
     else:
         instance_type = ISA_INSTANCE_MAP.get(args.isa, args.instance) if args.isa else args.instance
         handle = provision(instance_type, args.initial_build)

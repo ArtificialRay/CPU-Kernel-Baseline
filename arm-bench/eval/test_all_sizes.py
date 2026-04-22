@@ -256,7 +256,7 @@ def phase2_sample(handle, isa: str, problems: dict) -> bool:
     # Sync local loop .c files to remote to ensure no stale candidates from
     # previous runs interfere with builds (compile() builds all loops together).
     print("  Syncing loop source files to remote...")
-    handle.rsync_to(str(REPO_ROOT / "loops"), "~/simd-loops/loops")
+    handle.rsync_to(str(REPO_ROOT / "loops"), "~/arm-bench/loops")
     print("  Sync done.\n")
 
     all_ok = True

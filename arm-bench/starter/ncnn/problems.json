@@ -1,0 +1,72 @@
+[
+  {
+    "id": "conv",
+    "num": "001",
+    "name": "convolution_kernel",
+    "description": "general 2d convolution with arm baseline",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "starter_header":   "starter/ncnn/candidate/convolution.h",
+    "candidate_source": "candidates_src/ncnn/convolution.cpp",
+    "tester":           "tests/ncnn/candidate/convolution.cpp",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "convdw",
+    "num": "002",
+    "name": "convolutiondepthwise_kernel",
+    "description": "Use of depthwise convolution with arm baseline",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "starter_header":   "starter/ncnn/candidate/convolutiondepthwise.h",
+    "candidate_source": "candidates_src/ncnn/convolutiondepwise.cpp",
+    "tester":           "tests/ncnn/candidate/convolutiondepwise.cpp",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "deconv",
+    "num": "003",
+    "name": "deconvolution_kernel",
+    "description": "Use of deconvolution with arm baseline",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "starter_header":   "starter/ncnn/candidate/deconvolution.h",
+    "candidate_source": "candidates_src/ncnn/deconvolution.cpp",
+    "tester":           "tests/ncnn/candidate/deconvolution.cpp",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "deconvdw",
+    "num": "004",
+    "name": "deconvolutiondepthwise_kernel",
+    "description": "Use of depthwise deconvolution with arm baseline",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "starter_header":   "starter/ncnn/candidate/deconvolutiondepthwise.h",
+    "candidate_source": "candidates_src/ncnn/deconvolutiondepwise.cpp",
+    "tester":           "tests/ncnn/candidate/deconvolutiondepwise.cpp",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "conv1d",
+    "num": "005",
+    "name": "convolution1d_kernel",
+    "description": "Use of 1D convolution with arm baseline",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "starter_header":   "starter/ncnn/candidate/convolution1d.h",
+    "candidate_source": "candidates_src/ncnn/convolution1d.cpp",
+    "tester":           "tests/ncnn/candidate/convolution1d.cpp",
+    "tags": [
+      "sve"
+    ]
+  }
+]

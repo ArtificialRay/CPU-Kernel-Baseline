@@ -1,84 +1,130 @@
 """
-eval/run_benchmark.py — Agentic benchmark CLI for ncnn kernel optimization.
+eval/run_benchmark.py — Agentic benchmark CLI for arm-bench.
 
-Full end-to-end: provision (if needed) -> run agentic LLM eval -> score -> (optionally) teardown.
+Full end-to-end: provision (if needed) → run agentic LLM eval → score → (optionally) teardown.
 
-Usage (from arm-bench/), using openrouter:
-    # Single problem, local:
-    python -m eval.run_benchmark --problem conv2d --isa sve --model openrouter/anthropic/claude-opus-4-6
+Usage:
+    # Single problem, agentic mode:
+    python eval/run_benchmark.py --problem loop_001 --isa sve2 --model anthropic/claude-opus-4-6
 
-    # All problems:
-    python -m eval.run_benchmark --all --isa sve --model openrouter/anthropic/claude-opus-4-6
+    # Full benchmark (all problems for an ISA):
+    python eval/run_benchmark.py --all --isa sve2 --model anthropic/claude-opus-4-6
 
-    # With remote instance:
-    python -m eval.run_benchmark --all --isa sve --model openrouter/anthropic/claude-opus-4-6 \
+    # Provision a fresh instance, run, then tear it down:
+    python eval/run_benchmark.py --problem loop_001 --isa sve2 --model anthropic/claude-opus-4-6 \\
         --provision --teardown
+
+    # Use an already-running instance (from eval_config.json):
+    python eval/run_benchmark.py --all --isa sve --model openai/gpt-4o
 """
 
 import argparse
 import json
+import time
+from pathlib import Path
 
-from eval.config import REPO_ROOT
-from eval.evaluator import run_agentic_eval, load_starter_problems
-from eval.tools import EvalResult
+from eval.config import REPO_ROOT, load_problems, load_ncnn_problems, ISA_TIER
+from eval.evaluator import run_agentic_eval
+from eval.provision import get_or_provision, get_running_instance, teardown, provision, ISA_INSTANCE_MAP
+from eval.tools import EvalResult, NCNNTools, NCNN_SYSTEM_PROMPT, build_ncnn_user_prompt
 
 RESULTS_DIR = REPO_ROOT / "results"
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Agentic LLM benchmark for ncnn kernel optimization"
+        description="Agentic LLM benchmark for arm-bench SIMD kernels and ncnn kernels"
+    )
+
+    # Mode selection
+    parser.add_argument(
+        "--mode", choices=["simd", "ncnn"], default="simd",
+        help="Evaluation mode: 'simd' for SIMD loop problems (default), "
+             "'ncnn' for ncnn kernel optimization problems",
     )
 
     # Problem selection
     grp = parser.add_mutually_exclusive_group(required=True)
-    grp.add_argument("--problem", help="Single problem ID, e.g. conv2d")
+    grp.add_argument("--problem", help="Single problem ID, e.g. loop_001 (simd) or conv2d (ncnn)")
     grp.add_argument("--all", action="store_true", help="Run all problems for the given ISA")
 
     # Model and ISA
-    parser.add_argument("--isa", required=True, choices=["neon", "sve", "sve2"])
+    parser.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
     parser.add_argument("--model", required=True,
                         help="LiteLLM model string, e.g. anthropic/claude-opus-4-6")
 
     # Instance lifecycle
     parser.add_argument("--provision", action="store_true",
-                        help="Provision/reuse a remote instance instead of running locally")
+                        help="Provision a new instance even if one is already configured")
     parser.add_argument("--teardown", action="store_true",
                         help="Destroy the instance after evaluation")
+    parser.add_argument("--instance", default=None,
+                        help="EC2 instance type override (default: inferred from ISA)")
 
     # Eval options
     parser.add_argument("--max-turns", type=int, default=20,
                         help="Max agent turns per problem (default: 20)")
     parser.add_argument("--quiet", action="store_true", help="Suppress per-turn output")
     parser.add_argument("--no-save", action="store_true", help="Don't save results to results/")
+    parser.add_argument("--save-trace", action="store_true",
+                        help="Save full conversation trace to traces/ alongside results")
 
     args = parser.parse_args()
 
-    # ── Resolve instance ──────────────────────────────────────────────────
-    handle = None
+    # SME2 requires hardware not yet available on AWS (no EC2 instance supports SME2).
+    # The problems are kept in the dataset for future use.
+    if args.isa == "sme2":
+        print("ERROR: SME2 is not yet supported — no AWS EC2 instance implements the "
+              "Scalable Matrix Extension. SME2 problems are reserved for future hardware. "
+              "Use --isa sve (c7g) or --isa sve2 (c8g) instead.")
+        return
+
+    # ── Resolve instance ───────────────────────────────────────────────────
+    instance_type = args.instance or ISA_INSTANCE_MAP.get(args.isa, "c7g.large")
+
     if args.provision:
-        from eval.provision import get_or_provision
-        handle = get_or_provision(args.isa)
-        print(f"Using remote instance: {handle.host}")
+        handle = provision(instance_type)
+    else:
+        handle = get_running_instance(args.isa)
+        if handle is None:
+            print(f"No running instance for ISA={args.isa}. Provisioning {instance_type}...")
+            handle = provision(instance_type)
 
     # ── Resolve problems ──────────────────────────────────────────────────
-    problems = load_starter_problems()
+    if args.mode == "ncnn":
+        problems = load_ncnn_problems()
+    else:
+        problems = load_problems()
 
     if args.problem:
         if args.problem not in problems:
-            print(f"Problem {args.problem!r} not found in starter/problems.json")
+            src = "starter/problems.json" if args.mode == "ncnn" else "problems.json"
+            print(f"Problem {args.problem!r} not found in {src}")
             return
         problem_ids = [args.problem]
     else:
+        if args.isa == "sve2":
+            valid_targets = {"sve", "sve2"}
+        else:
+            valid_targets = {args.isa}
         problem_ids = [
             pid for pid, p in problems.items()
-            if p.get("isa_target") == args.isa
+            if p.get("isa_target") in valid_targets
         ]
-        print(f"Running {len(problem_ids)} problems (ISA: {args.isa})")
+        print(f"Running {len(problem_ids)} problems (mode: {args.mode}, ISA: {args.isa})")
 
-    # ── Run evaluations ──────────────────────────────────────────────────
+    # ── Run evaluations ───────────────────────────────────────────────────
     results: dict[str, EvalResult] = {}
     RESULTS_DIR.mkdir(exist_ok=True)
+
+    # NCNN mode: pass custom tools class, system prompt, and user prompt builder
+    ncnn_kwargs = {}
+    if args.mode == "ncnn":
+        ncnn_kwargs = {
+            "tools_class": NCNNTools,
+            "system_prompt_override": NCNN_SYSTEM_PROMPT,
+            "user_prompt_builder": build_ncnn_user_prompt,
+        }
 
     for i, pid in enumerate(problem_ids):
         print(f"\n[{i+1}/{len(problem_ids)}] {pid}")
@@ -90,6 +136,8 @@ def main():
                 handle=handle,
                 max_turns=args.max_turns,
                 verbose=not args.quiet,
+                problem_override=problems[pid] if args.mode == "ncnn" else None,
+                **ncnn_kwargs,
             )
         except Exception as e:
             print(f"  ERROR: {e}")
@@ -98,19 +146,51 @@ def main():
         results[pid] = result
 
         if not args.no_save:
-            out = RESULTS_DIR / f"{pid}_{args.isa}_{args.model.replace('/', '_')}.json"
+            stem = f"{pid}_{args.isa}_{args.model.replace('/', '_')}"
             data = result.to_dict()
             data.update({"problem_id": pid, "isa": args.isa, "model": args.model})
+
+            # Overwrite the latest-run JSON (backward-compat)
+            out = RESULTS_DIR / f"{stem}.json"
             out.write_text(json.dumps(data, indent=2))
 
-    # ── Print summary ────────────────────────────────────────────────────
+            # Append to JSONL for time-series tracking (one record per line)
+            jsonl_out = RESULTS_DIR / f"{stem}.jsonl"
+            with jsonl_out.open("a") as f:
+                f.write(json.dumps(data) + "\n")
+
+            # Optionally save full conversation trace to traces/
+            if args.save_trace and result.trace:
+                traces_dir = REPO_ROOT / "traces"
+                traces_dir.mkdir(exist_ok=True)
+                ts = result.timestamp.replace(":", "-")
+                trace_out = traces_dir / f"{stem}_{ts}.json"
+                # Strip full code from trace args (already in code_versions)
+                trace_out.write_text(json.dumps({
+                    "problem_id": pid,
+                    "isa": args.isa,
+                    "model": args.model,
+                    "timestamp": result.timestamp,
+                    "trace": result.trace,
+                    "code_versions": result.code_versions,
+                }, indent=2))
+
+    # ── Print summary ─────────────────────────────────────────────────────
     _print_summary(results, args.isa, args.model)
 
-    # ── Teardown ─────────────────────────────────────────────────────────
+    # ── Teardown ──────────────────────────────────────────────────────────
     if args.teardown:
-        from eval.provision import teardown
         print("\n[teardown] Destroying instance...")
         teardown()
+    else:
+        from eval.provision import get_running_instance
+        handle = get_running_instance(args.isa)
+        if handle and handle.host:
+            print(
+                f"\n[WARNING] Instance at {handle.host} is still running and accruing cost. "
+                f"Run with --teardown to destroy it after evaluation, "
+                f"or: python -m eval.provision --teardown"
+            )
 
 
 def _print_summary(results: dict[str, EvalResult], isa: str, model: str):
@@ -118,31 +198,31 @@ def _print_summary(results: dict[str, EvalResult], isa: str, model: str):
     if n == 0:
         return
 
-    n_correct = sum(1 for r in results.values() if r.correct)
-    n_beats_baseline = sum(1 for r in results.values() if r.level >= 2)
-    speedups = [r.speedup_vs_ref for r in results.values() if r.speedup_vs_ref is not None]
+    by_level = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+    speedups = []
+    for r in results.values():
+        by_level[r.level] = by_level.get(r.level, 0) + 1
+        if r.speedup_vs_scalar is not None:
+            speedups.append(r.speedup_vs_scalar)
+
+    n_correct = sum(v for k, v in by_level.items() if k >= 1)
+    n_fast = sum(v for k, v in by_level.items() if k >= 2)
+    n_autovec = sum(v for k, v in by_level.items() if k >= 3)
+    n_ref = by_level.get(4, 0)
     avg_speedup = round(sum(speedups) / len(speedups), 2) if speedups else None
 
     print(f"\n{'='*60}")
     print(f"  Benchmark Summary")
     print(f"  Model: {model}  |  ISA: {isa}")
     print(f"{'='*60}")
-    print(f"  Total problems:               {n}")
-    print(f"  Last compiled code Correctness (level >= 1):          {n_correct}/{n}")
-    print(f"  Beats ARM baseline (level 2):  {n_beats_baseline}/{n}")
+    print(f"  Total problems:           {n}")
+    print(f"  Correct (level ≥ 1):      {n_correct}/{n}  ({100*n_correct//n}%)")
+    print(f"  Beats scalar (level ≥ 2): {n_fast}/{n}  ({100*n_fast//n}%)  ← fast_p")
+    print(f"  Beats autovec (level ≥ 3): {n_autovec}/{n}  ({100*n_autovec//n}%)")
+    print(f"  Beats hand-written (level 4): {n_ref}/{n}  ({100*n_ref//n}%)")
     if avg_speedup is not None:
-        print(f"  Avg speedup vs ARM baseline:   {avg_speedup}x")
+        print(f"  Avg speedup vs scalar:    {avg_speedup}×  (correct submissions)")
     print(f"{'='*60}")
-
-    # Per-problem table
-    print(f"\n{'Problem':<20} {'Correct(last compiled code)':<10} {'Speedup(best version)':<12} {'Runtime ms':<12} {'Turns'} {'Metadata location for code with best speedup'}")
-    print("-" * 66)
-    for pid, r in results.items():
-        correct = "PASS" if r.correct else "FAIL"
-        speedup = f"{r.speedup_vs_ref}x" if r.speedup_vs_ref else "N/A"
-        ms = str(r.runtime_ms) if r.runtime_ms else "N/A"
-        turns = str(r.tool_calls)
-        print(f"{pid:<20} {correct:<10} {speedup:<12} {ms:<12} {turns} {r.best_history_file}")
 
 
 if __name__ == "__main__":

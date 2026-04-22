@@ -14,7 +14,7 @@ import json
 import sys
 
 from eval.provision import get_or_provision, teardown as do_teardown
-from eval.tools import SIMDTools
+from eval.tools import SIMDTools, NCNNTools
 
 # ---------------------------------------------------------------------------
 # Dummy candidate: scalar FP32 inner product (loop_001, always correct)
@@ -33,7 +33,96 @@ static void inner_loop_001(struct loop_001_data *restrict data) {
     data->res = res;
 }
 """,
-    "conv": "convolution.cpp"
+    "conv": """\
+#include "starter/ncnn/candidate/convolution.h"
+
+#include "common/fused_activation.h"
+
+#include <vector>
+
+namespace ncnn {
+
+int convolution_kernel(const Mat& bottom_blob, Mat& top_blob,
+                       const Mat& weight_data, const Mat& bias_data,
+                       int kernel_w, int kernel_h,
+                       int stride_w, int stride_h,
+                       int dilation_w, int dilation_h,
+                       int activation_type, const Mat& activation_params,
+                       const Option& opt)
+{
+    const int w = bottom_blob.w;
+    const int inch = bottom_blob.c;
+
+    const int outw = top_blob.w;
+    const int outh = top_blob.h;
+    const int outch = top_blob.c;
+
+    const int bias_term = bias_data.empty() ? 0 : 1;
+
+    const int maxk = kernel_w * kernel_h;
+
+    // kernel offsets
+    std::vector<int> _space_ofs(maxk);
+    int* space_ofs = &_space_ofs[0];
+    {
+        int p1 = 0;
+        int p2 = 0;
+        int gap = w * dilation_h - kernel_w * dilation_w;
+        for (int i = 0; i < kernel_h; i++)
+        {
+            for (int j = 0; j < kernel_w; j++)
+            {
+                space_ofs[p1] = p2;
+                p1++;
+                p2 += dilation_w;
+            }
+            p2 += gap;
+        }
+    }
+
+    #pragma omp parallel for num_threads(opt.num_threads)
+    for (int p = 0; p < outch; p++)
+    {
+        float* outptr = top_blob.channel(p);
+
+        for (int i = 0; i < outh; i++)
+        {
+            for (int j = 0; j < outw; j++)
+            {
+                float sum = 0.f;
+
+                if (bias_term)
+                    sum = bias_data[p];
+
+                const float* kptr = (const float*)weight_data + maxk * inch * p;
+
+                for (int q = 0; q < inch; q++)
+                {
+                    const Mat m = bottom_blob.channel(q);
+                    const float* sptr = m.row(i * stride_h) + j * stride_w;
+
+                    for (int k = 0; k < maxk; k++)
+                    {
+                        float val = sptr[space_ofs[k]];
+                        float wt = kptr[k];
+                        sum += val * wt;
+                    }
+
+                    kptr += maxk;
+                }
+
+                outptr[j] = activation_ss(sum, activation_type, activation_params);
+            }
+
+            outptr += outw;
+        }
+    }
+
+    return 0;
+}
+
+} // namespace ncnn
+    """
 }
 
 #DEFAULT_PROBLEM = "loop_001"
@@ -57,12 +146,8 @@ def run_smoke_test(problem_id: str, isa: str, teardown: bool):
         print(f"No dummy candidate defined for {problem_id}. Add one to DUMMY_CANDIDATES.")
         sys.exit(1)
 
-    tools = SIMDTools(handle=handle, problem_id=problem_id, isa=isa)
-
-    # # 1. Upload ncnn source tree + starter files to remote work dir
-    # print("[2/5]  Uploading ncnn tree...")
-    # tools.upload_ncnn_tree()
-    # print(f"      Synced to {tools.remote_project_root}\n")
+    ToolsCls = NCNNTools if problem_id.startswith(("conv", "deconv")) else SIMDTools
+    tools = ToolsCls(handle=handle, problem_id=problem_id, isa=isa)
 
     # 2. Compile
     print("[2/5] compile()...")
@@ -75,24 +160,23 @@ def run_smoke_test(problem_id: str, isa: str, teardown: bool):
         print(f"      warnings: {cr.warnings}")
     print()
 
-    # 3. Run (candidate + baseline)
-    print("[3/5] run()...")
-    rr = tools.run(n=1)
-    print(f"      correct={rr.correct}  candidate_runtime_ms={rr.candidate_runtime_ms}  baseline_runtime_ms={rr.baseline_runtime_ms}")
-    print(f"      {rr.output}")
+    # 3. Run
+    print("[3/5] run(n=10)...")
+    rr = tools.run(n=10)
+    print(f"      correct={rr.correct}  runtime_ms={rr.runtime_ms}")
     if not rr.correct:
+        print(f"      output: {rr.output}")
         sys.exit(1)
     print()
 
-    # 4. Perf (candidate + baseline, output returns only the candidate perf info)
-    print("[4/5] perf()...")
-    pr_candidate,pr_baseline = tools.perf(n=1)
-    print(f"      Candidates: cycles={pr_candidate.cycles}  instructions={pr_candidate.instructions}  ipc={pr_candidate.ipc}  l1d_miss%={pr_candidate.l1d_miss_pct}")
-    print(f"      Baseline: cycles={pr_baseline.cycles}  instructions={pr_baseline.instructions}  ipc={pr_baseline.ipc}  l1d_miss%={pr_baseline.l1d_miss_pct}")
+    # 4. Perf
+    print("[4/5] perf(n=10)...")
+    pr = tools.perf(n=10)
+    print(f"      cycles={pr.cycles}  instructions={pr.instructions}  ipc={pr.ipc}  cache_misses/iter={pr.cache_misses_per_iter}  task_clock_ms={pr.task_clock_ms}")
     print()
 
     # 5. Disassemble
-    fn = f"inner_loop_{tools.loop_num}"
+    fn = "convolution_kernel" if problem_id == "conv" else f"inner_loop_{tools.loop_num}"
     print(f"[5/5] disassemble(fn='{fn}')...")
     dr = tools.disassemble(fn=fn)
     lines = dr.asm.splitlines()
@@ -105,11 +189,12 @@ def run_smoke_test(problem_id: str, isa: str, teardown: bool):
     # Summary
     print(f"{'='*60}")
     print(f"  Smoke test PASSED")
-    print(f"  Candidate runtime_ms : {rr.candidate_runtime_ms}")
-    print(f"  Candidate cycles     : {pr_candidate.cycles}")
-    print(f"  Candidate instructions: {pr_candidate.instructions}")
-    print(f"  Candidate IPC        : {pr_candidate.ipc}")
-    print(f"  Candidate L1D miss % : {pr_candidate.l1d_miss_pct}")
+    print(f"  runtime_ms : {rr.runtime_ms}")
+    print(f"  cycles     : {pr.cycles}")
+    print(f"  instructions: {pr.instructions}")
+    print(f"  IPC        : {pr.ipc}")
+    print(f"  LLC misses/iter: {pr.cache_misses_per_iter}")
+    print(f"  task_clock : {pr.task_clock_ms} ms/iter")
     print(f"{'='*60}\n")
 
     if teardown:

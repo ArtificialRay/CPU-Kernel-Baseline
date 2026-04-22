@@ -18,9 +18,11 @@ venv/
 generations/*
 results/*
 baselines/*
+traces/*
 !generations/.gitkeep
 !results/.gitkeep
 !baselines/.gitkeep
+!traces/.gitkeep
 
 # SSH credentials — never commit these
 eval/eval_config.json
@@ -32,7 +34,6 @@ eval/eval_config.json
 terraform/.terraform/
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
-terraform/.terraform.lock.hc
-terraform
-*.csv
-history/
+terraform/.terraform.lock.hcl
+
+.env

@@ -1,0 +1,1017 @@
+[
+  {
+    "id": "loop_001",
+    "num": "001",
+    "name": "FP32 inner product",
+    "description": "Compute the FP32 dot product of two float arrays",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_001_fp32_inner_product",
+    "tags": [
+      "sve",
+      "fp32"
+    ]
+  },
+  {
+    "id": "loop_002",
+    "num": "002",
+    "name": "UINT32 inner product",
+    "description": "Compute the integer dot product of two uint32 arrays",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_002_uint32_inner_product",
+    "tags": [
+      "sve",
+      "uint"
+    ]
+  },
+  {
+    "id": "loop_003",
+    "num": "003",
+    "name": "FP64 inner product",
+    "description": "Compute the FP64 dot product of two double arrays",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_003_fp64_inner_product",
+    "tags": [
+      "sve",
+      "fp64"
+    ]
+  },
+  {
+    "id": "loop_004",
+    "num": "004",
+    "name": "UINT64 inner product",
+    "description": "Compute the integer dot product of two uint64 arrays",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_004_uint64_inner_product",
+    "tags": [
+      "sve",
+      "uint"
+    ]
+  },
+  {
+    "id": "loop_005",
+    "num": "005",
+    "name": "strlen short strings",
+    "description": "Compute the length of many short null-terminated strings",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_005_strlen_short_strings",
+    "tags": [
+      "sve",
+      "string"
+    ]
+  },
+  {
+    "id": "loop_006",
+    "num": "006",
+    "name": "strlen long strings",
+    "description": "Compute the length of many long null-terminated strings",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_006_strlen_long_strings",
+    "tags": [
+      "sve",
+      "string"
+    ]
+  },
+  {
+    "id": "loop_008",
+    "num": "008",
+    "name": "Precise fp64 add reduction",
+    "description": "Sum a double array with exact scalar FP ordering \u2014 result must be bit-identical to sequential scalar addition",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_008_precise_fp64_add_reduction",
+    "tags": [
+      "sve",
+      "fp64"
+    ]
+  },
+  {
+    "id": "loop_009",
+    "num": "009",
+    "name": "Pointer chasing",
+    "description": "Traverse a linked list and XOR-accumulate the payload from each node",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_009_pointer_chasing",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_010",
+    "num": "010",
+    "name": "Conditional reduction (fp)",
+    "description": "Find the last active element of an FP array under a computed predicate",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_010_conditional_reduction_fp",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_012",
+    "num": "012",
+    "name": "Particle motion",
+    "description": "Advance 3D particle positions by a time step with modular boundary wrapping",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_012_particle_motion",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_019",
+    "num": "019",
+    "name": "Mark objects",
+    "description": "Write a marker value to a set of scattered (non-contiguous) memory locations",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_019_mark_objects",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_022",
+    "num": "022",
+    "name": "TCP checksum",
+    "description": "Compute one's complement checksum across a buffer of variable-length TCP packets",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_022_tcp_checksum",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_023",
+    "num": "023",
+    "name": "Conjugate Gradient",
+    "description": "Sparse matrix-vector multiply where column indices are stored as an indirect index array",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_023_conjugate_gradient",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_024",
+    "num": "024",
+    "name": "Sum of abs diffs",
+    "description": "Sum of absolute differences between two byte arrays, accumulated into a uint32",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_024_sum_of_abs_diffs",
+    "tags": [
+      "sve",
+      "dot-product"
+    ]
+  },
+  {
+    "id": "loop_025",
+    "num": "025",
+    "name": "FP32 small matrix-matrix multiply",
+    "description": "Multiply two small fixed-size FP32 matrices",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_025_fp32_small_matrix_matrix_multiply",
+    "tags": [
+      "sve",
+      "matmul",
+      "fp32"
+    ]
+  },
+  {
+    "id": "loop_026",
+    "num": "026",
+    "name": "Convert UTF-16 to chars",
+    "description": "Convert a UTF-16 string to narrow ASCII chars, skipping high surrogate pairs",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_026_convert_utf_16_to_chars",
+    "tags": [
+      "sve",
+      "string"
+    ]
+  },
+  {
+    "id": "loop_027",
+    "num": "027",
+    "name": "FP32 square root",
+    "description": "Compute element-wise square root of an FP32 array",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_027_fp32_square_root",
+    "tags": [
+      "sve",
+      "fp32"
+    ]
+  },
+  {
+    "id": "loop_028",
+    "num": "028",
+    "name": "FP64 fast division",
+    "description": "Compute element-wise fast approximate reciprocal division of FP64 arrays",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_028_fp64_fast_division",
+    "tags": [
+      "sve",
+      "fp64"
+    ]
+  },
+  {
+    "id": "loop_029",
+    "num": "029",
+    "name": "FP64 multiply by power of 2",
+    "description": "Scale each FP64 element by an integer power of two",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_029_fp64_multiply_by_power_of_2",
+    "tags": [
+      "sve",
+      "fp64"
+    ]
+  },
+  {
+    "id": "loop_031",
+    "num": "031",
+    "name": "small-lengths inline memcpy test",
+    "description": "Copy small byte buffers of varied lengths and alignments",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_031_small_lengths_inline_memcpy_test",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_032",
+    "num": "032",
+    "name": "FP64 banded linear equations",
+    "description": "Solve a step of a banded linear system with non-unit-strided coefficient access",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_032_fp64_banded_linear_equations",
+    "tags": [
+      "sve",
+      "fp64"
+    ]
+  },
+  {
+    "id": "loop_033",
+    "num": "033",
+    "name": "FP64 Inner product",
+    "description": "Compute FP64 inner product of two arrays",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_033_fp64_inner_product",
+    "tags": [
+      "sve",
+      "fp64"
+    ]
+  },
+  {
+    "id": "loop_034",
+    "num": "034",
+    "name": "Short string compares",
+    "description": "Compare many short null-terminated strings for equality",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_034_short_string_compares",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_035",
+    "num": "035",
+    "name": "Array addition",
+    "description": "Element-wise addition of two arrays with arbitrary length (non-multiple-of-vector-width)",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_035_array_addition",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_036",
+    "num": "036",
+    "name": "Sparse matrix Gauss Step",
+    "description": "Apply one Gaussian elimination step to a sparse row using indirect column indices",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_036_sparse_matrix_gauss_step",
+    "tags": [
+      "sve",
+      "matmul"
+    ]
+  },
+  {
+    "id": "loop_037",
+    "num": "037",
+    "name": "FP32 complex vector product",
+    "description": "Element-wise complex multiplication of two FP32 complex-number arrays (interleaved re/im)",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_037_fp32_complex_vector_product",
+    "tags": [
+      "sve",
+      "fp32"
+    ]
+  },
+  {
+    "id": "loop_038",
+    "num": "038",
+    "name": "Fp16 convolution",
+    "description": "1D convolution of an FP16 signal with an FP16 filter kernel",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_038_fp16_convolution",
+    "tags": [
+      "sve",
+      "fp16"
+    ]
+  },
+  {
+    "id": "loop_040",
+    "num": "040",
+    "name": "Clamp operation",
+    "description": "Clamp each element of an integer sequence to data-dependent [min, max] bounds",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_040_clamp_operation",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_101",
+    "num": "101",
+    "name": "Upscale filter",
+    "description": "Upscale a pixel buffer by splitting each element into its high and low halves",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_101_upscale_filter",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_102",
+    "num": "102",
+    "name": "General histogram",
+    "description": "Count the frequency of each byte value in a large buffer (histogram)",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_102_general_histogram",
+    "tags": [
+      "sve",
+      "histogram"
+    ]
+  },
+  {
+    "id": "loop_103",
+    "num": "103",
+    "name": "whitespace",
+    "description": "Find all whitespace character positions in a byte string",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_103_whitespace",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_104",
+    "num": "104",
+    "name": "Byte historgram",
+    "description": "Compute byte-value frequency histogram using segmented counting",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_104_byte_historgram",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_105",
+    "num": "105",
+    "name": "Cascade summation",
+    "description": "Sum adjacent FP value pairs in a cascading pairwise reduction",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_105_cascade_summation",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_106",
+    "num": "106",
+    "name": "Sheep and goats",
+    "description": "Partition a vector by bit flag, concentrating set-bit elements to one side",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_106_sheep_and_goats",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_107",
+    "num": "107",
+    "name": "UINT128 multiply",
+    "description": "Multiply 64-bit integer pairs producing full 128-bit results with carry",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_107_uint128_multiply",
+    "tags": [
+      "sve",
+      "uint"
+    ]
+  },
+  {
+    "id": "loop_108",
+    "num": "108",
+    "name": "Pixel manipulation",
+    "description": "Deinterleave RGBA pixel data and accumulate channel values with bit shifts",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_108_pixel_manipulation",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_109",
+    "num": "109",
+    "name": "UINT32 complex addition",
+    "description": "Element-wise addition of complex numbers stored as interleaved uint32 (re, im) pairs",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_109_uint32_complex_addition",
+    "tags": [
+      "sve",
+      "uint"
+    ]
+  },
+  {
+    "id": "loop_110",
+    "num": "110",
+    "name": "UINT32 complex dot",
+    "description": "Compute complex dot product of two arrays of uint32 complex numbers",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_110_uint32_complex_dot",
+    "tags": [
+      "sve",
+      "dot-product",
+      "uint"
+    ]
+  },
+  {
+    "id": "loop_111",
+    "num": "111",
+    "name": "FP64 overflow handling",
+    "description": "Normalise FP64 values that may overflow by detecting and rescaling their exponents",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_111_fp64_overflow_handling",
+    "tags": [
+      "sve",
+      "fp64"
+    ]
+  },
+  {
+    "id": "loop_112",
+    "num": "112",
+    "name": "UINT32 complex MAC",
+    "description": "Complex multiply-accumulate over arrays of uint32 complex numbers",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_112_uint32_complex_mac",
+    "tags": [
+      "sve",
+      "uint"
+    ]
+  },
+  {
+    "id": "loop_113",
+    "num": "113",
+    "name": "UINT32 Pairs addition",
+    "description": "Sum adjacent uint32 pairs across an array (horizontal pairwise add)",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_113_uint32_pairs_addition",
+    "tags": [
+      "sve",
+      "uint"
+    ]
+  },
+  {
+    "id": "loop_114",
+    "num": "114",
+    "name": "Auto-correlation",
+    "description": "Compute auto-correlation of an integer array with widening accumulation",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_114_auto_correlation",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_120",
+    "num": "120",
+    "name": "Insertion sort",
+    "description": "Sort a small integer array using insertion sort",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_120_insertion_sort",
+    "tags": [
+      "sve",
+      "sort"
+    ]
+  },
+  {
+    "id": "loop_121",
+    "num": "121",
+    "name": "Quicksort",
+    "description": "Partition an integer array around a pivot (one pass of quicksort)",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_121_quicksort",
+    "tags": [
+      "sve",
+      "sort"
+    ]
+  },
+  {
+    "id": "loop_122",
+    "num": "122",
+    "name": "Odd-Even transposition sort",
+    "description": "Sort element pairs using odd-even transposition compare-and-swap",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_122_odd_even_transposition_sort",
+    "tags": [
+      "sve",
+      "sort"
+    ]
+  },
+  {
+    "id": "loop_123",
+    "num": "123",
+    "name": "Bitonic mergesort",
+    "description": "Merge two sorted halves using a bitonic compare-and-swap network",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_123_bitonic_mergesort",
+    "tags": [
+      "sve",
+      "sort"
+    ]
+  },
+  {
+    "id": "loop_124",
+    "num": "124",
+    "name": "Radix sort",
+    "description": "Sort integers by digit using a single radix counting pass",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_124_radix_sort",
+    "tags": [
+      "sve",
+      "sort"
+    ]
+  },
+  {
+    "id": "loop_126",
+    "num": "126",
+    "name": "conditional update",
+    "description": "Conditionally update array elements where a per-element predicate holds",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_126_conditional_update",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_127",
+    "num": "127",
+    "name": "loop early exit",
+    "description": "Search an array for the first element satisfying a condition, exit immediately on match",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_127_loop_early_exit",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_128",
+    "num": "128",
+    "name": "alias in contiguous access",
+    "description": "Shift array elements in place where source and destination ranges may overlap",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_128_alias_in_contiguous_access",
+    "tags": [
+      "sve"
+    ]
+  },
+  {
+    "id": "loop_130",
+    "num": "130",
+    "name": "FP32 matrix-matrix multiply using",
+    "description": "Multiply two FP32 matrices using tiled register accumulation",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_130_fp32_matrix_matrix_multiply_using",
+    "tags": [
+      "sve",
+      "matmul",
+      "fp32"
+    ]
+  },
+  {
+    "id": "loop_135",
+    "num": "135",
+    "name": "INT8-INT32 matrix-matrix multiply using MMLA",
+    "description": "Multiply INT8 matrices accumulating into INT32 using tiled 4-element dot products",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_135_int8_int32_matrix_matrix_multiply_using_",
+    "tags": [
+      "sve",
+      "matmul",
+      "int8"
+    ]
+  },
+  {
+    "id": "loop_136",
+    "num": "136",
+    "name": "INT4-INT32 matrix-matrix multiply using MMLA",
+    "description": "Multiply 4-bit quantized matrices into INT32 using lookup-table dequantization",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_136_int4_int32_matrix_matrix_multiply_using_",
+    "tags": [
+      "sve",
+      "matmul"
+    ]
+  },
+  {
+    "id": "loop_137",
+    "num": "137",
+    "name": "BF16-FP32 matrix-matrix multiply using MMLA",
+    "description": "Multiply BF16 matrices accumulating into FP32 using tiled dot products",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_137_bf16_fp32_matrix_matrix_multiply_using_m",
+    "tags": [
+      "sve",
+      "matmul",
+      "fp32",
+      "bf16"
+    ]
+  },
+  {
+    "id": "loop_201",
+    "num": "201",
+    "name": "FP64 matrix-matrix multiply using MOPA / DOT",
+    "description": "Multiply two FP64 matrices using tiled outer-product accumulation",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_201_fp64_matrix_matrix_multiply_using_mopa_d",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "fp64"
+    ]
+  },
+  {
+    "id": "loop_202",
+    "num": "202",
+    "name": "FP32 matrix-matrix multiply using MOPA / DOT",
+    "description": "Multiply two FP32 matrices using tiled outer-product accumulation",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_202_fp32_matrix_matrix_multiply_using_mopa_d",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "fp32"
+    ]
+  },
+  {
+    "id": "loop_204",
+    "num": "204",
+    "name": "FP16 matrix-matrix multiply using MOPA / DOT",
+    "description": "Multiply two FP16 matrices accumulating into FP16 using tiled outer products",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_204_fp16_matrix_matrix_multiply_using_mopa_d",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "fp16"
+    ]
+  },
+  {
+    "id": "loop_205",
+    "num": "205",
+    "name": "INT8-INT32 matrix-matrix multiply using MOPA / DOT",
+    "description": "Multiply INT8 matrices accumulating into INT32 using tiled outer products or dot products",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_205_int8_int32_matrix_matrix_multiply_using_",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "int8"
+    ]
+  },
+  {
+    "id": "loop_206",
+    "num": "206",
+    "name": "INT16-INT64 matrix-matrix multiply using MOPA / DOT",
+    "description": "Multiply INT16 matrices accumulating into INT64 using tiled outer products",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_206_int16_int64_matrix_matrix_multiply_using",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product"
+    ]
+  },
+  {
+    "id": "loop_207",
+    "num": "207",
+    "name": "INT1-INT32 matrix-matrix multiply using MOPA / DOT",
+    "description": "Multiply 1-bit binary matrices accumulating into INT32",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_207_int1_int32_matrix_matrix_multiply_using_",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product"
+    ]
+  },
+  {
+    "id": "loop_208",
+    "num": "208",
+    "name": "BF16-BF16 matrix-matrix multiply using MOPA / DOT",
+    "description": "Multiply BF16 matrices accumulating into BF16 using tiled outer products",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_208_bf16_bf16_matrix_matrix_multiply_using_m",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "bf16"
+    ]
+  },
+  {
+    "id": "loop_210",
+    "num": "210",
+    "name": "BF16-FP32 matrix-matrix multiply using MOPA / DOT",
+    "description": "Multiply BF16 matrices accumulating into FP32 using tiled outer products or dot products",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_210_bf16_fp32_matrix_matrix_multiply_using_m",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "fp32",
+      "bf16"
+    ]
+  },
+  {
+    "id": "loop_211",
+    "num": "211",
+    "name": "INT16-INT32 matrix-matrix multiply using MOPA / DOT",
+    "description": "Multiply INT16 matrices accumulating into INT32 using tiled outer products or dot products",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_211_int16_int32_matrix_matrix_multiply_using",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product"
+    ]
+  },
+  {
+    "id": "loop_212",
+    "num": "212",
+    "name": "4-bit-FP32 col-major interleaved matrix-vector multiply",
+    "description": "Multiply 4-bit quantized matrices into FP32 using lookup dequantization and dot products",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_212_4_bit_fp32_col_major_interleaved_matrix_",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "fp32"
+    ]
+  },
+  {
+    "id": "loop_215",
+    "num": "215",
+    "name": "UINT8-UINT32 col-major interleaved matrix-vector multiply",
+    "description": "Multiply uint8 matrices accumulating into uint32 using column-major tiled dot products",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_215_uint8_uint32_col_major_interleaved_matri",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "int8",
+      "uint"
+    ]
+  },
+  {
+    "id": "loop_216",
+    "num": "216",
+    "name": "FP32 col-major matrix-vector multiply",
+    "description": "Multiply an FP32 matrix by an FP32 vector (column-major GEMV)",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_216_fp32_col_major_matrix_vector_multiply",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "fp32"
+    ]
+  },
+  {
+    "id": "loop_217",
+    "num": "217",
+    "name": "INT8-INT32 row-major matrix-vector multiply",
+    "description": "Multiply an INT8 matrix by an INT8 vector accumulating into INT32 (row-major GEMV)",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_217_int8_int32_row_major_matrix_vector_multi",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "int8"
+    ]
+  },
+  {
+    "id": "loop_218",
+    "num": "218",
+    "name": "FP64 col-major matrix-vector multiply",
+    "description": "Multiply an FP64 matrix by an FP64 vector (column-major GEMV)",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_218_fp64_col_major_matrix_vector_multiply",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "fp64"
+    ]
+  },
+  {
+    "id": "loop_219",
+    "num": "219",
+    "name": "INT8-INT32 col-major matrix-vector multiply",
+    "description": "Multiply an INT8 matrix by an INT8 vector accumulating into INT32 (column-major GEMV)",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_219_int8_int32_col_major_matrix_vector_multi",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "int8"
+    ]
+  },
+  {
+    "id": "loop_220",
+    "num": "220",
+    "name": "FP32 row-major matrix-vector multiply",
+    "description": "Multiply an FP32 matrix by an FP32 vector (row-major GEMV)",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_220_fp32_row_major_matrix_vector_multiply",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "fp32"
+    ]
+  },
+  {
+    "id": "loop_221",
+    "num": "221",
+    "name": "FP64 row-major matrix-vector multiply",
+    "description": "Multiply an FP64 matrix by an FP64 vector (row-major GEMV)",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_221_fp64_row_major_matrix_vector_multiply",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "fp64"
+    ]
+  },
+  {
+    "id": "loop_222",
+    "num": "222",
+    "name": "FP16 convolution",
+    "description": "1D convolution of an FP16 signal with an FP16 filter using multi-vector loads",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_222_fp16_convolution",
+    "tags": [
+      "sme2",
+      "streaming",
+      "fp16"
+    ]
+  },
+  {
+    "id": "loop_223",
+    "num": "223",
+    "name": "Matrix transposition",
+    "description": "Transpose a matrix in-place using interleaved load and store",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_223_matrix_transposition",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul"
+    ]
+  },
+  {
+    "id": "loop_231",
+    "num": "231",
+    "name": "BF16-FP32 col-major interleaved matrix-vector multiply",
+    "description": "Multiply a BF16 matrix by a BF16 vector accumulating into FP32 (column-major interleaved GEMV)",
+    "isa_target": "sve",
+    "instance_type": "c7g.large",
+    "dir_name": "loop_231_bf16_fp32_col_major_interleaved_matrix_v",
+    "tags": [
+      "sve",
+      "matmul",
+      "dot-product",
+      "fp32",
+      "bf16"
+    ]
+  },
+  {
+    "id": "loop_245",
+    "num": "245",
+    "name": "INT8-INT32 matrix-matrix multiply with rearrangement",
+    "description": "Multiply INT8 matrices into INT32 using a mix of tiled outer products, dot products, and matrix rearrangement",
+    "isa_target": "sme2",
+    "instance_type": "c8g.large",
+    "dir_name": "loop_245_int8_int32_matrix_matrix_multiply_with_r",
+    "tags": [
+      "sme2",
+      "streaming",
+      "matmul",
+      "dot-product",
+      "int8"
+    ]
+  }
+]

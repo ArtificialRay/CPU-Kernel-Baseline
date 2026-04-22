@@ -318,7 +318,7 @@ def add_candidate_block(loop_file: Path, num: str) -> bool:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract simd-loops benchmark dataset")
+    parser = argparse.ArgumentParser(description="Extract arm-bench benchmark dataset")
     parser.add_argument("--loop", help="Process only this loop number, e.g. 001")
     parser.add_argument("--add-candidate-blocks", action="store_true",
                         help="Also patch loop_NNN.c files with HAVE_CANDIDATE injection points")
