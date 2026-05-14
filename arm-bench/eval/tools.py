@@ -54,6 +54,7 @@ class PerfResult:
     ipc: float | None = None
     cache_misses_per_iter: float | None = None  # LLC misses divided by n iterations
     task_clock_ms: float | None = None  # on-CPU ms per iteration (excludes scheduler idle)
+    wall_ms: float | None = None        # wall-clock ms per iteration (perf duration_time / n)
     raw_output: str = ""
 
     def to_tool_result(self) -> dict:
@@ -63,6 +64,7 @@ class PerfResult:
             "ipc": self.ipc,
             "cache_misses_per_iter": self.cache_misses_per_iter,
             "task_clock_ms": self.task_clock_ms,
+            "wall_ms": self.wall_ms,
             "raw_output": self.raw_output.strip(),
         }
 
@@ -367,7 +369,7 @@ class SIMDTools:
             f"PERF=${{PERF:-perf}}; "
             f"{self.remote_binary} -k {loop_hex} -n 1 >/dev/null 2>&1; "  # warmup
             f"sudo $PERF stat "
-            f"-e cycles,instructions,cache-misses,task-clock "
+            f"-e cycles,instructions,cache-misses,task-clock,duration_time "
             f"{self.remote_binary} -k {loop_hex} -n {n} "
             f"2>&1"
         )
@@ -389,7 +391,7 @@ class SIMDTools:
             f"PERF=${{PERF:-perf}}; "
             f"{bin_path} -k {loop_decimal} -n 1 >/dev/null 2>&1; "  # warmup
             f"sudo $PERF stat "
-            f"-e cycles,instructions,cache-misses,task-clock "
+            f"-e cycles,instructions,cache-misses,task-clock,duration_time "
             f"{bin_path} -k {loop_decimal} -n {n} "
             f"2>&1"
         )
@@ -429,12 +431,19 @@ class SIMDTools:
             if raw_ns is not None and n > 0:
                 task_clock_ms = round(raw_ns / n / 1e6, 4)
 
+        # duration_time: wall-clock time in ns (kernel >= 4.13)
+        wall_ms = None
+        raw_ns = _parse_perf_counter(output, "duration_time")
+        if raw_ns is not None and n > 0:
+            wall_ms = round(raw_ns / n / 1e6, 4)
+
         return PerfResult(
             cycles=cycles,
             instructions=instructions,
             ipc=ipc,
             cache_misses_per_iter=cache_misses_per_iter,
             task_clock_ms=task_clock_ms,
+            wall_ms=wall_ms,
             raw_output=output,
         )
 
@@ -827,7 +836,7 @@ class SIMDTools:
                     "description": (
                         "Run perf stat to collect hardware PMU counters: "
                         "cycles, instructions, IPC, cache_misses_per_iter (LLC misses per iteration), "
-                        "and task_clock_ms (on-CPU ms per iteration — more precise than run() wall-clock). "
+                        "task_clock_ms (on-CPU ms per iteration — more precise than run() wall-clock), and total wall time. "
                         "Use size= to profile at a large input (e.g. size=500000) so data spills out of "
                         "cache and you measure real memory bandwidth pressure."
                     ),
@@ -958,7 +967,7 @@ provided for you — you only write the `*_kernel()` implementation in the .cpp 
 You have access to these tools:
   - compile(code): Upload and compile your implementation.
   - run(n): Run the test suite n times and verify all tests pass.
-  - perf(n): Collect hardware PMU counters: cycles, IPC, cache_misses_per_iter, task_clock_ms.
+  - perf(n): Collect hardware PMU counters: cycles, IPC, cache_misses_per_iter, task_clock_ms, wall time.
   - disassemble(fn): See the generated AArch64 assembly for a specific function.
   - submit(code, explanation): Submit your final implementation for scoring.
 
@@ -1240,6 +1249,29 @@ class NCNNTools:
 
         return RunResult(correct=correct, runtime_ms=runtime_ms, output=output_for_agent)
 
+    def _time_perf_binary(self, n: int) -> float | None:
+        """
+        Time the perf_candidate_{name} binary (no assertion overhead) n times
+        back-to-back with date +%s%N and return ms per invocation.
+
+        Mirrors scripts/collect_baselines_ncnn.py::time_binary exactly so the
+        candidate runtime measured here is directly comparable to baseline_ms.
+        """
+        if not self._binary_exists:
+            return None
+        cmd = (
+            f"t0=$(date +%s%N); "
+            f"for i in $(seq 1 {n}); do {self.remote_perf_binary}; rc=$?; "
+            f"if [ $rc -ne 0 ]; then exit $rc; fi; done; "
+            f"t1=$(date +%s%N); "
+            f'echo "TIME_NS=$((t1-t0))"'
+        )
+        rc, stdout, _ = self._run_remote(cmd, timeout=600)
+        if rc != 0:
+            return None
+        m = re.search(r"TIME_NS=(\d+)", stdout)
+        return round(int(m.group(1)) / 1e6 / n, 3) if m else None
+
     # ─── Tool: perf ───────────────────────────────────────────────────────────
 
     def perf(self, n: int = 5, size: int | None = None) -> PerfResult:
@@ -1267,7 +1299,7 @@ class NCNNTools:
             f"PERF=${{PERF:-perf}}; "
             f"{self.remote_perf_binary} >/dev/null 2>&1; "  # warmup
             f"sudo $PERF stat "
-            f"-e cycles,instructions,cache-misses,task-clock "
+            f"-e cycles,instructions,cache-misses,task-clock,duration_time "
             f"bash -c '{run_loop}' "
             f"2>&1"
         )
@@ -1344,7 +1376,8 @@ class NCNNTools:
                 tool_calls=self._tool_calls,
             )
 
-        # Correctness check (n=1 for single-pass correctness)
+        # Correctness check (n=1 for single-pass correctness, uses test_candidate
+        # binary with EXPECT_MATCH assertions)
         rr = self.run(n=1)
         if not rr.correct:
             return EvalResult(
@@ -1353,47 +1386,30 @@ class NCNNTools:
                 tool_calls=self._tool_calls,
             )
 
-        # Performance: run 10 invocations and get per-invocation timing
-        rr_perf = self.run(n=10)
-        runtime_ms = None
-        if rr_perf.runtime_ms is not None:
-            runtime_ms = round(rr_perf.runtime_ms / 10, 4)  # ms per invocation
+        # Performance: time perf_candidate (no-assertion) binary using the same
+        # date +%s%N methodology as scripts/collect_baselines_ncnn.py::time_binary
+        # so runtime_ms is directly comparable to baseline_ms in baselines/ncnn.json.
+        runtime_ms = self._time_perf_binary(n=10)
 
         # Load baselines (populated by scripts/collect_baselines_ncnn.py)
         from eval.config import load_ncnn_baselines
         baselines = load_ncnn_baselines()
         baseline = baselines.get(self.problem_id, {})
-        candidate_ms = baseline.get("candidate_ms")  # scalar C kernel (starter candidates_src)
-        baseline_ms  = baseline.get("baseline_ms")   # ARM-heavy-optimized reference
-        ref_ms       = baseline.get("ref_ms")
+        baseline_ms = baseline.get("baseline_ms")  # ARM-heavy-optimized hand-written reference
 
-        # EvalResult field names are shared with SIMDTools for JSON-schema stability:
-        #   speedup_vs_scalar  ← candidate (scalar C) side for ncnn
-        #   speedup_vs_autovec ← baseline (ARM-optimized) side for ncnn
-        speedup_vs_scalar  = None
-        speedup_vs_autovec = None
-        speedup_vs_ref     = None
+        # In NCNN mode there is no scalar/autovec/ref split — the only meaningful
+        # comparison is candidate vs the hand-written ARM baseline. Report it as
+        # speedup_vs_ref (the "beat hand-written" slot in EvalResult).
+        speedup_vs_ref = None
         level = 1  # correct
 
-        if runtime_ms and candidate_ms:
-            speedup_vs_scalar = round(candidate_ms / runtime_ms, 2)
-            if speedup_vs_scalar > 1.0:
-                level = 2
-
         if runtime_ms and baseline_ms:
-            speedup_vs_autovec = round(baseline_ms / runtime_ms, 2)
-            if level >= 2 and speedup_vs_autovec > 1.0:
-                level = 3  # beats ARM baseline
-
-        if runtime_ms and ref_ms:
-            speedup_vs_ref = round(ref_ms / runtime_ms, 2)
-            if level >= 3 and speedup_vs_ref > 1.0:
+            speedup_vs_ref = round(baseline_ms / runtime_ms, 2)
+            if speedup_vs_ref > 1.0:
                 level = 4
 
         return EvalResult(
             correct=True,
-            speedup_vs_scalar=speedup_vs_scalar,
-            speedup_vs_autovec=speedup_vs_autovec,
             speedup_vs_ref=speedup_vs_ref,
             level=level,
             runtime_ms=runtime_ms,
@@ -1459,7 +1475,7 @@ class NCNNTools:
                     "description": (
                         "Run perf stat to collect hardware PMU counters: "
                         "cycles, instructions, IPC, cache_misses_per_iter, "
-                        "and task_clock_ms (on-CPU ms per invocation)."
+                        "task_clock_ms (on-CPU ms per invocation), and wall time."
                     ),
                     "parameters": {
                         "type": "object",

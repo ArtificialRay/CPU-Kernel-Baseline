@@ -3,6 +3,7 @@
 #include "mat.h"
 #include "option.h"
 #include <cstring>
+#include <memory>
 #include <vector>
 
 // ── Deterministic test data generation ───────────────────────────────────────
@@ -67,7 +68,11 @@ static inline ncnn::Mat make_mat_4d(int w_, int h_, int d_, int c_, const std::v
     return m;
 }
 
-// Create a 3-D ncnn::Mat with a deterministic ramp (c-major): value(i) = (i+1)*0.1f
+// Create a 3-D ncnn::Mat with a deterministic bounded ramp (c-major).
+// Values cycle through [0.1, 10.0] (idx mod 100) to keep partial-sum magnitudes
+// small in long reductions — unbounded ramps cause catastrophic cancellation
+// against ~0 outputs, where fp32 rounding-order drift between ref (sequential)
+// and ARM kernels (NEON pairwise/blocked) exceeds any sane rel_tol.
 static inline ncnn::Mat make_mat_ramp(int w_, int h_, int c_)
 {
     ncnn::Mat m;
@@ -77,12 +82,12 @@ static inline ncnn::Mat make_mat_ramp(int w_, int h_, int c_)
         for (int hh = 0; hh < h_; ++hh) {
             float* dst = m.channel(cc).row(hh);
             for (int ww = 0; ww < w_; ++ww)
-                dst[ww] = (float)(++idx) * 0.1f;
+                dst[ww] = (float)((idx++ % 100) + 1) * 0.1f;
         }
     return m;
 }
 
-// 2-D ramp (used by Convolution1D where layout is [w=seq_len, h=channels]).
+// 2-D bounded ramp (used by Convolution1D where layout is [w=seq_len, h=channels]).
 static inline ncnn::Mat make_mat_ramp_2d(int w_, int h_)
 {
     ncnn::Mat m;
@@ -91,7 +96,7 @@ static inline ncnn::Mat make_mat_ramp_2d(int w_, int h_)
     for (int hh = 0; hh < h_; ++hh) {
         float* dst = m.row(hh);
         for (int ww = 0; ww < w_; ++ww)
-            dst[ww] = (float)(++idx) * 0.1f;
+            dst[ww] = (float)((idx++ % 100) + 1) * 0.1f;
     }
     return m;
 }

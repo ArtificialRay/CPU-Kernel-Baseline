@@ -37,3 +37,4 @@ terraform/terraform.tfstate.backup
 terraform/.terraform.lock.hcl
 
 .env
+*.log

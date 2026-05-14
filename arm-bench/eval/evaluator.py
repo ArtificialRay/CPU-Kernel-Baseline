@@ -47,6 +47,7 @@ Workflow — follow this order:
   6. submit() once you have a correct implementation you are happy with.
 
 Key rules:
+  - Don't change ISA target unless it is necessary
   - The function signature must be preserved exactly.
   - The `res` field in the data struct is the checksum — it must match the scalar output.
   - Always call perf() after confirming correctness — do not submit without profiling.
@@ -421,7 +422,8 @@ def run_agentic_eval(
                     ipc = result_dict.get("ipc")
                     miss = result_dict.get("cache_misses_per_iter")
                     task_ms = result_dict.get("task_clock_ms")
-                    print(f"  ← perf: IPC={ipc}, LLC_misses/iter={miss}, task_clock={task_ms}ms/iter")
+                    wall_ms = result_dict.get("wall_ms")
+                    print(f"  ← perf: IPC={ipc}, LLC_misses/iter={miss}, task_clock={task_ms}ms/iter, wall_ms={wall_ms}ms")
                 else:
                     print(f"  ← {fn_name}: {str(result_dict)[:100]}")
 
@@ -509,62 +511,23 @@ def run_agentic_eval(
                 if not er.compile_error:  # ignore failed submits (e.g. placeholder)
                     final_result = er
 
-    # If agent never submitted successfully, force a final run with last compiled code
-    if final_result is None:
+    # Decide whether we still need to (re-)submit something through tools.submit():
+    #   - final_result is None: agent never produced a successful submit
+    #   - best_correct differs from what the agent submitted: agent's final pick
+    #     wasn't its fastest correct version; try the best one
+    # All scoring lives in the ToolsClass.submit() so evaluator doesn't need to know
+    # about baseline field names (SIMD: scalar/autovec/ref; NCNN: only baseline_ms).
+    needs_submit = final_result is None or (
+        best_correct
+        and best_correct.get("code")
+        and best_correct["code"] != agent_submitted_code
+    )
+
+    if needs_submit and best_correct and best_correct.get("code"):
         if verbose:
-            print("\n[Max turns reached — forcing final scoring run]")
-        # Use a tools-class-specific iteration count (NCNNTools uses fewer)
-        _autofail_n = getattr(tools, "_autofail_n", 1000)
-        rr = tools.run(n=_autofail_n)
-        # Use tools-class-specific baseline loader if available (e.g. NCNNTools)
-        if hasattr(tools, "_load_baseline_for_problem"):
-            baseline = tools._load_baseline_for_problem()
-        else:
-            from eval.config import load_baselines, ISA_TIER
-            tier = ISA_TIER.get(isa, "c7g")
-            baselines = load_baselines(tier)
-            baseline = baselines.get(problem_id, {})
-        scalar_ms = baseline.get("scalar_ms")
-        autovec_ms = baseline.get("autovec_ms")
-        ref_ms = baseline.get("ref_ms")
-
-        speedup_vs_scalar = None
-        speedup_vs_autovec = None
-        speedup_vs_ref = None
-        level = 0
-
-        if rr.correct:
-            level = 1
-            if rr.runtime_ms and scalar_ms:
-                speedup_vs_scalar = round(scalar_ms / rr.runtime_ms, 2)
-                if speedup_vs_scalar > 1.0:
-                    level = 2
-            if rr.runtime_ms and autovec_ms:
-                speedup_vs_autovec = round(autovec_ms / rr.runtime_ms, 2)
-                if level >= 2 and speedup_vs_autovec > 1.0:
-                    level = 3
-            if rr.runtime_ms and ref_ms:
-                speedup_vs_ref = round(ref_ms / rr.runtime_ms, 2)
-                if level >= 3 and speedup_vs_ref > 1.0:
-                    level = 4
-
-        final_result = EvalResult(
-            correct=rr.correct,
-            speedup_vs_scalar=speedup_vs_scalar,
-            speedup_vs_autovec=speedup_vs_autovec,
-            speedup_vs_ref=speedup_vs_ref,
-            level=level,
-            runtime_ms=rr.runtime_ms,
-            tool_calls=tools._tool_calls,
-        )
-
-    # ── Auto-resubmit best version if it differs from what the agent submitted ──
-    # The agent may have submitted a later (worse) version, or may not have submitted
-    # at all. Re-score the best correct version seen and use it if faster.
-    if best_correct and best_correct.get("code") and best_correct["code"] != agent_submitted_code:
-        if verbose:
-            print(f"\n[Auto-submit] Re-scoring best version "
-                  f"(v{best_correct['version']}, {best_correct['ms_per_iter']:.4f}ms/iter during session)...")
+            reason = "max turns reached" if final_result is None else "best version differs from agent's submission"
+            print(f"\n[Auto-submit] {reason} — re-scoring v{best_correct['version']} "
+                  f"({best_correct['ms_per_iter']:.4f}ms/iter during session)...")
         try:
             better = tools.submit(
                 best_correct["code"],
@@ -574,14 +537,15 @@ def run_agentic_eval(
                 ),
             )
             better.tool_calls = tools._tool_calls
-            if better.correct and (
-                final_result is None
-                or final_result.runtime_ms is None
+            if final_result is None:
+                final_result = better
+            elif better.correct and (
+                final_result.runtime_ms is None
                 or (better.runtime_ms and better.runtime_ms < final_result.runtime_ms)
             ):
                 if verbose:
                     print(f"  → v{best_correct['version']} scores better "
-                          f"({better.runtime_ms}ms vs {final_result.runtime_ms if final_result else '?'}ms) — using it")
+                          f"({better.runtime_ms}ms vs {final_result.runtime_ms}ms) — using it")
                 final_result = better
             else:
                 if verbose:
@@ -589,6 +553,19 @@ def run_agentic_eval(
         except Exception as e:
             if verbose:
                 print(f"  [auto-submit failed: {e}]")
+
+    # No correct version ever produced and agent never submitted — record a failed result.
+    if final_result is None:
+        if verbose:
+            print("\n[Max turns reached, no correct version produced — recording failure]")
+        _autofail_n = getattr(tools, "_autofail_n", 1000)
+        rr = tools.run(n=_autofail_n)
+        final_result = EvalResult(
+            correct=rr.correct,
+            level=1 if rr.correct else 0,
+            runtime_ms=rr.runtime_ms,
+            tool_calls=tools._tool_calls,
+        )
 
     final_result.timestamp = run_timestamp
     final_result.trace = trace

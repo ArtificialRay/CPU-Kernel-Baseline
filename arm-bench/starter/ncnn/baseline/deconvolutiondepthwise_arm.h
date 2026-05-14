@@ -118,8 +118,19 @@ public:
     return ref_depthwise_deconv2d(in, weight, bias, kh, kw, stride_h, stride_w);
 }
 
-// Generic runner for DeconvolutionDepthWise_arm
-[[maybe_unused]] static ncnn::Mat run_depthwise_deconv2d_arm(int c, int in_h, int in_w,
+// ── Setup/forward split ──────────────────────────────────────────────
+// Symmetric with deconvolution_arm.h: DeconvolutionDepthWise_arm::create_pipeline
+// rebuilds weight_data_tm (and for some packed paths, packs per-group weights);
+// in the unpacked (1,1) path most of that work is redundant relative to forward.
+// Splitting lets perf binaries pay create_pipeline once per shape and time only
+// forward(); tests keep using run_depthwise_deconv2d_arm() as a one-shot wrapper.
+struct DeconvDwArmCtx {
+    std::unique_ptr<ncnn::DeconvolutionDepthWise_arm> layer;  // heap-stable; owns group_ops
+    ncnn::Mat bottom;
+    ncnn::Option opt;
+};
+
+[[maybe_unused]] static DeconvDwArmCtx setup_depthwise_deconv2d_arm(int c, int in_h, int in_w,
                                              int kh, int kw, int stride_h, int stride_w,
                                              bool with_bias = false)
 {
@@ -128,10 +139,9 @@ public:
     std::vector<float> bias;
     if (with_bias) { bias.resize(c); for (int i = 0; i < c; ++i) bias[i] = i * 0.1f; }
 
-    ncnn::Mat bottom = make_mat_ramp(in_w, in_h, c);
-    ncnn::Mat top;
-
-    ncnn::DeconvolutionDepthWise_arm ddw;
+    DeconvDwArmCtx ctx;
+    ctx.layer.reset(new ncnn::DeconvolutionDepthWise_arm());
+    auto& ddw = *ctx.layer;
     ddw.num_output         = c;
     ddw.kernel_w           = kw;    ddw.kernel_h  = kh;
     ddw.dilation_w         = 1;     ddw.dilation_h = 1;
@@ -148,13 +158,32 @@ public:
     ddw.weight_data        = make_weight(weight);
     if (with_bias) ddw.bias_data = make_weight(bias);
 
-    ncnn::Option opt = make_opt();
-    if (ddw.create_pipeline(opt) != 0) {
+    ctx.opt = make_opt();
+    if (ddw.create_pipeline(ctx.opt) != 0) {
         fprintf(stderr, "  DeconvolutionDepthWise_arm::create_pipeline failed\n");
-        return ncnn::Mat();
+        ctx.layer.reset();
+        return ctx;
     }
-    int ret = ddw.forward(bottom, top, opt);
+    ctx.bottom = make_mat_ramp(in_w, in_h, c);
+    return ctx;
+}
+
+// Hot path — this is what perf binaries time.
+[[maybe_unused]] static ncnn::Mat forward_depthwise_deconv2d_arm(const DeconvDwArmCtx& ctx)
+{
+    if (!ctx.layer) return ncnn::Mat();
+    ncnn::Mat top;
+    int ret = ctx.layer->forward(ctx.bottom, top, ctx.opt);
     if (ret != 0) { fprintf(stderr, "  DeconvolutionDepthWise_arm::forward failed %d\n", ret); return ncnn::Mat(); }
     return top;
+}
+
+// One-shot wrapper — keeps EXPECT_MATCH(run_depthwise_deconv2d_arm, ...) working.
+[[maybe_unused]] static ncnn::Mat run_depthwise_deconv2d_arm(int c, int in_h, int in_w,
+                                             int kh, int kw, int stride_h, int stride_w,
+                                             bool with_bias = false)
+{
+    auto ctx = setup_depthwise_deconv2d_arm(c, in_h, in_w, kh, kw, stride_h, stride_w, with_bias);
+    return forward_depthwise_deconv2d_arm(ctx);
 }
 // BASELINE_INJECT_END

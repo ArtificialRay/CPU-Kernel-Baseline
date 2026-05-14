@@ -117,42 +117,73 @@ public:
     return ref_deconv2d(in, weight, bias, in_c, out_c, kh, kw, stride_h, stride_w);
 }
 
-// Generic runner for Deconvolution_arm
-[[maybe_unused]] static ncnn::Mat run_deconv2d_arm(int in_c, int out_c, int in_h, int in_w,
-                                   int kh, int kw, int stride_h, int stride_w,
-                                   bool with_bias = false)
+// ── Setup/forward split ──────────────────────────────────────────────
+// Deconvolution_arm::create_pipeline does a full transpose+populate of
+// weight_data_tm and then (for the four NEON-specialized (k, s) variants —
+// 3×3 s1/s2, 4×4 s1/s2) discards it via `weight_data_tm = weight_data;`
+// (deconvolution_arm.cpp:178-200). That work scales with weight size and is
+// paid on every run_deconv2d_arm() call in the original API. Splitting lets
+// perf binaries pay it once per shape (setup_deconv2d_arm) and time only
+// forward(); tests keep using run_deconv2d_arm() as a one-shot wrapper.
+struct DeconvArmCtx {
+    std::unique_ptr<ncnn::Deconvolution_arm> layer;  // owns activation/gemm pointers — heap-stable
+    ncnn::Mat bottom;
+    ncnn::Option opt;
+};
+
+[[maybe_unused]] static DeconvArmCtx setup_deconv2d_arm(int in_c, int out_c, int in_h, int in_w,
+                                       int kh, int kw, int stride_h, int stride_w,
+                                       bool with_bias = false)
 {
     int wsize = in_c * out_c * kh * kw;
     std::vector<float> weight = make_weights(wsize, 0.3f);
     std::vector<float> bias;
     if (with_bias) { bias.resize(out_c); for (int i = 0; i < out_c; ++i) bias[i] = i * 0.1f; }
 
-    ncnn::Mat bottom = make_mat_ramp(in_w, in_h, in_c);
-    ncnn::Mat top;
+    DeconvArmCtx ctx;
+    ctx.layer.reset(new ncnn::Deconvolution_arm());
+    auto& d = *ctx.layer;
+    d.num_output         = out_c;
+    d.kernel_w           = kw;    d.kernel_h  = kh;
+    d.dilation_w         = 1;     d.dilation_h = 1;
+    d.stride_w           = stride_w; d.stride_h = stride_h;
+    d.pad_left           = 0; d.pad_right  = 0;
+    d.pad_top            = 0; d.pad_bottom = 0;
+    d.output_pad_right   = 0; d.output_pad_bottom = 0;
+    d.output_w           = 0; d.output_h = 0;
+    d.bias_term          = with_bias ? 1 : 0;
+    d.weight_data_size   = wsize;
+    d.activation_type    = 0;
+    d.dynamic_weight     = 0;
+    d.weight_data        = make_weight(weight);
+    if (with_bias) d.bias_data = make_weight(bias);
 
-    ncnn::Deconvolution_arm deconv;
-    deconv.num_output         = out_c;
-    deconv.kernel_w           = kw;    deconv.kernel_h  = kh;
-    deconv.dilation_w         = 1;     deconv.dilation_h = 1;
-    deconv.stride_w           = stride_w; deconv.stride_h = stride_h;
-    deconv.pad_left           = 0; deconv.pad_right  = 0;
-    deconv.pad_top            = 0; deconv.pad_bottom = 0;
-    deconv.output_pad_right   = 0; deconv.output_pad_bottom = 0;
-    deconv.output_w           = 0; deconv.output_h = 0;
-    deconv.bias_term          = with_bias ? 1 : 0;
-    deconv.weight_data_size   = wsize;
-    deconv.activation_type    = 0;
-    deconv.dynamic_weight     = 0;
-    deconv.weight_data        = make_weight(weight);
-    if (with_bias) deconv.bias_data = make_weight(bias);
-
-    ncnn::Option opt = make_opt();
-    if (deconv.create_pipeline(opt) != 0) {
+    ctx.opt = make_opt();
+    if (d.create_pipeline(ctx.opt) != 0) {
         fprintf(stderr, "  Deconvolution_arm::create_pipeline failed\n");
-        return ncnn::Mat();
+        ctx.layer.reset();   // empty ctx → forward returns empty Mat
+        return ctx;
     }
-    int ret = deconv.forward(bottom, top, opt);
+    ctx.bottom = make_mat_ramp(in_w, in_h, in_c);
+    return ctx;
+}
+
+// Hot path — this is what perf binaries time.
+[[maybe_unused]] static ncnn::Mat forward_deconv2d_arm(const DeconvArmCtx& ctx)
+{
+    if (!ctx.layer) return ncnn::Mat();
+    ncnn::Mat top;
+    int ret = ctx.layer->forward(ctx.bottom, top, ctx.opt);
     if (ret != 0) { fprintf(stderr, "  Deconvolution_arm::forward failed %d\n", ret); return ncnn::Mat(); }
     return top;
+}
+
+// One-shot wrapper — keeps EXPECT_MATCH(run_deconv2d_arm, run_ref_deconv2d, ...) working.
+[[maybe_unused]] static ncnn::Mat run_deconv2d_arm(int in_c, int out_c, int in_h, int in_w,
+                                   int kh, int kw, int stride_h, int stride_w,
+                                   bool with_bias = false)
+{
+    auto ctx = setup_deconv2d_arm(in_c, out_c, in_h, in_w, kh, kw, stride_h, stride_w, with_bias);
+    return forward_deconv2d_arm(ctx);
 }
 // BASELINE_INJECT_END

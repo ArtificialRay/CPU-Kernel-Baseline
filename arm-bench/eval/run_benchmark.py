@@ -3,6 +3,7 @@ eval/run_benchmark.py — Agentic benchmark CLI for arm-bench.
 
 Full end-to-end: provision (if needed) → run agentic LLM eval → score → (optionally) teardown.
 
+SIMD-loop bench
 Usage:
     # Single problem, agentic mode:
     python eval/run_benchmark.py --problem loop_001 --isa sve2 --model anthropic/claude-opus-4-6
@@ -16,20 +17,27 @@ Usage:
 
     # Use an already-running instance (from eval_config.json):
     python eval/run_benchmark.py --all --isa sve --model openai/gpt-4o
+
+NCNN kernel bench
+    # set `--mode ncnn` to bench ncnn kernel problems, e.g.
+    python -m eval.run_benchmark --problem conv --mode ncnn --isa sve2 --model anthropic/claude-opus-4-6
+    python -m eval.run_benchmark --all --mode ncnn --isa sve --model openrouter/anthropic/claude-opus-4.6
+    # if use openrouter, set `--model` to `openrouter/anthropic/claude-opus-4-6`
+!! Remember run `sync_remote.sh` to reset candidate kernel at every run! 
 """
 
 import argparse
 import json
 import time
 from pathlib import Path
-
+from dotenv import load_dotenv
 from eval.config import REPO_ROOT, load_problems, load_ncnn_problems, ISA_TIER
 from eval.evaluator import run_agentic_eval
 from eval.provision import get_or_provision, get_running_instance, teardown, provision, ISA_INSTANCE_MAP
 from eval.tools import EvalResult, NCNNTools, NCNN_SYSTEM_PROMPT, build_ncnn_user_prompt
 
 RESULTS_DIR = REPO_ROOT / "results"
-
+load_dotenv(REPO_ROOT / ".env")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -45,7 +53,7 @@ def main():
 
     # Problem selection
     grp = parser.add_mutually_exclusive_group(required=True)
-    grp.add_argument("--problem", help="Single problem ID, e.g. loop_001 (simd) or conv2d (ncnn)")
+    grp.add_argument("--problem", help="Single problem ID, e.g. loop_001 (simd) or conv (ncnn)")
     grp.add_argument("--all", action="store_true", help="Run all problems for the given ISA")
 
     # Model and ISA
@@ -183,7 +191,6 @@ def main():
         print("\n[teardown] Destroying instance...")
         teardown()
     else:
-        from eval.provision import get_running_instance
         handle = get_running_instance(args.isa)
         if handle and handle.host:
             print(

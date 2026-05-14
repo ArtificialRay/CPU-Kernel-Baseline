@@ -14,11 +14,13 @@ add_compile_options(-Wall -Wextra -O2)
 
 find_package(OpenMP REQUIRED)
 
-# ARM NEON / FP16 / dotprod flags apply only when the target is aarch64.
-# On x86 the kernels still compile via the scalar fallback branches.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm")
-    add_compile_options(-march=armv8.2-a+fp16+dotprod)
-endif()
+# NCNNTools has already set -DCMAKE_CXX_FLAGS=-march=armv8-a+fp16+dotprod for the whole project. So no need to add this again
+
+# # ARM NEON / FP16 / dotprod flags apply only when the target is aarch64.
+# # On x86 the kernels still compile via the scalar fallback branches.
+# if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm")
+#     add_compile_options(-march=armv8.2-a+fp16+dotprod)
+# endif()
 
 # ── Paths ────────────────────────────────────────────────────────────
 # This CMake expects to live alongside arm-bench:
@@ -51,7 +53,7 @@ add_library(ncnn_framework STATIC
     ${BASE_ROOT}/framework/mat.cpp
     ${BASE_ROOT}/framework/expression.cpp
     ${BASE_ROOT}/mapped/padding/padding.cpp
-    ${BASE_ROOT}/mapped/tests/ncnn_framework_stub.cpp
+    ${BASE_ROOT}/framework/ncnn_framework_stub.cpp
 )
 target_include_directories(ncnn_framework PUBLIC
     ${BASE_ROOT}
@@ -145,6 +147,8 @@ add_candidate_test(deconvdw   deconvolutiondepwise.cpp deconvolutiondepwise.cpp)
 # identically to our starter header — same class layout, same vtable slots,
 # so the test (which sees our starter declaration) dispatches correctly.
 function(add_baseline_test name arm_src mapped_subdir mapped_src test_src)
+    # Extra sources can be passed via ${ARGN} (e.g. a layer-factory hook
+    # that overrides test_make_layer_cpu_hook for this binary only).
     set(stem "test_baseline_${name}")
     set(generated "${CMAKE_BINARY_DIR}/generated/${stem}.cpp")
     _ncnn_gen_test_main(
@@ -155,6 +159,7 @@ function(add_baseline_test name arm_src mapped_subdir mapped_src test_src)
         ${BASE_ROOT}/arm-heavy-optimized/conv/${arm_src}
         ${BASE_ROOT}/mapped/${mapped_subdir}/${mapped_src}
         ${generated}
+        ${ARGN}
     )
     target_include_directories(${stem} PRIVATE
         ${NCNN_TEST_INCLUDES}
@@ -164,7 +169,11 @@ function(add_baseline_test name arm_src mapped_subdir mapped_src test_src)
     add_test(NAME ${stem} COMMAND ${stem})
 endfunction()
 
-add_baseline_test(conv     convolution_arm.cpp             convolution          convolution.cpp          convolution.cpp)
+# conv test gets a layer-factory hook so forwardDilation_arm's sub-layer is
+# a real Convolution_arm; without it, dilation tests run against an empty
+# top_blob (see weak default in framework/ncnn_framework_stub.cpp).
+add_baseline_test(conv     convolution_arm.cpp             convolution          convolution.cpp          convolution.cpp
+                  ${ARM_BENCH}/tests/ncnn/baseline/conv_arm_layer_hook.cpp)
 add_baseline_test(conv1d   convolution1d_arm.cpp           convolution1d        convolution1d.cpp        convolution1d.cpp)
 add_baseline_test(convdw   convolutiondepthwise_arm.cpp    convolutiondepthwise convolutiondepthwise.cpp convolutiondepwise.cpp)
 add_baseline_test(deconv   deconvolution_arm.cpp           deconvolution        deconvolution.cpp        deconvolution.cpp)

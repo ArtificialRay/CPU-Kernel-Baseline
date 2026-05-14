@@ -94,7 +94,9 @@ def build_targets(handle, name: str) -> bool:
 
 def check_correct(handle, binary: str) -> bool:
     """Run the test binary once; passes iff rc==0 and stdout has no FAIL."""
-    rc, stdout, _ = _run(handle, binary, timeout=60)
+    rc, stdout, stderr = _run(handle, binary, timeout=60)
+    print(stdout)
+    print(stderr)
     return rc == 0 and "FAIL" not in stdout
 
 
@@ -111,7 +113,9 @@ def time_binary(handle, binary: str, n: int) -> float | None:
     if rc != 0:
         return None
     m = re.search(r"TIME_NS=(\d+)", stdout)
-    return round(int(m.group(1)) / 1e6 / n, 3) if m else None
+    m = round(int(m.group(1)) / 1e6 / n, 3) if m else None
+    print(f"{binary} completed, takes {m} ms")
+    return m
 
 
 def collect_one(handle, problem: dict, n: int) -> dict | None:
