@@ -20,6 +20,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <limits.h>
+
+// In-process timing knobs (set by main.c from CLI flags -w / -r).
+// LOOP_DECL in loops.h uses them to do K warmup iters and R timed segments,
+// reporting the minimum elapsed time across segments. Defaults (0, 1) keep
+// the old single-shot behavior so any tool not passing -w / -r is unaffected.
+extern int g_warmup_iters;
+extern int g_reps;
 
 // 64-bit aligned global allocator
 void *alloc_64b(uint64_t size, const char *name);

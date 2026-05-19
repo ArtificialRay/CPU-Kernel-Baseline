@@ -11,6 +11,12 @@
 
 #include "helpers.h"
 
+// In-process timing knobs — main.c overwrites these from -w / -r CLI flags.
+// Defaults preserve single-shot, no-warmup behavior for any caller that does
+// not pass -w / -r (backward compatible with old eval scripts and STANDALONE).
+int g_warmup_iters = 0;
+int g_reps = 1;
+
 #define MEMORY_SIZE (MAX_GLOBAL_MEMORY_KIB * 1024)
 #define MEMORY_TAIL 128
 static uint8_t *__global_memory_buffer = NULL;
