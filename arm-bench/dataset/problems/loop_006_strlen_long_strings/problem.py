@@ -28,7 +28,19 @@ struct loop_006_data {
 
 # Scalar reference implementation — the LLM's task is to optimize this
 SCALAR_CODE = r"""
+static void inner_loop_006(struct loop_006_data *restrict data) {
+  uint8_t *p = data->p;
+  uint8_t *lmt = data->lmt;
 
+  uint32_t res = 0;
+  while (p < lmt) {
+    uint32_t len = strlen_opt(p);
+    p += len + 1;
+    res += 1;
+    res ^= (len % 0xffff) << 16;
+  }
+  data->checksum = res;
+}
 """
 
 # Prompt template (used by generate_samples.py and run_benchmark.py)

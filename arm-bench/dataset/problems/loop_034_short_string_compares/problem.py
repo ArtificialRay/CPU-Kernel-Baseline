@@ -29,7 +29,27 @@ struct loop_034_data {
 
 # Scalar reference implementation — the LLM's task is to optimize this
 SCALAR_CODE = r"""
+static void inner_loop_034(struct loop_034_data *restrict input) {
+  uint8_t *p1 = input->a;
+  uint8_t *p2 = input->b;
+  uint8_t *lmt = input->lmt;
 
+  uint32_t res = 0;
+  uint32_t cnt = 0;
+  int length = 13;
+  while (p1 < lmt) {
+    int64_t r = strcmp_opt(p1, p2);
+    uint32_t cmp = 1;
+    if (r > 0) cmp = 2;
+    if (r < 0) cmp = 3;
+    res += cnt * cmp;
+    p1 += length;
+    p2 += length;
+    cnt++;
+    length = 3 + (length + 11) % 43;
+  }
+  input->checksum = res;
+}
 """
 
 # Prompt template (used by generate_samples.py and run_benchmark.py)
