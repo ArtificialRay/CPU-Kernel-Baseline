@@ -379,6 +379,14 @@ def run_agentic_eval(
                 if verbose:
                     print(f"  [rate limit] sleeping {wait}s: {e}")
                 time.sleep(wait)
+            except (litellm.InternalServerError, litellm.APIConnectionError,
+                    litellm.ServiceUnavailableError) as e:
+                # Anthropic returns "overloaded_error" via 529s when the cluster
+                # is saturated. These are transient — back off and retry.
+                wait = 30 * (2 ** _retry)
+                if verbose:
+                    print(f"  [server error] sleeping {wait}s: {type(e).__name__}: {e}")
+                time.sleep(wait)
             except litellm.BadRequestError as e:
                 # Some models deprecate kwargs (e.g. temperature on opus-4-7).
                 # Strip temperature and retry once.
@@ -389,7 +397,7 @@ def run_agentic_eval(
                     continue
                 raise
         else:
-            raise RuntimeError("Exceeded retry budget for rate limit")
+            raise RuntimeError("Exceeded retry budget for rate/server errors")
         msg = response.choices[0].message
         messages.append(msg.model_dump())
 
