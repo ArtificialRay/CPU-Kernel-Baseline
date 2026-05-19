@@ -361,21 +361,33 @@ def run_agentic_eval(
             })
 
         compressed = _compress_history(messages, code_versions=code_versions)
+        # opus-4-7 and newer extended-thinking models reject `temperature`.
+        completion_kwargs = {
+            "model": model,
+            "messages": compressed,
+            "tools": schemas,
+            "tool_choice": "auto",
+        }
+        if "opus-4-7" not in model and "opus-4-8" not in model:
+            completion_kwargs["temperature"] = 0.2
         for _retry in range(6):
             try:
-                response = litellm.completion(
-                    model=model,
-                    messages=compressed,
-                    tools=schemas,
-                    tool_choice="auto",
-                    temperature=0.2,
-                )
+                response = litellm.completion(**completion_kwargs)
                 break
             except litellm.RateLimitError as e:
                 wait = 30 * (2 ** _retry)
                 if verbose:
                     print(f"  [rate limit] sleeping {wait}s: {e}")
                 time.sleep(wait)
+            except litellm.BadRequestError as e:
+                # Some models deprecate kwargs (e.g. temperature on opus-4-7).
+                # Strip temperature and retry once.
+                if "temperature" in completion_kwargs and "temperature" in str(e).lower():
+                    if verbose:
+                        print(f"  [retry] dropping temperature: {e}")
+                    completion_kwargs.pop("temperature")
+                    continue
+                raise
         else:
             raise RuntimeError("Exceeded retry budget for rate limit")
         msg = response.choices[0].message

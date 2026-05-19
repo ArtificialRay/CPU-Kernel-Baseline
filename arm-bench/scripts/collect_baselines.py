@@ -184,8 +184,11 @@ def collect_baselines(
         num = pid.split("_")[1]  # "loop_001" → "001"
         entry: dict = {}
 
-        # Determine the size to use for this problem
-        _, perf_sizes = load_problem_sizes(pid)
+        # Determine the size to use for this problem.
+        # Pass isa so c8g (sve2) targets use PERF_SIZES_C8G instead of PERF_SIZES.
+        # This must match what eval/tools.py submit() uses, otherwise baseline_ms
+        # and the agent's runtime_ms are measured at different sizes.
+        _, perf_sizes = load_problem_sizes(pid, isa=isa)
         perf_size = max(perf_sizes) if perf_sizes else None
         size_label = f"size={perf_size}" if perf_size else "default-size"
 
@@ -283,9 +286,14 @@ def main():
             return
         problem_ids = [pid]
     else:
+        # SVE2 hardware (c8g) also runs SVE-tagged problems — mirror run_benchmark.py filter
+        if args.isa == "sve2":
+            valid_targets = {"sve", "sve2"}
+        else:
+            valid_targets = {args.isa}
         problem_ids = [
             pid for pid, p in problems.items()
-            if p.get("isa_target") == args.isa
+            if p.get("isa_target") in valid_targets
         ]
         print(f"Collecting baselines for {len(problem_ids)} problems (ISA: {args.isa})")
 
