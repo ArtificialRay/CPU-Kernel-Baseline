@@ -99,15 +99,32 @@ def compile_loop_at_size(
     return f"{remote_root}/build/{target}/bin/simd_loops"
 
 
+# In-process timing knobs — must match eval/tools.py TIMING_WARMUP / TIMING_REPS
+# so baseline and submit() measure the same way.
+TIMING_WARMUP = 3
+TIMING_REPS = 10
+# OS-level noise mitigation — must match eval/tools.py TIMING_PIN_PREFIX.
+# Pins to vCPU 1 and raises priority so background OS work doesn't preempt the
+# kernel mid-segment.
+TIMING_PIN_PREFIX = "sudo nice -n -20 taskset -c 1"
+
+
 def run_loop(handle: InstanceHandle, binary: str, loop_num: str, n: int) -> float | None:
     """
-    Run a loop and return ms per iteration (total_ms / n).
-    Returns None if the checksum is wrong or the run fails.
+    Run a loop and return ms per iteration.
+
+    Prefers the in-process minimum reported by the new harness
+    (INNER_MIN_PER_ITER_NS) — it eliminates shell wrapping, process spawn,
+    and malloc/fill overhead, and takes the minimum across R timed segments
+    after K warmup iterations to suppress scheduler / co-tenant noise.
+
+    Falls back to (shell wall TIME_NS) / n for binaries built without the
+    in-process timer.
     """
     loop_decimal = int(loop_num)
     time_cmd = (
         f"t0=$(date +%s%N); "
-        f"{binary} -k {loop_decimal} -n {n}; "
+        f"{TIMING_PIN_PREFIX} {binary} -k {loop_decimal} -n {n} -w {TIMING_WARMUP} -r {TIMING_REPS}; "
         f"rc=$?; "
         f"t1=$(date +%s%N); "
         f'echo "TIME_NS=$((t1-t0))"; '
@@ -120,10 +137,14 @@ def run_loop(handle: InstanceHandle, binary: str, loop_num: str, n: int) -> floa
     if rc == 2 or "ABORT" in stdout:
         return None
 
+    m_inner = re.search(r"INNER_MIN_PER_ITER_NS=(\d+)", stdout)
+    if m_inner:
+        return round(int(m_inner.group(1)) / 1e6, 6)  # ms per iter (min)
+
     m = re.search(r"TIME_NS=(\d+)", stdout)
     if m:
         total_ms = int(m.group(1)) / 1e6
-        return round(total_ms / n, 4)  # ms per iteration
+        return round(total_ms / n, 4)  # back-compat
     return None
 
 
