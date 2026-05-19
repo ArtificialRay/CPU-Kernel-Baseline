@@ -12,12 +12,42 @@
 #include "helpers.h"
 #include "loops.h"
 
+#include <signal.h>
+#include <unistd.h>
+
 #ifndef STANDALONE
 
 // Loop information
 #define LOOP(n, ...)  loop_function_t __ptr_loop_##n = NULL;
 #include "loops.inc"
 #undef LOOP
+
+// ---------------------------------------------------------------------------
+// Watchdog: kill the process if a candidate kernel runs for too long. Without
+// this, an LLM-produced infinite loop or a pathologically slow implementation
+// can hang the SSH-side eval harness up to its 300s socket timeout, wasting
+// budget and forcing tear-down. Default 60s; tunable via -t/--timeout.
+// Exit code 124 is the conventional `timeout(1)` exit so callers can detect it.
+// ---------------------------------------------------------------------------
+static int g_timeout_s = 60;
+
+static void __watchdog_handler(int sig) {
+    (void)sig;
+    /* write(2) is async-signal-safe; printf is not. */
+    static const char msg[] = "ABORT: kernel watchdog timeout reached\n";
+    (void)!write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    _exit(124);
+}
+
+static void __install_watchdog(void) {
+    if (g_timeout_s <= 0) return;            /* 0 / negative disables */
+    struct sigaction sa = {0};
+    sa.sa_handler = __watchdog_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGALRM, &sa, NULL);
+    alarm((unsigned int)g_timeout_s);
+}
 
 // Command line parse result
 typedef struct Options {
@@ -26,6 +56,16 @@ typedef struct Options {
   int loop;
   const char *name;
 } Options;
+
+static long parseLong(const char *flag, const char *arg, int base) {
+  char *end = NULL;
+  long v = strtol(arg, &end, base);
+  if (end != arg + strlen(arg)) {
+    fprintf(stderr, "Expected integer after '%s'\n", flag);
+    exit(1);
+  }
+  return v;
+}
 
 static Options parseOptions(int argc, char **argv) {
   Options opt = {0};
@@ -41,33 +81,41 @@ static Options parseOptions(int argc, char **argv) {
                 argv[i - 1]);
         exit(1);
       }
-
-      char *end = NULL;
-      long temp = strtol(argv[i], &end, 10);
-      if (end != argv[i] + strlen(argv[i])) {
-        fprintf(stderr, "Expected number of iterations after '%s'\n",
-                argv[i - 1]);
-        exit(1);
-      }
-
-      opt.iterations = temp;
+      opt.iterations = parseLong(argv[i - 1], argv[i], 10);
     } else if (strcmp("-k", argv[i]) == 0 || strcmp("--loop", argv[i]) == 0) {
       i++;
       if (i == argc) {
         fprintf(stderr, "Expected loop number after '%s'\n", argv[i - 1]);
         exit(1);
       }
-
-      char *end = NULL;
-      long temp = strtol(argv[i], &end, 16);
-      if (end != argv[i] + strlen(argv[i])) {
-        fprintf(stderr, "Expected number of iterations after '%s'\n",
-                argv[i - 1]);
+      opt.loop = (int)parseLong(argv[i - 1], argv[i], 16);
+      opt.name = argv[i];
+    } else if (strcmp("-w", argv[i]) == 0 || strcmp("--warmup", argv[i]) == 0) {
+      i++;
+      if (i == argc) {
+        fprintf(stderr, "Expected count after '%s'\n", argv[i - 1]);
         exit(1);
       }
-
-      opt.loop = temp;
-      opt.name = argv[i];
+      long v = parseLong(argv[i - 1], argv[i], 10);
+      if (v < 0) v = 0;
+      g_warmup_iters = (int)v;
+    } else if (strcmp("-r", argv[i]) == 0 || strcmp("--reps", argv[i]) == 0) {
+      i++;
+      if (i == argc) {
+        fprintf(stderr, "Expected count after '%s'\n", argv[i - 1]);
+        exit(1);
+      }
+      long v = parseLong(argv[i - 1], argv[i], 10);
+      if (v < 1) v = 1;
+      g_reps = (int)v;
+    } else if (strcmp("-t", argv[i]) == 0 || strcmp("--timeout", argv[i]) == 0) {
+      i++;
+      if (i == argc) {
+        fprintf(stderr, "Expected seconds after '%s'\n", argv[i - 1]);
+        exit(1);
+      }
+      long v = parseLong(argv[i - 1], argv[i], 10);
+      g_timeout_s = (int)v;        /* 0 / negative disables the watchdog */
     } else {
       fprintf(stderr, "Unexpected '%s'\n", argv[i]);
       exit(1);
@@ -84,6 +132,7 @@ static Options parseOptions(int argc, char **argv) {
 
 int main(int argc, char **argv) {
   Options opt = parseOptions(argc, argv);
+  __install_watchdog();
   switch (opt.loop) {
 #define LOOP(n, name, purpose, ...)             \
     case 0x##n:                                 \
