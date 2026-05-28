@@ -20,6 +20,42 @@ from eval.provision import InstanceHandle
 CANDIDATE_START = "// CANDIDATE_INJECT_START"
 CANDIDATE_END = "// CANDIDATE_INJECT_END"
 
+# In-process timing knobs passed to simd_loops as -w / -r.
+# WARMUP: untimed iterations to heat caches/TLB/branch-predictor.
+# REPS: number of timed segments of -n iterations each; we keep the minimum.
+# These match common-practice for microbenchmarking SIMD kernels: a few warmups
+# remove cold-start cost; min over a handful of segments removes scheduler/
+# co-tenant noise (which can only add to the kernel's real time, never subtract).
+TIMING_WARMUP = 3
+TIMING_REPS = 10
+
+# OS-level noise mitigation, applied to every timed binary invocation.
+# - `taskset -c 1` pins to vCPU 1 (CPU 0 typically handles more system IRQs/daemons
+#   on Linux). On c8g.large (2 vCPUs) this just keeps the kernel on one core so
+#   cross-core migration doesn't invalidate caches/TLB mid-measurement.
+# - `nice -n -20` requests the highest scheduling priority so background OS work
+#   gets preempted by us, not the other way around. Requires CAP_SYS_NICE, which
+#   `sudo` grants. EC2 Ubuntu AMIs allow passwordless sudo by default.
+# Note: AWS Graviton has no DVFS exposed (Nitro hides cpufreq) and Graviton4
+# runs at a fixed 3.4 GHz — so we don't need to lock frequency. The only OS
+# noise sources we can fight are migration + scheduler preemption.
+TIMING_PIN_PREFIX = "sudo nice -n -20 taskset -c 1"
+
+# Minimum speedup ratio required to promote a level. Set above the empirically
+# observed σ_min so single-percent wins that fall inside the noise floor don't
+# falsely promote. Cross-invocation σ_min on c8g.large was 0.2-2.3% across our
+# sample loops; 1.03 (3%) sits comfortably above the max while still letting
+# real ≥5% wins promote.  See "Level threshold and noise margin" in the README.
+LEVEL_PROMOTION_MARGIN = 1.03
+
+
+def _parse_inner_ns(stdout: str) -> int | None:
+    """Parse the per-iteration minimum (in ns) printed by the in-process
+    timing wrapper in common/loops.h. Returns None if the binary predates
+    the new harness (old binaries don't print this line)."""
+    m = re.search(r"INNER_MIN_PER_ITER_NS=(\d+)", stdout)
+    return int(m.group(1)) if m else None
+
 
 @dataclass
 class CompileResult:
@@ -52,9 +88,11 @@ class PerfResult:
     cycles: int | None = None
     instructions: int | None = None
     ipc: float | None = None
-    cache_misses_per_iter: float | None = None  # LLC misses divided by n iterations
-    task_clock_ms: float | None = None  # on-CPU ms per iteration (excludes scheduler idle)
-    wall_ms: float | None = None        # wall-clock ms per iteration (perf duration_time / n)
+    cache_misses_per_iter: float | None = None  # LLC misses divided by total iters executed
+    task_clock_ms: float | None = None  # on-CPU ms per iteration (averaged over total iters)
+    wall_ms: float | None = None        # wall-clock ms per iteration (perf duration_time / total iters)
+    inner_min_per_iter_ms: float | None = None   # in-process min over R timed segments (most accurate)
+    inner_mean_per_iter_ms: float | None = None  # in-process mean over R timed segments
     raw_output: str = ""
 
     def to_tool_result(self) -> dict:
@@ -65,6 +103,8 @@ class PerfResult:
             "cache_misses_per_iter": self.cache_misses_per_iter,
             "task_clock_ms": self.task_clock_ms,
             "wall_ms": self.wall_ms,
+            "inner_min_per_iter_ms": self.inner_min_per_iter_ms,
+            "inner_mean_per_iter_ms": self.inner_mean_per_iter_ms,
             "raw_output": self.raw_output.strip(),
         }
 
@@ -269,9 +309,12 @@ class SIMDTools:
             return self._run_at_explicit_size(n, size)
 
         loop_hex = int(self.loop_num)
+        # Always pass -w / -r so the in-process timer reports INNER_MIN_PER_ITER_NS.
+        # Still wrap with shell `date` so old result fields stay populated (fallback
+        # if the remote binary predates the in-process timer).
         time_cmd = (
             f"t0=$(date +%s%N); "
-            f"{self.remote_binary} -k {loop_hex} -n {n}; "
+            f"{TIMING_PIN_PREFIX} {self.remote_binary} -k {loop_hex} -n {n} -w {TIMING_WARMUP} -r {TIMING_REPS}; "
             f"rc=$?; "
             f"t1=$(date +%s%N); "
             f'echo "TIME_NS=$((t1-t0))"; '
@@ -280,13 +323,26 @@ class SIMDTools:
         rc, stdout, stderr = self.handle.run(time_cmd, timeout=300)
         correct = "Checksum correct." in stdout
 
-        runtime_ms = None
-        m = re.search(r"TIME_NS=(\d+)", stdout)
-        if m:
-            total_ns = int(m.group(1))
-            runtime_ms = round(total_ns / 1e6, 3)
+        # Watchdog timeout (exit 124, "ABORT: kernel watchdog timeout") — surface
+        # this clearly so the agent doesn't think it's a checksum problem.
+        if rc == 124 or "kernel watchdog timeout" in stdout:
+            return RunResult(correct=False, runtime_ms=None,
+                             output="ABORT: kernel exceeded watchdog timeout — "
+                                    "likely infinite loop or pathologically slow code")
 
-        output_clean = stdout.replace(f"TIME_NS={m.group(0) if m else ''}", "").strip()
+        # Prefer in-process min-per-iter (immune to shell/process spawn jitter);
+        # fall back to shell-wall total/n for older binaries.
+        runtime_ms: float | None = None
+        inner_ns = _parse_inner_ns(stdout)
+        if inner_ns is not None:
+            runtime_ms = round(inner_ns / 1e6 * n, 3)  # report ms-for-n-iters for back-compat
+        else:
+            m_t = re.search(r"TIME_NS=(\d+)", stdout)
+            if m_t:
+                runtime_ms = round(int(m_t.group(1)) / 1e6, 3)
+
+        output_clean = re.sub(r"^(?:TIME_NS=\d+|INNER_[A-Z_]+=[^\s]+( INNER_[A-Z_]+=[^\s]+)*)\s*$",
+                              "", stdout, flags=re.MULTILINE).strip()
         return RunResult(correct=correct, runtime_ms=runtime_ms, output=output_clean)
 
     def _run_at_explicit_size(self, n: int, size: int) -> RunResult:
@@ -307,7 +363,7 @@ class SIMDTools:
         loop_decimal = int(self.loop_num)
         time_cmd = (
             f"t0=$(date +%s%N); "
-            f"{bin_path} -k {loop_decimal} -n {n}; "
+            f"{TIMING_PIN_PREFIX} {bin_path} -k {loop_decimal} -n {n} -w {TIMING_WARMUP} -r {TIMING_REPS}; "
             f"rc=$?; "
             f"t1=$(date +%s%N); "
             f'echo "TIME_NS=$((t1-t0))"; '
@@ -317,15 +373,26 @@ class SIMDTools:
 
         # rc==0: correct checksum. rc==1: wrong checksum (expected at non-default SIZE).
         # rc==2 or "ABORT": explicit abort (no implementation / alloc fail).
+        # rc==124: watchdog timeout (likely candidate infinite loop / pathologically slow).
         # Any other rc (e.g. 132=SIGILL, 139=SIGSEGV) means the binary crashed.
+        if rc == 124 or "kernel watchdog timeout" in stdout:
+            return RunResult(correct=False, runtime_ms=None,
+                             output=f"ABORT at size={size}: watchdog timeout — "
+                                    "likely infinite loop or pathologically slow code")
         ran_ok = rc in (0, 1) and "ABORT" not in stdout
 
-        runtime_ms = None
-        m = re.search(r"TIME_NS=(\d+)", stdout)
-        if m:
-            runtime_ms = round(int(m.group(1)) / 1e6, 3)
+        runtime_ms: float | None = None
+        inner_ns = _parse_inner_ns(stdout)
+        if inner_ns is not None:
+            runtime_ms = round(inner_ns / 1e6 * n, 3)
+        else:
+            m_t = re.search(r"TIME_NS=(\d+)", stdout)
+            if m_t:
+                runtime_ms = round(int(m_t.group(1)) / 1e6, 3)
 
-        output_clean = re.sub(r"TIME_NS=\d+", "", stdout).strip()
+        output_clean = re.sub(
+            r"^(?:TIME_NS=\d+|INNER_[A-Z_]+=[^\s]+( INNER_[A-Z_]+=[^\s]+)*)\s*$",
+            "", stdout, flags=re.MULTILINE).strip()
 
         # Restore default binary so subsequent run()/perf() calls work correctly
         self._compile_at_size(self._get_default_size() or size, have_candidate=True)
@@ -367,10 +434,10 @@ class SIMDTools:
         perf_cmd = (
             f"PERF=$(ls /usr/lib/linux-aws-*-tools-*/perf 2>/dev/null | head -1); "
             f"PERF=${{PERF:-perf}}; "
-            f"{self.remote_binary} -k {loop_hex} -n 1 >/dev/null 2>&1; "  # warmup
-            f"sudo $PERF stat "
+            f"{self.remote_binary} -k {loop_hex} -n 1 >/dev/null 2>&1; "  # process warmup (i$, .text)
+            f"sudo nice -n -20 $PERF stat "
             f"-e cycles,instructions,cache-misses,task-clock,duration_time "
-            f"{self.remote_binary} -k {loop_hex} -n {n} "
+            f"taskset -c 1 {self.remote_binary} -k {loop_hex} -n {n} -w {TIMING_WARMUP} -r {TIMING_REPS} "
             f"2>&1"
         )
         rc, output, _ = self.handle.run(perf_cmd, timeout=300)
@@ -389,10 +456,10 @@ class SIMDTools:
         perf_cmd = (
             f"PERF=$(ls /usr/lib/linux-aws-*-tools-*/perf 2>/dev/null | head -1); "
             f"PERF=${{PERF:-perf}}; "
-            f"{bin_path} -k {loop_decimal} -n 1 >/dev/null 2>&1; "  # warmup
-            f"sudo $PERF stat "
+            f"{bin_path} -k {loop_decimal} -n 1 >/dev/null 2>&1; "  # process warmup (i$, .text)
+            f"sudo nice -n -20 $PERF stat "
             f"-e cycles,instructions,cache-misses,task-clock,duration_time "
-            f"{bin_path} -k {loop_decimal} -n {n} "
+            f"taskset -c 1 {bin_path} -k {loop_decimal} -n {n} -w {TIMING_WARMUP} -r {TIMING_REPS} "
             f"2>&1"
         )
         rc, output, _ = self.handle.run(perf_cmd, timeout=300)
@@ -414,28 +481,50 @@ class SIMDTools:
         elif cycles and instructions:
             ipc = round(instructions / cycles, 2) if cycles > 0 else None
 
+        # Total iters executed inside the timed binary: warmup + reps*n.
+        # Older binaries (no INNER_REPS line) executed exactly n iters.
+        total_iters = n
+        m_meta = re.search(
+            r"INNER_REPS=(\d+)\s+INNER_N=(\d+)\s+INNER_WARMUP=(\d+)", output)
+        if m_meta:
+            reps = int(m_meta.group(1))
+            n_seg = int(m_meta.group(2))
+            warmup = int(m_meta.group(3))
+            total_iters = warmup + reps * n_seg
+
         raw_cache_misses = _parse_perf_counter(output, "cache-misses")
         cache_misses_per_iter = None
-        if raw_cache_misses is not None and n > 0:
-            cache_misses_per_iter = round(raw_cache_misses / n, 1)
+        if raw_cache_misses is not None and total_iters > 0:
+            cache_misses_per_iter = round(raw_cache_misses / total_iters, 1)
 
-        # task-clock: on-CPU time per iteration (excludes time sleeping/preempted).
+        # task-clock: on-CPU time, averaged over all iters executed in the run.
         # Older perf: "   1,234.56 msec task-clock"  (value in ms)
         # Newer perf: "   1234567  task-clock"        (value in nanoseconds)
         task_clock_ms = None
         m = re.search(r"([\d,]+\.?\d*)\s+msec\s+task-clock", output)
-        if m and n > 0:
-            task_clock_ms = round(float(m.group(1).replace(",", "")) / n, 4)
+        if m and total_iters > 0:
+            task_clock_ms = round(float(m.group(1).replace(",", "")) / total_iters, 4)
         else:
             raw_ns = _parse_perf_counter(output, "task-clock")
-            if raw_ns is not None and n > 0:
-                task_clock_ms = round(raw_ns / n / 1e6, 4)
+            if raw_ns is not None and total_iters > 0:
+                task_clock_ms = round(raw_ns / total_iters / 1e6, 4)
 
         # duration_time: wall-clock time in ns (kernel >= 4.13)
         wall_ms = None
         raw_ns = _parse_perf_counter(output, "duration_time")
-        if raw_ns is not None and n > 0:
-            wall_ms = round(raw_ns / n / 1e6, 4)
+        if raw_ns is not None and total_iters > 0:
+            wall_ms = round(raw_ns / total_iters / 1e6, 4)
+
+        # In-process timing — the most accurate per-iter number, since it isolates
+        # the timed segment from process spawn / malloc / fill / exit overhead.
+        inner_min_per_iter_ms = None
+        inner_mean_per_iter_ms = None
+        m_min = re.search(r"INNER_MIN_PER_ITER_NS=(\d+)", output)
+        if m_min:
+            inner_min_per_iter_ms = round(int(m_min.group(1)) / 1e6, 6)
+        m_mean = re.search(r"INNER_MEAN_PER_ITER_NS=(\d+)", output)
+        if m_mean:
+            inner_mean_per_iter_ms = round(int(m_mean.group(1)) / 1e6, 6)
 
         return PerfResult(
             cycles=cycles,
@@ -444,6 +533,8 @@ class SIMDTools:
             cache_misses_per_iter=cache_misses_per_iter,
             task_clock_ms=task_clock_ms,
             wall_ms=wall_ms,
+            inner_min_per_iter_ms=inner_min_per_iter_ms,
+            inner_mean_per_iter_ms=inner_mean_per_iter_ms,
             raw_output=output,
         )
 
@@ -576,19 +667,24 @@ class SIMDTools:
         speedup_vs_ref = None
         level = 1  # correct
 
+        # Promotion thresholds use a noise margin: a speedup must exceed
+        # LEVEL_PROMOTION_MARGIN, not just 1.0. This prevents single-percent
+        # "wins" that fall inside the measurement noise floor from inflating
+        # the level. With min-of-R + warmup + CPU pinning we observe σ_min
+        # ≤ 2-3% on c8g.large; 1.03 sits above that.
         if runtime_ms and scalar_ms:
             speedup_vs_scalar = round(scalar_ms / runtime_ms, 2)
-            if speedup_vs_scalar > 1.0:
+            if speedup_vs_scalar > LEVEL_PROMOTION_MARGIN:
                 level = 2
 
         if runtime_ms and autovec_ms:
             speedup_vs_autovec = round(autovec_ms / runtime_ms, 2)
-            if level >= 2 and speedup_vs_autovec > 1.0:
+            if level >= 2 and speedup_vs_autovec > LEVEL_PROMOTION_MARGIN:
                 level = 3
 
         if runtime_ms and ref_ms:
             speedup_vs_ref = round(ref_ms / runtime_ms, 2)
-            if level >= 3 and speedup_vs_ref > 1.0:
+            if level >= 3 and speedup_vs_ref > LEVEL_PROMOTION_MARGIN:
                 level = 4  # beats hand-written SVE reference
 
         return EvalResult(
@@ -744,10 +840,12 @@ class SIMDTools:
                 results[size] = None  # aborted
                 continue
 
-            # Timing: 10 iterations (each ~10ms → ~0.1s total per size)
+            # Timing: -w K warmup + -r R timed segments of -n 10 each, then report
+            # the minimum per-iter time across segments. Shell `date` wrapper kept
+            # so old binaries still produce some timing (fallback).
             time_cmd = (
                 f"t0=$(date +%s%N); "
-                f"{bin_path} -k {loop_decimal} -n 10; "
+                f"{TIMING_PIN_PREFIX} {bin_path} -k {loop_decimal} -n 10 -w {TIMING_WARMUP} -r {TIMING_REPS}; "
                 f"rc=$?; "
                 f"t1=$(date +%s%N); "
                 f'echo "TIME_NS=$((t1-t0))"; '
@@ -758,12 +856,17 @@ class SIMDTools:
                 results[size] = None  # aborted at this size
                 continue
 
-            m = re.search(r"TIME_NS=(\d+)", stdout)
-            if m:
-                total_ms = int(m.group(1)) / 1e6
-                results[size] = round(total_ms / 10, 4)  # ms per iteration
+            inner_ns = _parse_inner_ns(stdout)
+            if inner_ns is not None:
+                results[size] = round(inner_ns / 1e6, 4)  # ms per iteration (min)
             else:
-                results[size] = None
+                # Back-compat: old binary without in-process timer
+                m = re.search(r"TIME_NS=(\d+)", stdout)
+                if m:
+                    total_ms = int(m.group(1)) / 1e6
+                    results[size] = round(total_ms / 10, 4)
+                else:
+                    results[size] = None
 
         # Restore default-size binary
         default_size = self._get_default_size()
@@ -1405,7 +1508,7 @@ class NCNNTools:
 
         if runtime_ms and baseline_ms:
             speedup_vs_ref = round(baseline_ms / runtime_ms, 2)
-            if speedup_vs_ref > 1.0:
+            if speedup_vs_ref > LEVEL_PROMOTION_MARGIN:
                 level = 4
 
         return EvalResult(

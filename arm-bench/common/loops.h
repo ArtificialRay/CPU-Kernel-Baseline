@@ -125,13 +125,47 @@ typedef int (*loop_function_t)(int);
 #endif
 
 // Loop declaration
+//
+// inner_loops_##n is the in-process timing wrapper. It first runs
+// g_warmup_iters untimed iterations to heat caches/TLB/branch-predictor, then
+// runs g_reps timed segments of `l` iterations each and records the minimum
+// elapsed time across segments. The minimum is reported as INNER_MIN_PER_ITER_NS
+// (and also as INNER_MIN_TOTAL_NS along with the parameters) on stdout, where
+// driver-side tooling can parse it.
+//
+// Defaults (g_warmup_iters=0, g_reps=1) reduce the inner loop to one untimed
+// warmup followed by one timed segment — semantically the same as the old
+// `for (i<l) inner_loop(d)` body, just with extra clock_gettime calls. Old
+// scripts that parse `TIME_NS=` from the shell wrapper see no difference.
 #define LOOP_DECL(n, sme_attr)                                              \
   LOOP_INIT(n)                                                              \
   sme_attr                                                                  \
   static void inner_loops_##n(int l, struct loop_##n##_data *restrict d)  { \
     LOOP_START();                                                           \
-    for (int i = 0; i < l; ++i) inner_loop_##n(d);                          \
+    for (int _w = 0; _w < g_warmup_iters; ++_w) inner_loop_##n(d);          \
+    long long _min_ns = LLONG_MAX;                                          \
+    long long _sum_ns = 0;                                                  \
+    int _reps_done = 0;                                                     \
+    int _reps = (g_reps > 0) ? g_reps : 1;                                  \
+    for (int _r = 0; _r < _reps; ++_r) {                                    \
+      struct timespec _t0, _t1;                                             \
+      clock_gettime(CLOCK_MONOTONIC, &_t0);                                 \
+      for (int i = 0; i < l; ++i) inner_loop_##n(d);                        \
+      clock_gettime(CLOCK_MONOTONIC, &_t1);                                 \
+      long long _ns = (long long)(_t1.tv_sec - _t0.tv_sec) * 1000000000LL   \
+                    + (long long)(_t1.tv_nsec - _t0.tv_nsec);               \
+      if (_ns < _min_ns) _min_ns = _ns;                                     \
+      _sum_ns += _ns;                                                       \
+      _reps_done++;                                                         \
+    }                                                                       \
     LOOP_STOP();                                                            \
+    if (l > 0 && _reps_done > 0) {                                          \
+      printf("INNER_MIN_PER_ITER_NS=%lld\n", _min_ns / l);                  \
+      printf("INNER_MEAN_PER_ITER_NS=%lld\n",                               \
+             (_sum_ns / _reps_done) / l);                                   \
+    }                                                                       \
+    printf("INNER_MIN_TOTAL_NS=%lld INNER_REPS=%d INNER_N=%d INNER_WARMUP=%d\n", \
+           _min_ns, _reps_done, l, g_warmup_iters);                         \
   }                                                                         \
   int loop_##n(int iters)
 
