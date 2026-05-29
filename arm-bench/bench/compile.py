@@ -42,7 +42,9 @@ BENCH_ROOT = Path(__file__).resolve().parent
 
 
 def _solutions_root(arm_bench_root: Path) -> Path:
-    return arm_bench_root / "solutions"
+    # Solutions live inside the warehouse root at arm-bench/bench-trace/.
+    # The `_harness/<op>.{cpp,h}` files are resolved off this path.
+    return arm_bench_root / "bench-trace" / "solutions"
 
 
 def _ncnn_base_root(arm_bench_root: Path) -> Path:

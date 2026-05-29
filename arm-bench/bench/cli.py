@@ -26,8 +26,12 @@ from bench.data import TraceSet
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _default_root() -> Path:
-    """Default arm-bench root: parent of `bench/`."""
-    return Path(__file__).resolve().parent.parent
+    """Default warehouse root: arm-bench/bench-trace/.
+
+    The TraceSet expects to find definitions/ + solutions/ + workloads/ +
+    traces/ directly under this root.
+    """
+    return Path(__file__).resolve().parent.parent / "bench-trace"
 
 
 def _parse_axes_filter(s: Optional[str]) -> Optional[Dict[str, int]]:

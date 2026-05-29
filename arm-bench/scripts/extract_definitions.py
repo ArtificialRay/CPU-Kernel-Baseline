@@ -39,11 +39,12 @@ from typing import Dict, List, Optional, Tuple
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 ARM_BENCH_ROOT = Path(__file__).resolve().parent.parent
+WAREHOUSE_ROOT = ARM_BENCH_ROOT / "bench-trace"
 TESTS_CPP = ARM_BENCH_ROOT / "tests" / "ncnn" / "candidate" / "convolution.cpp"
-DEFINITIONS_DIR = ARM_BENCH_ROOT / "definitions" / "conv"
-WORKLOADS_DIR = ARM_BENCH_ROOT / "workloads" / "conv"
+DEFINITIONS_DIR = WAREHOUSE_ROOT / "definitions" / "conv"
+WORKLOADS_DIR = WAREHOUSE_ROOT / "workloads" / "conv"
 SOLUTIONS_DIR = (
-    ARM_BENCH_ROOT / "solutions" / "ncnn" / "baseline-ncnn-arm" / "conv2d"
+    WAREHOUSE_ROOT / "solutions" / "ncnn" / "baseline-ncnn-arm" / "conv2d"
 )
 TEMPLATE_PATH = (
     ARM_BENCH_ROOT / "bench" / "templates" / "baseline_ncnn_arm_conv2d_kernel.cpp"

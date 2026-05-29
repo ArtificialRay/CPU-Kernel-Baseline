@@ -8,3 +8,4 @@ logs/
 Guide.md
 plot.ipynb
 flashinfer-bench
+*/bench-trace/*
