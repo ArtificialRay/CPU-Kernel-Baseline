@@ -1,0 +1,116 @@
+{
+  "name": "conv2d_kh3_kw3_sh1_sw1_dh4_dw4_c32_c64",
+  "op_type": "conv2d",
+  "description": "2D convolution: 3x3 kernel, stride (1,1), dilation (4,4), 32->64 channels. Extracted from tests/ncnn/candidate/convolution.cpp.",
+  "tags": [
+    "status:phase2",
+    "isa:sve"
+  ],
+  "axes": {
+    "N": {
+      "type": "var"
+    },
+    "H": {
+      "type": "var",
+      "parent": "N"
+    },
+    "W": {
+      "type": "var",
+      "parent": "N"
+    },
+    "H_out": {
+      "type": "var",
+      "parent": "N",
+      "description": "Derived: (H + 2*pad_h - (Kh-1)*Dh - 1) / Sh + 1"
+    },
+    "W_out": {
+      "type": "var",
+      "parent": "N",
+      "description": "Derived: (W + 2*pad_w - (Kw-1)*Dw - 1) / Sw + 1"
+    },
+    "C_in": {
+      "type": "const",
+      "value": 32
+    },
+    "C_out": {
+      "type": "const",
+      "value": 64
+    },
+    "Kh": {
+      "type": "const",
+      "value": 3
+    },
+    "Kw": {
+      "type": "const",
+      "value": 3
+    },
+    "Sh": {
+      "type": "const",
+      "value": 1
+    },
+    "Sw": {
+      "type": "const",
+      "value": 1
+    },
+    "Dh": {
+      "type": "const",
+      "value": 4
+    },
+    "Dw": {
+      "type": "const",
+      "value": 4
+    }
+  },
+  "inputs": {
+    "input": {
+      "shape": [
+        "N",
+        "C_in",
+        "H",
+        "W"
+      ],
+      "dtype": "float32"
+    },
+    "weight": {
+      "shape": [
+        "C_out",
+        "C_in",
+        "Kh",
+        "Kw"
+      ],
+      "dtype": "float32"
+    },
+    "pad_top": {
+      "shape": null,
+      "dtype": "int32"
+    },
+    "pad_left": {
+      "shape": null,
+      "dtype": "int32"
+    },
+    "activation_type": {
+      "shape": null,
+      "dtype": "int32"
+    },
+    "with_bias": {
+      "shape": null,
+      "dtype": "int32"
+    }
+  },
+  "outputs": {
+    "output": {
+      "shape": [
+        "N",
+        "C_out",
+        "H_out",
+        "W_out"
+      ],
+      "dtype": "float32"
+    }
+  },
+  "constraints": [
+    "H_out == (H + 2*pad_top - (Kh-1)*Dh - 1) / Sh + 1",
+    "W_out == (W + 2*pad_left - (Kw-1)*Dw - 1) / Sw + 1"
+  ],
+  "reference": "import torch\nimport torch.nn.functional as F\n\n\ndef run(input, weight, pad_top, pad_left, activation_type, with_bias):\n    x = torch.from_numpy(input)\n    w = torch.from_numpy(weight)\n    y = F.conv2d(x, w, None,\n                 stride=(1, 1),\n                 padding=(int(pad_top), int(pad_left)),\n                 dilation=(4, 4))\n    return y\n"
+}

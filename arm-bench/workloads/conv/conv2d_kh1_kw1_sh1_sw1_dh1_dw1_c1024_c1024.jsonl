@@ -1,0 +1,1 @@
+{"axes": {"N": 1, "H": 14, "W": 14}, "scalar_inputs": {"pad_top": 0, "pad_left": 0, "activation_type": 0, "with_bias": 0}, "uuid": "H14_W14_padh0_padw0_b0", "tags": {"from": "tests/ncnn/candidate/convolution.cpp"}}

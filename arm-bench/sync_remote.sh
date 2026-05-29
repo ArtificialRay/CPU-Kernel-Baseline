@@ -50,4 +50,13 @@ else
     echo "[sync] skipped ncnn (not found at $NCNN_ROOT)"
 fi
 
+# Root-level requirements.txt lives at CPU-Kernel-Baseline/requirements.txt
+# (not under arm-bench/). Push it to the remote home so `pip3 install -r
+# ~/requirements.txt` works after sync.
+REQS="$REPO_ROOT/../requirements.txt"
+if [[ -f "$REQS" ]]; then
+    echo "[sync] requirements.txt -> $USER_NAME@$HOST:~/requirements.txt"
+    rsync -az -e "$SSH_OPTS" "$REQS" "$USER_NAME@$HOST:requirements.txt"
+fi
+
 echo "[sync] done."
