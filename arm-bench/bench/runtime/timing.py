@@ -19,6 +19,11 @@ per timed sample which suits ms-scale convolutions.
 
 CPU pinning uses os.sched_setaffinity on Linux; on other platforms the call
 is silently a no-op (timing still works, just noisier).
+
+NOTE: this timer assumes the kernel runs with num_threads=1. Multi-threaded
+kernels need a different pinning strategy and aren't supported yet —
+bench/runner.py refuses to time a Solution whose dataset config asks for
+more threads.
 """
 
 from __future__ import annotations

@@ -58,11 +58,33 @@ def make_mat_ramp_2d(shape_hw: Tuple[int, int]) -> np.ndarray:
 
 # ── Definition + Workload → concrete numpy inputs ─────────────────────────────
 
+def _input_var_axes(d: Definition) -> set:
+    """Var axes that appear in at least one input tensor shape.
+
+    Output-only var axes (e.g. H_out / W_out for conv) are derived; we don't
+    require the workload to provide them since the kernel/harness allocates
+    the output, and Definition.reference can compute its own output shape.
+    """
+    used: set = set()
+    for spec in d.inputs.values():
+        if spec.shape is None:
+            continue
+        for axis in spec.shape:
+            ax = d.axes.get(axis)
+            if ax is not None and not isinstance(ax, AxisConst):
+                used.add(axis)
+    return used
+
+
 def _resolved_axes(d: Definition, w: Workload) -> Dict[str, int]:
     """Merge a definition's const axes with a workload's var-axis values.
 
-    Raises if the workload is missing a var axis the definition declares or
-    overrides a const.
+    Workload MUST provide every var axis that appears in some input tensor
+    shape. Var axes that only appear in outputs (derived dims like H_out)
+    are not required — the harness or reference handles them.
+
+    Raises if a workload key is unknown, overrides a const, or misses a
+    required input var axis.
     """
     out: Dict[str, int] = dict(d.const_axes)  # const first
     for name, val in w.axes.items():
@@ -74,9 +96,12 @@ def _resolved_axes(d: Definition, w: Workload) -> Dict[str, int]:
                 f"{d.const_axes[name]}); workload must not set it"
             )
         out[name] = val
-    missing = set(d.var_axes) - set(out)
+    required = _input_var_axes(d)
+    missing = required - set(out)
     if missing:
-        raise ValueError(f"Workload missing var axes for '{d.name}': {sorted(missing)}")
+        raise ValueError(
+            f"Workload missing required input var axes for '{d.name}': {sorted(missing)}"
+        )
     return out
 
 
