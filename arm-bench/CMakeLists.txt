@@ -128,7 +128,7 @@ function(add_candidate_test name candidate_src test_src)
     add_test(NAME ${stem} COMMAND ${stem})
 endfunction()
 
-add_candidate_test(conv       convolution.cpp          convolution.cpp)
+# `conv` (conv2d) was migrated to bench-trace/; see https://github.com/ArtificialRay/CPU-Kernel-Baseline/pull/12
 add_candidate_test(conv1d     convolution1d.cpp        convolution1d.cpp)
 add_candidate_test(convdw     convolutiondepwise.cpp   convolutiondepwise.cpp)
 add_candidate_test(deconv     deconvolution.cpp        deconvolution.cpp)
@@ -169,11 +169,7 @@ function(add_baseline_test name arm_src mapped_subdir mapped_src test_src)
     add_test(NAME ${stem} COMMAND ${stem})
 endfunction()
 
-# conv test gets a layer-factory hook so forwardDilation_arm's sub-layer is
-# a real Convolution_arm; without it, dilation tests run against an empty
-# top_blob (see weak default in framework/ncnn_framework_stub.cpp).
-add_baseline_test(conv     convolution_arm.cpp             convolution          convolution.cpp          convolution.cpp
-                  ${ARM_BENCH}/tests/ncnn/baseline/conv_arm_layer_hook.cpp)
+# `conv` (conv2d) was migrated to bench-trace/, see https://github.com/ArtificialRay/CPU-Kernel-Baseline/pull/12
 add_baseline_test(conv1d   convolution1d_arm.cpp           convolution1d        convolution1d.cpp        convolution1d.cpp)
 add_baseline_test(convdw   convolutiondepthwise_arm.cpp    convolutiondepthwise convolutiondepthwise.cpp convolutiondepwise.cpp)
 add_baseline_test(deconv   deconvolution_arm.cpp           deconvolution        deconvolution.cpp        deconvolution.cpp)
@@ -237,13 +233,13 @@ function(add_baseline_perf name arm_src mapped_subdir mapped_src perf_src)
     target_link_libraries(${stem} PRIVATE ncnn_framework m)
 endfunction()
 
-add_candidate_perf(conv       convolution.cpp          convolution.cpp)
+# `conv` (conv2d) was migrated to bench-trace/ , see https://github.com/ArtificialRay/CPU-Kernel-Baseline/pull/12.
 add_candidate_perf(conv1d     convolution1d.cpp        convolution1d.cpp)
 add_candidate_perf(convdw     convolutiondepwise.cpp   convolutiondepwise.cpp)
 add_candidate_perf(deconv     deconvolution.cpp        deconvolution.cpp)
 add_candidate_perf(deconvdw   deconvolutiondepwise.cpp deconvolutiondepwise.cpp)
 
-add_baseline_perf(conv     convolution_arm.cpp             convolution          convolution.cpp          convolution.cpp)
+# `conv` (conv2d) was migrated to bench-trace/ , see https://github.com/ArtificialRay/CPU-Kernel-Baseline/pull/12.
 add_baseline_perf(conv1d   convolution1d_arm.cpp           convolution1d        convolution1d.cpp        convolution1d.cpp)
 add_baseline_perf(convdw   convolutiondepthwise_arm.cpp    convolutiondepthwise convolutiondepthwise.cpp convolutiondepwise.cpp)
 add_baseline_perf(deconv   deconvolution_arm.cpp           deconvolution        deconvolution.cpp        deconvolution.cpp)
