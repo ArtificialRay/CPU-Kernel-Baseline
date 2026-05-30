@@ -190,7 +190,6 @@ class TraceSet:
     def get_traces_by_solution(self, sol_name: str) -> List[Trace]:
         return list(self._traces_by_solution.get(sol_name, []))
 
-<<<<<<< feat/collect-ncnn-baseline-kernel-conv
     def get_baseline_solution(
         self, def_name: str, baseline_author: str = "baseline-ncnn-arm"
     ) -> Optional[Solution]:
@@ -240,8 +239,6 @@ class TraceSet:
                 best = ns
         return best
 
-=======
->>>>>>> main
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def add_traces(self, traces: List[Trace]) -> None:
@@ -333,7 +330,6 @@ class TraceSet:
             raise ValueError(f"No workloads for definition {definition!r} matching filter")
 
         solutions_root = self._require_root() / "solutions"
-<<<<<<< feat/collect-ncnn-baseline-kernel-conv
         traces = run_solution_on_workloads(
             d, s, wls, solutions_root=solutions_root, trace_set=self,
         )
@@ -379,12 +375,6 @@ class TraceSet:
             all_traces.extend(traces)
         return all_traces
 
-=======
-        traces = run_solution_on_workloads(d, s, wls, solutions_root=solutions_root)
-        self.add_traces(traces)
-        return traces
-
->>>>>>> main
     # ── Summary ───────────────────────────────────────────────────────────────
 
     def summary(self) -> Dict[str, Any]:
