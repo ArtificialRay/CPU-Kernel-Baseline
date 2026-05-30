@@ -74,6 +74,8 @@ def run_solution_on_workloads(
     workloads: List[Workload],
     *,
     solutions_root: Optional[Path] = None,    # kept for API symmetry; resolved via compile.py
+    trace_set: Optional[Any] = None,          # for baseline_min_ns lookup (PHASE2 #7)
+    baseline_author: str = "baseline-ncnn-arm",
     warmup: int = DEFAULT_WARMUP,
     repeat: int = DEFAULT_REPEAT,
     cpu: Optional[int] = DEFAULT_CPU,
@@ -141,6 +143,7 @@ def run_solution_on_workloads(
                     env=env, timestamp=timestamp,
                     warmup=warmup, repeat=repeat, cpu=cpu, watchdog_s=watchdog_s,
                     abs_tol=abs_tol, rel_tol=rel_tol,
+                    trace_set=trace_set, baseline_author=baseline_author,
                 )
             )
     finally:
@@ -158,6 +161,8 @@ def _run_one(
     env: Environment, timestamp: str,
     warmup: int, repeat: int, cpu: Optional[int], watchdog_s: float,
     abs_tol: float, rel_tol: float,
+    trace_set: Optional[Any] = None,
+    baseline_author: str = "baseline-ncnn-arm",
 ) -> Trace:
     # 1. Generate inputs (numpy)
     try:
@@ -241,6 +246,17 @@ def _run_one(
             return _trace(d.name, w, s.name,
                           _eval_error(EvaluationStatus.TIMEOUT, env, timestamp, str(e)))
 
+        # 7. Baseline lookup → speedup (PHASE2.md deliverable #7).
+        # Skip when this Solution *is* the baseline (avoids self-divides).
+        ref_min_ns: Optional[int] = None
+        speedup: Optional[float] = None
+        if trace_set is not None and s.author != baseline_author:
+            ref_min_ns = trace_set.get_baseline_min_ns(
+                d.name, w.uuid, baseline_author=baseline_author
+            )
+            if ref_min_ns is not None and timing.min_ns > 0:
+                speedup = ref_min_ns / timing.min_ns
+
         return _trace(
             d.name, w, s.name,
             Evaluation(
@@ -255,6 +271,8 @@ def _run_one(
                 performance=Performance(
                     min_ns=timing.min_ns,
                     p5_ns=timing.p5_ns,
+                    reference_min_ns=ref_min_ns,
+                    speedup=speedup,
                     repeat=timing.repeat,
                     warmup=timing.warmup,
                 ),

@@ -1,19 +1,5 @@
 [
   {
-    "id": "conv",
-    "num": "001",
-    "name": "convolution_kernel",
-    "description": "general 2d convolution with arm baseline",
-    "isa_target": "sve",
-    "instance_type": "c7g.large",
-    "starter_header":   "starter/ncnn/candidate/convolution.h",
-    "candidate_source": "candidates_src/ncnn/convolution.cpp",
-    "tester":           "tests/ncnn/candidate/convolution.cpp",
-    "tags": [
-      "sve"
-    ]
-  },
-  {
     "id": "convdw",
     "num": "002",
     "name": "convolutiondepthwise_kernel",

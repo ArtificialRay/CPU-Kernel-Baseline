@@ -190,6 +190,55 @@ class TraceSet:
     def get_traces_by_solution(self, sol_name: str) -> List[Trace]:
         return list(self._traces_by_solution.get(sol_name, []))
 
+    def get_baseline_solution(
+        self, def_name: str, baseline_author: str = "baseline-ncnn-arm"
+    ) -> Optional[Solution]:
+        """Resolve the unique `baseline_author` Solution for `def_name`.
+
+        Raises if more than one baseline solution exists for the Definition under this author (an indicator
+        of a bad migration), returns None if zero exist.
+        """
+        candidates = [
+            s for s in self.solutions.get(def_name, []) if s.author == baseline_author
+        ]
+        if not candidates:
+            return None
+        if len(candidates) > 1:
+            names = ", ".join(s.name for s in candidates)
+            raise ValueError(
+                f"Multiple baseline solutions for definition '{def_name}' "
+                f"under author '{baseline_author}': {names}"
+            )
+        return candidates[0]
+
+    def get_baseline_min_ns(
+        self,
+        def_name: str,
+        workload_uuid: str,
+        baseline_author: str = "baseline-ncnn-arm",
+    ) -> Optional[int]:
+        """Return the cached baseline `min_ns` for (def_name, workload_uuid).
+
+        Returns None if no PASSED baseline trace exists for that workload — caller leaves `reference_min_ns`
+        and `speedup` as None in that case.
+        """
+        baseline = self.get_baseline_solution(def_name, baseline_author)
+        if baseline is None:
+            return None
+        best: Optional[int] = None
+        for t in self.traces.get(def_name, []):
+            if t.solution != baseline.name:
+                continue
+            if t.workload.uuid != workload_uuid:
+                continue
+            ev = t.evaluation
+            if ev is None or ev.status.value != "PASSED" or ev.performance is None:
+                continue
+            ns = ev.performance.min_ns
+            if best is None or ns < best:
+                best = ns
+        return best
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def add_traces(self, traces: List[Trace]) -> None:
@@ -281,9 +330,50 @@ class TraceSet:
             raise ValueError(f"No workloads for definition {definition!r} matching filter")
 
         solutions_root = self._require_root() / "solutions"
-        traces = run_solution_on_workloads(d, s, wls, solutions_root=solutions_root)
+        traces = run_solution_on_workloads(
+            d, s, wls, solutions_root=solutions_root, trace_set=self,
+        )
         self.add_traces(traces)
         return traces
+
+    def cli_collect_baselines(
+        self,
+        baseline_author: str = "baseline-ncnn-arm",
+        definition_filter: Optional[str] = None,
+    ) -> List[Trace]:
+        """Run every `baseline_author` Solution against its Definition's Workloads.
+
+        PHASE2.md deliverable #5. Produces the cached baseline traces that
+        `cli_bench` later consults via `get_baseline_min_ns` to fill the
+        candidate's `reference_min_ns` + `speedup`.
+
+        Returns the full list of newly-produced traces (also appended to
+        `traces/<op_type>/<def>.jsonl`).
+        """
+        from bench.runner import run_solution_on_workloads
+
+        all_traces: List[Trace] = []
+        for def_name, def_obj in self.definitions.items():
+            if definition_filter is not None and def_name != definition_filter:
+                continue
+            baseline = self.get_baseline_solution(def_name, baseline_author)
+            if baseline is None:
+                continue
+            wls = self.get_workloads(def_name)
+            if not wls:
+                continue
+            solutions_root = self._require_root() / "solutions"
+            # baseline_author=baseline.author short-circuits the speedup lookup
+            # in _run_one so the baseline doesn't compare against itself.
+            traces = run_solution_on_workloads(
+                def_obj, baseline, wls,
+                solutions_root=solutions_root,
+                trace_set=self,
+                baseline_author=baseline.author,
+            )
+            self.add_traces(traces)
+            all_traces.extend(traces)
+        return all_traces
 
     # ── Summary ───────────────────────────────────────────────────────────────
 

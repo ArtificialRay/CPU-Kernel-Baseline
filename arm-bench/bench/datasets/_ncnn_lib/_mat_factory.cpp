@@ -48,9 +48,13 @@ void* armbench_ncnn_mat_create_2d(int w, int h, const float* data)
 }
 
 // Create a 1D Mat (w,) — used for weights (flat, out_c*in_c*kh*kw) and bias.
+// For w == 0 (used by the Python adapter to represent "no bias" / "no activation
+// params"), return a fresh empty ncnn::Mat so the harness can still pass it by
+// reference. Returning nullptr would crash the harness's reinterpret_cast.
 void* armbench_ncnn_mat_create_1d(int w, const float* data)
 {
     auto* m = new ncnn::Mat();
+    if (w <= 0) return m;
     m->create(w, (size_t)4u, (ncnn::Allocator*)0);
     if (m->empty()) { delete m; return nullptr; }
     std::memcpy((float*)m->data, data, w * sizeof(float));

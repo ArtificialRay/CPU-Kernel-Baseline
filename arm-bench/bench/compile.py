@@ -42,7 +42,9 @@ BENCH_ROOT = Path(__file__).resolve().parent
 
 
 def _solutions_root(arm_bench_root: Path) -> Path:
-    return arm_bench_root / "solutions"
+    # Solutions live inside the warehouse root at arm-bench/bench-trace/.
+    # The `_harness/<op>.{cpp,h}` files are resolved off this path.
+    return arm_bench_root / "bench-trace" / "solutions"
 
 
 def _ncnn_base_root(arm_bench_root: Path) -> Path:
@@ -104,6 +106,16 @@ NCNN_FRAMEWORK_SOURCES = [
 
 
 # ── Compile entry point ──────────────────────────────────────────────────────
+
+def _has_ncnn_arm_heavy(solution: Solution) -> bool:
+    """True if the Solution declares the prebuilt arm-heavy lib as a dependency."""
+    return "ncnn_arm_heavy" in (solution.spec.dependencies or [])
+
+
+def _ncnn_arm_heavy_archive(arm_bench_root: Path) -> Path:
+    """Path to the prebuilt static archive produced by scripts/build_ncnn_arm_heavy.sh."""
+    return arm_bench_root / "build" / "libncnn_arm_heavy.a"
+
 
 def compile_solution(
     solution: Solution,
@@ -187,16 +199,29 @@ def compile_solution(
     # 4. mat_factory (dataset Python adapter's C side) + stubs for unreached
     # ncnn symbols (Layer factory, Layer base) that mat.cpp pulls in
     # transitively via copy_make_border.
+    #
+    # If the Solution declares ncnn_arm_heavy as a dependency, swap the
+    # abort-on-call stubs for the heavy-build stubs that route create_layer
+    # to real Padding / Convolution_arm layers (PHASE2.md deliverable #2).
     mat_factory_cpp = BENCH_ROOT / "datasets" / "_ncnn_lib" / "_mat_factory.cpp"
-    ncnn_stubs_cpp = BENCH_ROOT / "datasets" / "_ncnn_lib" / "_ncnn_unused_stubs.cpp"
+    if _has_ncnn_arm_heavy(solution):
+        ncnn_stubs_cpp = BENCH_ROOT / "datasets" / "_ncnn_lib" / "_ncnn_arm_heavy_stubs.cpp"
+    else:
+        ncnn_stubs_cpp = BENCH_ROOT / "datasets" / "_ncnn_lib" / "_ncnn_unused_stubs.cpp"
     if not mat_factory_cpp.exists():
         raise FileNotFoundError(f"_mat_factory.cpp not found at {mat_factory_cpp}")
     if not ncnn_stubs_cpp.exists():
-        raise FileNotFoundError(f"_ncnn_unused_stubs.cpp not found at {ncnn_stubs_cpp}")
+        raise FileNotFoundError(f"ncnn stubs file not found at {ncnn_stubs_cpp}")
 
     # 5. ncnn framework sources
     framework_srcs: List[Path] = []
-    for rel in NCNN_FRAMEWORK_SOURCES:
+    framework_rels = list(NCNN_FRAMEWORK_SOURCES)
+    if _has_ncnn_arm_heavy(solution):
+        # Padding layer impl — required by mat.cpp's copy_make_border path that
+        # the harness hits whenever pad > 0. Without it, _make_layer would
+        # return a Padding* whose vtable has no impl.
+        framework_rels.append("c-partially-optimized/tensor/padding.cpp")
+    for rel in framework_rels:
         p = base_root / rel
         if not p.exists():
             raise FileNotFoundError(
@@ -213,8 +238,28 @@ def compile_solution(
         base_root / "framework",                  # unqualified "mat.h" / "option.h"
         arm_bench_root / "starter" / "ncnn",     # legacy ncnn_helpers.h (if a Solution still uses it)
     ]
+    if _has_ncnn_arm_heavy(solution):
+        # convolution_arm.h + convolution.h (base) + padding.h
+        include_dirs += [
+            base_root / "arm-heavy-optimized" / "conv",
+            base_root / "arm-heavy-optimized" / "common",
+            base_root / "c-partially-optimized" / "conv",
+            base_root / "c-partially-optimized" / "tensor",
+            base_root / "c-partially-optimized" / "common",
+        ]
     if extra_include_dirs:
         include_dirs.extend(extra_include_dirs)
+
+    # 6b. Prebuilt static archives (Phase 2: ncnn_arm_heavy)
+    heavy_archive: Optional[Path] = None
+    if _has_ncnn_arm_heavy(solution):
+        heavy_archive = _ncnn_arm_heavy_archive(arm_bench_root)
+        if not heavy_archive.exists():
+            raise FileNotFoundError(
+                f"Solution '{solution.name}' depends on ncnn_arm_heavy but the "
+                f"prebuilt archive is missing: {heavy_archive}. "
+                f"Run scripts/build_ncnn_arm_heavy.sh first."
+            )
 
     # 7. Build the command
     so_path = build_dir / f"{solution.name[:64]}.so"
@@ -242,6 +287,12 @@ def compile_solution(
 
     # Output
     cmd += ["-o", str(so_path)]
+
+    # Prebuilt static archives — placed after sources, before -l flags, so
+    # symbols satisfy the .o references seen so far. Use the full path (not
+    # -L/-l) to avoid PATH-search ambiguity.
+    if heavy_archive is not None:
+        cmd.append(str(heavy_archive))
 
     # Link flags
     cmd += list(solution.spec.link_flags or [])

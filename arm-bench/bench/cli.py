@@ -26,8 +26,12 @@ from bench.data import TraceSet
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _default_root() -> Path:
-    """Default arm-bench root: parent of `bench/`."""
-    return Path(__file__).resolve().parent.parent
+    """Default warehouse root: arm-bench/bench-trace/.
+
+    The TraceSet expects to find definitions/ + solutions/ + workloads/ +
+    traces/ directly under this root.
+    """
+    return Path(__file__).resolve().parent.parent / "bench-trace"
 
 
 def _parse_axes_filter(s: Optional[str]) -> Optional[Dict[str, int]]:
@@ -71,6 +75,21 @@ def cmd_bench(args: argparse.Namespace) -> int:
             )
         else:
             print(f"  {t.workload.uuid[:8]}  {ev.status.value}  {ev.log[:120]}")
+    return 0
+
+
+def cmd_collect_baselines(args: argparse.Namespace) -> int:
+    ts = TraceSet.from_path(args.root)
+    traces = ts.cli_collect_baselines(
+        baseline_author=args.baseline_author,
+        definition_filter=args.definition,
+    )
+    if not traces:
+        print(f"No baseline traces produced. Check that solutions/ncnn/{args.baseline_author}/"
+              f" contains conv2d Solutions and definitions/ + workloads/ are populated.")
+        return 1
+    n_pass = sum(1 for t in traces if t.is_successful())
+    print(f"\n{len(traces)} traces produced ({n_pass} PASSED, {len(traces) - n_pass} other).")
     return 0
 
 
@@ -125,6 +144,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter workloads, e.g. 'N=1,H=56,W=56'. Only matching workloads are run.",
     )
     b.set_defaults(func=cmd_bench)
+
+    cb = sub.add_parser(
+        "collect-baselines",
+        help="Run every baseline-author Solution against its Definition's workloads, "
+             "caching the timings for later speedup lookup.",
+    )
+    cb.add_argument("--baseline-author", default="baseline-ncnn-arm",
+                    help="Author folder under solutions/<dataset>/ to treat as baseline.")
+    cb.add_argument("--definition", default=None,
+                    help="If set, only collect baselines for this Definition.")
+    cb.set_defaults(func=cmd_collect_baselines)
 
     s = sub.add_parser("summary", help="Dump warehouse summary as JSON.")
     s.set_defaults(func=cmd_summary)
