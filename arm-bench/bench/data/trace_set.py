@@ -195,8 +195,7 @@ class TraceSet:
     ) -> Optional[Solution]:
         """Resolve the unique `baseline_author` Solution for `def_name`.
 
-        PHASE2.md deliverable #6 helper. Raises if more than one baseline
-        Solution exists for the Definition under this author (an indicator
+        Raises if more than one baseline solution exists for the Definition under this author (an indicator
         of a bad migration), returns None if zero exist.
         """
         candidates = [
@@ -220,9 +219,7 @@ class TraceSet:
     ) -> Optional[int]:
         """Return the cached baseline `min_ns` for (def_name, workload_uuid).
 
-        PHASE2.md deliverable #6. Runner calls this when computing a
-        candidate's `speedup` field. Returns None if no PASSED baseline
-        trace exists for that workload — caller leaves `reference_min_ns`
+        Returns None if no PASSED baseline trace exists for that workload — caller leaves `reference_min_ns`
         and `speedup` as None in that case.
         """
         baseline = self.get_baseline_solution(def_name, baseline_author)
