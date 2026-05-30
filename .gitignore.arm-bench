@@ -1,12 +1,3 @@
-*.zip
-*/build/
-*.cmake
-.venv/
-.vscode/
-.env
-logs/
-Guide.md
-plot.ipynb
 build/
 
 # macOS
@@ -48,6 +39,4 @@ terraform/.terraform.lock.hcl
 .env
 *.log
 
-bench-trace/
-__pycache__/
-
+bench-trace
