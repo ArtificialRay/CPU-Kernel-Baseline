@@ -46,9 +46,71 @@ WORKLOADS_DIR = WAREHOUSE_ROOT / "workloads" / "conv"
 SOLUTIONS_DIR = (
     WAREHOUSE_ROOT / "solutions" / "ncnn" / "baseline-ncnn-arm" / "conv2d"
 )
+REF_SCALAR_DIR = (
+    WAREHOUSE_ROOT / "solutions" / "ncnn" / "reference-scalar" / "conv2d"
+)
 TEMPLATE_PATH = (
     ARM_BENCH_ROOT / "bench" / "templates" / "baseline_ncnn_arm_conv2d_kernel.cpp"
 )
+
+# ── reference-scalar raw kernel (candidate proof) ────────────────────────────
+#
+# Raw-`float*` port of starter/ncnn/ref_conv.h::ref_conv2d. Implements the
+# CandidateBuilder C-ABI contract (bench/compile/builders/candidate_harness/
+# conv2d.h) directly — NO ncnn includes, NO ncnn::Mat. This is the load-bearing
+# proof that a candidate compiles + runs with zero ncnn dependency. Bias is
+# always NULL from the runner (the conv2d reference uses F.conv2d(..., None)),
+# so correctness does not depend on the bias path.
+REFERENCE_SCALAR_KERNEL = '''\
+// reference-scalar conv2d — raw float* port of ref_conv.h::ref_conv2d.
+// No ncnn dependency; implements the CandidateBuilder C-ABI directly.
+
+#include "conv2d.h"
+
+extern "C" int armbench_entry_conv2d(
+    const float* input, float* output,
+    const float* weight, const float* bias,
+    int N, int Cin, int H, int W,
+    int Cout, int Kh, int Kw, int Sh, int Sw, int Dh, int Dw,
+    int pad_top, int pad_left,
+    int activation_type, const float* act_params, int n_act)
+{
+    (void)act_params; (void)n_act;
+    const int ext_kh = Dh * (Kh - 1) + 1;
+    const int ext_kw = Dw * (Kw - 1) + 1;
+    const int H_out = (H + 2 * pad_top  - ext_kh) / Sh + 1;
+    const int W_out = (W + 2 * pad_left - ext_kw) / Sw + 1;
+
+    for (int n = 0; n < N; ++n) {
+        const float* in_n = input + (long)n * Cin * H * W;
+        float* out_n = output + (long)n * Cout * H_out * W_out;
+        for (int oc = 0; oc < Cout; ++oc) {
+            float* outc = out_n + (long)oc * H_out * W_out;
+            for (int oh = 0; oh < H_out; ++oh) {
+                for (int ow = 0; ow < W_out; ++ow) {
+                    float sum = bias ? bias[oc] : 0.0f;
+                    for (int ic = 0; ic < Cin; ++ic) {
+                        const float* inc = in_n + (long)ic * H * W;
+                        for (int kh = 0; kh < Kh; ++kh) {
+                            for (int kw = 0; kw < Kw; ++kw) {
+                                int ih = oh * Sh - pad_top  + kh * Dh;
+                                int iw = ow * Sw - pad_left + kw * Dw;
+                                float px = (ih >= 0 && ih < H && iw >= 0 && iw < W)
+                                           ? inc[ih * W + iw] : 0.0f;
+                                int widx = ((oc * Cin + ic) * Kh + kh) * Kw + kw;
+                                sum += px * weight[widx];
+                            }
+                        }
+                    }
+                    if (activation_type == 1 && sum < 0.0f) sum = 0.0f;
+                    outc[oh * W_out + ow] = sum;
+                }
+            }
+        }
+    }
+    return 0;
+}
+'''
 
 # ── Reference Python (Definition.reference) ─────────────────────────────────
 
@@ -197,6 +259,59 @@ def build_definition(s: Shape) -> Dict:
     }
 
 
+def build_reference_scalar_solution(d_name: str) -> Dict:
+    """Build the raw-`float*` reference-scalar Solution for Definition `d_name`.
+
+    Author 'reference-scalar' is a CANDIDATE (not the baseline author), so it is
+    built by CandidateBuilder against the raw ABI with zero ncnn dependency. The
+    `dataset: "ncnn"` field only pins the on-disk folder (solutions/ncnn/...);
+    the runner selects the raw adapter by is_baseline, not by dataset.
+    """
+    return {
+        "name": f"reference-scalar_{d_name}",
+        "definition": d_name,
+        "dataset": "ncnn",
+        "author": "reference-scalar",
+        "description": (
+            f"Scalar raw-float* conv2d for {d_name}. Port of ref_conv.h::ref_conv2d "
+            f"to the CandidateBuilder C-ABI; no ncnn dependency. Ground-truth "
+            f"correctness, slow perf. The load-bearing proof for the raw candidate path."
+        ),
+        "spec": {
+            "language": "cpp",
+            "target_hardware": ["graviton3", "aarch64-sve"],
+            "entry_point": "kernel.cpp::armbench_entry_conv2d",
+            "dependencies": [],
+            "isa_features": [],
+            "compile_flags": ["-O2", "-std=c++14"],
+            "link_flags": [],
+        },
+        "sources": [
+            {"path": "kernel.cpp", "content": REFERENCE_SCALAR_KERNEL},
+        ],
+    }
+
+
+def stamp_reference_scalar_from_definitions() -> int:
+    """Stamp one reference-scalar Solution per existing conv2d Definition on disk.
+
+    Robust to the (now-removed) tests source: reads the already-extracted
+    definitions/conv/*.json rather than re-parsing EXPECT_MATCH rows.
+    """
+    if not DEFINITIONS_DIR.exists():
+        print(f"ERROR: {DEFINITIONS_DIR} not found; nothing to stamp.", file=sys.stderr)
+        return 1
+    REF_SCALAR_DIR.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for p in sorted(DEFINITIONS_DIR.glob("*.json")):
+        d_name = json.loads(p.read_text())["name"]
+        sol = build_reference_scalar_solution(d_name)
+        (REF_SCALAR_DIR / f"{d_name}.json").write_text(json.dumps(sol, indent=2) + "\n")
+        n += 1
+    print(f"Stamped {n} reference-scalar solutions under {REF_SCALAR_DIR}")
+    return 0
+
+
 def build_workload(s: Shape, source_tag: str) -> Dict:
     """One workload point for `s`. Pad + with_bias go into scalar_inputs."""
     return {
@@ -252,7 +367,13 @@ def main() -> int:
                         help="Parse + report counts only; do not write files.")
     parser.add_argument("--max-defs-warn", type=int, default=30,
                         help="Warn if more than N distinct Definitions are emitted.")
+    parser.add_argument("--reference-scalar-only", action="store_true",
+                        help="Skip the tests parse; only (re)stamp reference-scalar "
+                             "solutions from the existing definitions/ on disk.")
     args = parser.parse_args()
+
+    if args.reference_scalar_only:
+        return stamp_reference_scalar_from_definitions()
 
     if not TESTS_CPP.exists():
         print(f"ERROR: {TESTS_CPP} not found", file=sys.stderr)
@@ -331,6 +452,7 @@ def main() -> int:
         print(f"  {d_name:<55}  workloads={len(wl_unique):>3}")
 
     print(f"\nWrote {n_defs} definitions, {n_wls} workloads, {n_sols} baseline solutions.")
+    stamp_reference_scalar_from_definitions()
     return 0
 
 

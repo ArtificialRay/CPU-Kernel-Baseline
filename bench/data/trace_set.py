@@ -3,9 +3,9 @@
 Mirrors flashinfer-bench's TraceSet structure, trimmed for Phase 1: no
 safetensors blob handling, no ranking algorithms yet — those grow later.
 
-Also hosts the `cli_bench` function that `bench/cli.py`'s `bench` subcommand
-dispatches to. Persistence happens through TraceSet methods (`add_traces`),
-not through the runner.
+A pure warehouse: it loads, indexes, queries (get_baseline_solution /
+get_baseline_min_ns), and persists (add_traces). The benchmark run loops live
+in bench/benchmark.py (Benchmark); bench/cli.py dispatches into that.
 """
 
 from __future__ import annotations
@@ -280,100 +280,10 @@ class TraceSet:
             shutil.move(str(traces_path), str(backup))
         traces_path.mkdir(parents=True, exist_ok=True)
 
-    # ── CLI dispatch ──────────────────────────────────────────────────────────
-    # The `armbench bench` subcommand resolves here. Keeping the orchestration
-    # on TraceSet means: load once, query via the warehouse, write back via
-    # add_traces. `bench/cli.py` is a thin argparse layer.
-
-    def cli_bench(
-        self,
-        definition: str,
-        solution: str,
-        workload_filter: Optional[Dict[str, int]] = None,
-    ) -> List[Trace]:
-        """Run a Solution against all workloads of a Definition; return + persist Traces.
-
-        Parameters
-        ----------
-        definition
-            Name of the Definition to benchmark against.
-        solution
-            Name of the Solution to run.
-        workload_filter
-            If provided, only run workloads whose axes match these key/value pairs exactly.
-
-        Returns
-        -------
-        The newly-produced Traces (also appended to `traces/<op_type>/<def>.jsonl`).
-        """
-        # Imported lazily so the data layer stays import-clean from numpy/torch/ctypes
-        from bench.runner import run_solution_on_workloads
-
-        d = self.get_definition(definition)
-        if d is None:
-            raise KeyError(f"Unknown definition: {definition!r}")
-        s = self.get_solution(solution)
-        if s is None:
-            raise KeyError(f"Unknown solution: {solution!r}")
-        if s.definition != definition:
-            raise ValueError(
-                f"Solution {solution!r} targets definition {s.definition!r}, not {definition!r}"
-            )
-
-        wls = self.get_workloads(definition)
-        if workload_filter:
-            wls = [
-                w for w in wls
-                if all(w.axes.get(k) == v for k, v in workload_filter.items())
-            ]
-        if not wls:
-            raise ValueError(f"No workloads for definition {definition!r} matching filter")
-
-        solutions_root = self._require_root() / "solutions"
-        traces = run_solution_on_workloads(
-            d, s, wls, solutions_root=solutions_root, trace_set=self,
-        )
-        self.add_traces(traces)
-        return traces
-
-    def cli_collect_baselines(
-        self,
-        baseline_author: str = "baseline-ncnn-arm",
-        definition_filter: Optional[str] = None,
-    ) -> List[Trace]:
-        """Run every `baseline_author` Solution against its Definition's Workloads.
-
-        PHASE2.md deliverable #5. Produces the cached baseline traces that
-        `cli_bench` later consults via `get_baseline_min_ns` to fill the
-        candidate's `reference_min_ns` + `speedup`.
-
-        Returns the full list of newly-produced traces (also appended to
-        `traces/<op_type>/<def>.jsonl`).
-        """
-        from bench.runner import run_solution_on_workloads
-
-        all_traces: List[Trace] = []
-        for def_name, def_obj in self.definitions.items():
-            if definition_filter is not None and def_name != definition_filter:
-                continue
-            baseline = self.get_baseline_solution(def_name, baseline_author)
-            if baseline is None:
-                continue
-            wls = self.get_workloads(def_name)
-            if not wls:
-                continue
-            solutions_root = self._require_root() / "solutions"
-            # baseline_author=baseline.author short-circuits the speedup lookup
-            # in _run_one so the baseline doesn't compare against itself.
-            traces = run_solution_on_workloads(
-                def_obj, baseline, wls,
-                solutions_root=solutions_root,
-                trace_set=self,
-                baseline_author=baseline.author,
-            )
-            self.add_traces(traces)
-            all_traces.extend(traces)
-        return all_traces
+    # The benchmark run loops live in bench/benchmark.py (Benchmark.bench /
+    # collect_baselines / run_all). TraceSet stays a pure warehouse: load,
+    # query (get_baseline_solution / get_baseline_min_ns), and persist
+    # (add_traces). bench/cli.py constructs a Benchmark and dispatches into it.
 
     # ── Summary ───────────────────────────────────────────────────────────────
 

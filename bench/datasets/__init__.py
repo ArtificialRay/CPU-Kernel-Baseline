@@ -17,10 +17,12 @@ and add a new bench/datasets/xnnpack.py with the same interface.
 from typing import Dict, Type
 
 from .ncnn import NcnnDataset
+from .raw import RawDataset
 
 # Registry of dataset adapters by name. Keys must match SupportedDatasets enum.
 DATASETS: Dict[str, Type] = {
     "ncnn": NcnnDataset,
+    "raw": RawDataset,
 }
 
 

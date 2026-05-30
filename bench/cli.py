@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
+from bench.benchmark import Benchmark, BenchmarkConfig
 from bench.data import TraceSet
 
 
@@ -54,11 +55,15 @@ def _parse_axes_filter(s: Optional[str]) -> Optional[Dict[str, int]]:
 
 def cmd_bench(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
-    traces = ts.cli_bench(
-        definition=args.definition,
-        solution=args.solution,
-        workload_filter=_parse_axes_filter(args.workload_axes),
-    )
+    bench = Benchmark(ts, BenchmarkConfig())
+    try:
+        traces = bench.bench(
+            definition=args.definition,
+            solution=args.solution,
+            workload_filter=_parse_axes_filter(args.workload_axes),
+        )
+    finally:
+        bench.close()
     # One-line per trace summary
     for t in traces:
         ev = t.evaluation
@@ -80,10 +85,15 @@ def cmd_bench(args: argparse.Namespace) -> int:
 
 def cmd_collect_baselines(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
-    traces = ts.cli_collect_baselines(
+    cfg = BenchmarkConfig(
         baseline_author=args.baseline_author,
-        definition_filter=args.definition,
+        definitions=[args.definition] if args.definition else None,
     )
+    bench = Benchmark(ts, cfg)
+    try:
+        traces = bench.collect_baselines()
+    finally:
+        bench.close()
     if not traces:
         print(f"No baseline traces produced. Check that solutions/ncnn/{args.baseline_author}/"
               f" contains conv2d Solutions and definitions/ + workloads/ are populated.")

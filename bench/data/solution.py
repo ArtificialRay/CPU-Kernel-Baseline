@@ -33,6 +33,9 @@ class SupportedDatasets(str, Enum):
     """Calls the kernel via ncnn::Mat/Option scaffolding; harness wraps ncnn::Convolution etc."""
     RAW = "raw"
     """Calls the kernel with bare `float*` tensors; for non-framework solutions."""
+    SIMD_LOOP = "simd-loop"
+    """The loop_* SIMD baseline dataset. Builder is a NotImplemented stub until
+    that dataset is migrated into bench/ (see SimdLoopBuilder)."""
     # Future: XNNPACK, EIGEN, ...
 
 

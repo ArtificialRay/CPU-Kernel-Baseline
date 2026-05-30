@@ -2,8 +2,8 @@
 
 Pure compute: given a (Definition, Solution, [Workload]) tuple, this module
 compiles, dlopens, runs, scores, times, and returns Traces. It does NOT touch
-disk for persistence — the caller (TraceSet.cli_bench / eval/tools.py) is
-responsible for `add_traces()`.
+disk for persistence — the caller (bench/benchmark.py Benchmark / eval/tools.py)
+is responsible for `add_traces()`.
 
 End-to-end flow per workload:
   1. gen_inputs_for_workload(d, w)                   # numpy arrays + scalars
@@ -30,10 +30,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from bench.compile import (
+    BuilderRegistry,
     CompileError,
-    CompileResult,
-    cleanup_build_dir,
-    compile_solution,
 )
 from bench.data.definition import Definition
 from bench.data.solution import Solution, SupportedDatasets
@@ -48,6 +46,7 @@ from bench.data.trace import (
 from bench.data.workload import Workload
 from bench.datasets import get as get_dataset_adapter
 from bench.datasets.ncnn import SIGNATURES as NCNN_SIGNATURES
+from bench.datasets.raw import SIGNATURES as RAW_SIGNATURES
 from bench.runtime.correctness import compare
 from bench.runtime.inputs import gen_inputs_for_workload
 from bench.runtime.timing import WatchdogTimeout, time_callable
@@ -73,7 +72,9 @@ def run_solution_on_workloads(
     solution: Solution,
     workloads: List[Workload],
     *,
-    solutions_root: Optional[Path] = None,    # kept for API symmetry; resolved via compile.py
+    is_baseline: bool = False,                # baseline path (NcnnBuilder + ncnn adapter)
+                                              # vs candidate path (CandidateBuilder + raw adapter)
+    solutions_root: Optional[Path] = None,    # kept for API symmetry; resolved via the registry
     trace_set: Optional[Any] = None,          # for baseline_min_ns lookup (PHASE2 #7)
     baseline_author: str = "baseline-ncnn-arm",
     warmup: int = DEFAULT_WARMUP,
@@ -102,9 +103,13 @@ def run_solution_on_workloads(
     timestamp = datetime.now(timezone.utc).isoformat()
 
     # ── Compile once, reuse across workloads ──
+    # Build dir lifecycle is owned by the registry (freed by Benchmark.close()),
+    # so the runner no longer cleans up per call.
     try:
-        compiled = compile_solution(solution, op_type=definition.op_type)
-    except (CompileError, FileNotFoundError) as e:
+        compiled = BuilderRegistry.get_instance().build(
+            definition, solution, is_baseline
+        )
+    except (CompileError, FileNotFoundError, NotImplementedError) as e:
         log = _format_compile_error(e)
         logger.warning("Compile failed for %s: %s", solution.name, log[:300])
         return [
@@ -116,13 +121,15 @@ def run_solution_on_workloads(
         ]
 
     # ── Dlopen + bind entry + reference closure (once per compile) ──
+    # Adapter + ctypes signatures are chosen by is_baseline, NOT solution.dataset:
+    # baselines run through the ncnn::Mat ABI, candidates through the raw float* ABI.
     try:
         lib = ctypes.CDLL(str(compiled.so_path))
-        entry = _bind_entry(lib, definition.op_type)
-        adapter = get_dataset_adapter(solution.dataset.value)()
+        signatures = NCNN_SIGNATURES if is_baseline else RAW_SIGNATURES
+        entry = _bind_entry(lib, definition.op_type, signatures)
+        adapter = get_dataset_adapter("ncnn" if is_baseline else "raw")()
         ref_run = _compile_reference(definition)
     except Exception as e:
-        cleanup_build_dir(compiled)
         log = f"Failed to load compiled .so or reference: {e}\n{traceback.format_exc()}"
         return [
             _trace(
@@ -134,20 +141,17 @@ def run_solution_on_workloads(
 
     # ── Per-workload loop ──
     traces: List[Trace] = []
-    try:
-        for wl in workloads:
-            traces.append(
-                _run_one(
-                    definition, solution, wl,
-                    entry=entry, adapter=adapter, ref_run=ref_run,
-                    env=env, timestamp=timestamp,
-                    warmup=warmup, repeat=repeat, cpu=cpu, watchdog_s=watchdog_s,
-                    abs_tol=abs_tol, rel_tol=rel_tol,
-                    trace_set=trace_set, baseline_author=baseline_author,
-                )
+    for wl in workloads:
+        traces.append(
+            _run_one(
+                definition, solution, wl,
+                entry=entry, adapter=adapter, ref_run=ref_run,
+                env=env, timestamp=timestamp,
+                warmup=warmup, repeat=repeat, cpu=cpu, watchdog_s=watchdog_s,
+                abs_tol=abs_tol, rel_tol=rel_tol,
+                trace_set=trace_set, baseline_author=baseline_author,
             )
-    finally:
-        cleanup_build_dir(compiled)
+        )
 
     return traces
 
@@ -333,14 +337,14 @@ def _eval_error(status: EvaluationStatus, env: Environment, ts: str, log: str) -
     return Evaluation(status=status, environment=env, timestamp=ts, log=log)
 
 
-def _bind_entry(lib: ctypes.CDLL, op_type: str):
-    """Resolve armbench_entry_<op_type> with the ctypes signature for that op."""
+def _bind_entry(lib: ctypes.CDLL, op_type: str, signatures: Dict[str, Any]):
+    """Resolve armbench_entry_<op_type> with the given ctypes signature table."""
     sym = f"armbench_entry_{op_type}"
-    if op_type not in NCNN_SIGNATURES:
+    if op_type not in signatures:
         raise ValueError(f"No ctypes signature registered for op_type '{op_type}'")
     fn = getattr(lib, sym)
     fn.restype = ctypes.c_int
-    fn.argtypes = NCNN_SIGNATURES[op_type]
+    fn.argtypes = signatures[op_type]
     # Stash the lib so the adapter can bind its own symbols (mat_factory) too.
     fn._lib = lib  # type: ignore[attr-defined]
     return fn
