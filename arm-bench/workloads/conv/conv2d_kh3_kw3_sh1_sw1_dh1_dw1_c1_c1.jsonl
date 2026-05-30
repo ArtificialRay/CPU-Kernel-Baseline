@@ -1,0 +1,1 @@
+{"axes": {"N": 1, "H": 5, "W": 5}, "scalar_inputs": {}, "uuid": "smoke-5x5", "tags": {"from": "phase1-smoke"}, "description": "5x5 input, no padding -> 3x3 output. Smallest hand-checkable case."}

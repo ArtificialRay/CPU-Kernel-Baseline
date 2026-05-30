@@ -26,12 +26,17 @@ from bench.data import TraceSet
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _default_root() -> Path:
+<<<<<<< feat/collect-ncnn-baseline-kernel-conv
     """Default warehouse root: arm-bench/bench-trace/.
 
     The TraceSet expects to find definitions/ + solutions/ + workloads/ +
     traces/ directly under this root.
     """
     return Path(__file__).resolve().parent.parent / "bench-trace"
+=======
+    """Default arm-bench root: parent of `bench/`."""
+    return Path(__file__).resolve().parent.parent
+>>>>>>> main
 
 
 def _parse_axes_filter(s: Optional[str]) -> Optional[Dict[str, int]]:
@@ -78,6 +83,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
     return 0
 
 
+<<<<<<< feat/collect-ncnn-baseline-kernel-conv
 def cmd_collect_baselines(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
     traces = ts.cli_collect_baselines(
@@ -93,6 +99,8 @@ def cmd_collect_baselines(args: argparse.Namespace) -> int:
     return 0
 
 
+=======
+>>>>>>> main
 def cmd_summary(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
     print(json.dumps(ts.summary(), indent=2))
