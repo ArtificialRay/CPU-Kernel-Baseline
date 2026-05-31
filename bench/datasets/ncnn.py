@@ -1,15 +1,15 @@
 """ncnn dataset adapter: numpy ↔ ncnn::Mat via ctypes.
 
 The C-side implementation of these factory functions lives in
-`bench/datasets/_ncnn_lib/_mat_factory.cpp`, which bench/compile.py
-concatenates into every solution.so build. After dlopening the solution.so,
-the runner resolves both:
-  - armbench_entry_<op_type>  (from solutions/ncnn/_harness/<op_type>.cpp)
+`bench/datasets/_ncnn_lib/_mat_factory.cpp`, which the NcnnBuilder
+(`bench/compile/builders/ncnn.py`) compiles into every solution.so build. After
+dlopening the solution.so, the runner resolves both:
+  - armbench_entry_<op_type>  (from bench/compile/builders/ncnn_harness/<op_type>.cpp)
   - armbench_ncnn_mat_*       (from _mat_factory.cpp)
 …and ctypes-binds them with the signatures declared here.
 
 SIGNATURES dict is the load-bearing manual mirror of
-`solutions/ncnn/_harness/<op_type>.h`. Edit one, edit the other.
+`bench/compile/builders/ncnn_harness/<op_type>.h`. Edit one, edit the other.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import numpy as np
 
 # ── ctypes signatures for armbench_entry_<op_type> ───────────────────────────
 # Each entry mirrors the matching `extern "C" int armbench_entry_<op_type>(...)`
-# in solutions/ncnn/_harness/<op_type>.cpp. Order must match exactly.
+# in bench/compile/builders/ncnn_harness/<op_type>.cpp. Order must match exactly.
 
 _C_VOID_P = ctypes.c_void_p
 _C_INT = ctypes.c_int
@@ -209,7 +209,7 @@ class NcnnDataset:
         scalar_args carries the per-op int parameters the harness needs
         (out_c, kw, kh, sw, sh, dw, dh, pad_left, pad_top, activation_type for
         conv2d). The order here MUST match SIGNATURES[op_type] and the C
-        signature in `solutions/ncnn/_harness/<op_type>.cpp`.
+        signature in `bench/compile/builders/ncnn_harness/<op_type>.cpp`.
         """
         fns = self.bind_lib(lib)
 

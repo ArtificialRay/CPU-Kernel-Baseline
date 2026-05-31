@@ -1,22 +1,22 @@
 """NcnnBuilder — baseline path for the `ncnn` dataset.
 
-Port of the old `compile_solution` (baseline branch only), retargeted from the
-stale `framework/` + `arm-heavy-optimized/` layout to the real ncnn checkout
-(`ncnn/src/*.cpp`, `ncnn/src/layer/arm/`). Builds:
+Builds, against the real ncnn checkout (`ncnn/src/*.cpp`, `ncnn/src/layer/arm/`):
 
   - the solution kernel.cpp (defines ncnn::convolution_kernel)
-  - solutions/ncnn/_harness/<op>.{cpp,h}     (ncnn::Mat/Option shim)
+  - ncnn_harness/<op>.{cpp,h}                 (ncnn::Mat/Option shim, ships next
+                                               to this builder)
   - bench/datasets/_ncnn_lib/_mat_factory.cpp (numpy ↔ ncnn::Mat)
-  - bench/datasets/_ncnn_lib/_ncnn_*_stubs.cpp
-  - the minimum ncnn framework sources
 
-into one .so the runner dlopens.
+into one .so (linked against the full ncnn static lib) that the runner dlopens.
 
-ncnn needs a CMake-generated `platform.h`. We add `<base_root>/build/src` to the
-include path when present (the conventional `cmake -B build` output), and the
-prebuilt `libncnn.a` / `libncnn_arm_heavy.a` archive when the solution declares
-the `ncnn_arm_heavy` dependency. Both are resolved at build time and the exact
-shape is confirmed on the ARM host.
+The real ncnn kernels come from a full `libncnn.a` produced by ncnn's own CMake
+build (see `_ncnn_static_lib`). That build is required: upstream
+`convolution_arm.cpp` references a sprawling tree of per-ISA helper translation
+units (`convolution_arm_i8mm.cpp`, `..._asimddp.cpp`, `..._sve.cpp`, …), each
+compiled by ncnn's CMake with its own `-march` flags — hand-picking a subset
+into a slim archive leaves undefined symbols at dlopen. The same CMake build also
+generates `platform.h` under `<base_root>/build/src`, which we add to the include
+path.
 """
 
 from __future__ import annotations
@@ -34,20 +34,11 @@ from ..builder import (
     Builder,
     CompileError,
     CompileResult,
-    solutions_root,
 )
 
-# Minimum ncnn framework .cpp set, retargeted to ncnn/src/ (was framework/*.cpp).
-NCNN_FRAMEWORK_SOURCES = [
-    "src/mat.cpp",
-    "src/allocator.cpp",
-    "src/expression.cpp",
-    "src/option.cpp",
-    "src/paramdict.cpp",
-    "src/cpu.cpp",
-    "src/modelbin.cpp",
-    "src/datareader.cpp",
-]
+# ncnn_harness/ (the ncnn::Mat shim) ships next to this builder, mirroring
+# candidate_harness/. Keyed by op_type: ncnn_harness/<op>.{cpp,h}.
+_HARNESS_DIR = Path(__file__).resolve().parent / "ncnn_harness"
 
 
 def _ncnn_base_root(arm_bench_root: Path) -> Path:
@@ -61,20 +52,11 @@ def _ncnn_base_root(arm_bench_root: Path) -> Path:
     return arm_bench_root.parent / "ncnn"
 
 
-def _has_ncnn_arm_heavy(solution: Solution) -> bool:
-    return "ncnn_arm_heavy" in (solution.spec.dependencies or [])
-
-
-def _ncnn_arm_heavy_archive(arm_bench_root: Path) -> Path:
-    return arm_bench_root / "build" / "libncnn_arm_heavy.a"
-
-
 def _ncnn_static_lib(base_root: Path) -> Optional[Path]:
-    """Locate a full ncnn static lib from a CMake build, if one exists.
+    """Locate the full ncnn static lib from a CMake build, if one exists.
 
-    A real `libncnn.a` resolves Convolution_arm's entire dependency tree (and
-    ships the generated platform.h next to it), so when present it supersedes
-    the framework-sources + stubs + arm-heavy-archive path entirely. Build it
+    A real `libncnn.a` resolves Convolution_arm's entire dependency tree (every
+    per-ISA helper TU) and ships the generated platform.h next to it. Build it
     once on the host with:
 
         cd ncnn && cmake -B build -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF \\
@@ -123,11 +105,8 @@ class NcnnBuilder(Builder):
     ) -> CompileResult:
         solution_src_paths = self._materialize_sources(solution, sources_dir)
 
-        # Harness (ncnn::Mat shim).
-        harness_cpp = (
-            solutions_root(arm_bench_root)
-            / solution.dataset.value / "_harness" / f"{op_type}.cpp"
-        )
+        # Harness (ncnn::Mat shim) — ships next to this builder in ncnn_harness/.
+        harness_cpp = _HARNESS_DIR / f"{op_type}.cpp"
         harness_h = harness_cpp.with_suffix(".h")
         if not harness_cpp.exists():
             raise FileNotFoundError(f"Dataset harness not found: {harness_cpp}")
@@ -161,52 +140,22 @@ class NcnnBuilder(Builder):
         for inc in include_dirs:
             cmd += ["-I", str(inc)]
 
+        # Link against the full ncnn static lib — it resolves the whole ncnn
+        # dependency tree (Convolution_arm and its per-ISA helper TUs,
+        # copy_make_border, Mat, ...) that the kernel and harness reference.
         static_lib = _ncnn_static_lib(base_root)
-        if static_lib is not None:
-            # Full-lib path: libncnn.a resolves the whole ncnn dependency tree
-            # (Convolution_arm, copy_make_border, Mat, ...). No framework sources,
-            # no create_layer stubs — linking those too would duplicate symbols.
-            cmd.append(str(harness_cpp))
-            cmd.append(str(mat_factory_cpp))
-            cmd += [str(p) for p in solution_src_paths]
-            cmd += ["-o", str(so_path)]
-            cmd.append(str(static_lib))
-        else:
-            # Legacy minimal path: hand-pick framework sources + create_layer
-            # stubs + the optional prebuilt arm-heavy archive. Used when no full
-            # ncnn CMake build is present.
-            if _has_ncnn_arm_heavy(solution):
-                stubs = BENCH_ROOT / "datasets" / "_ncnn_lib" / "_ncnn_arm_heavy_stubs.cpp"
-            else:
-                stubs = BENCH_ROOT / "datasets" / "_ncnn_lib" / "_ncnn_unused_stubs.cpp"
-            if not stubs.exists():
-                raise FileNotFoundError(f"ncnn helper source not found: {stubs}")
-            framework_srcs: List[Path] = []
-            for rel in NCNN_FRAMEWORK_SOURCES:
-                p = base_root / rel
-                if not p.exists():
-                    raise FileNotFoundError(
-                        f"ncnn framework source missing: {p}. Build a full ncnn "
-                        f"static lib (see _ncnn_static_lib) or set ARMBENCH_BASE_ROOT."
-                    )
-                framework_srcs.append(p)
-            heavy_archive: Optional[Path] = None
-            if _has_ncnn_arm_heavy(solution):
-                heavy_archive = _ncnn_arm_heavy_archive(arm_bench_root)
-                if not heavy_archive.exists():
-                    raise FileNotFoundError(
-                        f"Solution '{solution.name}' depends on ncnn_arm_heavy but neither "
-                        f"a full ncnn static lib nor the prebuilt archive {heavy_archive} "
-                        f"is present."
-                    )
-            cmd.append(str(harness_cpp))
-            cmd.append(str(mat_factory_cpp))
-            cmd.append(str(stubs))
-            cmd += [str(p) for p in framework_srcs]
-            cmd += [str(p) for p in solution_src_paths]
-            cmd += ["-o", str(so_path)]
-            if heavy_archive is not None:
-                cmd.append(str(heavy_archive))
+        if static_lib is None:
+            raise FileNotFoundError(
+                f"Full ncnn static lib not found under {base_root}/build "
+                f"(build/src/libncnn.a or build/install/lib/libncnn.a). Build it "
+                f"once with ncnn's CMake — see _ncnn_static_lib for the command — "
+                f"or set ARMBENCH_BASE_ROOT to a checkout that has one."
+            )
+        cmd.append(str(harness_cpp))
+        cmd.append(str(mat_factory_cpp))
+        cmd += [str(p) for p in solution_src_paths]
+        cmd += ["-o", str(so_path)]
+        cmd.append(str(static_lib))
 
         cmd += list(solution.spec.link_flags or [])
         if "-fopenmp" not in cmd and not any("-fno-openmp" in f for f in cmd):

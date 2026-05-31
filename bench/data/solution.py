@@ -65,11 +65,13 @@ class SolutionSpec(BaseModelWithDocstrings):
     target_hardware: List[NonEmptyString] = Field(min_length=1)
     """E.g. ['graviton3', 'aarch64-sve']. Informational; benchmarker may use for skip checks."""
     entry_point: NonEmptyString
-    """`<source_file>::<C_symbol>`. The symbol the on-disk harness's
-    `armbench_entry_<op_type>` shim calls into. Must follow the per-(dataset, op_type)
-    contract declared in `solutions/<dataset>/_harness/<op_type>.h`."""
+    """`<source_file>::<C_symbol>`. The symbol the builder's harness shim
+    `armbench_entry_<op_type>` calls into. Must follow the per-(dataset, op_type)
+    contract declared in the builder's harness header (e.g.
+    `bench/compile/builders/ncnn_harness/<op_type>.h` for ncnn baselines,
+    `candidate_harness/<op_type>.h` for candidates)."""
     dependencies: List[NonEmptyString] = Field(default_factory=list)
-    """E.g. ['ncnn', 'openmp']. Mapped to -l flags by `bench/compile.py`."""
+    """E.g. ['ncnn', 'openmp']. Mapped to -l flags by the compile builders."""
     isa_features: List[NonEmptyString] = Field(default_factory=list)
     """E.g. ['sve', 'neon']. Benchmarker skips solutions whose features the host lacks."""
     compile_flags: List[NonEmptyString] = Field(default_factory=list)
