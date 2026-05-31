@@ -102,21 +102,46 @@ The workflow to collect runtime performance of convolution kernel
 Remote (Ubuntu ARM, after `python eval/provision.py --instance c7g.large`):
 ```bash
 ssh -i ~/.ssh/id_rsa ubuntu@<host> '
-  sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip clang libomp-dev
-  pip3 install --user --break-system-packages -r ~/requirements.txt
+  sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip clang cmake libomp-dev
+  pip3 install --user --break-system-packages -r ~/arm-bench/requirements.txt
 '
 ```
 
-### 2. Build libncnn_arm_heavy.a on the instance (one-time per ISA)
+### 2. Build the full ncnn static lib on the instance (one-time per ISA)
 
-One-time prebuild of `convolution_arm.cpp` + base `convolution.cpp` into a
-static archive that every baseline Solution links against:
+Every baseline Solution links against a full `libncnn.a` built from the ncnn
+checkout (`~/ncnn`, a sibling of `~/arm-bench`). It is required for two reasons:
+it resolves Convolution_arm's whole per-ISA helper tree (`convolution_arm_i8mm.cpp`,
+`..._asimddp.cpp`, `..._sve.cpp`, …, each compiled with its own `-march` flags),
+and its CMake configure step generates the `platform.h` the per-solution build
+includes. A hand-picked subset would leave undefined symbols at dlopen, so build
+the whole thing once.
+
+**a. Configure** (fast; also generates `build/src/platform.h`):
 
 ```bash
-ssh -i ~/.ssh/id_rsa ubuntu@<host> 'bash arm-bench/scripts/build_ncnn_arm_heavy.sh'
-# defaults: ARMBENCH_ISA=sve, ARMBENCH_REBUILD=0
-# output: arm-bench/build/libncnn_arm_heavy.a
+ssh -i ~/.ssh/id_rsa ubuntu@<host> 'cd ~/ncnn && CC=clang CXX=clang++ cmake -B build \
+    -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF \
+    -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF'
 ```
+
+**b. Build the `ncnn` target only** (compiles the full library — a few minutes
+on a 2-core c7g.large; scale `-j` to the instance):
+
+```bash
+ssh -i ~/.ssh/id_rsa ubuntu@<host> 'cd ~/ncnn && cmake --build build -j"$(nproc)" --target ncnn'
+```
+
+**c. Verify** the archive and generated header exist:
+
+```bash
+ssh -i ~/.ssh/id_rsa ubuntu@<host> 'ls -la ~/ncnn/build/src/libncnn.a ~/ncnn/build/src/platform.h'
+# output: ~/ncnn/build/src/libncnn.a  (the lib the NcnnBuilder links against)
+```
+
+The builder auto-discovers `~/ncnn/build/src/libncnn.a` (override the checkout
+location with `ARMBENCH_BASE_ROOT=<path>` if it differs). This is a one-time
+cost per instance/ISA: the lib is cached and reused across every baseline build.
 
 ### 3. Collect baselines
 

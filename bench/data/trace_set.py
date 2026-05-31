@@ -33,8 +33,8 @@ class TraceSet:
         root/
           definitions/<op_type>/<def_name>.json
           solutions/<dataset>/<author>/<op_type>/<sol_name>.json
-            (plus solutions/<dataset>/_harness/<op_type>.{cpp,h} — loaded on demand
-             by bench/compile.py, not part of the warehouse itself)
+            (the per-op harness shim that wraps these lives with the builders, in
+             bench/compile/builders/<…>_harness/, not in the warehouse)
           workloads/<op_type>/<def_name>.jsonl
           traces/<op_type>/<def_name>.jsonl
 

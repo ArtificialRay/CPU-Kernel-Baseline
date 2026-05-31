@@ -1,17 +1,18 @@
 """Per-dataset Python adapters: numpy ↔ framework-native tensor handles.
 
-The C-side calling convention for each dataset lives on disk under
-`solutions/<dataset>/_harness/<op_type>.{cpp,h}`. The Python-side adapter
-here is responsible for:
+The C-side calling convention for each dataset lives with its builder, under
+`bench/compile/builders/<dataset>_harness/<op_type>.{cpp,h}`. The Python-side
+adapter here is responsible for:
 
   - `wrap_inputs(definition, workload, np_inputs)` — turn numpy arrays into
-    opaque pointers the on-disk harness expects (ncnn::Mat*, raw float*, ...)
+    opaque pointers the harness shim expects (ncnn::Mat*, raw float*, ...)
   - `unwrap_output(definition, workload, output_handle)` — read result back to numpy
   - `SIGNATURES` dict — kernel_type → ctypes argtypes list, mirrors
-    `armbench_entry_<op_type>` declared in `_harness/<op_type>.h`
+    `armbench_entry_<op_type>` declared in `<dataset>_harness/<op_type>.h`
 
-To add a new dataset (e.g. "xnnpack"): create solutions/xnnpack/_harness/
-and add a new bench/datasets/xnnpack.py with the same interface.
+To add a new dataset (e.g. "xnnpack"): create
+bench/compile/builders/xnnpack_harness/ and add a new bench/datasets/xnnpack.py
+with the same interface.
 """
 
 from typing import Dict, Type
