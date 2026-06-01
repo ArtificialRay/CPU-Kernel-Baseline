@@ -156,7 +156,7 @@ ssh -i ~/.ssh/id_rsa ubuntu@<host> 'cd arm-bench && python3 -m bench.cli collect
 
 Pull traces back locally for inspection / source-of-truth versioning:
 ```bash
-rsync -avz -e "ssh -i ~/.ssh/id_rsa" ubuntu@<host>:arm-bench/traces/ arm-bench/traces/
+rsync -avz -e "ssh -i ~/.ssh/id_rsa" ubuntu@<host>:arm-bench/bench-trace/traces/ bench-trace/traces/
 ```
 
 ### 4. Inspect / run a candidate Solution
