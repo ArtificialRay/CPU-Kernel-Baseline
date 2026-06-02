@@ -62,15 +62,16 @@ class TimingResult:
     """If watchdog tripped, the rep index at which we stopped; samples_ns may be short."""
 
     # ── Hardware perf counters (per single kernel invocation; None if unavailable) ──
-    # Taken from the MIN-cycles rep (noise floor, like min_ns), not a loop mean.
+    # Amortized mean over the timed loop (aggregate / total_iters). A per-rep min
+    # would be preferable but needs rdpmc, unavailable on Graviton/Nitro.
     cycles: Optional[int] = None
-    """CPU core cycles per invocation — the canonical metric, min over reps."""
+    """CPU core cycles per invocation — the canonical metric (loop mean)."""
     instructions: Optional[int] = None
-    """Retired instructions per invocation, from the min-cycles rep."""
+    """Retired instructions per invocation (loop mean)."""
     cache_misses: Optional[float] = None
-    """Cache misses per invocation, from the min-cycles rep."""
+    """Cache misses per invocation (aggregate / total_iters)."""
     ipc: Optional[float] = None
-    """Instructions per cycle of the min-cycles rep (instructions / cycles)."""
+    """Instructions per cycle (instructions / cycles)."""
 
 
 class WatchdogTimeout(RuntimeError):
@@ -118,11 +119,10 @@ def time_callable(
         seconds, raise WatchdogTimeout. Default 30 s catches infinite loops.
     collect_perf_counters
         If True, open a perf_event_open counter group (cycles / instructions /
-        cache-misses) and RESET/ENABLE/DISABLE it around EACH rep, then report
-        the rep with the fewest cycles (the noise floor, mirroring min_ns). The
-        counter ioctls sit outside the t0..t1 window so ns timing is unaffected.
-        Best-effort: if the counters can't be opened (permissions / non-Linux),
-        timing proceeds and the perf fields on the result stay None.
+        cache-misses) and ENABLE/DISABLE it once around the whole `repeat` loop,
+        reporting the per-invocation mean. Best-effort: if the counters can't be
+        opened (permissions / non-Linux), timing proceeds and the perf fields on
+        the result stay None.
 
     Returns
     -------
@@ -139,14 +139,23 @@ def time_callable(
     for _ in range(warmup):
         inner()
 
-    # Per-rep hardware counters: RESET/ENABLE before each sample and DISABLE/READ
-    # after, so each rep yields its OWN cycle count and we can take the MIN (the
-    # noise floor, exactly like min_ns) instead of a jitter-prone loop mean. The
-    # ioctls sit OUTSIDE the t0..t1 window, so the ns samples are unaffected and
-    # stay identical to counter-less runs (preserves the timing regression).
+    # Hardware counters wrap the WHOLE repeat loop with ONE ENABLE/DISABLE, so
+    # cycles is an amortized mean over all reps. We tried per-rep enable/disable
+    # to take a min-cycles "noise floor" (like min_ns); on Graviton it backfired
+    # — the per-rep counter syscalls perturb cache/pipeline state right before
+    # each timed window, inflating AND destabilizing min_ns (+55% on tiny
+    # kernels) and cycles (p95 drift 3%→18%). A clean per-rep min needs the rdpmc
+    # userspace read (no syscall), but Graviton/Nitro reports cap_user_rdpmc=0
+    # (PMU is virtualized), so that path is unavailable here. Hence: one-shot
+    # wrap + mean, which keeps min_ns clean and cycles more stable.
     counters = open_counters() if collect_perf_counters else None
-    # Per-rep (cycles, instructions, cache_misses) for reps that read cleanly.
-    perf_samples: List[tuple] = []
+    if counters is not None:
+        try:
+            counters.reset()
+            counters.enable()
+        except OSError:
+            counters.close()
+            counters = None
 
     samples: List[int] = []
     deadline = time.monotonic() + watchdog_s
@@ -156,29 +165,21 @@ def time_callable(
         if time.monotonic() > deadline:
             aborted_at = r
             break
-        if counters is not None:
-            try:
-                counters.reset()
-                counters.enable()
-            except OSError:
-                counters.close()
-                counters = None
         t0 = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
         for _ in range(inner_iters):
             inner()
         t1 = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-        if counters is not None:
-            try:
-                counters.disable()
-                c = counters.read()
-                if c.cycles is not None:
-                    perf_samples.append((c.cycles, c.instructions, c.cache_misses))
-            except OSError:
-                pass
         samples.append((t1 - t0) // inner_iters)
 
+    totals = None
     if counters is not None:
-        counters.close()
+        try:
+            counters.disable()
+            totals = counters.read()
+        except OSError:
+            totals = None
+        finally:
+            counters.close()
 
     if not samples:
         raise WatchdogTimeout(
@@ -192,20 +193,20 @@ def time_callable(
     p5_ns = sorted_samples[p5_idx]
     median_ns = sorted_samples[n // 2]
 
-    # Report the rep with the MINIMUM cycles (noise floor, mirroring min_ns), and
-    # take that same rep's instructions/cache_misses so ipc is self-consistent.
-    # Each rep's counts cover inner_iters calls → divide to get per-invocation.
+    # Normalize aggregate counters to one kernel invocation. total_iters counts
+    # only the samples actually taken (a watchdog abort shortens the loop).
     cycles = instructions = None
     cache_misses = ipc = None
-    if perf_samples and inner_iters > 0:
-        best_cyc, best_ins, best_cm = min(perf_samples, key=lambda s: s[0])
-        cycles = int(round(best_cyc / inner_iters))
-        if best_ins is not None:
-            instructions = int(round(best_ins / inner_iters))
-            if best_cyc > 0:
-                ipc = round(best_ins / best_cyc, 4)
-        if best_cm is not None:
-            cache_misses = best_cm / inner_iters
+    total_iters = len(samples) * inner_iters
+    if totals is not None and total_iters > 0:
+        if totals.cycles is not None:
+            cycles = int(round(totals.cycles / total_iters))
+        if totals.instructions is not None:
+            instructions = int(round(totals.instructions / total_iters))
+        if totals.cache_misses is not None:
+            cache_misses = totals.cache_misses / total_iters
+        if totals.cycles and totals.instructions:
+            ipc = round(totals.instructions / totals.cycles, 4)
 
     return TimingResult(
         min_ns=int(min_ns),

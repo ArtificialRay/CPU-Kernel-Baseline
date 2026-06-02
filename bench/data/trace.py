@@ -48,11 +48,11 @@ class Performance(BaseModelWithDocstrings):
     INNER_MIN_PER_ITER_NS), `p5_ns` the 5th-percentile noise-floor proxy.
 
     All hardware counters (`cycles`, `instructions`, `cache_misses`) are reported
-    per ONE kernel invocation, taken from the rep with the FEWEST cycles (the
-    noise floor, mirroring how `min_ns` is the min sample) rather than a loop
-    mean — so a stray memory stall / scheduler hit in one rep doesn't inflate
-    them. They are Optional: when `perf_event_open` is unavailable (permissions /
-    non-Linux) they stay None and only the ns timings are reported.
+    per ONE kernel invocation as an amortized mean over the timed loop (aggregate
+    / `repeat * inner_iters`). A per-rep min (mirroring `min_ns`) would be less
+    jitter-prone but needs the rdpmc userspace read, which Graviton/Nitro doesn't
+    expose (cap_user_rdpmc=0). They are Optional: when `perf_event_open` is
+    unavailable (permissions / non-Linux) they stay None and only ns is reported.
     """
 
     min_ns: int = Field(ge=0)
