@@ -1,19 +1,20 @@
 """Run one Solution against one Definition's workloads, return List[Trace].
 
-Pure compute: given a (Definition, Solution, [Workload]) tuple, this module
-compiles, dlopens, runs, scores, times, and returns Traces. It does NOT touch
-disk for persistence — the caller (bench/benchmark.py Benchmark / eval/tools.py)
-is responsible for `add_traces()`.
+Thin compile-and-dispatch shell. Given a (Definition, Solution, [Workload]) tuple
+this module compiles + dlopens the solution, binds the kernel + reference, then
+hands each workload to a pluggable `Evaluator` (bench/evaluators/) which owns the
+correctness + performance protocol. The runner itself no longer knows how an
+evaluation is scored — only how to build the artifacts the evaluator needs.
 
-End-to-end flow per workload:
-  1. gen_inputs_for_workload(d, w)                   # numpy arrays + scalars
-  2. exec(d.reference) → run(**inputs)               # PyTorch ground truth
-  3. dataset.wrap_inputs(np, scalars, op_type, lib)  # ncnn::Mat opaque ptrs
-  4. entry(*ctx.entry_args)                          # kernel call
-  5. dataset.unwrap_output(ctx)                      # numpy result
-  6. correctness.compare(candidate, reference)
-  7. if pass: timing.time_callable(lambda: entry(*args))
-  8. emit Trace
+Responsibilities that stay here (per-solution, around the evaluator):
+  - compile once (BuilderRegistry), fan a COMPILE_ERROR trace to every workload
+    on failure;
+  - dlopen + bind `armbench_entry_<op>` + pick the dataset adapter → `BoundKernel`
+    (`_bind_kernel` is the single chokepoint for the deferred multi-dataset work);
+  - exec the Definition.reference → `ref_run`;
+  - snapshot the Environment; wrap each evaluator result into a Trace.
+
+It does NOT touch disk for persistence — the caller (bench/benchmark.py) does.
 """
 
 from __future__ import annotations
@@ -29,40 +30,23 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from bench.compile import (
-    BuilderRegistry,
-    CompileError,
-)
+from bench.compile import BuilderRegistry, CompileError
+from bench.config import EvalConfig
 from bench.data.definition import Definition
-from bench.data.solution import Solution, SupportedDatasets
+from bench.data.solution import Solution
 from bench.data.trace import (
-    Correctness,
     Environment,
     Evaluation,
     EvaluationStatus,
-    Performance,
     Trace,
 )
 from bench.data.workload import Workload
 from bench.datasets import get as get_dataset_adapter
 from bench.datasets.ncnn import SIGNATURES as NCNN_SIGNATURES
 from bench.datasets.raw import SIGNATURES as RAW_SIGNATURES
-from bench.runtime.correctness import compare
-from bench.runtime.inputs import gen_inputs_for_workload
-from bench.runtime.timing import WatchdogTimeout, time_callable
+from bench.evaluators import BoundKernel, resolve_evaluator
 
 logger = logging.getLogger(__name__)
-
-
-# ── Configuration ────────────────────────────────────────────────────────────
-
-# Defaults for time_callable. Tunable via env var or CLI flag later.
-DEFAULT_WARMUP = 5
-DEFAULT_REPEAT = 50
-DEFAULT_CPU = 0
-DEFAULT_WATCHDOG_S = 30.0
-DEFAULT_CORRECTNESS_ABS_TOL = 1e-3
-DEFAULT_CORRECTNESS_REL_TOL = 1e-3
 
 
 # ── Top-level entry ──────────────────────────────────────────────────────────
@@ -74,21 +58,17 @@ def run_solution_on_workloads(
     *,
     is_baseline: bool = False,                # baseline path (NcnnBuilder + ncnn adapter)
                                               # vs candidate path (CandidateBuilder + raw adapter)
+    cfg: Optional[EvalConfig] = None,         # evaluation knobs (tolerances, timing, perf)
+    trace_set: Optional[Any] = None,          # for baseline cycles/ns lookup → speedup
     solutions_root: Optional[Path] = None,    # kept for API symmetry; resolved via the registry
-    trace_set: Optional[Any] = None,          # for baseline_min_ns lookup (PHASE2 #7)
-    baseline_author: str = "baseline-ncnn-arm",
-    warmup: int = DEFAULT_WARMUP,
-    repeat: int = DEFAULT_REPEAT,
-    cpu: Optional[int] = DEFAULT_CPU,
-    watchdog_s: float = DEFAULT_WATCHDOG_S,
-    abs_tol: float = DEFAULT_CORRECTNESS_ABS_TOL,
-    rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL,
 ) -> List[Trace]:
     """Run one Solution against a list of Workloads, return one Trace each.
 
     On compile failure, every workload gets a COMPILE_ERROR Trace (same log).
-    On runtime/numeric errors, the affected workload's Trace records the status.
+    On load/runtime errors, the affected workload's Trace records the status.
     """
+    cfg = cfg or EvalConfig()
+
     if solution.definition != definition.name:
         raise ValueError(
             f"Solution '{solution.name}' targets definition '{solution.definition}', "
@@ -99,194 +79,68 @@ def run_solution_on_workloads(
     _check_single_thread_safety(solution)
 
     # ── Environment snapshot (constant across all workloads) ──
-    env = _current_environment(cpu_pinned=cpu)
+    env = _current_environment(cpu_pinned=cfg.cpu)
     timestamp = datetime.now(timezone.utc).isoformat()
 
     # ── Compile once, reuse across workloads ──
-    # Build dir lifecycle is owned by the registry (freed by Benchmark.close()),
-    # so the runner no longer cleans up per call.
     try:
-        compiled = BuilderRegistry.get_instance().build(
-            definition, solution, is_baseline
-        )
+        compiled = BuilderRegistry.get_instance().build(definition, solution, is_baseline)
     except (CompileError, FileNotFoundError, NotImplementedError) as e:
         log = _format_compile_error(e)
         logger.warning("Compile failed for %s: %s", solution.name, log[:300])
         return [
-            _trace(
-                definition.name, w, solution.name,
-                _eval_error(EvaluationStatus.COMPILE_ERROR, env, timestamp, log)
-            )
+            _trace(definition.name, w, solution.name,
+                   _eval_error(EvaluationStatus.COMPILE_ERROR, env, timestamp, log))
             for w in workloads
         ]
 
-    # ── Dlopen + bind entry + reference closure (once per compile) ──
-    # Adapter + ctypes signatures are chosen by is_baseline, NOT solution.dataset:
-    # baselines run through the ncnn::Mat ABI, candidates through the raw float* ABI.
+    # ── Dlopen + bind kernel + reference closure (once per compile) ──
     try:
-        lib = ctypes.CDLL(str(compiled.so_path))
-        signatures = NCNN_SIGNATURES if is_baseline else RAW_SIGNATURES
-        entry = _bind_entry(lib, definition.op_type, signatures)
-        adapter = get_dataset_adapter("ncnn" if is_baseline else "raw")()
+        kernel = _bind_kernel(definition, solution, is_baseline, compiled)
         ref_run = _compile_reference(definition)
     except Exception as e:
         log = f"Failed to load compiled .so or reference: {e}\n{traceback.format_exc()}"
         return [
-            _trace(
-                definition.name, w, solution.name,
-                _eval_error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log),
-            )
+            _trace(definition.name, w, solution.name,
+                   _eval_error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log))
             for w in workloads
         ]
 
-    # ── Per-workload loop ──
+    # ── Per-workload loop: delegate to the resolved evaluator ──
+    evaluator = resolve_evaluator(definition)
     traces: List[Trace] = []
     for wl in workloads:
-        traces.append(
-            _run_one(
-                definition, solution, wl,
-                entry=entry, adapter=adapter, ref_run=ref_run,
-                env=env, timestamp=timestamp,
-                warmup=warmup, repeat=repeat, cpu=cpu, watchdog_s=watchdog_s,
-                abs_tol=abs_tol, rel_tol=rel_tol,
-                trace_set=trace_set, baseline_author=baseline_author,
-            )
+        ev = evaluator.evaluate(
+            definition, wl, kernel, ref_run, cfg,
+            env=env, timestamp=timestamp,
+            is_baseline=is_baseline, trace_set=trace_set,
         )
+        traces.append(_trace(definition.name, wl, solution.name, ev))
 
     return traces
 
 
-# ── Per-workload runner ──────────────────────────────────────────────────────
+# ── Kernel binding (the deferred-#2 chokepoint) ──────────────────────────────
 
-def _run_one(
-    d: Definition, s: Solution, w: Workload,
-    *,
-    entry: Any, adapter: Any, ref_run: Any,
-    env: Environment, timestamp: str,
-    warmup: int, repeat: int, cpu: Optional[int], watchdog_s: float,
-    abs_tol: float, rel_tol: float,
-    trace_set: Optional[Any] = None,
-    baseline_author: str = "baseline-ncnn-arm",
-) -> Trace:
-    # 1. Generate inputs (numpy)
-    try:
-        np_inputs = gen_inputs_for_workload(d, w)
-    except Exception as e:
-        log = f"gen_inputs failed: {e}\n{traceback.format_exc()}"
-        return _trace(d.name, w, s.name,
-                      _eval_error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log))
+def _bind_kernel(
+    definition: Definition, solution: Solution, is_baseline: bool, compiled: Any
+) -> BoundKernel:
+    """Dlopen the compiled .so and wrap it as a BoundKernel.
 
-    # 2. Reference
-    try:
-        ref_kwargs = {k: v for k, v in np_inputs.items()}
-        ref_out = ref_run(**ref_kwargs)
-        ref_np = _to_numpy(ref_out)
-    except Exception as e:
-        log = f"reference run() failed: {e}\n{traceback.format_exc()}"
-        return _trace(d.name, w, s.name,
-                      _eval_error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log))
+    Adapter + ctypes signatures are chosen by is_baseline, NOT solution.dataset:
+    baselines run through the ncnn::Mat ABI, candidates through the raw float* ABI.
 
-    # 3. Pack inputs for the dataset's calling convention
-    scalar_args = _scalar_args_for(d, w)
-    try:
-        ctx = adapter.wrap_inputs(np_inputs, scalar_args, d.op_type, entry._lib)  # noqa: SLF001
-    except Exception as e:
-        log = f"adapter.wrap_inputs failed: {e}\n{traceback.format_exc()}"
-        return _trace(d.name, w, s.name,
-                      _eval_error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log))
-
-    try:
-        # 4. One untimed kernel call to validate correctness
-        try:
-            rc = entry(*ctx.entry_args)
-            if rc != 0:
-                log = f"kernel returned non-zero: {rc}"
-                return _trace(d.name, w, s.name,
-                              _eval_error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log))
-            candidate_np = adapter.unwrap_output(ctx)
-            # Align rank with the Definition's declared output (e.g. ncnn::Mat
-            # has no batch dim; Definition says (N, C, H, W) → prepend N=1).
-            candidate_np = _align_to_definition_output(candidate_np, d, w)
-        except Exception as e:
-            log = f"kernel call failed: {e}\n{traceback.format_exc()}"
-            return _trace(d.name, w, s.name,
-                          _eval_error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log))
-
-        # 5. Compare
-        c = compare(candidate_np, ref_np, abs_tol=abs_tol, rel_tol=rel_tol)
-        if not c.passed:
-            status = (
-                EvaluationStatus.INCORRECT_SHAPE if c.fail_reason == "shape"
-                else EvaluationStatus.INCORRECT_DTYPE if c.fail_reason == "dtype"
-                else EvaluationStatus.INCORRECT_NUMERICAL
-            )
-            log = (
-                f"correctness {c.fail_reason}: max_abs={c.max_absolute_error:.3e} "
-                f"max_rel={c.max_relative_error:.3e} "
-                f"first_idx={c.first_mismatch_index} "
-                f"got={c.first_mismatch_got:.6f} ref={c.first_mismatch_ref:.6f}"
-            )
-            return _trace(
-                d.name, w, s.name,
-                Evaluation(
-                    status=status,
-                    environment=env,
-                    timestamp=timestamp,
-                    log=log,
-                    correctness=Correctness(
-                        max_absolute_error=c.max_absolute_error,
-                        max_relative_error=c.max_relative_error,
-                    ),
-                ),
-            )
-
-        # 6. Time it
-        try:
-            timing = time_callable(
-                lambda: entry(*ctx.entry_args),
-                warmup=warmup, repeat=repeat, cpu=cpu, watchdog_s=watchdog_s,
-            )
-        except WatchdogTimeout as e:
-            return _trace(d.name, w, s.name,
-                          _eval_error(EvaluationStatus.TIMEOUT, env, timestamp, str(e)))
-
-        # 7. Baseline lookup → speedup (PHASE2.md deliverable #7).
-        # Skip when this Solution *is* the baseline (avoids self-divides).
-        ref_min_ns: Optional[int] = None
-        speedup: Optional[float] = None
-        if trace_set is not None and s.author != baseline_author:
-            ref_min_ns = trace_set.get_baseline_min_ns(
-                d.name, w.uuid, baseline_author=baseline_author
-            )
-            if ref_min_ns is not None and timing.min_ns > 0:
-                speedup = ref_min_ns / timing.min_ns
-
-        return _trace(
-            d.name, w, s.name,
-            Evaluation(
-                status=EvaluationStatus.PASSED,
-                environment=env,
-                timestamp=timestamp,
-                log="",
-                correctness=Correctness(
-                    max_absolute_error=c.max_absolute_error,
-                    max_relative_error=c.max_relative_error,
-                ),
-                performance=Performance(
-                    min_ns=timing.min_ns,
-                    p5_ns=timing.p5_ns,
-                    reference_min_ns=ref_min_ns,
-                    speedup=speedup,
-                    repeat=timing.repeat,
-                    warmup=timing.warmup,
-                ),
-            ),
-        )
-    finally:
-        try:
-            adapter.release(ctx)
-        except Exception:
-            logger.exception("adapter.release raised")
+    THIS is the single place the multi-dataset concern (problem #2) is localized:
+    to support simd-loop/tnn/... baselines later, replace the is_baseline branch
+    with a `solution.dataset → {adapter, SIGNATURES}` lookup here. Nothing in the
+    evaluator or runner loop changes, because all ABI access goes through
+    BoundKernel.
+    """
+    lib = ctypes.CDLL(str(compiled.so_path))
+    signatures = NCNN_SIGNATURES if is_baseline else RAW_SIGNATURES
+    entry = _bind_entry(lib, definition.op_type, signatures)
+    adapter = get_dataset_adapter("ncnn" if is_baseline else "raw")()
+    return BoundKernel(entry=entry, adapter=adapter, op_type=definition.op_type)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -358,66 +212,6 @@ def _compile_reference(d: Definition):
     if not callable(run):
         raise ValueError(f"Definition '{d.name}' reference has no callable `run`")
     return run
-
-
-def _scalar_args_for(d: Definition, w: Workload) -> Dict[str, int]:
-    """Assemble the integer args the on-disk harness needs (out_c, kw/kh, ..., pad, act).
-
-    For conv2d:
-      - out_c: from definition's C_out const axis
-      - kernel_{w,h}, stride_{w,h}, dilation_{w,h}: from definition's const axes
-      - pad_left, pad_top: from workload.scalar_inputs
-      - activation_type: from workload.scalar_inputs (default 0 = none)
-    """
-    if d.op_type != "conv2d":
-        raise NotImplementedError(f"_scalar_args_for: op_type {d.op_type} not yet supported")
-
-    consts = d.const_axes
-    si = w.scalar_inputs
-    return {
-        "out_c": consts["C_out"],
-        "kernel_w": consts["Kw"],
-        "kernel_h": consts["Kh"],
-        "stride_w": consts["Sw"],
-        "stride_h": consts["Sh"],
-        "dilation_w": consts["Dw"],
-        "dilation_h": consts["Dh"],
-        "pad_left": int(si.get("pad_left", 0)),
-        "pad_top": int(si.get("pad_top", 0)),
-        "activation_type": int(si.get("activation_type", 0)),
-    }
-
-
-def _align_to_definition_output(arr: np.ndarray, d: Definition, w: Workload) -> np.ndarray:
-    """Reshape candidate output to match the Definition's declared output rank.
-
-    ncnn::Mat has no batch dim — if the Definition declares (N, C_out, H_out, W_out)
-    and ncnn returns (C_out, H_out, W_out), we prepend N=1. We support only
-    a single declared output for now (Phase 1).
-    """
-    if len(d.outputs) != 1:
-        return arr
-    out_spec = next(iter(d.outputs.values()))
-    if out_spec.shape is None:
-        return arr
-    expected_rank = len(out_spec.shape)
-    if arr.ndim == expected_rank:
-        return arr
-    if arr.ndim == expected_rank - 1:
-        # Most common case for ncnn dataset: prepend an N=1.
-        return arr.reshape((1,) + arr.shape)
-    return arr  # Let `compare` flag the mismatch with a useful error.
-
-
-def _to_numpy(x) -> np.ndarray:
-    """Coerce reference output to a numpy array. Accepts torch.Tensor, numpy, list."""
-    if isinstance(x, np.ndarray):
-        return x
-    if hasattr(x, "detach") and hasattr(x, "cpu") and hasattr(x, "numpy"):
-        return x.detach().cpu().numpy()
-    if isinstance(x, (list, tuple)):
-        return np.asarray(x)
-    raise TypeError(f"Cannot convert reference output of type {type(x)} to numpy")
 
 
 __all__ = ["run_solution_on_workloads"]

@@ -239,6 +239,39 @@ class TraceSet:
                 best = ns
         return best
 
+    def get_baseline_min_cycles(
+        self,
+        def_name: str,
+        workload_uuid: str,
+        baseline_author: str = "baseline-ncnn-arm",
+    ) -> Optional[int]:
+        """Return the cached baseline `cycles` for (def_name, workload_uuid).
+
+        Cycles analog of `get_baseline_min_ns` — the speedup denominator now that
+        cycles is the canonical metric. Returns None if no PASSED baseline trace
+        with a non-null `cycles` exists for that workload (older traces predating
+        the perf-counter rollout have `cycles=None`); caller then leaves
+        `reference_cycles` / `speedup` as None (or falls back to the ns ratio).
+        """
+        baseline = self.get_baseline_solution(def_name, baseline_author)
+        if baseline is None:
+            return None
+        best: Optional[int] = None
+        for t in self.traces.get(def_name, []):
+            if t.solution != baseline.name:
+                continue
+            if t.workload.uuid != workload_uuid:
+                continue
+            ev = t.evaluation
+            if ev is None or ev.status.value != "PASSED" or ev.performance is None:
+                continue
+            cyc = ev.performance.cycles
+            if cyc is None:
+                continue
+            if best is None or cyc < best:
+                best = cyc
+        return best
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def add_traces(self, traces: List[Trace]) -> None:

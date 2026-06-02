@@ -40,12 +40,6 @@ logger = logging.getLogger(__name__)
 #   parent.parent → bench
 #   parent³       → arm-bench root (== the flattened cpu-kernel-baseline/ repo)
 #
-# NOTE (deviation from plan): the original plan assumed arm-bench lived at
-# cpu-kernel-baseline/arm-bench/ and therefore advised arm_bench_root.parent.parent
-# for the ncnn checkout. In the current (flattened) layout arm-bench IS
-# cpu-kernel-baseline/, the real ncnn checkout sits at the repo root next to it,
-# so `ARM_BENCH_ROOT.parent / "ncnn"` is already correct. Verified against the
-# on-disk checkout (ncnn/src/*.cpp, ncnn/src/layer/arm/).
 
 BENCH_ROOT = Path(__file__).resolve().parent.parent
 ARM_BENCH_ROOT = BENCH_ROOT.parent

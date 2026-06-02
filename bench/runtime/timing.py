@@ -34,6 +34,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
+from bench.runtime.perf_counters import open_counters
+
 
 @dataclass
 class TimingResult:
@@ -59,6 +61,16 @@ class TimingResult:
     aborted_at: Optional[int] = None
     """If watchdog tripped, the rep index at which we stopped; samples_ns may be short."""
 
+    # ── Hardware perf counters (per single kernel invocation; None if unavailable) ──
+    cycles: Optional[int] = None
+    """CPU core cycles per invocation — the canonical performance metric."""
+    instructions: Optional[int] = None
+    """Retired instructions per invocation."""
+    cache_misses: Optional[float] = None
+    """Cache misses per invocation (aggregate / total_iters)."""
+    ipc: Optional[float] = None
+    """Instructions per cycle (instructions / cycles)."""
+
 
 class WatchdogTimeout(RuntimeError):
     """Raised when total elapsed wall time exceeds `watchdog_s`."""
@@ -83,6 +95,7 @@ def time_callable(
     inner_iters: int = 1,
     cpu: Optional[int] = 0,
     watchdog_s: float = 30.0,
+    collect_perf_counters: bool = False,
 ) -> TimingResult:
     """Time `inner` with the LOOP_DECL pattern.
 
@@ -102,10 +115,17 @@ def time_callable(
     watchdog_s
         Wall-clock kill switch. If timing hasn't finished within this many
         seconds, raise WatchdogTimeout. Default 30 s catches infinite loops.
+    collect_perf_counters
+        If True, open a perf_event_open counter group (cycles / instructions /
+        cache-misses) and ENABLE/DISABLE it around the timed `repeat` loop. The
+        counts are normalized to one kernel invocation. Best-effort: if the
+        counters can't be opened (permissions / non-Linux), timing proceeds and
+        the perf fields on the result stay None.
 
     Returns
     -------
-    TimingResult with samples in ns/iter.
+    TimingResult with samples in ns/iter, plus per-invocation hardware counters
+    when `collect_perf_counters` is set and available.
     """
     if repeat < 1:
         raise ValueError("repeat must be >= 1")
@@ -116,6 +136,17 @@ def time_callable(
 
     for _ in range(warmup):
         inner()
+
+    # Open + ENABLE counters right before the timed loop so they cover exactly
+    # the same window as the ns samples below.
+    counters = open_counters() if collect_perf_counters else None
+    if counters is not None:
+        try:
+            counters.reset()
+            counters.enable()
+        except OSError:
+            counters.close()
+            counters = None
 
     samples: List[int] = []
     deadline = time.monotonic() + watchdog_s
@@ -131,6 +162,16 @@ def time_callable(
         t1 = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
         samples.append((t1 - t0) // inner_iters)
 
+    totals = None
+    if counters is not None:
+        try:
+            counters.disable()
+            totals = counters.read()
+        except OSError:
+            totals = None
+        finally:
+            counters.close()
+
     if not samples:
         raise WatchdogTimeout(
             f"watchdog tripped before any sample was recorded ({watchdog_s}s)"
@@ -143,6 +184,21 @@ def time_callable(
     p5_ns = sorted_samples[p5_idx]
     median_ns = sorted_samples[n // 2]
 
+    # Normalize aggregate counters to one kernel invocation. total_iters counts
+    # only the samples actually taken (a watchdog abort shortens the loop).
+    cycles = instructions = None
+    cache_misses = ipc = None
+    total_iters = len(samples) * inner_iters
+    if totals is not None and total_iters > 0:
+        if totals.cycles is not None:
+            cycles = int(round(totals.cycles / total_iters))
+        if totals.instructions is not None:
+            instructions = int(round(totals.instructions / total_iters))
+        if totals.cache_misses is not None:
+            cache_misses = totals.cache_misses / total_iters
+        if totals.cycles and totals.instructions:
+            ipc = round(totals.instructions / totals.cycles, 4)
+
     return TimingResult(
         min_ns=int(min_ns),
         p5_ns=int(p5_ns),
@@ -153,6 +209,10 @@ def time_callable(
         inner_iters=inner_iters,
         cpu_pinned=pinned,
         aborted_at=aborted_at,
+        cycles=cycles,
+        instructions=instructions,
+        cache_misses=cache_misses,
+        ipc=ipc,
     )
 
 

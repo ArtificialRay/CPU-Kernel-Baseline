@@ -11,39 +11,16 @@ pure warehouse (load/query/persist), no longer hosting the run loops.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from bench.compile import BuilderRegistry
+from bench.config import BenchmarkConfig, EvalConfig
 from bench.data.definition import Definition
 from bench.data.solution import Solution
 from bench.data.trace import Trace
 from bench.data.trace_set import TraceSet
 from bench.data.workload import Workload
-from bench.runner import (
-    DEFAULT_CORRECTNESS_ABS_TOL,
-    DEFAULT_CORRECTNESS_REL_TOL,
-    DEFAULT_CPU,
-    DEFAULT_REPEAT,
-    DEFAULT_WARMUP,
-    DEFAULT_WATCHDOG_S,
-    run_solution_on_workloads,
-)
-
-
-@dataclass
-class BenchmarkConfig:
-    baseline_author: str = "baseline-ncnn-arm"
-    definitions: Optional[List[str]] = None
-    """If set, only run these definition names."""
-    solutions: Optional[List[str]] = None
-    """If set, only run these solution names."""
-    warmup: int = DEFAULT_WARMUP
-    repeat: int = DEFAULT_REPEAT
-    cpu: Optional[int] = DEFAULT_CPU
-    abs_tol: float = DEFAULT_CORRECTNESS_ABS_TOL
-    rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
-    watchdog_s: float = DEFAULT_WATCHDOG_S
+from bench.runner import run_solution_on_workloads
 
 
 class Benchmark:
@@ -66,14 +43,12 @@ class Benchmark:
         dump_traces: bool = True,
     ) -> List[Trace]:
         """Run one Solution against a list of Workloads; persist + return Traces."""
-        cfg = self._config
+        eval_cfg = EvalConfig.from_benchmark_config(self._config)
         traces = run_solution_on_workloads(
             definition, solution, workloads,
             is_baseline=self._is_baseline(solution),
+            cfg=eval_cfg,
             trace_set=self._ts,
-            baseline_author=cfg.baseline_author,
-            warmup=cfg.warmup, repeat=cfg.repeat, cpu=cfg.cpu,
-            watchdog_s=cfg.watchdog_s, abs_tol=cfg.abs_tol, rel_tol=cfg.rel_tol,
         )
         if dump_traces:
             self._ts.add_traces(traces)

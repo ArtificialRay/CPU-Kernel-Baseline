@@ -39,24 +39,44 @@ class Correctness(BaseModelWithDocstrings):
 
 
 class Performance(BaseModelWithDocstrings):
-    """Timing results. All times in nanoseconds (ns) — keeps ints, no µs/ms ambiguity.
+    """Timing + hardware-counter results for one (Definition × Solution × Workload).
 
-    `min_ns` is the min of `repeat` timed iterations; this is what we report as
-    "the time" (port of common/loops.h's INNER_MIN_PER_ITER_NS). `p5_ns` is the
-    5th-percentile sample, the noise-floor proxy we display alongside as a
-    stability check.
+    `cycles` is the **canonical** metric: CPU core cycles per single kernel
+    invocation (frequency-independent, so comparable across DVFS / machines of
+    the same ISA). The ns timings stay as a secondary/jitter view — `min_ns` is
+    the min of `repeat` timed iterations (port of common/loops.h's
+    INNER_MIN_PER_ITER_NS), `p5_ns` the 5th-percentile noise-floor proxy.
+
+    All hardware counters (`cycles`, `instructions`, `cache_misses`) are
+    normalized to ONE kernel invocation (aggregate over the timed loop divided
+    by `repeat * inner_iters`), so they're independent of `repeat`. They are
+    Optional: when `perf_event_open` is unavailable (permissions / non-Linux)
+    they stay None and only the ns timings are reported (graceful degradation).
     """
 
     min_ns: int = Field(ge=0)
-    """Min ns/iter across `repeat` samples — the canonical timing."""
+    """Min ns/iter across `repeat` samples — secondary timing."""
     p5_ns: int = Field(ge=0)
     """5th-percentile ns/iter — stability/jitter proxy."""
     reference_min_ns: Optional[int] = Field(default=None, ge=0)
     """Reference (e.g. baseline ncnn) min_ns, if benchmarker computed it."""
     speedup: Optional[float] = Field(default=None, ge=0.0)
-    """reference_min_ns / min_ns (i.e. >1 means we're faster than reference)."""
+    """Canonical speedup: reference_cycles / cycles when cycles are present,
+    else reference_min_ns / min_ns. >1 means faster than reference."""
     repeat: int = Field(ge=1)
     warmup: int = Field(ge=0)
+
+    # ── Hardware perf counters (perf_event_open; per single kernel invocation) ──
+    cycles: Optional[int] = Field(default=None, ge=0)
+    """CPU core cycles per invocation — the canonical performance metric."""
+    instructions: Optional[int] = Field(default=None, ge=0)
+    """Retired instructions per invocation."""
+    ipc: Optional[float] = Field(default=None, ge=0.0)
+    """Instructions per cycle (instructions / cycles)."""
+    cache_misses: Optional[float] = Field(default=None, ge=0.0)
+    """Cache misses per invocation (float: aggregate / total_iters)."""
+    reference_cycles: Optional[int] = Field(default=None, ge=0)
+    """Reference (baseline) cycles, the speedup denominator when present."""
 
 
 class Environment(BaseModelWithDocstrings):
