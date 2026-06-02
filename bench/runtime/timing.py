@@ -62,14 +62,15 @@ class TimingResult:
     """If watchdog tripped, the rep index at which we stopped; samples_ns may be short."""
 
     # ── Hardware perf counters (per single kernel invocation; None if unavailable) ──
+    # Taken from the MIN-cycles rep (noise floor, like min_ns), not a loop mean.
     cycles: Optional[int] = None
-    """CPU core cycles per invocation — the canonical performance metric."""
+    """CPU core cycles per invocation — the canonical metric, min over reps."""
     instructions: Optional[int] = None
-    """Retired instructions per invocation."""
+    """Retired instructions per invocation, from the min-cycles rep."""
     cache_misses: Optional[float] = None
-    """Cache misses per invocation (aggregate / total_iters)."""
+    """Cache misses per invocation, from the min-cycles rep."""
     ipc: Optional[float] = None
-    """Instructions per cycle (instructions / cycles)."""
+    """Instructions per cycle of the min-cycles rep (instructions / cycles)."""
 
 
 class WatchdogTimeout(RuntimeError):
@@ -117,10 +118,11 @@ def time_callable(
         seconds, raise WatchdogTimeout. Default 30 s catches infinite loops.
     collect_perf_counters
         If True, open a perf_event_open counter group (cycles / instructions /
-        cache-misses) and ENABLE/DISABLE it around the timed `repeat` loop. The
-        counts are normalized to one kernel invocation. Best-effort: if the
-        counters can't be opened (permissions / non-Linux), timing proceeds and
-        the perf fields on the result stay None.
+        cache-misses) and RESET/ENABLE/DISABLE it around EACH rep, then report
+        the rep with the fewest cycles (the noise floor, mirroring min_ns). The
+        counter ioctls sit outside the t0..t1 window so ns timing is unaffected.
+        Best-effort: if the counters can't be opened (permissions / non-Linux),
+        timing proceeds and the perf fields on the result stay None.
 
     Returns
     -------
@@ -137,16 +139,14 @@ def time_callable(
     for _ in range(warmup):
         inner()
 
-    # Open + ENABLE counters right before the timed loop so they cover exactly
-    # the same window as the ns samples below.
+    # Per-rep hardware counters: RESET/ENABLE before each sample and DISABLE/READ
+    # after, so each rep yields its OWN cycle count and we can take the MIN (the
+    # noise floor, exactly like min_ns) instead of a jitter-prone loop mean. The
+    # ioctls sit OUTSIDE the t0..t1 window, so the ns samples are unaffected and
+    # stay identical to counter-less runs (preserves the timing regression).
     counters = open_counters() if collect_perf_counters else None
-    if counters is not None:
-        try:
-            counters.reset()
-            counters.enable()
-        except OSError:
-            counters.close()
-            counters = None
+    # Per-rep (cycles, instructions, cache_misses) for reps that read cleanly.
+    perf_samples: List[tuple] = []
 
     samples: List[int] = []
     deadline = time.monotonic() + watchdog_s
@@ -156,21 +156,29 @@ def time_callable(
         if time.monotonic() > deadline:
             aborted_at = r
             break
+        if counters is not None:
+            try:
+                counters.reset()
+                counters.enable()
+            except OSError:
+                counters.close()
+                counters = None
         t0 = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
         for _ in range(inner_iters):
             inner()
         t1 = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+        if counters is not None:
+            try:
+                counters.disable()
+                c = counters.read()
+                if c.cycles is not None:
+                    perf_samples.append((c.cycles, c.instructions, c.cache_misses))
+            except OSError:
+                pass
         samples.append((t1 - t0) // inner_iters)
 
-    totals = None
     if counters is not None:
-        try:
-            counters.disable()
-            totals = counters.read()
-        except OSError:
-            totals = None
-        finally:
-            counters.close()
+        counters.close()
 
     if not samples:
         raise WatchdogTimeout(
@@ -184,20 +192,20 @@ def time_callable(
     p5_ns = sorted_samples[p5_idx]
     median_ns = sorted_samples[n // 2]
 
-    # Normalize aggregate counters to one kernel invocation. total_iters counts
-    # only the samples actually taken (a watchdog abort shortens the loop).
+    # Report the rep with the MINIMUM cycles (noise floor, mirroring min_ns), and
+    # take that same rep's instructions/cache_misses so ipc is self-consistent.
+    # Each rep's counts cover inner_iters calls → divide to get per-invocation.
     cycles = instructions = None
     cache_misses = ipc = None
-    total_iters = len(samples) * inner_iters
-    if totals is not None and total_iters > 0:
-        if totals.cycles is not None:
-            cycles = int(round(totals.cycles / total_iters))
-        if totals.instructions is not None:
-            instructions = int(round(totals.instructions / total_iters))
-        if totals.cache_misses is not None:
-            cache_misses = totals.cache_misses / total_iters
-        if totals.cycles and totals.instructions:
-            ipc = round(totals.instructions / totals.cycles, 4)
+    if perf_samples and inner_iters > 0:
+        best_cyc, best_ins, best_cm = min(perf_samples, key=lambda s: s[0])
+        cycles = int(round(best_cyc / inner_iters))
+        if best_ins is not None:
+            instructions = int(round(best_ins / inner_iters))
+            if best_cyc > 0:
+                ipc = round(best_ins / best_cyc, 4)
+        if best_cm is not None:
+            cache_misses = best_cm / inner_iters
 
     return TimingResult(
         min_ns=int(min_ns),

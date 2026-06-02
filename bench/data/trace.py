@@ -47,11 +47,12 @@ class Performance(BaseModelWithDocstrings):
     the min of `repeat` timed iterations (port of common/loops.h's
     INNER_MIN_PER_ITER_NS), `p5_ns` the 5th-percentile noise-floor proxy.
 
-    All hardware counters (`cycles`, `instructions`, `cache_misses`) are
-    normalized to ONE kernel invocation (aggregate over the timed loop divided
-    by `repeat * inner_iters`), so they're independent of `repeat`. They are
-    Optional: when `perf_event_open` is unavailable (permissions / non-Linux)
-    they stay None and only the ns timings are reported (graceful degradation).
+    All hardware counters (`cycles`, `instructions`, `cache_misses`) are reported
+    per ONE kernel invocation, taken from the rep with the FEWEST cycles (the
+    noise floor, mirroring how `min_ns` is the min sample) rather than a loop
+    mean — so a stray memory stall / scheduler hit in one rep doesn't inflate
+    them. They are Optional: when `perf_event_open` is unavailable (permissions /
+    non-Linux) they stay None and only the ns timings are reported.
     """
 
     min_ns: int = Field(ge=0)
