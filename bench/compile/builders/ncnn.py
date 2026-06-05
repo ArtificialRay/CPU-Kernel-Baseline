@@ -42,14 +42,15 @@ _HARNESS_DIR = Path(__file__).resolve().parent / "ncnn_harness"
 
 
 def _ncnn_base_root(arm_bench_root: Path) -> Path:
-    """ncnn checkout root. Repo-root sibling of arm-bench by default.
+    """ncnn checkout root. Lives inside the repo at <repo_root>/ncnn/.
 
-    Overridable via ARMBENCH_BASE_ROOT for remote layouts.
+    After the PR #15 repo flattening, ARM_BENCH_ROOT == repo root, so ncnn/ is
+    a direct child (not a sibling via parent). Overridable via ARMBENCH_BASE_ROOT.
     """
     env = os.environ.get("ARMBENCH_BASE_ROOT")
     if env:
         return Path(env).expanduser()
-    return arm_bench_root.parent / "ncnn"
+    return arm_bench_root / "ncnn"
 
 
 def _ncnn_static_lib(base_root: Path) -> Optional[Path]:
