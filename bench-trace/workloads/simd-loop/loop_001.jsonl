@@ -1,0 +1,6 @@
+{"axes": {"N": 1}, "scalar_inputs": {}, "uuid": "eb53b961e2955749b498eb35e2b4c65d", "tags": {"source": "edge"}}
+{"axes": {"N": 7}, "scalar_inputs": {}, "uuid": "795bba06f00a5545808f3f4d68b7ac82", "tags": {"source": "edge"}}
+{"axes": {"N": 9999}, "scalar_inputs": {}, "uuid": "cd6fd803b9195c548b0eb2475dd5ee31", "tags": {"source": "edge"}}
+{"axes": {"N": 10001}, "scalar_inputs": {}, "uuid": "cfef2d56dc515e47b9cadf26e40425ad", "tags": {"source": "edge"}}
+{"axes": {"N": 4000000}, "scalar_inputs": {}, "uuid": "847537a2d4da514db5d666f77c0e5c41", "tags": {"source": "perf"}}
+{"axes": {"N": 16000000}, "scalar_inputs": {}, "uuid": "69d813f6d4fe5b11807b70f28eb64c61", "tags": {"source": "perf"}}
