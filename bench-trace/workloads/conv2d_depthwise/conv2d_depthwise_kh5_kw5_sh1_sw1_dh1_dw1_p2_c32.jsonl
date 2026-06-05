@@ -1,0 +1,1 @@
+{"axes": {"N": 1, "H": 224, "W": 224}, "scalar_inputs": {"pad_left": 2, "pad_top": 2, "activation_type": 0}, "uuid": "f5d5dd2354934d93a448eae9daf6946c", "tags": {"from": "gen_definitions"}}

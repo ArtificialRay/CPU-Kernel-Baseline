@@ -1,0 +1,105 @@
+{
+  "name": "deconv2d_kh3_kw3_sh2_sw2_cin1_cout1",
+  "op_type": "deconv2d",
+  "description": "Transposed 2D conv: kh=3 kw=3 stride=(2,2) dilation=(1,1) pad=0 C_in=1 C_out=1",
+  "tags": [
+    "status:draft"
+  ],
+  "axes": {
+    "N": {
+      "type": "var"
+    },
+    "H": {
+      "type": "var",
+      "parent": "N"
+    },
+    "W": {
+      "type": "var",
+      "parent": "N"
+    },
+    "H_out": {
+      "type": "var",
+      "parent": "N",
+      "description": "Derived: (H - 1) * sh + kh"
+    },
+    "W_out": {
+      "type": "var",
+      "parent": "N",
+      "description": "Derived: (W - 1) * sw + kw"
+    },
+    "C_in": {
+      "type": "const",
+      "value": 1
+    },
+    "C_out": {
+      "type": "const",
+      "value": 1
+    },
+    "Kh": {
+      "type": "const",
+      "value": 3
+    },
+    "Kw": {
+      "type": "const",
+      "value": 3
+    },
+    "Sh": {
+      "type": "const",
+      "value": 2
+    },
+    "Sw": {
+      "type": "const",
+      "value": 2
+    },
+    "Dh": {
+      "type": "const",
+      "value": 1
+    },
+    "Dw": {
+      "type": "const",
+      "value": 1
+    }
+  },
+  "inputs": {
+    "input": {
+      "shape": [
+        "N",
+        "C_in",
+        "H",
+        "W"
+      ],
+      "dtype": "float32"
+    },
+    "weight": {
+      "shape": [
+        "C_out",
+        "C_in",
+        "Kh",
+        "Kw"
+      ],
+      "dtype": "float32"
+    },
+    "bias": {
+      "shape": [
+        "C_out"
+      ],
+      "dtype": "float32"
+    }
+  },
+  "outputs": {
+    "output": {
+      "shape": [
+        "N",
+        "C_out",
+        "H_out",
+        "W_out"
+      ],
+      "dtype": "float32"
+    }
+  },
+  "constraints": [
+    "H_out == (H - 1) * Sh + Kh",
+    "W_out == (W - 1) * Sw + Kw"
+  ],
+  "reference": "import torch\nimport torch.nn.functional as F\n\ndef run(input, weight, bias):\n    x = torch.from_numpy(input)\n    w = torch.from_numpy(weight).permute(1, 0, 2, 3)\n    b = torch.from_numpy(bias)\n    return F.conv_transpose2d(x, w, b, stride=(2, 2), padding=(0, 0), dilation=(1, 1)).numpy()\n"
+}

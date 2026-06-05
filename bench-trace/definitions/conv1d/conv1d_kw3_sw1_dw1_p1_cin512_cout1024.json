@@ -1,0 +1,80 @@
+{
+  "name": "conv1d_kw3_sw1_dw1_p1_cin512_cout1024",
+  "op_type": "conv1d",
+  "description": "1D convolution: kw=3 stride=1 dilation=1 pad=1 C_in=512 C_out=1024",
+  "tags": [
+    "status:draft"
+  ],
+  "axes": {
+    "N": {
+      "type": "var"
+    },
+    "W": {
+      "type": "var",
+      "parent": "N"
+    },
+    "W_out": {
+      "type": "var",
+      "parent": "N",
+      "description": "Derived: (W + 2*pad - dw*(kw-1) - 1) / sw + 1"
+    },
+    "C_in": {
+      "type": "const",
+      "value": 512
+    },
+    "C_out": {
+      "type": "const",
+      "value": 1024
+    },
+    "Kw": {
+      "type": "const",
+      "value": 3
+    },
+    "Sw": {
+      "type": "const",
+      "value": 1
+    },
+    "Dw": {
+      "type": "const",
+      "value": 1
+    }
+  },
+  "inputs": {
+    "input": {
+      "shape": [
+        "N",
+        "C_in",
+        "W"
+      ],
+      "dtype": "float32"
+    },
+    "weight": {
+      "shape": [
+        "C_out",
+        "C_in",
+        "Kw"
+      ],
+      "dtype": "float32"
+    },
+    "bias": {
+      "shape": [
+        "C_out"
+      ],
+      "dtype": "float32"
+    }
+  },
+  "outputs": {
+    "output": {
+      "shape": [
+        "N",
+        "C_out",
+        "W_out"
+      ],
+      "dtype": "float32"
+    }
+  },
+  "constraints": [
+    "W_out == (W + 2*1 - 1*(Kw-1) - 1) // Sw + 1"
+  ],
+  "reference": "import torch\nimport torch.nn.functional as F\n\ndef run(input, weight, bias):\n    x = torch.from_numpy(input).unsqueeze(0)\n    w = torch.from_numpy(weight)\n    b = torch.from_numpy(bias)\n    return F.conv1d(x, w, b, stride=1, padding=1, dilation=1).squeeze(0).numpy()\n"
+}

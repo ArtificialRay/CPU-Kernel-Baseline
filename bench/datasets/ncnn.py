@@ -39,7 +39,36 @@ SIGNATURES: Dict[str, List[type]] = {
         _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT,
         _C_INT, _C_INT, _C_INT,
     ],
-    # Other op_types added as Phase 3 migrates them (conv2d_depthwise, deconv2d, ...).
+    # conv1d.cpp::armbench_entry_conv1d:
+    #   void* bottom, void* top, void* weight, void* bias, void* act_params, void* opt,
+    #   int out_c, int kernel_w, int stride_w, int dilation_w, int pad_left,
+    #   int activation_type
+    "conv1d": [
+        _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P,
+        _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT,
+    ],
+    # conv2d_depthwise.cpp::armbench_entry_conv2d_depthwise:
+    #   void* bottom, void* top, void* weight, void* bias, void* act_params, void* opt,
+    #   int kw, int kh, int sw, int sh, int dw, int dh, int pad_left, int pad_top,
+    #   int activation_type
+    "conv2d_depthwise": [
+        _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P,
+        _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT,
+    ],
+    # deconv2d.cpp::armbench_entry_deconv2d:
+    #   void* bottom, void* top, void* weight, void* bias, void* act_params, void* opt,
+    #   int out_c, int kw, int kh, int sw, int sh, int dw, int dh, int activation_type
+    "deconv2d": [
+        _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P,
+        _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT,
+    ],
+    # deconv2d_depthwise.cpp::armbench_entry_deconv2d_depthwise:
+    #   void* bottom, void* top, void* weight, void* bias, void* act_params, void* opt,
+    #   int kw, int kh, int sw, int sh, int dw, int dh, int activation_type
+    "deconv2d_depthwise": [
+        _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P,
+        _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT,
+    ],
 }
 
 
@@ -213,8 +242,8 @@ class NcnnDataset:
         """
         fns = self.bind_lib(lib)
 
-        # Order matters — match SIGNATURES[op_type] tensor positions.
-        if op_type == "conv2d":
+        # All supported op_types use the same tensor order.
+        if op_type in ("conv2d", "conv1d", "conv2d_depthwise", "deconv2d", "deconv2d_depthwise"):
             order_tensors = ["input", "weight", "bias", "activation_params"]
         else:
             raise NotImplementedError(f"NcnnDataset: op_type '{op_type}' not yet supported")
@@ -241,25 +270,56 @@ class NcnnDataset:
         # Default Option
         opt_ptr = ctypes.c_void_p(fns.option_default())
 
-        # Assemble entry args. Order must match the C signature.
+        # Assemble entry args. Order must match the C signature and SIGNATURES[op_type].
+        base = (
+            tensor_ptrs[0],  # bottom
+            output_ptr,      # top (output, empty — harness allocates)
+            tensor_ptrs[1],  # weight
+            tensor_ptrs[2],  # bias
+            tensor_ptrs[3],  # activation_params
+            opt_ptr,
+        )
+        sa = scalar_args
         if op_type == "conv2d":
-            entry_args = (
-                tensor_ptrs[0],  # bottom
-                output_ptr,      # top (output)
-                tensor_ptrs[1],  # weight
-                tensor_ptrs[2],  # bias
-                tensor_ptrs[3],  # activation_params
-                opt_ptr,
-                int(scalar_args["out_c"]),
-                int(scalar_args["kernel_w"]),
-                int(scalar_args["kernel_h"]),
-                int(scalar_args["stride_w"]),
-                int(scalar_args["stride_h"]),
-                int(scalar_args["dilation_w"]),
-                int(scalar_args["dilation_h"]),
-                int(scalar_args["pad_left"]),
-                int(scalar_args["pad_top"]),
-                int(scalar_args["activation_type"]),
+            entry_args = base + (
+                int(sa["out_c"]),
+                int(sa["kernel_w"]), int(sa["kernel_h"]),
+                int(sa["stride_w"]), int(sa["stride_h"]),
+                int(sa["dilation_w"]), int(sa["dilation_h"]),
+                int(sa["pad_left"]), int(sa["pad_top"]),
+                int(sa["activation_type"]),
+            )
+        elif op_type == "conv1d":
+            entry_args = base + (
+                int(sa["out_c"]),
+                int(sa["kernel_w"]),
+                int(sa["stride_w"]),
+                int(sa["dilation_w"]),
+                int(sa["pad_left"]),
+                int(sa["activation_type"]),
+            )
+        elif op_type == "conv2d_depthwise":
+            entry_args = base + (
+                int(sa["kernel_w"]), int(sa["kernel_h"]),
+                int(sa["stride_w"]), int(sa["stride_h"]),
+                int(sa["dilation_w"]), int(sa["dilation_h"]),
+                int(sa["pad_left"]), int(sa["pad_top"]),
+                int(sa["activation_type"]),
+            )
+        elif op_type == "deconv2d":
+            entry_args = base + (
+                int(sa["out_c"]),
+                int(sa["kernel_w"]), int(sa["kernel_h"]),
+                int(sa["stride_w"]), int(sa["stride_h"]),
+                int(sa["dilation_w"]), int(sa["dilation_h"]),
+                int(sa["activation_type"]),
+            )
+        elif op_type == "deconv2d_depthwise":
+            entry_args = base + (
+                int(sa["kernel_w"]), int(sa["kernel_h"]),
+                int(sa["stride_w"]), int(sa["stride_h"]),
+                int(sa["dilation_w"]), int(sa["dilation_h"]),
+                int(sa["activation_type"]),
             )
         else:
             raise NotImplementedError(op_type)
