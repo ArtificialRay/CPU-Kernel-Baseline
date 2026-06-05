@@ -9,6 +9,15 @@ Builds, against the real ncnn checkout (`ncnn/src/*.cpp`, `ncnn/src/layer/arm/`)
 
 into one .so (linked against the full ncnn static lib) that the runner dlopens.
 
+Host setup (Graviton / AArch64 Ubuntu):
+    sudo apt-get install clang-18 libomp-18-dev cmake
+    git clone --depth=1 https://github.com/Tencent/ncnn.git ncnn
+    cd ncnn && cmake -B build -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF \\
+        -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF \\
+        -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF \\
+        -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
+    cmake --build build -j$(nproc) ncnn   # → ncnn/build/src/libncnn.a
+
 The real ncnn kernels come from a full `libncnn.a` produced by ncnn's own CMake
 build (see `_ncnn_static_lib`). That build is required: upstream
 `convolution_arm.cpp` references a sprawling tree of per-ISA helper translation
