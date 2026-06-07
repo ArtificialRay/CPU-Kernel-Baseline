@@ -1,8 +1,12 @@
 #include "loop_003.h"
+#include <limits>
 
 extern "C" void inner_loop_003(struct loop_003_data *data);
 
 extern "C" int armbench_entry_loop_003(void *a, void *b, int64_t n, void *res_out) {
+    if (n < 0 || n > std::numeric_limits<int>::max()) {
+        return -1;
+    }
     struct loop_003_data data;
     data.a = static_cast<double *>(a);
     data.b = static_cast<double *>(b);
