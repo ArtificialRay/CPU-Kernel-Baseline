@@ -33,6 +33,7 @@ AxisSpec = Union[AxisConst, AxisVar]
 
 
 class DType(str, Enum):
+    FLOAT64 = "float64"
     FLOAT32 = "float32"
     FLOAT16 = "float16"
     BFLOAT16 = "bfloat16"

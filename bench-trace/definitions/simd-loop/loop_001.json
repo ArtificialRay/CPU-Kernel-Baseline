@@ -1,0 +1,17 @@
+{
+  "name": "loop_001",
+  "op_type": "loop_001",
+  "description": "FP32 inner product: sum(a[i] * b[i]) over N elements.",
+  "tags": ["simd-loop", "fp32", "inner-product"],
+  "axes": {
+    "N": {"type": "var", "description": "Array length"}
+  },
+  "inputs": {
+    "a": {"shape": ["N"], "dtype": "float32"},
+    "b": {"shape": ["N"], "dtype": "float32"}
+  },
+  "outputs": {
+    "res": {"shape": null, "dtype": "float32", "description": "Dot product result"}
+  },
+  "reference": "import numpy as np\n\ndef run(a, b):\n    return np.float32(np.dot(a.astype(np.float64), b.astype(np.float64)))\n"
+}

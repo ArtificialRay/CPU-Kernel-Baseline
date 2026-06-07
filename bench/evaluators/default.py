@@ -188,24 +188,34 @@ class DefaultEvaluator(Evaluator):
 # ── Helpers (moved verbatim from the old runner) ──────────────────────────────
 
 def _scalar_args_for(d: Definition, w: Workload) -> Dict[str, int]:
-    """Assemble the integer args the on-disk harness needs (out_c, kw/kh, ..., pad, act)."""
-    if d.op_type != "conv2d":
-        raise NotImplementedError(f"_scalar_args_for: op_type {d.op_type} not yet supported")
+    """Assemble the integer args the harness shim needs.
+
+    Returns a dict whose keys match what the dataset adapter's wrap_inputs
+    expects for this op_type.
+    """
+    from bench.datasets.simd_loop import SIGNATURES as _SIMD_LOOP_SIGNATURES
 
     consts = d.const_axes
     si = w.scalar_inputs
-    return {
-        "out_c": consts["C_out"],
-        "kernel_w": consts["Kw"],
-        "kernel_h": consts["Kh"],
-        "stride_w": consts["Sw"],
-        "stride_h": consts["Sh"],
-        "dilation_w": consts["Dw"],
-        "dilation_h": consts["Dh"],
-        "pad_left": int(si.get("pad_left", 0)),
-        "pad_top": int(si.get("pad_top", 0)),
-        "activation_type": int(si.get("activation_type", 0)),
-    }
+    if d.op_type == "conv2d":
+        return {
+            "out_c": consts["C_out"],
+            "kernel_w": consts["Kw"],
+            "kernel_h": consts["Kh"],
+            "stride_w": consts["Sw"],
+            "stride_h": consts["Sh"],
+            "dilation_w": consts["Dw"],
+            "dilation_h": consts["Dh"],
+            "pad_left": int(si.get("pad_left", 0)),
+            "pad_top": int(si.get("pad_top", 0)),
+            "activation_type": int(si.get("activation_type", 0)),
+        }
+    elif d.op_type in _SIMD_LOOP_SIGNATURES:
+        # All registered simd-loop problems pass N (the array length) as their
+        # only scalar arg.
+        return {"N": w.axes["N"]}
+    else:
+        raise NotImplementedError(f"_scalar_args_for: op_type {d.op_type!r} not yet supported")
 
 
 def _align_to_definition_output(arr: np.ndarray, d: Definition) -> np.ndarray:
@@ -228,13 +238,17 @@ def _align_to_definition_output(arr: np.ndarray, d: Definition) -> np.ndarray:
 
 
 def _to_numpy(x) -> np.ndarray:
-    """Coerce reference output to a numpy array. Accepts torch.Tensor, numpy, list."""
+    """Coerce reference output to a numpy array. Accepts torch.Tensor, numpy, list, scalar."""
     if isinstance(x, np.ndarray):
         return x
     if hasattr(x, "detach") and hasattr(x, "cpu") and hasattr(x, "numpy"):
         return x.detach().cpu().numpy()
     if isinstance(x, (list, tuple)):
         return np.asarray(x)
+    if isinstance(x, np.generic):
+        # numpy scalar (e.g. np.float32) — wrap in 1-element array to match the
+        # shape (1,) that SimdLoopDataset.unwrap_output returns.
+        return np.asarray([x])
     raise TypeError(f"Cannot convert reference output of type {type(x)} to numpy")
 
 

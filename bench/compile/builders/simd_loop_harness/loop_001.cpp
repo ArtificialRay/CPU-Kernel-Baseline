@@ -1,0 +1,20 @@
+// Harness shim for loop_001 (FP32 inner product).
+// The solution defines:  extern "C" void inner_loop_001(struct loop_001_data *data);
+#include "loop_001.h"
+#include <limits>
+
+extern "C" void inner_loop_001(struct loop_001_data *data);
+
+extern "C" int armbench_entry_loop_001(void *a, void *b, int64_t n, void *res_out) {
+    if (n < 0 || n > std::numeric_limits<int>::max()) {
+        return -1;
+    }
+    struct loop_001_data data;
+    data.a = static_cast<float *>(a);
+    data.b = static_cast<float *>(b);
+    data.n = static_cast<int>(n);
+    data.res = 0.0f;
+    inner_loop_001(&data);
+    *static_cast<float *>(res_out) = data.res;
+    return 0;
+}

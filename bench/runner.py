@@ -44,6 +44,7 @@ from bench.data.workload import Workload
 from bench.datasets import get as get_dataset_adapter
 from bench.datasets.ncnn import SIGNATURES as NCNN_SIGNATURES
 from bench.datasets.raw import SIGNATURES as RAW_SIGNATURES
+from bench.datasets.simd_loop import SIGNATURES as SIMD_LOOP_SIGNATURES
 from bench.evaluators import BoundKernel, resolve_evaluator
 
 logger = logging.getLogger(__name__)
@@ -137,9 +138,16 @@ def _bind_kernel(
     BoundKernel.
     """
     lib = ctypes.CDLL(str(compiled.so_path))
-    signatures = NCNN_SIGNATURES if is_baseline else RAW_SIGNATURES
-    entry = _bind_entry(lib, definition.op_type, signatures)
-    adapter = get_dataset_adapter("ncnn" if is_baseline else "raw")()
+    # Dispatch on dataset for baselines (as suggested in the docstring above);
+    # candidates always use the raw float* ABI regardless of declared dataset.
+    if not is_baseline:
+        sigs, adapter_name = RAW_SIGNATURES, "raw"
+    elif solution.dataset.value == "simd-loop":
+        sigs, adapter_name = SIMD_LOOP_SIGNATURES, "simd-loop"
+    else:
+        sigs, adapter_name = NCNN_SIGNATURES, "ncnn"
+    entry = _bind_entry(lib, definition.op_type, sigs)
+    adapter = get_dataset_adapter(adapter_name)()
     return BoundKernel(entry=entry, adapter=adapter, op_type=definition.op_type)
 
 

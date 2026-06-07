@@ -19,11 +19,13 @@ from typing import Dict, Type
 
 from .ncnn import NcnnDataset
 from .raw import RawDataset
+from .simd_loop import SimdLoopDataset
 
 # Registry of dataset adapters by name. Keys must match SupportedDatasets enum.
 DATASETS: Dict[str, Type] = {
     "ncnn": NcnnDataset,
     "raw": RawDataset,
+    "simd-loop": SimdLoopDataset,
 }
 
 

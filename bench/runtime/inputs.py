@@ -106,6 +106,7 @@ def _resolved_axes(d: Definition, w: Workload) -> Dict[str, int]:
 
 
 _DTYPE_TO_NP = {
+    DType.FLOAT64: np.float64,
     DType.FLOAT32: np.float32,
     DType.FLOAT16: np.float16,
     DType.BFLOAT16: None,  # numpy lacks native bfloat16; not used in Phase 1
@@ -182,9 +183,14 @@ def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
             # to match the test exactly.
             out[tname] = make_weights(n_elems, scale=1.0).reshape(shape).astype(np_dt, copy=False)
         else:
-            # Fallback: deterministic via make_weights so any tensor gets *some* data
             n_elems = int(np.prod(shape))
-            out[tname] = make_weights(n_elems, scale=1.0).reshape(shape).astype(np_dt, copy=False)
+            if np.issubdtype(np_dt, np.integer):
+                # make_weights produces floats in [-0.5, 0.5] which truncate to 0
+                # for integer casts. Use a deterministic ramp instead (values 1..100).
+                idx = np.arange(n_elems, dtype=np.int64)
+                out[tname] = ((idx * 7 + 13) % 100 + 1).astype(np_dt).reshape(shape)
+            else:
+                out[tname] = make_weights(n_elems, scale=1.0).reshape(shape).astype(np_dt, copy=False)
     return out
 
 
