@@ -1,4 +1,5 @@
 #include "loop_004.h"
+#include <cassert>
 
 extern "C" void inner_loop_004(struct loop_004_data *data);
 
@@ -6,6 +7,7 @@ extern "C" int armbench_entry_loop_004(void *a, void *b, int64_t n, void *res_ou
     struct loop_004_data data;
     data.a = static_cast<uint64_t *>(a);
     data.b = static_cast<uint64_t *>(b);
+    assert(n <= INT_MAX && "N exceeds int range");
     data.n = static_cast<int>(n);
     data.res = 0ull;
     inner_loop_004(&data);
