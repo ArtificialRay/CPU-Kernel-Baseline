@@ -120,9 +120,7 @@ the whole thing once.
 **a. Configure** (fast; also generates `build/src/platform.h`):
 
 ```bash
-ssh -i ~/.ssh/id_rsa ubuntu@<host> 'cd ~/ncnn && CC=clang CXX=clang++ cmake -B build \
-    -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF \
-    -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF'
+ssh -i ~/.ssh/id_rsa ubuntu@<host> 'cd ~/ncnn && CC=clang CXX=clang++ cmake -B build -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF'
 ```
 
 **b. Build the `ncnn` target only** (compiles the full library — a few minutes
@@ -139,8 +137,9 @@ ssh -i ~/.ssh/id_rsa ubuntu@<host> 'ls -la ~/ncnn/build/src/libncnn.a ~/ncnn/bui
 # output: ~/ncnn/build/src/libncnn.a  (the lib the NcnnBuilder links against)
 ```
 
-The builder auto-discovers `~/ncnn/build/src/libncnn.a` (override the checkout
-location with `ARMBENCH_BASE_ROOT=<path>` if it differs). This is a one-time
+The builder auto-discovers `<repo>/ncnn/build/src/libncnn.a` (override the
+checkout location with `NCNN_ROOT=<path>` when ncnn lives elsewhere — e.g.
+`NCNN_ROOT=/home/ubuntu/ncnn`, a sibling of `arm-bench`). This is a one-time
 cost per instance/ISA: the lib is cached and reused across every baseline build.
 
 ### 3. Collect baselines

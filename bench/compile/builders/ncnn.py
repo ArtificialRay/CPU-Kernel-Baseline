@@ -2,12 +2,15 @@
 
 Builds, against the real ncnn checkout (`ncnn/src/*.cpp`, `ncnn/src/layer/arm/`):
 
-  - the solution kernel.cpp (defines ncnn::convolution_kernel)
-  - ncnn_harness/<op>.{cpp,h}                 (ncnn::Mat/Option shim, ships next
-                                               to this builder)
+  - the solution's own sources — kernel.cpp (delegates to the ncnn arm layer)
+    plus binding.cpp defining armbench_entry_<op> (the ncnn::Mat/Option shim,
+    with per-Definition params baked as constexpr) and the <op>.h contract
   - bench/datasets/_ncnn_lib/_mat_factory.cpp (numpy ↔ ncnn::Mat)
 
 into one .so (linked against the full ncnn static lib) that the runner dlopens.
+
+Every baseline Solution is self-contained: it ships its own binding.cpp, so the
+builder injects no shared op harness — it just compiles the Solution's sources.
 
 Host setup (Graviton / AArch64 Ubuntu):
     sudo apt-get install clang-18 libomp-18-dev cmake
@@ -39,27 +42,23 @@ from bench.data.definition import Definition
 from bench.data.solution import Solution, SupportedDatasets
 
 from ..builder import (
-    BENCH_ROOT,
     Builder,
     CompileError,
     CompileResult,
 )
 
-# ncnn_harness/ (the ncnn::Mat shim) ships next to this builder, mirroring
-# candidate_harness/. Keyed by op_type: ncnn_harness/<op>.{cpp,h}.
-_HARNESS_DIR = Path(__file__).resolve().parent / "ncnn_harness"
 
-
-def _ncnn_base_root(arm_bench_root: Path) -> Path:
+def _ncnn_base_root(base_root: Path) -> Path:
     """ncnn checkout root. Lives inside the repo at <repo_root>/ncnn/.
 
-    After the PR #15 repo flattening, ARM_BENCH_ROOT == repo root, so ncnn/ is
-    a direct child (not a sibling via parent). Overridable via ARMBENCH_BASE_ROOT.
+    By default ncnn/ is a direct child of the repo root (arm_bench_root).
+    Overridable via NCNN_ROOT (points at the ncnn checkout, e.g.
+    /home/ubuntu/ncnn).
     """
-    env = os.environ.get("ARMBENCH_BASE_ROOT")
+    env = os.environ.get("NCNN_ROOT")
     if env:
         return Path(env).expanduser()
-    return arm_bench_root / "ncnn"
+    return base_root / "ncnn"
 
 
 def _ncnn_static_lib(base_root: Path) -> Optional[Path]:
@@ -85,8 +84,8 @@ class NcnnBuilder(Builder):
 
     def __init__(self) -> None:
         super().__init__(build_dir_name="armbench-ncnn")
-        self._arm_bench_root = BENCH_ROOT.parent
-
+        self._arm_bench_root = Path(__file__).resolve().parents[3] # repo dir
+        self._base_root = self._arm_bench_root.parent # home dir
     @staticmethod
     def is_available() -> bool:
         return shutil.which("clang++") is not None
@@ -95,14 +94,13 @@ class NcnnBuilder(Builder):
         return is_baseline and solution.dataset == SupportedDatasets.NCNN
 
     def build(self, definition: Definition, solution: Solution) -> CompileResult:
-        op_type = definition.op_type
         arm_bench_root = self._arm_bench_root
-        base_root = _ncnn_base_root(arm_bench_root)
+        base_root = _ncnn_base_root(self._base_root)
 
         build_dir, sources_dir = self._make_build_dir(solution)
         try:
             return self._build_inner(
-                definition, solution, op_type, arm_bench_root, base_root,
+                solution, arm_bench_root, base_root,
                 build_dir, sources_dir,
             )
         except (CompileError, FileNotFoundError):
@@ -110,27 +108,24 @@ class NcnnBuilder(Builder):
             raise
 
     def _build_inner(
-        self, definition, solution, op_type, arm_bench_root, base_root,
+        self, solution, arm_bench_root, base_root,
         build_dir, sources_dir,
     ) -> CompileResult:
         solution_src_paths = self._materialize_sources(solution, sources_dir)
 
-        # Harness (ncnn::Mat shim) — ships next to this builder in ncnn_harness/.
-        harness_cpp = _HARNESS_DIR / f"{op_type}.cpp"
-        harness_h = harness_cpp.with_suffix(".h")
-        if not harness_cpp.exists():
-            raise FileNotFoundError(f"Dataset harness not found: {harness_cpp}")
-        if not harness_h.exists():
-            raise FileNotFoundError(f"Harness header not found: {harness_h}")
-
-        mat_factory_cpp = BENCH_ROOT / "datasets" / "_ncnn_lib" / "_mat_factory.cpp"
+        # Every baseline Solution include a kernel source (kernel.cpp), 
+        # binding.cpp defining armbench_entry_<op> (the ncnn::Mat shim, with
+        # per-Definition params baked as constexpr) plus the kernel it calls.
+        # The builder just compiles those sources.
+        mat_factory_cpp = (
+            arm_bench_root / "bench" / "datasets" / "_ncnn_lib" / "_mat_factory.cpp"
+        )
         if not mat_factory_cpp.exists():
             raise FileNotFoundError(f"ncnn helper source not found: {mat_factory_cpp}")
 
         # Include dirs — retargeted to ncnn/src and ncnn/src/layer/arm.
         include_dirs = [
             sources_dir,
-            harness_cpp.parent,
             base_root / "src",
             base_root / "src" / "layer",
             base_root / "src" / "layer" / "arm",
@@ -152,16 +147,15 @@ class NcnnBuilder(Builder):
 
         # Link against the full ncnn static lib — it resolves the whole ncnn
         # dependency tree (Convolution_arm and its per-ISA helper TUs,
-        # copy_make_border, Mat, ...) that the kernel and harness reference.
+        # copy_make_border, Mat, ...) that the kernel and binding reference.
         static_lib = _ncnn_static_lib(base_root)
         if static_lib is None:
             raise FileNotFoundError(
                 f"Full ncnn static lib not found under {base_root}/build "
                 f"(build/src/libncnn.a or build/install/lib/libncnn.a). Build it "
                 f"once with ncnn's CMake — see _ncnn_static_lib for the command — "
-                f"or set ARMBENCH_BASE_ROOT to a checkout that has one."
+                f"or set NCNN_ROOT to a checkout that has one."
             )
-        cmd.append(str(harness_cpp))
         cmd.append(str(mat_factory_cpp))
         cmd += [str(p) for p in solution_src_paths]
         cmd += ["-o", str(so_path)]
