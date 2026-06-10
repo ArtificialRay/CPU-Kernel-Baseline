@@ -1,0 +1,22 @@
+{
+  "name": "reference-scalar_loop_001",
+  "definition": "loop_001",
+  "dataset": "simd-loop",
+  "author": "reference-scalar",
+  "spec": {
+    "language": "cpp",
+    "target_hardware": ["aarch64"],
+    "entry_point": "kernel.cpp::inner_loop_001",
+    "dependencies": [],
+    "isa_features": [],
+    "compile_flags": ["-O2", "-std=c++14"],
+    "link_flags": []
+  },
+  "sources": [
+    {
+      "path": "kernel.cpp",
+      "content": "#include \"loop_001.h\"\n\nextern \"C\" void inner_loop_001(struct loop_001_data *data) {\n    float *a = data->a;\n    float *b = data->b;\n    int n = data->n;\n    float res = 0.0f;\n    for (int i = 0; i < n; i++) res += a[i] * b[i];\n    data->res = res;\n}\n"
+    }
+  ],
+  "description": "Scalar reference for loop_001 (FP32 inner product). Baseline for speedup measurement."
+}

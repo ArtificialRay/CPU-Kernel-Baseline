@@ -1,0 +1,22 @@
+{
+  "name": "reference-scalar_loop_004",
+  "definition": "loop_004",
+  "dataset": "simd-loop",
+  "author": "reference-scalar",
+  "spec": {
+    "language": "cpp",
+    "target_hardware": ["aarch64"],
+    "entry_point": "kernel.cpp::inner_loop_004",
+    "dependencies": [],
+    "isa_features": [],
+    "compile_flags": ["-O2", "-std=c++14"],
+    "link_flags": []
+  },
+  "sources": [
+    {
+      "path": "kernel.cpp",
+      "content": "#include \"loop_004.h\"\n#include <stdint.h>\n\nextern \"C\" void inner_loop_004(struct loop_004_data *data) {\n    uint64_t *a = data->a;\n    uint64_t *b = data->b;\n    int n = data->n;\n    uint64_t res = 0;\n    for (int i = 0; i < n; i++) res += a[i] * b[i];\n    data->res = res;\n}\n"
+    }
+  ],
+  "description": "Scalar reference for loop_004 (UINT64 inner product). Baseline for speedup measurement."
+}
