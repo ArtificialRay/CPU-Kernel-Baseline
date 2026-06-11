@@ -1,2 +1,0 @@
-{"axes": {"N": 1, "W": 8}, "scalar_inputs": {"pad_left": 1, "activation_type": 0}, "uuid": "8a31f4718e6a4ae786953c69078bc89c", "tags": {"from": "gen_definitions"}}
-{"axes": {"N": 1, "W": 16}, "scalar_inputs": {"pad_left": 1, "activation_type": 0}, "uuid": "9ed02fff341c4bedae583d378f3122bc", "tags": {"from": "gen_definitions"}}
