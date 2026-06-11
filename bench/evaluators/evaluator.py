@@ -70,11 +70,17 @@ class BoundKernel:
     entry: Any
     adapter: Any
     op_type: str
+    # True when the Solution ships its own armbench_entry_<op> binding with all
+    # scalar params baked as constexpr — the entry takes ONLY Mat/Option
+    # pointers, so the adapter must not append scalar args. See
+    # PLAN_binding_into_sources.md.
+    self_contained: bool = False
 
     def prepare(self, np_inputs: Dict[str, Any], scalar_args: Dict[str, int]) -> Any:
         """Pack numpy inputs into the ABI ctx (allocates the output buffer)."""
         return self.adapter.wrap_inputs(
-            np_inputs, scalar_args, self.op_type, self.entry._lib  # noqa: SLF001
+            np_inputs, scalar_args, self.op_type, self.entry._lib,  # noqa: SLF001
+            self_contained=self.self_contained,
         )
 
     def invoke(self, ctx: Any) -> int:

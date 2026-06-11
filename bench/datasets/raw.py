@@ -67,6 +67,7 @@ class RawDataset:
         scalar_args: Dict[str, int],
         op_type: str,
         lib: ctypes.CDLL,
+        self_contained: bool = False,  # unused: candidates never bake bindings
     ) -> RawContext:
         if op_type != "conv2d":
             raise NotImplementedError(f"RawDataset: op_type '{op_type}' not yet supported")

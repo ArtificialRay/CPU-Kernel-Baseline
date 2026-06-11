@@ -175,12 +175,15 @@ def _gen_conv1d() -> None:
                     "Dw":    {"type": "const", "value": dw},
                 },
                 "inputs": {
-                    "input":  {"shape": ["N", "C_in", "W"], "dtype": "float32"},
+                    # conv1d is modeled natively 2D (ncnn::Convolution1D has no
+                    # batch dim): input is (C_in, W), output (C_out, W_out). The
+                    # reference adds/removes the batch dim via unsqueeze/squeeze.
+                    "input":  {"shape": ["C_in", "W"], "dtype": "float32"},
                     "weight": {"shape": ["C_out", "C_in", "Kw"], "dtype": "float32"},
                     "bias":   {"shape": ["C_out"], "dtype": "float32"},
                 },
                 "outputs": {
-                    "output": {"shape": ["N", "C_out", "W_out"], "dtype": "float32"},
+                    "output": {"shape": ["C_out", "W_out"], "dtype": "float32"},
                 },
                 "constraints": [
                     f"W_out == (W + 2*{pad_left} - {dw}*(Kw-1) - 1) // Sw + 1",

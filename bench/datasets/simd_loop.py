@@ -75,6 +75,7 @@ class SimdLoopDataset:
         scalar_args: Dict[str, int],
         op_type: str,
         lib: ctypes.CDLL,
+        self_contained: bool = False,  # unused: simd-loop not yet migrated
     ) -> SimdLoopContext:
         if op_type not in SIGNATURES:
             raise NotImplementedError(f"SimdLoopDataset: op_type '{op_type}' not registered")

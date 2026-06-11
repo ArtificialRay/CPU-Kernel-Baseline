@@ -14,8 +14,6 @@ from __future__ import annotations
 import shutil
 
 from .builder import (
-    ARM_BENCH_ROOT,
-    BENCH_ROOT,
     BuildError,
     Builder,
     CompileError,
@@ -36,8 +34,6 @@ def cleanup_build_dir(result: CompileResult) -> None:
 
 
 __all__ = [
-    "ARM_BENCH_ROOT",
-    "BENCH_ROOT",
     "Builder",
     "BuildError",
     "BuilderRegistry",

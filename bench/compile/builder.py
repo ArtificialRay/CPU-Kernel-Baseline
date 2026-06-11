@@ -33,23 +33,6 @@ from bench.data.solution import Solution
 logger = logging.getLogger(__name__)
 
 
-# ── Paths ────────────────────────────────────────────────────────────────────
-#
-# This file is bench/compile/builder.py, so:
-#   parent        → bench/compile
-#   parent.parent → bench
-#   parent³       → arm-bench root (== the flattened cpu-kernel-baseline/ repo)
-#
-
-BENCH_ROOT = Path(__file__).resolve().parent.parent
-ARM_BENCH_ROOT = BENCH_ROOT.parent
-
-
-def solutions_root(arm_bench_root: Path) -> Path:
-    """Warehouse solutions dir; the `_harness/<op>.{cpp,h}` files hang off this."""
-    return arm_bench_root / "bench-trace" / "solutions"
-
-
 # ── Build error ──────────────────────────────────────────────────────────────
 
 class CompileError(RuntimeError):
@@ -62,8 +45,8 @@ class CompileError(RuntimeError):
         self.command = command
 
 
-# Alias matching flashinfer-bench's naming, used by the registry for
-# "no builder can build this" / "build failed" conditions.
+# A stub used by the registry fo "no builder can build this" / "build failed" conditions.
+# Alias matching flashinfer-bench's naming, 
 class BuildError(RuntimeError):
     """No registered builder can build a solution, or a build failed structurally."""
 
@@ -150,9 +133,6 @@ class Builder(ABC):
 
 
 __all__ = [
-    "ARM_BENCH_ROOT",
-    "BENCH_ROOT",
-    "solutions_root",
     "Builder",
     "BuildError",
     "CompileError",
