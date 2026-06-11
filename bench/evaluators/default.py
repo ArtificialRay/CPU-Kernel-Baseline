@@ -200,14 +200,44 @@ def _scalar_args_for(d: Definition, w: Workload) -> Dict[str, int]:
     if d.op_type == "conv2d":
         return {
             "out_c": consts["C_out"],
-            "kernel_w": consts["Kw"],
-            "kernel_h": consts["Kh"],
-            "stride_w": consts["Sw"],
-            "stride_h": consts["Sh"],
-            "dilation_w": consts["Dw"],
-            "dilation_h": consts["Dh"],
+            "kernel_w": consts["Kw"], "kernel_h": consts["Kh"],
+            "stride_w": consts["Sw"], "stride_h": consts["Sh"],
+            "dilation_w": consts["Dw"], "dilation_h": consts["Dh"],
             "pad_left": int(si.get("pad_left", 0)),
             "pad_top": int(si.get("pad_top", 0)),
+            "activation_type": int(si.get("activation_type", 0)),
+        }
+    elif d.op_type == "conv1d":
+        return {
+            "out_c": consts["C_out"],
+            "kernel_w": consts["Kw"],
+            "stride_w": consts["Sw"],
+            "dilation_w": consts["Dw"],
+            "pad_left": int(si.get("pad_left", 0)),
+            "activation_type": int(si.get("activation_type", 0)),
+        }
+    elif d.op_type == "conv2d_depthwise":
+        return {
+            "kernel_w": consts["Kw"], "kernel_h": consts["Kh"],
+            "stride_w": consts["Sw"], "stride_h": consts["Sh"],
+            "dilation_w": consts["Dw"], "dilation_h": consts["Dh"],
+            "pad_left": int(si.get("pad_left", 0)),
+            "pad_top": int(si.get("pad_top", 0)),
+            "activation_type": int(si.get("activation_type", 0)),
+        }
+    elif d.op_type == "deconv2d":
+        return {
+            "out_c": consts["C_out"],
+            "kernel_w": consts["Kw"], "kernel_h": consts["Kh"],
+            "stride_w": consts["Sw"], "stride_h": consts["Sh"],
+            "dilation_w": consts["Dw"], "dilation_h": consts["Dh"],
+            "activation_type": int(si.get("activation_type", 0)),
+        }
+    elif d.op_type == "deconv2d_depthwise":
+        return {
+            "kernel_w": consts["Kw"], "kernel_h": consts["Kh"],
+            "stride_w": consts["Sw"], "stride_h": consts["Sh"],
+            "dilation_w": consts["Dw"], "dilation_h": consts["Dh"],
             "activation_type": int(si.get("activation_type", 0)),
         }
     elif d.op_type in _SIMD_LOOP_SIGNATURES:

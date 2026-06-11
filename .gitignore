@@ -15,6 +15,7 @@ build/
 
 # Claude Code session data
 .claude/
+.codegraph/
 
 # Python
 __pycache__/
@@ -47,8 +48,8 @@ terraform/terraform.tfstate.backup
 terraform/.terraform.lock.hcl
 
 .env
+.mcp*
 *.log
 
 bench-trace/
 __pycache__/
-

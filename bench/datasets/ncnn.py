@@ -4,12 +4,11 @@ The C-side implementation of these factory functions lives in
 `bench/datasets/_ncnn_lib/_mat_factory.cpp`, which the NcnnBuilder
 (`bench/compile/builders/ncnn.py`) compiles into every solution.so build. After
 dlopening the solution.so, the runner resolves both:
-  - armbench_entry_<op_type>  (from bench/compile/builders/ncnn_harness/<op_type>.cpp)
+  - armbench_entry_<op_type>  (from the solution's own binding.cpp)
   - armbench_ncnn_mat_*       (from _mat_factory.cpp)
-…and ctypes-binds them with the signatures declared here.
-
-SIGNATURES dict is the load-bearing manual mirror of
-`bench/compile/builders/ncnn_harness/<op_type>.h`. Edit one, edit the other.
+…and ctypes-binds them. Every ncnn baseline ships a self-contained
+armbench_entry_<op_type> that bakes its scalar params as constexpr, so the entry
+takes only the 6 Mat/Option pointers — the runner declares that signature inline.
 """
 
 from __future__ import annotations
@@ -20,27 +19,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-
-
-# ── ctypes signatures for armbench_entry_<op_type> ───────────────────────────
-# Each entry mirrors the matching `extern "C" int armbench_entry_<op_type>(...)`
-# in bench/compile/builders/ncnn_harness/<op_type>.cpp. Order must match exactly.
-
-_C_VOID_P = ctypes.c_void_p
-_C_INT = ctypes.c_int
-
-SIGNATURES: Dict[str, List[type]] = {
-    # conv2d.cpp::armbench_entry_conv2d:
-    #   void* bottom, void* top, void* weight, void* bias, void* act_params, void* opt,
-    #   int out_c, int kw, int kh, int sw, int sh, int dw, int dh,
-    #   int pad_left, int pad_top, int activation_type
-    "conv2d": [
-        _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P, _C_VOID_P,
-        _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT, _C_INT,
-        _C_INT, _C_INT, _C_INT,
-    ],
-    # Other op_types added as Phase 3 migrates them (conv2d_depthwise, deconv2d, ...).
-}
 
 
 # ── ncnn::Mat factory binding (per loaded .so) ───────────────────────────────
@@ -203,18 +181,19 @@ class NcnnDataset:
         scalar_args: Dict[str, int],
         op_type: str,
         lib: ctypes.CDLL,
+        self_contained: bool = False,
     ) -> NcnnContext:
         """Build the ctypes argument list for `armbench_entry_<op_type>`.
 
-        scalar_args carries the per-op int parameters the harness needs
-        (out_c, kw, kh, sw, sh, dw, dh, pad_left, pad_top, activation_type for
-        conv2d). The order here MUST match SIGNATURES[op_type] and the C
-        signature in `bench/compile/builders/ncnn_harness/<op_type>.cpp`.
+        Every ncnn baseline ships a self-contained entry that bakes its scalar
+        params as constexpr, so the call passes only the 6 Mat/Option pointers.
+        `scalar_args` and `self_contained` are accepted for adapter-interface
+        uniformity but no longer affect the call.
         """
         fns = self.bind_lib(lib)
 
-        # Order matters — match SIGNATURES[op_type] tensor positions.
-        if op_type == "conv2d":
+        # All supported op_types use the same tensor order.
+        if op_type in ("conv2d", "conv1d", "conv2d_depthwise", "deconv2d", "deconv2d_depthwise"):
             order_tensors = ["input", "weight", "bias", "activation_params"]
         else:
             raise NotImplementedError(f"NcnnDataset: op_type '{op_type}' not yet supported")
@@ -241,28 +220,19 @@ class NcnnDataset:
         # Default Option
         opt_ptr = ctypes.c_void_p(fns.option_default())
 
-        # Assemble entry args. Order must match the C signature.
-        if op_type == "conv2d":
-            entry_args = (
-                tensor_ptrs[0],  # bottom
-                output_ptr,      # top (output)
-                tensor_ptrs[1],  # weight
-                tensor_ptrs[2],  # bias
-                tensor_ptrs[3],  # activation_params
-                opt_ptr,
-                int(scalar_args["out_c"]),
-                int(scalar_args["kernel_w"]),
-                int(scalar_args["kernel_h"]),
-                int(scalar_args["stride_w"]),
-                int(scalar_args["stride_h"]),
-                int(scalar_args["dilation_w"]),
-                int(scalar_args["dilation_h"]),
-                int(scalar_args["pad_left"]),
-                int(scalar_args["pad_top"]),
-                int(scalar_args["activation_type"]),
-            )
-        else:
-            raise NotImplementedError(op_type)
+        # Assemble entry args. Order must match the C signature of
+        # armbench_entry_<op_type> (6 Mat/Option pointers).
+        base = (
+            tensor_ptrs[0],  # bottom
+            output_ptr,      # top (output, empty — harness allocates)
+            tensor_ptrs[1],  # weight
+            tensor_ptrs[2],  # bias
+            tensor_ptrs[3],  # activation_params
+            opt_ptr,
+        )
+        # Self-contained entry: scalars are baked constexpr in the solution's
+        # binding, so we pass only the 6 Mat/Option pointers.
+        entry_args = base
 
         return NcnnContext(
             fns=fns,
