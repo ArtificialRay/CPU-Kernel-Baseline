@@ -2,9 +2,8 @@
 #pragma once
 #include <stdint.h>
 
-struct loop_003_data {
+struct loop_008_data {
     double *a;
-    double *b;
     int n;
     double res;
 };
@@ -12,7 +11,7 @@ struct loop_003_data {
 #ifdef __cplusplus
 extern "C" {
 #endif
-int armbench_entry_loop_003(void *a, void *b, int64_t n, void *res_out);
+int armbench_entry_loop_008(void *a, int64_t n, void *res_out);
 #ifdef __cplusplus
 }
 #endif
