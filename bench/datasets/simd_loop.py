@@ -12,6 +12,7 @@ The calling convention for every loop:
 
 For scalar-output loops:  res_out → single scalar value written by the kernel.
 For array-output loops:   res_out → pre-allocated array of N elements (the output buffer).
+For inplace-sort loops:   res_out is unused; the first ptr (data) is sorted in-place.
 
 To add a new loop:
   1. Add an entry to _LOOP_META below.
@@ -107,6 +108,22 @@ _LOOP_META: Dict[str, dict] = {
         "result_dtype": np.uint32,
         "output_is_array": True,
     },
+    "loop_120": {
+        "inputs": [("data", np.int32)],
+        "result_dtype": np.int32,
+        "output_inplace": True,
+    },
+    "loop_121": {
+        "inputs": [("data", np.int32)],
+        "result_dtype": np.int32,
+        "output_inplace": True,
+        "scratch": [("temp", np.int32)],
+    },
+    "loop_122": {
+        "inputs": [("data", np.int32)],
+        "result_dtype": np.int32,
+        "output_inplace": True,
+    },
 }
 
 
@@ -116,7 +133,10 @@ _C_VOID_P = ctypes.c_void_p
 _C_INT64  = ctypes.c_int64
 
 SIGNATURES: Dict[str, List[type]] = {
-    op: [_C_VOID_P] * len(meta["inputs"]) + [_C_INT64, _C_VOID_P]
+    op: (
+        [_C_VOID_P] * (len(meta["inputs"]) + len(meta.get("scratch", [])))
+        + [_C_INT64, _C_VOID_P]
+    )
     for op, meta in _LOOP_META.items()
 }
 
@@ -130,9 +150,9 @@ _RESULT_DTYPE: Dict[str, type] = {
 @dataclass
 class SimdLoopContext:
     entry_args: Tuple[Any, ...]
-    _arrays:    list          # contiguous input arrays — kept alive during kernel call
-    res_buf:    np.ndarray    # result buffer (1-elem scalar or N-elem array)
-    _n:         int = 0       # user-visible output length; 0 means use full res_buf
+    _arrays:    list          # all live arrays (inputs + scratch + res_buf for inplace)
+    res_buf:    np.ndarray    # result buffer: scalar (1-elem), array (N-elem), or inplace ref
+    _n:         int = 0       # user-visible output length; 0 → use full res_buf
 
 
 # ── Adapter ───────────────────────────────────────────────────────────────────
@@ -160,9 +180,26 @@ class SimdLoopDataset:
         if op_type not in _LOOP_META:
             raise NotImplementedError(f"SimdLoopDataset: op_type {op_type!r} not registered")
         meta = _LOOP_META[op_type]
-        arrays = [np.ascontiguousarray(np_inputs[name]) for name, _ in meta["inputs"]]
         n = int(scalar_args["N"])
         pad = int(meta.get("array_pad", 0))
+
+        if meta.get("output_inplace"):
+            # In-place: the data array is sorted in-place; scratch bufs are temp storage.
+            data_name, data_dtype = meta["inputs"][0]
+            data_arr = np.ascontiguousarray(np_inputs[data_name].copy())
+            scratch = [np.zeros(n, dtype=dt) for _, dt in meta.get("scratch", [])]
+            all_arrs = [data_arr] + scratch
+            ptrs = [ctypes.cast(a.ctypes.data, _C_VOID_P) for a in all_arrs]
+            dummy = np.zeros(1, dtype=np.int64)
+            entry_args = (
+                tuple(ptrs)
+                + (_C_INT64(n),)
+                + (ctypes.cast(dummy.ctypes.data, _C_VOID_P),)
+            )
+            return SimdLoopContext(entry_args=entry_args, _arrays=all_arrs + [dummy],
+                                   res_buf=data_arr, _n=0)
+
+        arrays = [np.ascontiguousarray(np_inputs[name]) for name, _ in meta["inputs"]]
         if meta.get("output_is_array"):
             # Array-output: res_out IS the output array.
             # Pad inputs and output when the kernel reads/writes beyond size.
@@ -176,7 +213,8 @@ class SimdLoopDataset:
             res_buf = np.zeros(1, dtype=meta["result_dtype"])
         ptrs = [ctypes.cast(a.ctypes.data, _C_VOID_P) for a in arrays]
         entry_args = tuple(ptrs) + (_C_INT64(n),) + (ctypes.cast(res_buf.ctypes.data, _C_VOID_P),)
-        return SimdLoopContext(entry_args=entry_args, _arrays=arrays, res_buf=res_buf, _n=n if pad > 0 else 0)
+        return SimdLoopContext(entry_args=entry_args, _arrays=arrays, res_buf=res_buf,
+                               _n=n if pad > 0 else 0)
 
     def unwrap_output(self, ctx: SimdLoopContext) -> np.ndarray:
         arr = ctx.res_buf.copy()
