@@ -161,9 +161,10 @@ _RES_NAMES  = {"res", "result", "checksum", "sum", "out", "output"}
 # C type → numpy dtype for array outputs (uses proper unsigned types unlike scalar map)
 _array_dtype_map_local = {
     "float": "float32", "double": "float64",
-    "int": "int32", "uint32_t": "int32", "uint64_t": "int64",
-    "int32_t": "int32", "int64_t": "int64",
+    "int": "int32", "int32_t": "int32", "int64_t": "int64",
+    "uint32_t": "uint32", "uint64_t": "uint64",
     "uint8_t": "uint8", "uint16_t": "uint16",
+    "int8_t": "int8", "int16_t": "int16",
     "bool": "int32",
 }
 
@@ -392,6 +393,22 @@ extern "C" int armbench_entry_{lid}({args}) {{
 # Custom scalar kernels: used when _extract_scalar_kernel doesn't apply
 # (e.g. sort loops that use complex helper chains from sort.h).
 _CUSTOM_SCALAR_KERNELS: dict[str, str] = {
+    # Python reference computes in float64 then casts to float32; match that
+    # precision here so correctness comparison passes.
+    "loop_001": (
+        '#include "loop_001.h"\n'
+        '#include <stdint.h>\n\n'
+        'extern "C" void inner_loop_001(struct loop_001_data *data) {\n'
+        '    float *a = data->a;\n'
+        '    float *b = data->b;\n'
+        '    int n = data->n;\n'
+        '    double res = 0.0;\n'
+        '    for (int i = 0; i < n; i++) {\n'
+        '        res += (double)a[i] * (double)b[i];\n'
+        '    }\n'
+        '    data->res = (float)res;\n'
+        '}\n'
+    ),
     "loop_120": (
         '#include "loop_120.h"\n'
         '#include <algorithm>\n\n'
@@ -635,6 +652,13 @@ def _write_definition(info: LoopInfo) -> None:
     for f in info.input_ptr_fields:
         inputs[f.name] = {"shape": ["N"], "dtype": f.numpy_dtype}
 
+    override = _LOOP_META_OVERRIDES.get(info.loop_id, {})
+    simd_loop_meta = {
+        "output_inplace": info.is_inplace,
+        "array_pad": override.get("array_pad", 0),
+        "scratch": [{"name": f.name, "dtype": f.numpy_dtype} for f in info.scratch_fields],
+    }
+
     if info.is_inplace:
         f = info.input_ptr_fields[0]
         dtype = _array_dtype_map_local.get(f.c_type, "int32")
@@ -650,6 +674,7 @@ def _write_definition(info: LoopInfo) -> None:
             "inputs": inputs,
             "outputs": {out_name: out_spec},
             "reference": _gen_reference(info),
+            "simd_loop_meta": simd_loop_meta,
         }
         content = json.dumps(definition, indent=2) + "\n"
         if not out_path.exists() or out_path.read_text() != content:
@@ -659,9 +684,10 @@ def _write_definition(info: LoopInfo) -> None:
 
     _scalar_dtype_map = {
         "float": "float32", "double": "float64",
-        "int": "int32", "uint32_t": "int32", "uint64_t": "int64",
-        "int32_t": "int32", "int64_t": "int64",
-        "uint8_t": "int8", "uint16_t": "int16",
+        "int": "int32", "int32_t": "int32", "int64_t": "int64",
+        "uint32_t": "uint32", "uint64_t": "uint64",
+        "uint8_t": "uint8", "uint16_t": "uint16",
+        "int8_t": "int8", "int16_t": "int16",
         "bool": "int32",
     }
 
@@ -683,6 +709,7 @@ def _write_definition(info: LoopInfo) -> None:
         "inputs": inputs,
         "outputs": {out_name: out_spec},
         "reference": _gen_reference(info),
+        "simd_loop_meta": simd_loop_meta,
     }
     content = json.dumps(definition, indent=2) + "\n"
     if not out_path.exists() or out_path.read_text() != content:
@@ -765,7 +792,11 @@ def _write_reference_solution(info: LoopInfo) -> None:
             "compile_flags": ["-O2", "-std=c++14"],
             "link_flags": [],
         },
-        "sources": [{"path": "kernel.cpp", "content": scalar_src}],
+        "sources": [
+            {"path": f"{lid}.h",   "content": _gen_harness_h(info)},
+            {"path": f"{lid}.cpp", "content": _gen_harness_cpp(info)},
+            {"path": "kernel.cpp", "content": scalar_src},
+        ],
         "description": f"Scalar reference for {lid}. Baseline for speedup measurement.",
     }
     content = json.dumps(solution, indent=2) + "\n"
@@ -1054,7 +1085,6 @@ def main() -> None:
         all_infos.append(info)
 
     if not dry_run and all_infos:
-        _regen_simd_loop_py(all_infos)
         print(f"\nDone. Generated {len(all_infos)} loops.")
     elif dry_run:
         print(f"\nDry run: would generate {len(all_infos)} loops.")

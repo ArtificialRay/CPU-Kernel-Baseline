@@ -75,12 +75,16 @@ class BoundKernel:
     # pointers, so the adapter must not append scalar args. See
     # PLAN_binding_into_sources.md.
     self_contained: bool = False
+    definition: Optional[Any] = None
+    """Definition object — passed to adapters (e.g. SimdLoopDataset) that need
+    per-loop metadata to set up the calling convention."""
 
     def prepare(self, np_inputs: Dict[str, Any], scalar_args: Dict[str, int]) -> Any:
         """Pack numpy inputs into the ABI ctx (allocates the output buffer)."""
         return self.adapter.wrap_inputs(
             np_inputs, scalar_args, self.op_type, self.entry._lib,  # noqa: SLF001
             self_contained=self.self_contained,
+            definition=self.definition,
         )
 
     def invoke(self, ctx: Any) -> int:

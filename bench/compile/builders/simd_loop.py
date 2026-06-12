@@ -35,27 +35,40 @@ class SimdLoopBuilder(Builder):
         return shutil.which("clang++") is not None
 
     def can_build(self, solution: Solution, is_baseline: bool) -> bool:
-        return is_baseline and solution.dataset == SupportedDatasets.SIMD_LOOP
+        return solution.dataset == SupportedDatasets.SIMD_LOOP
 
     def build(self, definition: Definition, solution: Solution) -> CompileResult:
         op_type = definition.op_type
-        harness_cpp = _HARNESS_DIR / f"{op_type}.cpp"
-        harness_h = _HARNESS_DIR / f"{op_type}.h"
-        if not harness_h.exists():
-            raise FileNotFoundError(
-                f"simd-loop harness header missing: {harness_h}. "
-                f"Add bench/compile/builders/simd_loop_harness/{op_type}.{{h,cpp}}."
-            )
-        if not harness_cpp.exists():
-            raise FileNotFoundError(f"simd-loop harness shim missing: {harness_cpp}")
-
         build_dir, sources_dir = self._make_build_dir(solution)
         try:
-            solution_src_paths = self._materialize_sources(solution, sources_dir)
+            # Prefer harness fused into solution sources (loop_NNN.h / loop_NNN.cpp).
+            # Fall back to on-disk simd_loop_harness/ for solutions generated before
+            # the fuse migration.
+            harness_h_name   = f"{op_type}.h"
+            harness_cpp_name = f"{op_type}.cpp"
+            fused_harness_h   = next((s for s in solution.sources if s.path == harness_h_name), None)
+            fused_harness_cpp = next((s for s in solution.sources if s.path == harness_cpp_name), None)
 
-            include_dirs: List[Path] = [_HARNESS_DIR, sources_dir]
+            if fused_harness_h and fused_harness_cpp:
+                # Both harness files are embedded in the solution — materialize all.
+                solution_src_paths = self._materialize_sources(solution, sources_dir)
+                include_dirs: List[Path] = [sources_dir]
+                harness_cpp_path = sources_dir / harness_cpp_name
+            else:
+                # Legacy path: read harness from simd_loop_harness/.
+                harness_cpp_path = _HARNESS_DIR / f"{op_type}.cpp"
+                harness_h_path   = _HARNESS_DIR / f"{op_type}.h"
+                if not harness_h_path.exists():
+                    raise FileNotFoundError(
+                        f"simd-loop harness header missing: {harness_h_path}. "
+                        f"Re-run scripts/gen_simd_loop_harness.py to regenerate."
+                    )
+                if not harness_cpp_path.exists():
+                    raise FileNotFoundError(f"simd-loop harness shim missing: {harness_cpp_path}")
+                solution_src_paths = self._materialize_sources(solution, sources_dir)
+                include_dirs = [_HARNESS_DIR, sources_dir]
+
             so_path = build_dir / f"{solution.name[:64]}.so"
-
             cmd: List[str] = ["clang++", "-shared", "-fPIC"]
             cmd += list(solution.spec.compile_flags or [])
             if not any(f.startswith("-O") for f in cmd):
@@ -64,9 +77,11 @@ class SimdLoopBuilder(Builder):
                 cmd.append("-std=c++14")
             for inc in include_dirs:
                 cmd += ["-I", str(inc)]
-            # Harness first so its forward-decl of inner_loop_NNN is visible.
-            cmd.append(str(harness_cpp))
-            cmd += [str(p) for p in solution_src_paths]
+            # Harness cpp first so its forward-decl of inner_loop_NNN is visible.
+            cmd.append(str(harness_cpp_path))
+            # Add user kernel sources (skip harness files already added above).
+            harness_names = {harness_h_name, harness_cpp_name}
+            cmd += [str(p) for p in solution_src_paths if p.name not in harness_names]
             cmd += list(solution.spec.link_flags or [])
             cmd += ["-o", str(so_path)]
 

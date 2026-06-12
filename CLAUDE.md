@@ -30,26 +30,29 @@ bench/                          # Local harness Python package
     builders/
       candidate.py              # CandidateBuilder: raw float* for LLM candidates
       ncnn.py                   # NcnnBuilder: ncnn::Mat for ncnn baselines
-      simd_loop.py              # SimdLoopBuilder: flat-array for loop_* baselines
+      simd_loop.py              # SimdLoopBuilder: reads harness from solution sources
       candidate_harness/        # C shims for candidate kernels
       ncnn_harness/             # C shims for ncnn baseline kernels
-      simd_loop_harness/        # C shims for simd-loop baseline kernels
+      simd_loop_harness/        # Legacy on-disk copies (fallback only; fused into solution JSON)
   datasets/
-    ncnn.py                     # NcnnDataset adapter + SIGNATURES
+    ncnn.py                     # NcnnDataset adapter
     raw.py                      # RawDataset for candidates
-    simd_loop.py                # SimdLoopDataset + SIGNATURES
+    simd_loop.py                # SimdLoopDataset — derives all metadata from Definition
   evaluators/
-    evaluator.py                # BoundKernel, RefBaseline, Evaluator ABC
+    evaluator.py                # BoundKernel (carries Definition), RefBaseline, Evaluator ABC
     default.py                  # DefaultEvaluator (correctness + timing + speedup)
   runner.py                     # compile-once → BoundKernel → evaluator per workload
-  data/                         # Pydantic schemas: Definition, Solution, Workload, Trace
+  data/
+    definition.py               # Definition + SimdLoopMeta + DType (incl. unsigned)
+    solution.py                 # Solution, SourceFile, SupportedDatasets
+    ...                         # Workload, Trace, TraceSet Pydantic schemas
   runtime/
     inputs.py                   # Deterministic input generators
     timing.py                   # ns timing with CPU pinning + perf counters
     correctness.py              # Hybrid abs+rel tolerance comparison
 
-bench-trace/                    # On-disk warehouse (TraceSet root)
-  definitions/<op_type>/        # Definition JSONs
+bench-trace/                    # On-disk warehouse (TraceSet root) — gitignored, generated
+  definitions/<op_type>/        # Definition JSONs (include simd_loop_meta)
   workloads/<op_type>/          # Workload JSONLs (append-only)
   solutions/<dataset>/<author>/<op_type>/
   traces/<op_type>/
@@ -63,6 +66,7 @@ scripts/
   gen_definitions.py            # Regenerate ncnn definitions+workloads from test files
   gen_simd_loop_harness.py      # Code-gen all simd-loop harnesses + bench-trace artifacts
   bench_loop_agent.py           # Local iterative LLM agent (Path 2, works locally + on Graviton)
+  test_reference_scalars.py     # Correctness smoke-test: all reference-scalar solutions vs Python ref
 ```
 
 ---
@@ -90,6 +94,22 @@ python scripts/bench_loop_agent.py --all-loops --max-turns 4 \
   --model openrouter/anthropic/claude-opus-4-6
 ```
 
+### Validate via CLI (bench/cli.py)
+```bash
+python -m bench.cli list-definitions          # list all 20 simd-loop + ncnn definitions
+python -m bench.cli bench --definition loop_001 --solution reference-scalar_loop_001
+```
+
+### Correctness smoke-test (all 20 reference-scalar solutions)
+```bash
+python scripts/test_reference_scalars.py      # should print 121/121 workloads passed
+```
+
+### Regenerate simd-loop harnesses + bench-trace
+```bash
+python scripts/gen_simd_loop_harness.py       # idempotent; only writes on content change
+```
+
 ### Regenerate ncnn definitions
 ```bash
 python scripts/gen_definitions.py   # → bench-trace/definitions/ and bench-trace/workloads/
@@ -101,19 +121,38 @@ python scripts/gen_definitions.py   # → bench-trace/definitions/ and bench-tra
 
 ### simd-loop (fully tested on Graviton4 SVE2)
 
-**20 loops** across three patterns (80/80 edge-workload correctness on Mac):
+**20 loops** across three patterns (121/121 workload correctness, Mac + Graviton4):
 - **Scalar-output**: 001-004, 008, 010, 024, 032, 033, 126, 127 — reduction → single value
 - **Array-output**: 027, 028, 029, 035, 113, 128 — element-wise → N-element output
-- **Inplace-sort**: 120, 121, 122 — data array sorted in-place
+- **Inplace-sort**: 120, 121, 122 — data sorted in-place
 
-**To add more loops**: edit `TARGET_LOOP_IDS` in `scripts/gen_simd_loop_harness.py` and run it. New patterns may require adding a `_SORT_LOOPS` entry (inplace) or a custom ref/kernel.
+**75 total loops in `dataset/problems/`; 55 not yet integrated:**
 
-Both local dev and Graviton use the same code path; platform detected at runtime for ISA-appropriate prompting.
+| Reason skipped | Count | Examples |
+|----------------|-------|---------|
+| SME2/MOPA matmul — no AWS instance yet | ~25 | 200-series, 130, 135-137 |
+| Non-trivial multi-ptr structs (linked list, sparse, indirect) | ~15 | 009, 019, 023, 036, 102, 104 |
+| Multi-axis matmul needing m/n/k | ~5 | 025 |
+| String/char* ops | ~5 | 005, 006, 022, 031, 034 |
+| Complex C types (cuint32_t etc.) | ~5 | 037, 109, 110, 112 |
+| Scalar-only struct (no array ptr) | ~2 | 040, 012 |
 
-- `SimdLoopBuilder` — no framework deps, just clang++ + harness shim
-- Harness: `bench/compile/builders/simd_loop_harness/loop_NNN.{h,cpp}`
-- Adapter: `bench/datasets/simd_loop.py`
-- Data: `bench-trace/definitions/simd-loop/` + `bench-trace/workloads/simd-loop/`
+All 75 loops have SVE/NEON implementations — the blockers are ABI complexity, not ISA.
+
+**To add more loops**: add the loop ID to `TARGET_LOOP_IDS` in `scripts/gen_simd_loop_harness.py`
+and run it. The generator handles the three patterns automatically. Non-standard cases:
+- Sort/inplace: add to `_SORT_LOOPS` dict (lists scratch field names)
+- Custom kernel: add to `_CUSTOM_SCALAR_KERNELS` (e.g. loop_001 uses double accumulation)
+- Non-trivial reference: add to `_CUSTOM_REFS`
+- Array padding: add to `_LOOP_META_OVERRIDES` (e.g. `"array_pad": 2` for loop_113)
+
+**Architecture (self-contained solutions):**
+- Each solution JSON embeds its harness sources (`loop_NNN.h`, `loop_NNN.cpp`, `kernel.cpp`)
+- `SimdLoopBuilder` compiles directly from solution sources — no separate harness directory needed
+- `SimdLoopDataset` derives all adapter metadata from `Definition.simd_loop_meta` (written by
+  the generator into each definition JSON) — no hard-coded `_LOOP_META` or `SIGNATURES` dicts
+- `DType` enum includes unsigned types (uint8/16/32/64) needed for integer accumulation loops
+- `bench/cli.py` works for all simd-loop solutions without setting `is_baseline`
 
 **Candidate convention:** `inner_loop_NNN` must be `extern "C"` (not `static`).
 
@@ -144,10 +183,20 @@ cmake --build build -j$(nproc) ncnn
 
 ## Adding a new simd-loop problem
 
-1. `bench/compile/builders/simd_loop_harness/<op>.{h,cpp}` — struct + entry shim
-2. `bench/datasets/simd_loop.py` — add SIGNATURES entry + _RESULT_DTYPE
-3. `bench-trace/definitions/simd-loop/<op>.json` + `bench-trace/workloads/simd-loop/<op>.jsonl`
-4. `_scalar_args_for` in `bench/evaluators/default.py` picks it up automatically
+The generator handles everything — just run it after editing `TARGET_LOOP_IDS`:
+
+```bash
+python scripts/gen_simd_loop_harness.py
+```
+
+This writes (idempotently):
+1. `bench/compile/builders/simd_loop_harness/loop_NNN.{h,cpp}` — on-disk copies (legacy fallback)
+2. `bench-trace/definitions/simd-loop/loop_NNN.json` — includes `simd_loop_meta` for the adapter
+3. `bench-trace/workloads/simd-loop/loop_NNN.jsonl`
+4. `bench-trace/solutions/simd-loop/reference-scalar/loop_NNN/reference-scalar_loop_NNN.json`
+   — sources include fused `loop_NNN.h` + `loop_NNN.cpp` + `kernel.cpp`
+
+No Python files need manual editing to add a supported loop pattern.
 
 ## Instance types
 
@@ -157,11 +206,9 @@ cmake --build build -j$(nproc) ncnn
 | SVE2 | c8g.large | Graviton4, Neoverse V2, 128-bit SVE2 |
 | SME2 | —         | No AWS instance supports SME2 yet    |
 
-## In-flight PRs (as of 2026-06-05)
+## In-flight PRs (as of 2026-06-12)
 
-| Branch                    | Status         | Notes                                       |
-|---------------------------|----------------|---------------------------------------------|
-| `feat/simd-loop-harness`  | Ready to merge | PR 1 — simd-loop harness, gitignore         |
-| `feat/ncnn-4ops-harness`  | Ready to merge | PR 2 — stacked on PR 1, ncnn 4ops + agent  |
-| `feat/collect-ncnn-*`     | Stale (pre-#15)| Superseded by PR 2                          |
-| `chore/small-refactor-*`  | Stale (pre-#15)| Superseded by PR #15                        |
+| Branch                          | Status     | Notes                                                    |
+|---------------------------------|------------|----------------------------------------------------------|
+| `feat/simd-loop-20-loops` (#21) | Open       | 20 loops (array-output + inplace-sort); needs review     |
+| Next branch (unpushed)          | Local only | Arch refactor: self-contained solutions, no _LOOP_META   |

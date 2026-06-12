@@ -12,6 +12,26 @@ from pydantic import Field, model_validator
 from .utils import BaseModelWithDocstrings, NonEmptyString, NonNegativeInt
 
 
+class ScratchBufSpec(BaseModelWithDocstrings):
+    """A scratch buffer allocated by the harness for simd-loop kernels."""
+    name: NonEmptyString
+    dtype: NonEmptyString
+
+
+class SimdLoopMeta(BaseModelWithDocstrings):
+    """Adapter metadata for simd-loop definitions.
+
+    These fields are harness implementation details (not part of the math spec)
+    and are used by SimdLoopDataset.wrap_inputs to set up the calling convention.
+    """
+    output_inplace: bool = False
+    """True when the kernel sorts/modifies its first input array in-place."""
+    array_pad: int = Field(default=0, ge=0)
+    """Extra elements allocated past N for kernels that read/write beyond the array."""
+    scratch: list[ScratchBufSpec] = Field(default_factory=list)
+    """Scratch buffers (name + dtype) passed between inputs and N in the ABI."""
+
+
 class AxisConst(BaseModelWithDocstrings):
     """A dimension whose value is fixed across all workloads of this Definition."""
 
@@ -41,6 +61,10 @@ class DType(str, Enum):
     INT32 = "int32"
     INT16 = "int16"
     INT8 = "int8"
+    UINT64 = "uint64"
+    UINT32 = "uint32"
+    UINT16 = "uint16"
+    UINT8 = "uint8"
     BOOL = "bool"
 
 
@@ -72,6 +96,8 @@ class Definition(BaseModelWithDocstrings):
     constraints: List[NonEmptyString] = Field(default_factory=list)
     tags: List[NonEmptyString] = Field(default_factory=list)
     description: Optional[str] = None
+    simd_loop_meta: Optional[SimdLoopMeta] = None
+    """Set for simd-loop definitions; drives SimdLoopDataset.wrap_inputs."""
 
     @model_validator(mode="after")
     def _validate_reference(self) -> "Definition":
