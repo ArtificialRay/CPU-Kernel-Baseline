@@ -171,9 +171,11 @@ _array_dtype_map_local = {
 # In-place sort loops: only "data" is meaningful input/output; extra ptrs are scratch.
 # Custom scalar kernel (std::sort) is injected instead of extracting from loops/*.c.
 _SORT_LOOPS: dict[str, list] = {
-    "loop_120": [],          # no scratch buffers
-    "loop_121": ["temp"],    # temp is scratch
+    "loop_120": [],                       # no scratch buffers
+    "loop_121": ["temp"],                 # temp is scratch
     "loop_122": [],
+    "loop_123": ["temp", "block_sizes"],  # bitonic sort; edge sizes are all powers-of-2
+    "loop_124": ["temp", "hist", "prfx"], # radix sort; hist/prfx oversized to n (SVE uses ≤mvl*16)
 }
 
 
@@ -427,6 +429,20 @@ _CUSTOM_SCALAR_KERNELS: dict[str, str] = {
         '#include "loop_122.h"\n'
         '#include <algorithm>\n\n'
         'extern "C" void inner_loop_122(struct loop_122_data *data) {\n'
+        '    std::sort(data->data, data->data + data->n);\n'
+        '}\n'
+    ),
+    "loop_123": (
+        '#include "loop_123.h"\n'
+        '#include <algorithm>\n\n'
+        'extern "C" void inner_loop_123(struct loop_123_data *data) {\n'
+        '    std::sort(data->data, data->data + data->n);\n'
+        '}\n'
+    ),
+    "loop_124": (
+        '#include "loop_124.h"\n'
+        '#include <algorithm>\n\n'
+        'extern "C" void inner_loop_124(struct loop_124_data *data) {\n'
         '    std::sort(data->data, data->data + data->n);\n'
         '}\n'
     ),
@@ -840,6 +856,8 @@ TARGET_LOOP_IDS = [
     "loop_120",   # insertion sort
     "loop_121",   # quicksort (with temp scratch buffer)
     "loop_122",   # odd-even transposition sort
+    "loop_123",   # bitonic mergesort (temp + block_sizes scratch; n must be power-of-2)
+    "loop_124",   # radix sort (temp + hist + prfx scratch)
 ]
 
 
