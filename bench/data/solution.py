@@ -34,8 +34,7 @@ class SupportedDatasets(str, Enum):
     RAW = "raw"
     """Calls the kernel with bare `float*` tensors; for non-framework solutions."""
     SIMD_LOOP = "simd-loop"
-    """The loop_* SIMD baseline dataset. Builder is a NotImplemented stub until
-    that dataset is migrated into bench/ (see SimdLoopBuilder)."""
+    """The loop_* SIMD baseline dataset. Uses SimdLoopBuilder + SimdLoopDataset."""
     # Future: XNNPACK, EIGEN, ...
 
 

@@ -805,10 +805,9 @@ def _write_reference_solution(info: LoopInfo) -> None:
         print(f"  wrote {out_path.relative_to(REPO)}")
 
 
-# ── simd_loop.py regenerator ──────────────────────────────────────────────────
-
-def _regen_simd_loop_py(all_infos: list[LoopInfo]) -> None:
-    """Fully regenerate bench/datasets/simd_loop.py from _LOOP_META."""
+def _regen_simd_loop_py(all_infos: list[LoopInfo]) -> None:  # noqa: dead code — kept for reference
+    """No longer called. simd_loop.py is now hand-maintained and derives all
+    metadata from Definition.simd_loop_meta at runtime; no generated _LOOP_META."""
 
     meta_entries = []
     for info in all_infos:

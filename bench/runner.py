@@ -127,14 +127,9 @@ def _bind_kernel(
 ) -> BoundKernel:
     """Dlopen the compiled .so and wrap it as a BoundKernel.
 
-    Adapter + ctypes signatures are chosen by is_baseline, NOT solution.dataset:
-    baselines run through the ncnn::Mat ABI, candidates through the raw float* ABI.
-
-    THIS is the single place the multi-dataset concern (problem #2) is localized:
-    to support simd-loop/tnn/... baselines later, replace the is_baseline branch
-    with a `solution.dataset → {adapter, SIGNATURES}` lookup here. Nothing in the
-    evaluator or runner loop changes, because all ABI access goes through
-    BoundKernel.
+    Adapter + ctypes signatures are chosen by solution.dataset first, then
+    is_baseline for ncnn vs raw dispatch. simd-loop always routes to
+    SimdLoopDataset with signature derived from Definition.simd_loop_meta.
     """
     lib = ctypes.CDLL(str(compiled.so_path))
     self_contained = False
