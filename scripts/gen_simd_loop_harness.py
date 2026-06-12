@@ -12,14 +12,19 @@ Outputs (all idempotent — safe to re-run):
   bench/datasets/simd_loop.py   ← fully regenerated
 
 Supported loop patterns (auto-generated):
-  A1 — two pointer arrays + int n + scalar output
-  B  — one pointer array  + int n + scalar output
+  A  — two pointer arrays  + int n + scalar output
+  B  — one pointer array   + int n + scalar output
+  C  — N input arrays + one output array + int n  (array-output, last ptr = output)
+  D  — one input array + one output array + int n  (array-output)
 
 Loops requiring custom handling (skipped):
   loop_023 — indexes OOB with generated inputs
+  loop_101 — output array is FIRST ptr, size ≠ N
   loop_105 — b is scratch buffer, not an input
+  loop_108 — mixed uint32→uint8 pixel; trivially-zero output with values 1-100
+  loop_111 — last ptr is input (exponent), not output
   p+lmt loops (005, 006, 022, 103) — need string/buffer input generation
-  complex structs (012, 019, 109, …)
+  complex structs (012, 019, 109, 110, 112, …) — cuint32_t / cfloat32_t types
 """
 from __future__ import annotations
 
@@ -96,13 +101,25 @@ class Field:
 
 @dataclass
 class LoopInfo:
-    loop_id:    str          # "loop_001"
-    loop_num:   str          # "001"
-    ptr_fields: List[Field]  # input pointer fields in struct order
-    n_field:    Field        # the integer size field
-    res_field:  Field        # the scalar result field
-    edge_sizes: List[int]    # from EDGE_SIZES (0 excluded)
-    perf_sizes: List[int]    # from PERF_SIZES
+    loop_id:    str               # "loop_001"
+    loop_num:   str               # "001"
+    ptr_fields: List[Field]       # pointer fields in struct order (all ptrs, incl. output for array kind)
+    n_field:    Field             # the integer size field
+    res_field:  Optional[Field]   # scalar result field (None for array-output loops)
+    output_ptr: Optional[Field]   # array-output: the struct field that receives the output array
+    edge_sizes: List[int]         # from EDGE_SIZES (0 excluded)
+    perf_sizes: List[int]         # from PERF_SIZES
+
+    @property
+    def is_array_output(self) -> bool:
+        return self.output_ptr is not None
+
+    @property
+    def input_ptr_fields(self) -> List[Field]:
+        """Pointer fields that are INPUT only (excludes the output ptr for array loops)."""
+        if self.output_ptr is not None:
+            return [f for f in self.ptr_fields if f.name != self.output_ptr.name]
+        return self.ptr_fields
 
 
 # ── Parser ────────────────────────────────────────────────────────────────────
@@ -166,14 +183,10 @@ def _classify(loop_id: str, fields: List[Field]) -> Optional[LoopInfo]:
         if non_n:
             res_field = non_n[-1]
 
-    if n_field is None or res_field is None:
+    if n_field is None:
         return None
 
-    # Only support patterns with ≤ 2 pointer inputs
-    if len(ptr_fields) > 2:
-        return None
-
-    # Load sizes from problem.py
+    # Load sizes from problem.py (needed for both scalar and array patterns)
     import importlib.util
     prob_dir = next((d for d in PROBLEMS_DIR.iterdir()
                      if d.name.startswith(loop_id + "_")), None)
@@ -187,33 +200,55 @@ def _classify(loop_id: str, fields: List[Field]) -> Optional[LoopInfo]:
     # Use PERF_SIZES_C8G if present (better Graviton4 coverage), else PERF_SIZES
     perf = getattr(mod, "PERF_SIZES_C8G", None) or getattr(mod, "PERF_SIZES", [])
 
-    return LoopInfo(
-        loop_id=loop_id,
-        loop_num=loop_num,
-        ptr_fields=ptr_fields,
-        n_field=n_field,
-        res_field=res_field,
-        edge_sizes=edge,
-        perf_sizes=perf,
-    )
+    # Scalar-output pattern: has a scalar res field + ≤2 input pointers
+    if res_field is not None and len(ptr_fields) <= 2:
+        return LoopInfo(
+            loop_id=loop_id,
+            loop_num=loop_num,
+            ptr_fields=ptr_fields,
+            n_field=n_field,
+            res_field=res_field,
+            output_ptr=None,
+            edge_sizes=edge,
+            perf_sizes=perf,
+        )
+
+    # Array-output pattern: no scalar res, 2+ ptrs, last ptr is the output.
+    # ABI: armbench_entry(in1, ..., int64_t n, void* res_out) where res_out
+    # is the pre-allocated output array (size N), same slot as scalar res.
+    if res_field is None and len(ptr_fields) >= 2:
+        output_ptr = ptr_fields[-1]
+        return LoopInfo(
+            loop_id=loop_id,
+            loop_num=loop_num,
+            ptr_fields=ptr_fields,
+            n_field=n_field,
+            res_field=None,
+            output_ptr=output_ptr,
+            edge_sizes=edge,
+            perf_sizes=perf,
+        )
+
+    return None
 
 
 # ── Harness generator ─────────────────────────────────────────────────────────
 
 def _gen_harness_h(info: LoopInfo) -> str:
     lid = info.loop_id
-    num = info.loop_num
 
-    # struct field declarations (preserve restrict for clarity)
     struct_fields = []
     for f in info.ptr_fields:
         struct_fields.append(f"    {f.c_type} *{f.name};")
     struct_fields.append(f"    {info.n_field.c_type} {info.n_field.name};")
-    struct_fields.append(f"    {info.res_field.c_type} {info.res_field.name};")
+    if not info.is_array_output:
+        struct_fields.append(f"    {info.res_field.c_type} {info.res_field.name};")
 
-    # entry args: void* per pointer, int64_t n, void* res_out
-    args = ", ".join(["void *" + f.name for f in info.ptr_fields]
-                     + ["int64_t n", "void *res_out"])
+    # ABI: input ptrs + int64_t n + void* res_out (scalar value or array buffer)
+    args = ", ".join(
+        ["void *" + f.name for f in info.input_ptr_fields]
+        + ["int64_t n", "void *res_out"]
+    )
 
     return f"""\
 // Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
@@ -237,18 +272,43 @@ int armbench_entry_{lid}({args});
 def _gen_harness_cpp(info: LoopInfo) -> str:
     lid = info.loop_id
 
-    args = ", ".join(["void *" + f.name for f in info.ptr_fields]
-                     + ["int64_t n", "void *res_out"])
-
-    # struct assignments
-    ptr_assigns = "\n    ".join(
-        f"data.{f.name} = static_cast<{f.c_type} *>({f.name});"
-        for f in info.ptr_fields
+    args = ", ".join(
+        ["void *" + f.name for f in info.input_ptr_fields]
+        + ["int64_t n", "void *res_out"]
     )
-    n_cast = f"static_cast<{info.n_field.c_type}>(n)"
-    res_type = info.res_field.c_type
 
-    return f"""\
+    n_cast = f"static_cast<{info.n_field.c_type}>(n)"
+
+    if info.is_array_output:
+        # Map each input ptr and the output ptr (res_out → data.output_field)
+        ptr_assigns = "\n    ".join(
+            f"data.{f.name} = static_cast<{f.c_type} *>({f.name});"
+            for f in info.input_ptr_fields
+        )
+        out = info.output_ptr
+        return f"""\
+// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
+#include "{lid}.h"
+#include <stdint.h>
+
+extern "C" void inner_{lid}(struct {lid}_data *data);
+
+extern "C" int armbench_entry_{lid}({args}) {{
+    struct {lid}_data data;
+    {ptr_assigns}
+    data.{out.name} = static_cast<{out.c_type} *>(res_out);
+    data.{info.n_field.name} = {n_cast};
+    inner_{lid}(&data);
+    return 0;
+}}
+"""
+    else:
+        ptr_assigns = "\n    ".join(
+            f"data.{f.name} = static_cast<{f.c_type} *>({f.name});"
+            for f in info.ptr_fields
+        )
+        res_type = info.res_field.c_type
+        return f"""\
 // Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
 #include "{lid}.h"
 #include <cassert>
@@ -273,6 +333,56 @@ extern "C" int armbench_entry_{lid}({args}) {{
 
 # Hand-written references for non-trivial loops.
 _CUSTOM_REFS: dict[str, str] = {
+    # ── Array-output loops ────────────────────────────────────────────────────
+    "loop_027": (
+        "import numpy as np\n\n"
+        "def run(input):\n"
+        "    return np.sqrt(input.astype(np.float64)).astype(np.float32)\n"
+    ),
+    "loop_028": (
+        "import numpy as np\n\n"
+        "def run(input1, input2):\n"
+        "    return input1 / input2\n"
+    ),
+    "loop_029": (
+        "import numpy as np\n\n"
+        "def run(input, scale):\n"
+        "    return np.ldexp(input, scale.astype(np.int32))\n"
+    ),
+    "loop_035": (
+        "import numpy as np\n\n"
+        "def run(a, b):\n"
+        "    return a + b\n"
+    ),
+    "loop_113": (
+        # Processes pairs (i += 2): c[2k]=a[2k]+a[2k+1], c[2k+1]=b[2k]+b[2k+1].
+        # Kernel always reads a[i+1]/b[i+1] — wrap_inputs pads with 2 zeros so
+        # OOB reads return 0. Reference mirrors that: pad then vectorize.
+        "import numpy as np\n\n"
+        "def run(a0, b0):\n"
+        "    n = len(a0)\n"
+        "    ap = np.concatenate([a0.astype(np.int32), np.zeros(2, np.int32)])\n"
+        "    bp = np.concatenate([b0.astype(np.int32), np.zeros(2, np.int32)])\n"
+        "    n_pairs = (n + 1) // 2\n"
+        "    even = np.arange(n_pairs) * 2\n"
+        "    c = np.zeros(n, dtype=np.int32)\n"
+        "    # c[2k] = a[2k]+a[2k+1]\n"
+        "    c_ev = (ap[even].astype(np.int64) + ap[even + 1].astype(np.int64)).astype(np.int32)\n"
+        "    valid_ev = even[even < n]\n"
+        "    c[valid_ev] = c_ev[:len(valid_ev)]\n"
+        "    # c[2k+1] = b[2k]+b[2k+1]\n"
+        "    c_od = (bp[even].astype(np.int64) + bp[even + 1].astype(np.int64)).astype(np.int32)\n"
+        "    odd = even + 1\n"
+        "    valid_od = odd[odd < n]\n"
+        "    c[valid_od] = c_od[:len(valid_od)]\n"
+        "    return c\n"
+    ),
+    "loop_128": (
+        "import numpy as np\n\n"
+        "def run(a, b):\n"
+        "    return a + b\n"
+    ),
+    # ── Scalar-output loops ───────────────────────────────────────────────────
     "loop_010": (
         "import numpy as np\n\n"
         "def run(a):\n"
@@ -317,6 +427,16 @@ _CUSTOM_REFS: dict[str, str] = {
 def _gen_reference(info: LoopInfo) -> str:
     if info.loop_id in _CUSTOM_REFS:
         return _CUSTOM_REFS[info.loop_id]
+
+    if info.is_array_output:
+        # Generic fallback for array-output: element-wise add of first two inputs
+        input_names = [f.name for f in info.input_ptr_fields]
+        args = ", ".join(input_names)
+        if len(input_names) == 1:
+            body = f"    return {input_names[0]}.copy()"
+        else:
+            body = f"    return {input_names[0]} + {input_names[1]}"
+        return f"import numpy as np\n\ndef run({args}):\n{body}\n"
 
     input_names = [f.name for f in info.ptr_fields]
     res_np = info.res_field.np_result_expr
@@ -419,18 +539,32 @@ def _write_definition(info: LoopInfo) -> None:
     out_path = out_dir / f"{info.loop_id}.json"
 
     inputs = {}
-    for f in info.ptr_fields:
+    for f in info.input_ptr_fields:
         inputs[f.name] = {"shape": ["N"], "dtype": f.numpy_dtype}
 
-    # Output dtype — use the actual unsigned type for correctness
-    out_dtype_map = {
+    _scalar_dtype_map = {
         "float": "float32", "double": "float64",
         "int": "int32", "uint32_t": "int32", "uint64_t": "int64",
         "int32_t": "int32", "int64_t": "int64",
         "uint8_t": "int8", "uint16_t": "int16",
         "bool": "int32",
     }
-    out_dtype = out_dtype_map.get(info.res_field.c_type, "int32")
+    _array_dtype_map = {
+        "float": "float32", "double": "float64",
+        "int": "int32", "uint32_t": "int32", "uint64_t": "int64",
+        "int32_t": "int32", "int64_t": "int64",
+        "uint8_t": "uint8", "uint16_t": "uint16",
+        "bool": "int32",
+    }
+
+    if info.is_array_output:
+        out_name = info.output_ptr.name
+        out_dtype = _array_dtype_map.get(info.output_ptr.c_type, "int32")
+        out_spec = {"shape": ["N"], "dtype": out_dtype, "description": "Output array"}
+    else:
+        out_name = info.res_field.name
+        out_dtype = _scalar_dtype_map.get(info.res_field.c_type, "int32")
+        out_spec = {"shape": None, "dtype": out_dtype, "description": "Scalar result"}
 
     definition = {
         "name": info.loop_id,
@@ -439,13 +573,7 @@ def _write_definition(info: LoopInfo) -> None:
         "tags": ["simd-loop"],
         "axes": {"N": {"type": "var", "description": "Array length"}},
         "inputs": inputs,
-        "outputs": {
-            info.res_field.name: {
-                "shape": None,
-                "dtype": out_dtype,
-                "description": "Scalar result",
-            }
-        },
+        "outputs": {out_name: out_spec},
         "reference": _gen_reference(info),
     }
     content = json.dumps(definition, indent=2) + "\n"
@@ -542,20 +670,31 @@ def _regen_simd_loop_py(all_infos: list[LoopInfo]) -> None:
 
     meta_entries = []
     for info in all_infos:
-        inputs_repr = repr([
-            (f.name, f"np.{f.numpy_dtype}") for f in info.ptr_fields
-        ]).replace("'np.", "np.").replace("')", ")")
-        # Fix: repr wraps numpy dtype refs in quotes — build manually
         input_list = ", ".join(
-            f'("{f.name}", np.{f.numpy_dtype})' for f in info.ptr_fields
+            f'("{f.name}", np.{f.numpy_dtype})' for f in info.input_ptr_fields
         )
-        res_np = info.res_field.np_result_expr  # e.g. "np.float32"
-        entry = (
-            f'    "{info.loop_id}": {{\n'
-            f'        "inputs": [{input_list}],\n'
-            f'        "result_dtype": {res_np},\n'
-            f'    }},'
-        )
+        if info.is_array_output:
+            res_np = _C_TO_NP_RESULT.get(info.output_ptr.c_type, "np.int32")
+            override_lines = "".join(
+                f'        "{k}": {v!r},\n'
+                for k, v in _LOOP_META_OVERRIDES.get(info.loop_id, {}).items()
+            )
+            entry = (
+                f'    "{info.loop_id}": {{\n'
+                f'        "inputs": [{input_list}],\n'
+                f'        "result_dtype": {res_np},\n'
+                f'        "output_is_array": True,\n'
+                f'{override_lines}'
+                f'    }},'
+            )
+        else:
+            res_np = info.res_field.np_result_expr
+            entry = (
+                f'    "{info.loop_id}": {{\n'
+                f'        "inputs": [{input_list}],\n'
+                f'        "result_dtype": {res_np},\n'
+                f'    }},'
+            )
         meta_entries.append(entry)
 
     meta_block = "\n".join(meta_entries)
@@ -572,6 +711,9 @@ manual sync required.
 The harness shims live in bench/compile/builders/simd_loop_harness/<op>.{{h,cpp}}.
 The calling convention for every loop:
     int armbench_entry_loop_NNN(void* in1, [void* in2, ...], int64_t n, void* res_out)
+
+For scalar-output loops:  res_out → single scalar value written by the kernel.
+For array-output loops:   res_out → pre-allocated array of N elements (the output buffer).
 
 To add a new loop:
   1. Add an entry to _LOOP_META below.
@@ -617,7 +759,8 @@ _RESULT_DTYPE: Dict[str, type] = {{
 class SimdLoopContext:
     entry_args: Tuple[Any, ...]
     _arrays:    list          # contiguous input arrays — kept alive during kernel call
-    res_buf:    np.ndarray    # 1-element result buffer
+    res_buf:    np.ndarray    # result buffer (1-elem scalar or N-elem array)
+    _n:         int = 0       # user-visible output length; 0 means use full res_buf
 
 
 # ── Adapter ───────────────────────────────────────────────────────────────────
@@ -647,13 +790,27 @@ class SimdLoopDataset:
         meta = _LOOP_META[op_type]
         arrays = [np.ascontiguousarray(np_inputs[name]) for name, _ in meta["inputs"]]
         n = int(scalar_args["N"])
-        res_buf = np.zeros(1, dtype=meta["result_dtype"])
+        pad = int(meta.get("array_pad", 0))
+        if meta.get("output_is_array"):
+            # Array-output: res_out IS the output array.
+            # Pad inputs and output when the kernel reads/writes beyond size.
+            if pad > 0:
+                arrays = [
+                    np.concatenate([a, np.zeros(pad, dtype=a.dtype)])
+                    for a in arrays
+                ]
+            res_buf = np.zeros(n + pad, dtype=meta["result_dtype"])
+        else:
+            res_buf = np.zeros(1, dtype=meta["result_dtype"])
         ptrs = [ctypes.cast(a.ctypes.data, _C_VOID_P) for a in arrays]
         entry_args = tuple(ptrs) + (_C_INT64(n),) + (ctypes.cast(res_buf.ctypes.data, _C_VOID_P),)
-        return SimdLoopContext(entry_args=entry_args, _arrays=arrays, res_buf=res_buf)
+        return SimdLoopContext(entry_args=entry_args, _arrays=arrays, res_buf=res_buf, _n=n if pad > 0 else 0)
 
     def unwrap_output(self, ctx: SimdLoopContext) -> np.ndarray:
-        return ctx.res_buf.copy()
+        arr = ctx.res_buf.copy()
+        if ctx._n > 0 and len(arr) > ctx._n:
+            arr = arr[:ctx._n]
+        return arr
 
     def release(self, ctx: SimdLoopContext) -> None:
         ctx._arrays.clear()
@@ -664,18 +821,36 @@ class SimdLoopDataset:
         print(f"  wrote {SIMD_LOOP_PY.relative_to(REPO)}")
 
 
+# ── Per-loop meta overrides ────────────────────────────────────────────────────
+# Extra keys merged into the _LOOP_META entry for specific loops.
+# Use "array_pad": N to request N extra trailing elements in all arrays for a
+# loop whose kernel reads/writes beyond `size` (e.g. pair-processing loops).
+
+_LOOP_META_OVERRIDES: dict[str, dict] = {
+    "loop_113": {"array_pad": 2},  # kernel does a[i+1]/b[i+1] — needs 2 extra elements
+}
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 # Loops to process. Add more here as they are validated.
 TARGET_LOOP_IDS = [
-    "loop_001", "loop_002", "loop_003", "loop_004",  # existing (idempotent)
-    "loop_008",   # fp64 sum
-    "loop_010",   # conditional reduction → int result
-    "loop_024",   # sum of abs diffs (uint8 inputs)
-    "loop_032",   # fp64 banded pattern
+    # ── Scalar-output (reduction → single value) ─────────────────────────────
+    "loop_001", "loop_002", "loop_003", "loop_004",  # fp32/uint32/fp64/uint64 inner products
+    "loop_008",   # precise fp64 add reduction
+    "loop_010",   # conditional reduction → int
+    "loop_024",   # sum of abs diffs (uint8)
+    "loop_032",   # fp64 banded dot product
     "loop_033",   # fp64 inner product (int64 n)
     "loop_126",   # conditional dot product
     "loop_127",   # dot product with early exit
+    # ── Array-output (element-wise transform → output array) ─────────────────
+    "loop_027",   # fp32 sqrt  (1 input → 1 output)
+    "loop_028",   # fp64 div   (2 inputs → 1 output)
+    "loop_029",   # fp64 scalbn / ldexp (double + int64 scale → double)
+    "loop_035",   # fp32 add   (2 inputs → 1 output)
+    "loop_113",   # uint32 pair-wise add (2 inputs → 1 output, stride-2)
+    "loop_128",   # uint32 add with aliased pointers
 ]
 
 
@@ -707,8 +882,13 @@ def main() -> None:
             print(f"[skip] {loop_id}: struct pattern not supported")
             continue
 
-        print(f"[gen]  {loop_id}: {[f.name for f in info.ptr_fields]} + "
-              f"{info.n_field.name} -> {info.res_field.name} ({info.res_field.c_type})")
+        if info.is_array_output:
+            out_desc = f"[]{info.output_ptr.name} ({info.output_ptr.c_type}[])"
+            print(f"[gen]  {loop_id} (array): {[f.name for f in info.input_ptr_fields]} + "
+                  f"{info.n_field.name} -> {out_desc}")
+        else:
+            print(f"[gen]  {loop_id}: {[f.name for f in info.ptr_fields]} + "
+                  f"{info.n_field.name} -> {info.res_field.name} ({info.res_field.c_type})")
 
         if not dry_run:
             _write_harness(info)

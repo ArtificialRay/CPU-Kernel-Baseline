@@ -168,9 +168,17 @@ def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
                 out[tname] = make_mat_ramp(shape).astype(np_dt, copy=False)
             elif len(shape) == 2:
                 out[tname] = make_mat_ramp_2d(shape).astype(np_dt, copy=False)
+            elif len(shape) == 1:
+                # 1D flat arrays (simd-loop scalar kernels)
+                n_elems = shape[0]
+                if np.issubdtype(np_dt, np.integer):
+                    idx = np.arange(n_elems, dtype=np.int64)
+                    out[tname] = ((idx * 7 + 13) % 100 + 1).astype(np_dt)
+                else:
+                    out[tname] = make_weights(n_elems, scale=1.0).astype(np_dt, copy=False)
             else:
                 raise ValueError(
-                    f"Input tensor '{tname}' has unsupported rank {len(shape)}; expected 2/3/4"
+                    f"Input tensor '{tname}' has unsupported rank {len(shape)}; expected 1/2/3/4"
                 )
         elif tname in ("weight", "weight_data"):
             n_elems = int(np.prod(shape))

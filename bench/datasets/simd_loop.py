@@ -10,6 +10,9 @@ The harness shims live in bench/compile/builders/simd_loop_harness/<op>.{h,cpp}.
 The calling convention for every loop:
     int armbench_entry_loop_NNN(void* in1, [void* in2, ...], int64_t n, void* res_out)
 
+For scalar-output loops:  res_out → single scalar value written by the kernel.
+For array-output loops:   res_out → pre-allocated array of N elements (the output buffer).
+
 To add a new loop:
   1. Add an entry to _LOOP_META below.
   2. Run scripts/gen_simd_loop_harness.py to generate harness + bench-trace files.
@@ -73,6 +76,37 @@ _LOOP_META: Dict[str, dict] = {
         "inputs": [("a", np.int32), ("b", np.int32)],
         "result_dtype": np.uint32,
     },
+    "loop_027": {
+        "inputs": [("input", np.float32)],
+        "result_dtype": np.float32,
+        "output_is_array": True,
+    },
+    "loop_028": {
+        "inputs": [("input1", np.float64), ("input2", np.float64)],
+        "result_dtype": np.float64,
+        "output_is_array": True,
+    },
+    "loop_029": {
+        "inputs": [("input", np.float64), ("scale", np.int64)],
+        "result_dtype": np.float64,
+        "output_is_array": True,
+    },
+    "loop_035": {
+        "inputs": [("a", np.float32), ("b", np.float32)],
+        "result_dtype": np.float32,
+        "output_is_array": True,
+    },
+    "loop_113": {
+        "inputs": [("a0", np.int32), ("b0", np.int32)],
+        "result_dtype": np.uint32,
+        "output_is_array": True,
+        "array_pad": 2,
+    },
+    "loop_128": {
+        "inputs": [("a", np.int32), ("b", np.int32)],
+        "result_dtype": np.uint32,
+        "output_is_array": True,
+    },
 }
 
 
@@ -97,7 +131,8 @@ _RESULT_DTYPE: Dict[str, type] = {
 class SimdLoopContext:
     entry_args: Tuple[Any, ...]
     _arrays:    list          # contiguous input arrays — kept alive during kernel call
-    res_buf:    np.ndarray    # 1-element result buffer
+    res_buf:    np.ndarray    # result buffer (1-elem scalar or N-elem array)
+    _n:         int = 0       # user-visible output length; 0 means use full res_buf
 
 
 # ── Adapter ───────────────────────────────────────────────────────────────────
@@ -127,13 +162,27 @@ class SimdLoopDataset:
         meta = _LOOP_META[op_type]
         arrays = [np.ascontiguousarray(np_inputs[name]) for name, _ in meta["inputs"]]
         n = int(scalar_args["N"])
-        res_buf = np.zeros(1, dtype=meta["result_dtype"])
+        pad = int(meta.get("array_pad", 0))
+        if meta.get("output_is_array"):
+            # Array-output: res_out IS the output array.
+            # Pad inputs and output when the kernel reads/writes beyond size.
+            if pad > 0:
+                arrays = [
+                    np.concatenate([a, np.zeros(pad, dtype=a.dtype)])
+                    for a in arrays
+                ]
+            res_buf = np.zeros(n + pad, dtype=meta["result_dtype"])
+        else:
+            res_buf = np.zeros(1, dtype=meta["result_dtype"])
         ptrs = [ctypes.cast(a.ctypes.data, _C_VOID_P) for a in arrays]
         entry_args = tuple(ptrs) + (_C_INT64(n),) + (ctypes.cast(res_buf.ctypes.data, _C_VOID_P),)
-        return SimdLoopContext(entry_args=entry_args, _arrays=arrays, res_buf=res_buf)
+        return SimdLoopContext(entry_args=entry_args, _arrays=arrays, res_buf=res_buf, _n=n if pad > 0 else 0)
 
     def unwrap_output(self, ctx: SimdLoopContext) -> np.ndarray:
-        return ctx.res_buf.copy()
+        arr = ctx.res_buf.copy()
+        if ctx._n > 0 and len(arr) > ctx._n:
+            arr = arr[:ctx._n]
+        return arr
 
     def release(self, ctx: SimdLoopContext) -> None:
         ctx._arrays.clear()
