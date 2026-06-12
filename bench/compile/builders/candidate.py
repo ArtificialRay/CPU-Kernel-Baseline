@@ -66,8 +66,8 @@ class CandidateBuilder(Builder):
         if not any(f.startswith("-std=") for f in cmd):
             cmd.append("-std=c++14")
 
-        # Include dirs: the harness contract header + the solution's own headers.
-        cmd += ["-I", str(_HARNESS_DIR), "-I", str(sources_dir)]
+        # Include dirs: only the solution's own sources. 
+        cmd += ["-I", str(sources_dir)]
 
         if compile_harness:
             if not harness_cpp.exists():
