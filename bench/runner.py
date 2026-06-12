@@ -43,7 +43,7 @@ from bench.data.trace import (
 from bench.data.workload import Workload
 from bench.datasets import get as get_dataset_adapter
 from bench.datasets.raw import SIGNATURES as RAW_SIGNATURES
-from bench.datasets.simd_loop import SIGNATURES as SIMD_LOOP_SIGNATURES
+from bench.datasets.simd_loop import sig_from_definition
 from bench.evaluators import BoundKernel, resolve_evaluator
 
 logger = logging.getLogger(__name__)
@@ -127,35 +127,31 @@ def _bind_kernel(
 ) -> BoundKernel:
     """Dlopen the compiled .so and wrap it as a BoundKernel.
 
-    Adapter + ctypes signatures are chosen by is_baseline, NOT solution.dataset:
-    baselines run through the ncnn::Mat ABI, candidates through the raw float* ABI.
-
-    THIS is the single place the multi-dataset concern (problem #2) is localized:
-    to support simd-loop/tnn/... baselines later, replace the is_baseline branch
-    with a `solution.dataset → {adapter, SIGNATURES}` lookup here. Nothing in the
-    evaluator or runner loop changes, because all ABI access goes through
-    BoundKernel.
+    Adapter + ctypes signatures are chosen by solution.dataset first, then
+    is_baseline for ncnn vs raw dispatch. simd-loop always routes to
+    SimdLoopDataset with signature derived from Definition.simd_loop_meta.
     """
     lib = ctypes.CDLL(str(compiled.so_path))
-    # Dispatch on dataset for baselines (as suggested in the docstring above);
-    # candidates always use the raw float* ABI regardless of declared dataset.
     self_contained = False
-    if not is_baseline:
+    bound_definition = None
+    if solution.dataset.value == "simd-loop":
+        # simd-loop: always use SimdLoopDataset, sig derived from definition.
+        sig = sig_from_definition(definition)
+        sigs = {definition.op_type: sig}
+        adapter_name = "simd-loop"
+        bound_definition = definition
+    elif not is_baseline:
+        # Non-simd-loop candidates: raw float* ABI.
         sigs, adapter_name = RAW_SIGNATURES, "raw"
-    elif solution.dataset.value == "simd-loop":
-        sigs, adapter_name = SIMD_LOOP_SIGNATURES, "simd-loop"
     else:
-        # Every ncnn baseline ships a self-contained armbench_entry_<op> binding
-        # with all scalars baked as constexpr; the entry takes ONLY the 6
-        # Mat/Option pointers (no scalar ints). The builder no longer emits a
-        # scalar-taking harness, so there is no legacy signature to fall back to.
+        # ncnn baselines are self-contained (scalars baked as constexpr).
         adapter_name, self_contained = "ncnn", True
         sigs = {definition.op_type: [ctypes.c_void_p] * 6}
     entry = _bind_entry(lib, definition.op_type, sigs)
     adapter = get_dataset_adapter(adapter_name)()
     return BoundKernel(
         entry=entry, adapter=adapter, op_type=definition.op_type,
-        self_contained=self_contained,
+        self_contained=self_contained, definition=bound_definition,
     )
 
 

@@ -193,8 +193,6 @@ def _scalar_args_for(d: Definition, w: Workload) -> Dict[str, int]:
     Returns a dict whose keys match what the dataset adapter's wrap_inputs
     expects for this op_type.
     """
-    from bench.datasets.simd_loop import SIGNATURES as _SIMD_LOOP_SIGNATURES
-
     consts = d.const_axes
     si = w.scalar_inputs
     if d.op_type == "conv2d":
@@ -240,9 +238,7 @@ def _scalar_args_for(d: Definition, w: Workload) -> Dict[str, int]:
             "dilation_w": consts["Dw"], "dilation_h": consts["Dh"],
             "activation_type": int(si.get("activation_type", 0)),
         }
-    elif d.op_type in _SIMD_LOOP_SIGNATURES:
-        # All registered simd-loop problems pass N (the array length) as their
-        # only scalar arg.
+    elif "simd-loop" in d.tags:
         return {"N": w.axes["N"]}
     else:
         raise NotImplementedError(f"_scalar_args_for: op_type {d.op_type!r} not yet supported")

@@ -35,8 +35,9 @@ class CandidateBuilder(Builder):
         return shutil.which("clang++") is not None
 
     def can_build(self, solution: Solution, is_baseline: bool) -> bool:
-        # One builder for every candidate, any dataset.
-        return not is_baseline
+        from bench.data.solution import SupportedDatasets
+        # simd-loop solutions use SimdLoopBuilder regardless of is_baseline.
+        return not is_baseline and solution.dataset != SupportedDatasets.SIMD_LOOP
 
     def build(self, definition: Definition, solution: Solution) -> CompileResult:
         op_type = definition.op_type

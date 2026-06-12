@@ -1,6 +1,6 @@
 """arm-bench data layer. Pure schema + warehouse; no compile / no timing."""
 
-from .definition import AxisConst, AxisSpec, AxisVar, Definition, DType, TensorSpec
+from .definition import AxisConst, AxisSpec, AxisVar, Definition, DType, TensorSpec, SimdLoopMeta, ScratchBufSpec
 from .json_utils import (
     append_jsonl_file,
     load_json_file,

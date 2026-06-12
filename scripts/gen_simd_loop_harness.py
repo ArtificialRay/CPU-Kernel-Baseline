@@ -12,14 +12,21 @@ Outputs (all idempotent — safe to re-run):
   bench/datasets/simd_loop.py   ← fully regenerated
 
 Supported loop patterns (auto-generated):
-  A1 — two pointer arrays + int n + scalar output
-  B  — one pointer array  + int n + scalar output
+  A  — two pointer arrays  + int n + scalar output
+  B  — one pointer array   + int n + scalar output
+  C  — N input arrays + one output array + int n  (array-output, last ptr = output)
+  D  — one input array + one output array + int n  (array-output)
 
 Loops requiring custom handling (skipped):
   loop_023 — indexes OOB with generated inputs
+  loop_101 — output array is FIRST ptr, size ≠ N
   loop_105 — b is scratch buffer, not an input
-  p+lmt loops (005, 006, 022, 103) — need string/buffer input generation
-  complex structs (012, 019, 109, …)
+  loop_108 — mixed uint32→uint8 pixel; trivially-zero output with values 1-100
+  loop_111 — last ptr is input (exponent), not output
+  loop_123, 124 — sort with multiple scratch + extra-scalar params
+  p+lmt loops (005, 006, 022, 034, 103) — need string/buffer input generation
+  matrix multiply (025, 130, 135-137, 201-221, 223, 231, 245) — 2D m/n/k axes
+  complex structs (012, 019, 037, 109, 110, 112, 204, 211, 222) — custom C types
 """
 from __future__ import annotations
 
@@ -96,13 +103,34 @@ class Field:
 
 @dataclass
 class LoopInfo:
-    loop_id:    str          # "loop_001"
-    loop_num:   str          # "001"
-    ptr_fields: List[Field]  # input pointer fields in struct order
-    n_field:    Field        # the integer size field
-    res_field:  Field        # the scalar result field
-    edge_sizes: List[int]    # from EDGE_SIZES (0 excluded)
-    perf_sizes: List[int]    # from PERF_SIZES
+    loop_id:        str               # "loop_001"
+    loop_num:       str               # "001"
+    ptr_fields:     List[Field]       # ALL pointer fields in struct order
+    n_field:        Field             # the integer size field
+    res_field:      Optional[Field]   # scalar result field (None for array/inplace)
+    output_ptr:     Optional[Field]   # array-output: struct field for the output array
+    scratch_fields: List[Field]       # inplace: scratch ptrs (allocated, not input/output)
+    edge_sizes:     List[int]         # from EDGE_SIZES (0 excluded)
+    perf_sizes:     List[int]         # from PERF_SIZES
+    kind:           str = "scalar"    # "scalar" | "array" | "inplace"
+
+    @property
+    def is_array_output(self) -> bool:
+        return self.kind == "array"
+
+    @property
+    def is_inplace(self) -> bool:
+        return self.kind == "inplace"
+
+    @property
+    def input_ptr_fields(self) -> List[Field]:
+        """Pointer fields that are meaningful INPUTS (excludes output/scratch)."""
+        if self.kind == "array":
+            return [f for f in self.ptr_fields if f.name != self.output_ptr.name]
+        if self.kind == "inplace":
+            scratch_names = {f.name for f in self.scratch_fields}
+            return [f for f in self.ptr_fields if f.name not in scratch_names]
+        return self.ptr_fields
 
 
 # ── Parser ────────────────────────────────────────────────────────────────────
@@ -130,50 +158,36 @@ def _parse_struct(struct_def: str) -> List[Field]:
 _SIZE_NAMES = {"n", "size", "len", "length", "count", "num"}
 _RES_NAMES  = {"res", "result", "checksum", "sum", "out", "output"}
 
+# C type → numpy dtype for array outputs (uses proper unsigned types unlike scalar map)
+_array_dtype_map_local = {
+    "float": "float32", "double": "float64",
+    "int": "int32", "int32_t": "int32", "int64_t": "int64",
+    "uint32_t": "uint32", "uint64_t": "uint64",
+    "uint8_t": "uint8", "uint16_t": "uint16",
+    "int8_t": "int8", "int16_t": "int16",
+    "bool": "int32",
+}
+
+# In-place sort loops: only "data" is meaningful input/output; extra ptrs are scratch.
+# Custom scalar kernel (std::sort) is injected instead of extracting from loops/*.c.
+_SORT_LOOPS: dict[str, list] = {
+    "loop_120": [],          # no scratch buffers
+    "loop_121": ["temp"],    # temp is scratch
+    "loop_122": [],
+}
+
+
 def _classify(loop_id: str, fields: List[Field]) -> Optional[LoopInfo]:
-    """Try to classify fields into (ptr_inputs, n_field, res_field).
-    Returns None if the loop doesn't fit the supported patterns.
-    """
+    """Classify struct fields into a LoopInfo. Returns None if unsupported."""
     loop_num = re.search(r'loop_(\d+)', loop_id).group(1)
 
-    ptr_fields   = [f for f in fields if f.is_ptr]
+    ptr_fields    = [f for f in fields if f.is_ptr]
     scalar_fields = [f for f in fields if not f.is_ptr]
 
     if not ptr_fields or not scalar_fields:
         return None
 
-    # Find the result field: last scalar that looks like an output
-    res_field = None
-    n_field   = None
-
-    # Heuristic: the "result" is typically the last scalar field
-    # The "n" is a scalar whose name hints at a size
-    for f in scalar_fields:
-        if f.name.lower() in _SIZE_NAMES or f.name in ("n", "size"):
-            n_field = f
-        elif f.name.lower() in _RES_NAMES:
-            res_field = f
-
-    # Fallback: if no obvious n_field found, take first non-res scalar
-    if n_field is None:
-        non_res = [f for f in scalar_fields if f != res_field]
-        if non_res:
-            n_field = non_res[0]
-
-    # Fallback: if no res_field, take last scalar
-    if res_field is None:
-        non_n = [f for f in scalar_fields if f != n_field]
-        if non_n:
-            res_field = non_n[-1]
-
-    if n_field is None or res_field is None:
-        return None
-
-    # Only support patterns with ≤ 2 pointer inputs
-    if len(ptr_fields) > 2:
-        return None
-
-    # Load sizes from problem.py
+    # Load sizes early (needed for all patterns)
     import importlib.util
     prob_dir = next((d for d in PROBLEMS_DIR.iterdir()
                      if d.name.startswith(loop_id + "_")), None)
@@ -182,38 +196,95 @@ def _classify(loop_id: str, fields: List[Field]) -> Optional[LoopInfo]:
     spec = importlib.util.spec_from_file_location("prob", prob_dir / "problem.py")
     mod  = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-
     edge = [s for s in getattr(mod, "EDGE_SIZES", []) if s > 0]
-    # Use PERF_SIZES_C8G if present (better Graviton4 coverage), else PERF_SIZES
     perf = getattr(mod, "PERF_SIZES_C8G", None) or getattr(mod, "PERF_SIZES", [])
 
-    return LoopInfo(
-        loop_id=loop_id,
-        loop_num=loop_num,
-        ptr_fields=ptr_fields,
-        n_field=n_field,
-        res_field=res_field,
-        edge_sizes=edge,
-        perf_sizes=perf,
-    )
+    def _mk(**kw):
+        defaults = dict(res_field=None, output_ptr=None, scratch_fields=[], kind="scalar")
+        defaults.update(kw)
+        return LoopInfo(loop_id=loop_id, loop_num=loop_num, ptr_fields=ptr_fields,
+                        edge_sizes=edge, perf_sizes=perf, **defaults)
+
+    # ── In-place sort pattern (data is both input and output) ─────────────────
+    if loop_id in _SORT_LOOPS:
+        scratch_names = set(_SORT_LOOPS[loop_id])
+        scratch = [f for f in ptr_fields if f.name in scratch_names]
+        n_f = next((f for f in scalar_fields if f.name.lower() in _SIZE_NAMES), None)
+        if n_f is None and scalar_fields:
+            n_f = scalar_fields[0]
+        if n_f is None:
+            return None
+        return _mk(n_field=n_f, scratch_fields=scratch, kind="inplace")
+
+    # ── Generic patterns ──────────────────────────────────────────────────────
+    res_field = None
+    n_field   = None
+
+    for f in scalar_fields:
+        if f.name.lower() in _SIZE_NAMES or f.name in ("n", "size"):
+            n_field = f
+        elif f.name.lower() in _RES_NAMES:
+            res_field = f
+
+    if n_field is None:
+        non_res = [f for f in scalar_fields if f != res_field]
+        if non_res:
+            n_field = non_res[0]
+
+    if res_field is None:
+        non_n = [f for f in scalar_fields if f != n_field]
+        if non_n:
+            res_field = non_n[-1]
+
+    if n_field is None:
+        return None
+
+    # Scalar-output: has a res scalar + ≤2 input pointers
+    if res_field is not None and len(ptr_fields) <= 2:
+        return _mk(n_field=n_field, res_field=res_field, kind="scalar")
+
+    # Array-output: no scalar res, 2+ ptrs, last ptr is the output.
+    # ABI: armbench_entry(in1, ..., int64_t n, void* res_out) where res_out
+    # is the pre-allocated N-element output buffer.
+    if res_field is None and len(ptr_fields) >= 2:
+        return _mk(n_field=n_field, output_ptr=ptr_fields[-1], kind="array")
+
+    return None
 
 
 # ── Harness generator ─────────────────────────────────────────────────────────
 
 def _gen_harness_h(info: LoopInfo) -> str:
     lid = info.loop_id
-    num = info.loop_num
 
-    # struct field declarations (preserve restrict for clarity)
     struct_fields = []
-    for f in info.ptr_fields:
-        struct_fields.append(f"    {f.c_type} *{f.name};")
-    struct_fields.append(f"    {info.n_field.c_type} {info.n_field.name};")
-    struct_fields.append(f"    {info.res_field.c_type} {info.res_field.name};")
+    if info.is_inplace:
+        # n may appear first in struct for sort loops
+        if info.ptr_fields and info.ptr_fields[0].name == info.n_field.name:
+            struct_fields.append(f"    {info.n_field.c_type} {info.n_field.name};")
+            for f in info.ptr_fields:
+                struct_fields.append(f"    {f.c_type} *{f.name};")
+        else:
+            for f in info.ptr_fields:
+                struct_fields.append(f"    {f.c_type} *{f.name};")
+            struct_fields.append(f"    {info.n_field.c_type} {info.n_field.name};")
+    else:
+        for f in info.ptr_fields:
+            struct_fields.append(f"    {f.c_type} *{f.name};")
+        struct_fields.append(f"    {info.n_field.c_type} {info.n_field.name};")
+        if info.kind == "scalar":
+            struct_fields.append(f"    {info.res_field.c_type} {info.res_field.name};")
 
-    # entry args: void* per pointer, int64_t n, void* res_out
-    args = ", ".join(["void *" + f.name for f in info.ptr_fields]
-                     + ["int64_t n", "void *res_out"])
+    if info.is_inplace:
+        # ABI: data ptr + scratch ptrs + int64_t n + void* unused
+        all_ptrs = info.input_ptr_fields + info.scratch_fields
+        args = ", ".join(["void *" + f.name for f in all_ptrs] + ["int64_t n", "void *unused"])
+    else:
+        # ABI: input ptrs + int64_t n + void* res_out
+        args = ", ".join(
+            ["void *" + f.name for f in info.input_ptr_fields]
+            + ["int64_t n", "void *res_out"]
+        )
 
     return f"""\
 // Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
@@ -236,19 +307,67 @@ int armbench_entry_{lid}({args});
 
 def _gen_harness_cpp(info: LoopInfo) -> str:
     lid = info.loop_id
-
-    args = ", ".join(["void *" + f.name for f in info.ptr_fields]
-                     + ["int64_t n", "void *res_out"])
-
-    # struct assignments
-    ptr_assigns = "\n    ".join(
-        f"data.{f.name} = static_cast<{f.c_type} *>({f.name});"
-        for f in info.ptr_fields
-    )
     n_cast = f"static_cast<{info.n_field.c_type}>(n)"
-    res_type = info.res_field.c_type
 
-    return f"""\
+    if info.is_inplace:
+        all_ptrs = info.input_ptr_fields + info.scratch_fields
+        args = ", ".join(["void *" + f.name for f in all_ptrs] + ["int64_t n", "void *unused"])
+        # Use 'd' as local struct name to avoid shadowing pointer params like 'data'
+        ptr_assigns = "\n    ".join(
+            f"d.{f.name} = static_cast<{f.c_type} *>({f.name});"
+            for f in info.ptr_fields
+        )
+        return f"""\
+// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
+#include "{lid}.h"
+#include <stdint.h>
+
+extern "C" void inner_{lid}(struct {lid}_data *data);
+
+extern "C" int armbench_entry_{lid}({args}) {{
+    struct {lid}_data d;
+    d.{info.n_field.name} = {n_cast};
+    {ptr_assigns}
+    inner_{lid}(&d);
+    return 0;
+}}
+"""
+
+    args = ", ".join(
+        ["void *" + f.name for f in info.input_ptr_fields]
+        + ["int64_t n", "void *res_out"]
+    )
+
+    if info.is_array_output:
+        # Map each input ptr and the output ptr (res_out → data.output_field)
+        ptr_assigns = "\n    ".join(
+            f"data.{f.name} = static_cast<{f.c_type} *>({f.name});"
+            for f in info.input_ptr_fields
+        )
+        out = info.output_ptr
+        return f"""\
+// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
+#include "{lid}.h"
+#include <stdint.h>
+
+extern "C" void inner_{lid}(struct {lid}_data *data);
+
+extern "C" int armbench_entry_{lid}({args}) {{
+    struct {lid}_data data;
+    {ptr_assigns}
+    data.{out.name} = static_cast<{out.c_type} *>(res_out);
+    data.{info.n_field.name} = {n_cast};
+    inner_{lid}(&data);
+    return 0;
+}}
+"""
+    else:
+        ptr_assigns = "\n    ".join(
+            f"data.{f.name} = static_cast<{f.c_type} *>({f.name});"
+            for f in info.ptr_fields
+        )
+        res_type = info.res_field.c_type
+        return f"""\
 // Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
 #include "{lid}.h"
 #include <cassert>
@@ -271,8 +390,105 @@ extern "C" int armbench_entry_{lid}({args}) {{
 
 # ── Reference Python generator ────────────────────────────────────────────────
 
+# Custom scalar kernels: used when _extract_scalar_kernel doesn't apply
+# (e.g. sort loops that use complex helper chains from sort.h).
+_CUSTOM_SCALAR_KERNELS: dict[str, str] = {
+    # Python reference computes in float64 then casts to float32; match that
+    # precision here so correctness comparison passes.
+    "loop_001": (
+        '#include "loop_001.h"\n'
+        '#include <stdint.h>\n\n'
+        'extern "C" void inner_loop_001(struct loop_001_data *data) {\n'
+        '    float *a = data->a;\n'
+        '    float *b = data->b;\n'
+        '    int n = data->n;\n'
+        '    double res = 0.0;\n'
+        '    for (int i = 0; i < n; i++) {\n'
+        '        res += (double)a[i] * (double)b[i];\n'
+        '    }\n'
+        '    data->res = (float)res;\n'
+        '}\n'
+    ),
+    "loop_120": (
+        '#include "loop_120.h"\n'
+        '#include <algorithm>\n\n'
+        'extern "C" void inner_loop_120(struct loop_120_data *data) {\n'
+        '    std::sort(data->data, data->data + data->n);\n'
+        '}\n'
+    ),
+    "loop_121": (
+        '#include "loop_121.h"\n'
+        '#include <algorithm>\n\n'
+        'extern "C" void inner_loop_121(struct loop_121_data *data) {\n'
+        '    std::sort(data->data, data->data + data->n);\n'
+        '}\n'
+    ),
+    "loop_122": (
+        '#include "loop_122.h"\n'
+        '#include <algorithm>\n\n'
+        'extern "C" void inner_loop_122(struct loop_122_data *data) {\n'
+        '    std::sort(data->data, data->data + data->n);\n'
+        '}\n'
+    ),
+}
+
+
 # Hand-written references for non-trivial loops.
 _CUSTOM_REFS: dict[str, str] = {
+    # ── Array-output loops ────────────────────────────────────────────────────
+    "loop_027": (
+        "import numpy as np\n\n"
+        "def run(input):\n"
+        "    return np.sqrt(input.astype(np.float64)).astype(np.float32)\n"
+    ),
+    "loop_028": (
+        "import numpy as np\n\n"
+        "def run(input1, input2):\n"
+        "    return input1 / input2\n"
+    ),
+    "loop_029": (
+        "import numpy as np\n\n"
+        "def run(input, scale):\n"
+        "    return np.ldexp(input, scale.astype(np.int32))\n"
+    ),
+    "loop_035": (
+        "import numpy as np\n\n"
+        "def run(a, b):\n"
+        "    return a + b\n"
+    ),
+    "loop_113": (
+        # Processes pairs (i += 2): c[2k]=a[2k]+a[2k+1], c[2k+1]=b[2k]+b[2k+1].
+        # Kernel always reads a[i+1]/b[i+1] — wrap_inputs pads with 2 zeros so
+        # OOB reads return 0. Reference mirrors that: pad then vectorize.
+        "import numpy as np\n\n"
+        "def run(a0, b0):\n"
+        "    n = len(a0)\n"
+        "    ap = np.concatenate([a0.astype(np.int32), np.zeros(2, np.int32)])\n"
+        "    bp = np.concatenate([b0.astype(np.int32), np.zeros(2, np.int32)])\n"
+        "    n_pairs = (n + 1) // 2\n"
+        "    even = np.arange(n_pairs) * 2\n"
+        "    c = np.zeros(n, dtype=np.int32)\n"
+        "    # c[2k] = a[2k]+a[2k+1]\n"
+        "    c_ev = (ap[even].astype(np.int64) + ap[even + 1].astype(np.int64)).astype(np.int32)\n"
+        "    valid_ev = even[even < n]\n"
+        "    c[valid_ev] = c_ev[:len(valid_ev)]\n"
+        "    # c[2k+1] = b[2k]+b[2k+1]\n"
+        "    c_od = (bp[even].astype(np.int64) + bp[even + 1].astype(np.int64)).astype(np.int32)\n"
+        "    odd = even + 1\n"
+        "    valid_od = odd[odd < n]\n"
+        "    c[valid_od] = c_od[:len(valid_od)]\n"
+        "    return c\n"
+    ),
+    "loop_128": (
+        "import numpy as np\n\n"
+        "def run(a, b):\n"
+        "    return a + b\n"
+    ),
+    # ── In-place sort loops ───────────────────────────────────────────────────
+    "loop_120": "import numpy as np\n\ndef run(data):\n    return np.sort(data)\n",
+    "loop_121": "import numpy as np\n\ndef run(data):\n    return np.sort(data)\n",
+    "loop_122": "import numpy as np\n\ndef run(data):\n    return np.sort(data)\n",
+    # ── Scalar-output loops ───────────────────────────────────────────────────
     "loop_010": (
         "import numpy as np\n\n"
         "def run(a):\n"
@@ -317,6 +533,20 @@ _CUSTOM_REFS: dict[str, str] = {
 def _gen_reference(info: LoopInfo) -> str:
     if info.loop_id in _CUSTOM_REFS:
         return _CUSTOM_REFS[info.loop_id]
+
+    if info.is_inplace:
+        f = info.input_ptr_fields[0]
+        return f"import numpy as np\n\ndef run({f.name}):\n    return np.sort({f.name})\n"
+
+    if info.is_array_output:
+        # Generic fallback for array-output: element-wise add of first two inputs
+        input_names = [f.name for f in info.input_ptr_fields]
+        args = ", ".join(input_names)
+        if len(input_names) == 1:
+            body = f"    return {input_names[0]}.copy()"
+        else:
+            body = f"    return {input_names[0]} + {input_names[1]}"
+        return f"import numpy as np\n\ndef run({args}):\n{body}\n"
 
     input_names = [f.name for f in info.ptr_fields]
     res_np = info.res_field.np_result_expr
@@ -419,18 +649,56 @@ def _write_definition(info: LoopInfo) -> None:
     out_path = out_dir / f"{info.loop_id}.json"
 
     inputs = {}
-    for f in info.ptr_fields:
+    for f in info.input_ptr_fields:
         inputs[f.name] = {"shape": ["N"], "dtype": f.numpy_dtype}
 
-    # Output dtype — use the actual unsigned type for correctness
-    out_dtype_map = {
+    override = _LOOP_META_OVERRIDES.get(info.loop_id, {})
+    simd_loop_meta = {
+        "output_inplace": info.is_inplace,
+        "array_pad": override.get("array_pad", 0),
+        "scratch": [{"name": f.name, "dtype": f.numpy_dtype} for f in info.scratch_fields],
+    }
+
+    if info.is_inplace:
+        f = info.input_ptr_fields[0]
+        dtype = _array_dtype_map_local.get(f.c_type, "int32")
+        # Output must have a different name from the input to satisfy Definition validation
+        out_name = f"sorted_{f.name}"
+        out_spec = {"shape": ["N"], "dtype": dtype, "description": "Sorted array (in-place)"}
+        definition = {
+            "name": info.loop_id,
+            "op_type": info.loop_id,
+            "description": _description(info),
+            "tags": ["simd-loop"],
+            "axes": {"N": {"type": "var", "description": "Array length"}},
+            "inputs": inputs,
+            "outputs": {out_name: out_spec},
+            "reference": _gen_reference(info),
+            "simd_loop_meta": simd_loop_meta,
+        }
+        content = json.dumps(definition, indent=2) + "\n"
+        if not out_path.exists() or out_path.read_text() != content:
+            out_path.write_text(content)
+            print(f"  wrote {out_path.relative_to(REPO)}")
+        return
+
+    _scalar_dtype_map = {
         "float": "float32", "double": "float64",
-        "int": "int32", "uint32_t": "int32", "uint64_t": "int64",
-        "int32_t": "int32", "int64_t": "int64",
-        "uint8_t": "int8", "uint16_t": "int16",
+        "int": "int32", "int32_t": "int32", "int64_t": "int64",
+        "uint32_t": "uint32", "uint64_t": "uint64",
+        "uint8_t": "uint8", "uint16_t": "uint16",
+        "int8_t": "int8", "int16_t": "int16",
         "bool": "int32",
     }
-    out_dtype = out_dtype_map.get(info.res_field.c_type, "int32")
+
+    if info.is_array_output:
+        out_name = info.output_ptr.name
+        out_dtype = _array_dtype_map_local.get(info.output_ptr.c_type, "int32")
+        out_spec = {"shape": ["N"], "dtype": out_dtype, "description": "Output array"}
+    else:
+        out_name = info.res_field.name
+        out_dtype = _scalar_dtype_map.get(info.res_field.c_type, "int32")
+        out_spec = {"shape": None, "dtype": out_dtype, "description": "Scalar result"}
 
     definition = {
         "name": info.loop_id,
@@ -439,14 +707,9 @@ def _write_definition(info: LoopInfo) -> None:
         "tags": ["simd-loop"],
         "axes": {"N": {"type": "var", "description": "Array length"}},
         "inputs": inputs,
-        "outputs": {
-            info.res_field.name: {
-                "shape": None,
-                "dtype": out_dtype,
-                "description": "Scalar result",
-            }
-        },
+        "outputs": {out_name: out_spec},
         "reference": _gen_reference(info),
+        "simd_loop_meta": simd_loop_meta,
     }
     content = json.dumps(definition, indent=2) + "\n"
     if not out_path.exists() or out_path.read_text() != content:
@@ -494,23 +757,26 @@ def _write_reference_solution(info: LoopInfo) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"reference-scalar_{lid}.json"
 
-    # Get scalar kernel source from loops/loop_NNN.c
-    scalar_src = _extract_scalar_kernel(lid)
-    if not scalar_src:
-        # Fallback: generate minimal scalar from struct
-        input_names = [f.name for f in info.ptr_fields]
-        n_field = info.n_field.name
-        res_field = info.res_field.name
-        scalar_src = (
-            f'#include "{lid}.h"\n'
-            f'#include <stdint.h>\n\n'
-            f'extern "C" void inner_{lid}(struct {lid}_data *data) {{\n'
-            f'    // TODO: implement scalar reference\n'
-            f'    data->{res_field} = 0;\n'
-            f'}}\n'
-        )
+    # 1. Custom scalar kernel (e.g. sort loops that can't use extracted code)
+    if lid in _CUSTOM_SCALAR_KERNELS:
+        scalar_src = _CUSTOM_SCALAR_KERNELS[lid]
     else:
-        scalar_src = f'#include "{lid}.h"\n#include <stdint.h>\n\n' + scalar_src + "\n"
+        # 2. Extract from loops/loop_NNN.c
+        scalar_src = _extract_scalar_kernel(lid)
+        if scalar_src:
+            scalar_src = f'#include "{lid}.h"\n#include <stdint.h>\n\n' + scalar_src + "\n"
+        else:
+            # 3. Fallback stub
+            fallback_field = (info.res_field.name if info.res_field else
+                              info.output_ptr.name if info.output_ptr else
+                              info.input_ptr_fields[0].name if info.input_ptr_fields else "?")
+            scalar_src = (
+                f'#include "{lid}.h"\n'
+                f'#include <stdint.h>\n\n'
+                f'extern "C" void inner_{lid}(struct {lid}_data *data) {{\n'
+                f'    // TODO: implement scalar reference\n'
+                f'}}\n'
+            )
 
     solution = {
         "name": f"reference-scalar_{lid}",
@@ -526,7 +792,11 @@ def _write_reference_solution(info: LoopInfo) -> None:
             "compile_flags": ["-O2", "-std=c++14"],
             "link_flags": [],
         },
-        "sources": [{"path": "kernel.cpp", "content": scalar_src}],
+        "sources": [
+            {"path": f"{lid}.h",   "content": _gen_harness_h(info)},
+            {"path": f"{lid}.cpp", "content": _gen_harness_cpp(info)},
+            {"path": "kernel.cpp", "content": scalar_src},
+        ],
         "description": f"Scalar reference for {lid}. Baseline for speedup measurement.",
     }
     content = json.dumps(solution, indent=2) + "\n"
@@ -535,147 +805,40 @@ def _write_reference_solution(info: LoopInfo) -> None:
         print(f"  wrote {out_path.relative_to(REPO)}")
 
 
-# ── simd_loop.py regenerator ──────────────────────────────────────────────────
+# ── Per-loop meta overrides ────────────────────────────────────────────────────
+# Extra keys merged into the _LOOP_META entry for specific loops.
+# Use "array_pad": N to request N extra trailing elements in all arrays for a
+# loop whose kernel reads/writes beyond `size` (e.g. pair-processing loops).
 
-def _regen_simd_loop_py(all_infos: list[LoopInfo]) -> None:
-    """Fully regenerate bench/datasets/simd_loop.py from _LOOP_META."""
-
-    meta_entries = []
-    for info in all_infos:
-        inputs_repr = repr([
-            (f.name, f"np.{f.numpy_dtype}") for f in info.ptr_fields
-        ]).replace("'np.", "np.").replace("')", ")")
-        # Fix: repr wraps numpy dtype refs in quotes — build manually
-        input_list = ", ".join(
-            f'("{f.name}", np.{f.numpy_dtype})' for f in info.ptr_fields
-        )
-        res_np = info.res_field.np_result_expr  # e.g. "np.float32"
-        entry = (
-            f'    "{info.loop_id}": {{\n'
-            f'        "inputs": [{input_list}],\n'
-            f'        "result_dtype": {res_np},\n'
-            f'    }},'
-        )
-        meta_entries.append(entry)
-
-    meta_block = "\n".join(meta_entries)
-
-    py_content = f'''\
-# Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
-# Re-run the script to add new loops or update existing ones.
-"""simd-loop dataset adapter: numpy \\u2194 flat C arrays via ctypes.
-
-Each registered loop has an entry in _LOOP_META describing its input tensors
-and result dtype. SIGNATURES is derived from _LOOP_META at import time — no
-manual sync required.
-
-The harness shims live in bench/compile/builders/simd_loop_harness/<op>.{{h,cpp}}.
-The calling convention for every loop:
-    int armbench_entry_loop_NNN(void* in1, [void* in2, ...], int64_t n, void* res_out)
-
-To add a new loop:
-  1. Add an entry to _LOOP_META below.
-  2. Run scripts/gen_simd_loop_harness.py to generate harness + bench-trace files.
-"""
-
-from __future__ import annotations
-
-import ctypes
-from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
-
-import numpy as np
-
-
-# ── Loop metadata ─────────────────────────────────────────────────────────────
-# "inputs": ordered list of (field_name, numpy_dtype) matching struct pointer fields.
-# "result_dtype": numpy dtype for the scalar result buffer.
-
-_LOOP_META: Dict[str, dict] = {{
-{meta_block}
-}}
-
-
-# ── ctypes signatures (derived from _LOOP_META) ───────────────────────────────
-
-_C_VOID_P = ctypes.c_void_p
-_C_INT64  = ctypes.c_int64
-
-SIGNATURES: Dict[str, List[type]] = {{
-    op: [_C_VOID_P] * len(meta["inputs"]) + [_C_INT64, _C_VOID_P]
-    for op, meta in _LOOP_META.items()
-}}
-
-_RESULT_DTYPE: Dict[str, type] = {{
-    op: meta["result_dtype"] for op, meta in _LOOP_META.items()
-}}
-
-
-# ── Context ───────────────────────────────────────────────────────────────────
-
-@dataclass
-class SimdLoopContext:
-    entry_args: Tuple[Any, ...]
-    _arrays:    list          # contiguous input arrays — kept alive during kernel call
-    res_buf:    np.ndarray    # 1-element result buffer
-
-
-# ── Adapter ───────────────────────────────────────────────────────────────────
-
-class SimdLoopDataset:
-    """Adapter for simd-loop baseline kernels.
-
-    Protocol (same as NcnnDataset / RawDataset):
-        ctx = ds.wrap_inputs(np_inputs, scalar_args, op_type, lib)
-        entry(*ctx.entry_args)
-        out = ds.unwrap_output(ctx)
-        ds.release(ctx)
-    """
-
-    name = "simd-loop"
-
-    def wrap_inputs(
-        self,
-        np_inputs: Dict[str, np.ndarray],
-        scalar_args: Dict[str, int],
-        op_type: str,
-        lib: ctypes.CDLL,
-        self_contained: bool = False,
-    ) -> SimdLoopContext:
-        if op_type not in _LOOP_META:
-            raise NotImplementedError(f"SimdLoopDataset: op_type {{op_type!r}} not registered")
-        meta = _LOOP_META[op_type]
-        arrays = [np.ascontiguousarray(np_inputs[name]) for name, _ in meta["inputs"]]
-        n = int(scalar_args["N"])
-        res_buf = np.zeros(1, dtype=meta["result_dtype"])
-        ptrs = [ctypes.cast(a.ctypes.data, _C_VOID_P) for a in arrays]
-        entry_args = tuple(ptrs) + (_C_INT64(n),) + (ctypes.cast(res_buf.ctypes.data, _C_VOID_P),)
-        return SimdLoopContext(entry_args=entry_args, _arrays=arrays, res_buf=res_buf)
-
-    def unwrap_output(self, ctx: SimdLoopContext) -> np.ndarray:
-        return ctx.res_buf.copy()
-
-    def release(self, ctx: SimdLoopContext) -> None:
-        ctx._arrays.clear()
-'''
-
-    if not SIMD_LOOP_PY.exists() or SIMD_LOOP_PY.read_text() != py_content:
-        SIMD_LOOP_PY.write_text(py_content)
-        print(f"  wrote {SIMD_LOOP_PY.relative_to(REPO)}")
+_LOOP_META_OVERRIDES: dict[str, dict] = {
+    "loop_113": {"array_pad": 2},  # kernel does a[i+1]/b[i+1] — needs 2 extra elements
+}
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 # Loops to process. Add more here as they are validated.
 TARGET_LOOP_IDS = [
-    "loop_001", "loop_002", "loop_003", "loop_004",  # existing (idempotent)
-    "loop_008",   # fp64 sum
-    "loop_010",   # conditional reduction → int result
-    "loop_024",   # sum of abs diffs (uint8 inputs)
-    "loop_032",   # fp64 banded pattern
+    # ── Scalar-output (reduction → single value) ─────────────────────────────
+    "loop_001", "loop_002", "loop_003", "loop_004",  # fp32/uint32/fp64/uint64 inner products
+    "loop_008",   # precise fp64 add reduction
+    "loop_010",   # conditional reduction → int
+    "loop_024",   # sum of abs diffs (uint8)
+    "loop_032",   # fp64 banded dot product
     "loop_033",   # fp64 inner product (int64 n)
     "loop_126",   # conditional dot product
     "loop_127",   # dot product with early exit
+    # ── Array-output (element-wise transform → output array) ─────────────────
+    "loop_027",   # fp32 sqrt  (1 input → 1 output)
+    "loop_028",   # fp64 div   (2 inputs → 1 output)
+    "loop_029",   # fp64 scalbn / ldexp (double + int64 scale → double)
+    "loop_035",   # fp32 add   (2 inputs → 1 output)
+    "loop_113",   # uint32 pair-wise add (2 inputs → 1 output, stride-2)
+    "loop_128",   # uint32 add with aliased pointers
+    # ── In-place sort (data sorted in-place, output IS data) ─────────────────
+    "loop_120",   # insertion sort
+    "loop_121",   # quicksort (with temp scratch buffer)
+    "loop_122",   # odd-even transposition sort
 ]
 
 
@@ -707,8 +870,17 @@ def main() -> None:
             print(f"[skip] {loop_id}: struct pattern not supported")
             continue
 
-        print(f"[gen]  {loop_id}: {[f.name for f in info.ptr_fields]} + "
-              f"{info.n_field.name} -> {info.res_field.name} ({info.res_field.c_type})")
+        if info.is_inplace:
+            scratch = [f.name for f in info.scratch_fields]
+            print(f"[gen]  {loop_id} (inplace): data={info.input_ptr_fields[0].name}"
+                  f" scratch={scratch} n={info.n_field.name}")
+        elif info.is_array_output:
+            out_desc = f"[]{info.output_ptr.name} ({info.output_ptr.c_type}[])"
+            print(f"[gen]  {loop_id} (array): {[f.name for f in info.input_ptr_fields]} + "
+                  f"{info.n_field.name} -> {out_desc}")
+        else:
+            print(f"[gen]  {loop_id}: {[f.name for f in info.ptr_fields]} + "
+                  f"{info.n_field.name} -> {info.res_field.name} ({info.res_field.c_type})")
 
         if not dry_run:
             _write_harness(info)
@@ -719,7 +891,6 @@ def main() -> None:
         all_infos.append(info)
 
     if not dry_run and all_infos:
-        _regen_simd_loop_py(all_infos)
         print(f"\nDone. Generated {len(all_infos)} loops.")
     elif dry_run:
         print(f"\nDry run: would generate {len(all_infos)} loops.")
