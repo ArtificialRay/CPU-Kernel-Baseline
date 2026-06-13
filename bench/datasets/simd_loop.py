@@ -15,12 +15,11 @@ from __future__ import annotations
 
 import ctypes
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-if TYPE_CHECKING:
-    from bench.data.definition import Definition
+from bench.data.definition import Definition
 
 _C_VOID_P = ctypes.c_void_p
 _C_INT64   = ctypes.c_int64
@@ -31,13 +30,6 @@ _DTYPE_MAP: dict[str, Any] = {
     "int16":   np.int16,   "int8":    np.int8,
     "uint64":  np.uint64,  "uint32":  np.uint32,
 }
-
-
-def sig_from_definition(definition: Definition) -> list[type]:
-    """Derive the ctypes argtypes list from a simd-loop Definition."""
-    meta = definition.simd_loop_meta
-    n_scratch = len(meta.scratch) if meta else 0
-    return [_C_VOID_P] * (len(definition.inputs) + n_scratch) + [_C_INT64, _C_VOID_P]
 
 
 # ── Context ───────────────────────────────────────────────────────────────────
@@ -56,7 +48,7 @@ class SimdLoopDataset:
     """Adapter for simd-loop baseline kernels.
 
     Protocol (same as NcnnDataset / RawDataset):
-        ctx = ds.wrap_inputs(np_inputs, scalar_args, op_type, lib, definition=d)
+        ctx = ds.wrap_inputs(np_inputs, op_type, lib, definition=d)
         entry(*ctx.entry_args)
         out = ds.unwrap_output(ctx)
         ds.release(ctx)
@@ -67,19 +59,18 @@ class SimdLoopDataset:
     def wrap_inputs(
         self,
         np_inputs: Dict[str, np.ndarray],
-        scalar_args: Dict[str, int],
         op_type: str,
         lib: ctypes.CDLL,
-        self_contained: bool = False,
-        definition: Optional[Definition] = None,
+        *,
+        definition: Definition,
+        out_shape: Optional[Tuple[int, ...]] = None,
     ) -> SimdLoopContext:
-        if definition is None or definition.simd_loop_meta is None:
+        if definition.simd_loop_meta is None:
             raise NotImplementedError(
                 f"SimdLoopDataset: definition for {op_type!r} missing simd_loop_meta. "
                 "Re-run scripts/gen_simd_loop_harness.py to regenerate definitions."
             )
         meta = definition.simd_loop_meta
-        n = int(scalar_args["N"])
         pad = int(meta.array_pad)
 
         # Derive output dtype from Definition.outputs
@@ -91,6 +82,7 @@ class SimdLoopDataset:
             # In-place: the first input is sorted in-place; scratch bufs follow.
             input_names = list(definition.inputs.keys())
             data_arr = np.ascontiguousarray(np_inputs[input_names[0]].copy())
+            n = int(data_arr.shape[0])
             scratch = [np.zeros(n, dtype=_DTYPE_MAP[s.dtype]) for s in meta.scratch]
             all_arrs = [data_arr] + scratch
             ptrs = [ctypes.cast(a.ctypes.data, _C_VOID_P) for a in all_arrs]
@@ -104,6 +96,7 @@ class SimdLoopDataset:
                                    res_buf=data_arr, _n=0)
 
         arrays = [np.ascontiguousarray(np_inputs[name]) for name in definition.inputs]
+        n = int(arrays[0].shape[0])
         if output_is_array:
             if pad > 0:
                 arrays = [

@@ -138,10 +138,6 @@ class NcnnBuilder(Builder):
         so_path = build_dir / f"{solution.name[:64]}.so"
         cmd: List[str] = ["clang++", "-shared", "-fPIC"]
         cmd += list(solution.spec.compile_flags or [])
-        if not any(f.startswith("-O") for f in cmd):
-            cmd.append("-O2")
-        if not any(f.startswith("-std=") for f in cmd):
-            cmd.append("-std=c++14")
         for inc in include_dirs:
             cmd += ["-I", str(inc)]
 
@@ -162,8 +158,6 @@ class NcnnBuilder(Builder):
         cmd.append(str(static_lib))
 
         cmd += list(solution.spec.link_flags or [])
-        if "-fopenmp" not in cmd and not any("-fno-openmp" in f for f in cmd):
-            cmd.append("-fopenmp")
 
         self._run_clang(cmd, solution)
         return CompileResult(so_path=so_path, build_dir=build_dir, command=cmd)

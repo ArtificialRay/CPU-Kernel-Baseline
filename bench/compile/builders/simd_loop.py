@@ -71,10 +71,6 @@ class SimdLoopBuilder(Builder):
             so_path = build_dir / f"{solution.name[:64]}.so"
             cmd: List[str] = ["clang++", "-shared", "-fPIC"]
             cmd += list(solution.spec.compile_flags or [])
-            if not any(f.startswith("-O") for f in cmd):
-                cmd.append("-O2")
-            if not any(f.startswith("-std=") for f in cmd):
-                cmd.append("-std=c++14")
             for inc in include_dirs:
                 cmd += ["-I", str(inc)]
             # Harness cpp first so its forward-decl of inner_loop_NNN is visible.

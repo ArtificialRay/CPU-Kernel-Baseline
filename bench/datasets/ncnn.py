@@ -15,8 +15,13 @@ from __future__ import annotations
 
 import ctypes
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from bench.data.definition import Definition
+
+# Slots the ncnn conv-family entry always expects even when absent from the
+# definition (passed as empty 1D Mats). Ordered to match the harness ABI.
+_NCNN_EXTRA_SLOTS = ("bias", "activation_params")
 
 import numpy as np
 
@@ -178,31 +183,35 @@ class NcnnDataset:
     def wrap_inputs(
         self,
         np_inputs: Dict[str, np.ndarray],
-        scalar_args: Dict[str, int],
         op_type: str,
         lib: ctypes.CDLL,
-        self_contained: bool = False,
+        *,
+        definition: Definition,
+        out_shape: Optional[Tuple[int, ...]] = None,
     ) -> NcnnContext:
         """Build the ctypes argument list for `armbench_entry_<op_type>`.
 
         Every ncnn baseline ships a self-contained entry that bakes its scalar
-        params as constexpr, so the call passes only the 6 Mat/Option pointers.
-        `scalar_args` and `self_contained` are accepted for adapter-interface
-        uniformity but no longer affect the call.
+        params as constexpr, so the call passes only the Mat/Option pointers.
+        Tensor order: definition.inputs (non-scalars) + any _NCNN_EXTRA_SLOTS
+        not already present. out_shape is unused (ncnn allocates internally).
         """
         fns = self.bind_lib(lib)
 
-        # All supported op_types use the same tensor order.
-        if op_type in ("conv2d", "conv1d", "conv2d_depthwise", "deconv2d", "deconv2d_depthwise"):
-            order_tensors = ["input", "weight", "bias", "activation_params"]
-        else:
-            raise NotImplementedError(f"NcnnDataset: op_type '{op_type}' not yet supported")
+        # Non-scalar inputs from definition, then append any extra slots
+        # expected by the ncnn conv ABI that aren't in the definition.
+        tensor_names: List[str] = [
+            n for n, s in definition.inputs.items() if s.shape is not None
+        ]
+        for slot in _NCNN_EXTRA_SLOTS:
+            if slot not in tensor_names:
+                tensor_names.append(slot)
 
         created: List[ctypes.c_void_p] = []
 
         # Pack input tensors (bottom, weight, bias, act_params)
         tensor_ptrs: List[ctypes.c_void_p] = []
-        for tname in order_tensors:
+        for tname in tensor_names:
             arr = np_inputs.get(tname)
             if arr is None:
                 # Allow missing tensors (e.g. no-bias case) → empty 1D Mat
