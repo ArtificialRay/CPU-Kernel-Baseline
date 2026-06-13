@@ -61,10 +61,6 @@ class CandidateBuilder(Builder):
         so_path = build_dir / f"{solution.name[:64]}.so"
         cmd: List[str] = ["clang++", "-shared", "-fPIC"]
         cmd += list(solution.spec.compile_flags or [])
-        if not any(f.startswith("-O") for f in cmd):
-            cmd.append("-O2")
-        if not any(f.startswith("-std=") for f in cmd):
-            cmd.append("-std=c++14")
 
         # Include dirs: only the solution's own sources. 
         cmd += ["-I", str(sources_dir)]
