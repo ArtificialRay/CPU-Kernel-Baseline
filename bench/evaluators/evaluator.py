@@ -52,7 +52,6 @@ class RefBaseline:
     Workload; independent of any Solution."""
 
     np_inputs: Dict[str, Any]
-    scalar_args: Dict[str, int]
     ref_np: np.ndarray
 
 
@@ -70,21 +69,22 @@ class BoundKernel:
     entry: Any
     adapter: Any
     op_type: str
-    # True when the Solution ships its own armbench_entry_<op> binding with all
-    # scalar params baked as constexpr — the entry takes ONLY Mat/Option
-    # pointers, so the adapter must not append scalar args. See
-    # PLAN_binding_into_sources.md.
-    self_contained: bool = False
-    definition: Optional[Any] = None
-    """Definition object — passed to adapters (e.g. SimdLoopDataset) that need
-    per-loop metadata to set up the calling convention."""
 
-    def prepare(self, np_inputs: Dict[str, Any], scalar_args: Dict[str, int]) -> Any:
-        """Pack numpy inputs into the ABI ctx (allocates the output buffer)."""
+    def prepare(
+        self,
+        np_inputs: Dict[str, Any],
+        definition: Definition,
+        *,
+        out_shape: Optional[Tuple[int, ...]] = None,
+    ) -> Any:
+        """Pack numpy inputs into the ABI ctx (allocates the output buffer).
+
+        All adapters share this uniform signature; each internally uses what it
+        needs from `definition` (tensor names, var-axis indices, output dtype).
+        """
         return self.adapter.wrap_inputs(
-            np_inputs, scalar_args, self.op_type, self.entry._lib,  # noqa: SLF001
-            self_contained=self.self_contained,
-            definition=self.definition,
+            np_inputs, self.op_type, self.entry._lib,  # noqa: SLF001
+            definition=definition, out_shape=out_shape,
         )
 
     def invoke(self, ctx: Any) -> int:
@@ -182,7 +182,9 @@ class Evaluator(ABC):
 
         # Pack inputs for the kernel's calling convention.
         try:
-            ctx = kernel.prepare(baseline.np_inputs, baseline.scalar_args)
+            ctx = kernel.prepare(
+                baseline.np_inputs, definition, out_shape=baseline.ref_np.shape
+            )
         except Exception as e:  # noqa: BLE001
             log = f"adapter.wrap_inputs failed: {e}\n{traceback.format_exc()}"
             return _error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log)

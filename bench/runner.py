@@ -42,8 +42,6 @@ from bench.data.trace import (
 )
 from bench.data.workload import Workload
 from bench.datasets import get as get_dataset_adapter
-from bench.datasets.raw import SIGNATURES as RAW_SIGNATURES
-from bench.datasets.simd_loop import sig_from_definition
 from bench.evaluators import BoundKernel, resolve_evaluator
 
 logger = logging.getLogger(__name__)
@@ -132,27 +130,15 @@ def _bind_kernel(
     SimdLoopDataset with signature derived from Definition.simd_loop_meta.
     """
     lib = ctypes.CDLL(str(compiled.so_path))
-    self_contained = False
-    bound_definition = None
     if solution.dataset.value == "simd-loop":
-        # simd-loop: always use SimdLoopDataset, sig derived from definition.
-        sig = sig_from_definition(definition)
-        sigs = {definition.op_type: sig}
         adapter_name = "simd-loop"
-        bound_definition = definition
     elif not is_baseline:
-        # Non-simd-loop candidates: raw float* ABI.
-        sigs, adapter_name = RAW_SIGNATURES, "raw"
+        adapter_name = "raw"
     else:
-        # ncnn baselines are self-contained (scalars baked as constexpr).
-        adapter_name, self_contained = "ncnn", True
-        sigs = {definition.op_type: [ctypes.c_void_p] * 6}
-    entry = _bind_entry(lib, definition.op_type, sigs)
+        adapter_name = "ncnn"
+    entry = _bind_entry(lib, definition.op_type)
     adapter = get_dataset_adapter(adapter_name)()
-    return BoundKernel(
-        entry=entry, adapter=adapter, op_type=definition.op_type,
-        self_contained=self_contained, definition=bound_definition,
-    )
+    return BoundKernel(entry=entry, adapter=adapter, op_type=definition.op_type)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -203,15 +189,15 @@ def _eval_error(status: EvaluationStatus, env: Environment, ts: str, log: str) -
     return Evaluation(status=status, environment=env, timestamp=ts, log=log)
 
 
-def _bind_entry(lib: ctypes.CDLL, op_type: str, signatures: Dict[str, Any]):
-    """Resolve armbench_entry_<op_type> with the given ctypes signature table."""
-    sym = f"armbench_entry_{op_type}"
-    if op_type not in signatures:
-        raise ValueError(f"No ctypes signature registered for op_type '{op_type}'")
-    fn = getattr(lib, sym)
+def _bind_entry(lib: ctypes.CDLL, op_type: str):
+    """Resolve armbench_entry_<op_type> from the dlopened .so.
+
+    Adapters construct fully-typed ctypes objects in entry_args, so no
+    argtypes table is needed here.
+    """
+    fn = getattr(lib, f"armbench_entry_{op_type}")
     fn.restype = ctypes.c_int
-    fn.argtypes = signatures[op_type]
-    # Stash the lib so the adapter can bind its own symbols (mat_factory) too.
+    # Stash the lib so adapters can bind their own symbols (e.g. mat_factory).
     fn._lib = lib  # type: ignore[attr-defined]
     return fn
 

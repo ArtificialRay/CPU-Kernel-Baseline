@@ -8,7 +8,7 @@ cycle-based hardware counters threaded through `time_callable`.
 from __future__ import annotations
 
 import traceback
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 
@@ -60,9 +60,7 @@ class DefaultEvaluator(Evaluator):
         except Exception as e:
             raise RuntimeError(f"reference run() failed: {e}\n{traceback.format_exc()}") from e
 
-        # 3. Scalar args for the dataset's calling convention
-        scalar_args = _scalar_args_for(definition, workload)
-        return RefBaseline(np_inputs=np_inputs, scalar_args=scalar_args, ref_np=ref_np)
+        return RefBaseline(np_inputs=np_inputs, ref_np=ref_np)
 
     # ── Phase 1: correctness ──────────────────────────────────────────────────
 
@@ -184,64 +182,6 @@ class DefaultEvaluator(Evaluator):
             None,
         )
 
-
-# ── Helpers (moved verbatim from the old runner) ──────────────────────────────
-
-def _scalar_args_for(d: Definition, w: Workload) -> Dict[str, int]:
-    """Assemble the integer args the harness shim needs.
-
-    Returns a dict whose keys match what the dataset adapter's wrap_inputs
-    expects for this op_type.
-    """
-    consts = d.const_axes
-    si = w.scalar_inputs
-    if d.op_type == "conv2d":
-        return {
-            "out_c": consts["C_out"],
-            "kernel_w": consts["Kw"], "kernel_h": consts["Kh"],
-            "stride_w": consts["Sw"], "stride_h": consts["Sh"],
-            "dilation_w": consts["Dw"], "dilation_h": consts["Dh"],
-            "pad_left": int(si.get("pad_left", 0)),
-            "pad_top": int(si.get("pad_top", 0)),
-            "activation_type": int(si.get("activation_type", 0)),
-        }
-    elif d.op_type == "conv1d":
-        return {
-            "out_c": consts["C_out"],
-            "kernel_w": consts["Kw"],
-            "stride_w": consts["Sw"],
-            "dilation_w": consts["Dw"],
-            "pad_left": int(si.get("pad_left", 0)),
-            "activation_type": int(si.get("activation_type", 0)),
-        }
-    elif d.op_type == "conv2d_depthwise":
-        return {
-            "kernel_w": consts["Kw"], "kernel_h": consts["Kh"],
-            "stride_w": consts["Sw"], "stride_h": consts["Sh"],
-            "dilation_w": consts["Dw"], "dilation_h": consts["Dh"],
-            "pad_left": int(si.get("pad_left", 0)),
-            "pad_top": int(si.get("pad_top", 0)),
-            "activation_type": int(si.get("activation_type", 0)),
-        }
-    elif d.op_type == "deconv2d":
-        return {
-            "out_c": consts["C_out"],
-            "kernel_w": consts["Kw"], "kernel_h": consts["Kh"],
-            "stride_w": consts["Sw"], "stride_h": consts["Sh"],
-            "dilation_w": consts["Dw"], "dilation_h": consts["Dh"],
-            "activation_type": int(si.get("activation_type", 0)),
-        }
-    elif d.op_type == "deconv2d_depthwise":
-        return {
-            "kernel_w": consts["Kw"], "kernel_h": consts["Kh"],
-            "stride_w": consts["Sw"], "stride_h": consts["Sh"],
-            "dilation_w": consts["Dw"], "dilation_h": consts["Dh"],
-            "activation_type": int(si.get("activation_type", 0)),
-        }
-    elif "simd-loop" in d.tags:
-        return {"N": w.axes["N"]}
-    else:
-        raise NotImplementedError(f"_scalar_args_for: op_type {d.op_type!r} not yet supported")
 
 
 def _align_to_definition_output(arr: np.ndarray, d: Definition) -> np.ndarray:
