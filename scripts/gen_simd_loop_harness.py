@@ -735,14 +735,15 @@ def _write_workloads(info: LoopInfo) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{info.loop_id}.jsonl"
 
+    wl_inputs = {f.name: {"type": "random"} for f in info.input_ptr_fields}
     lines = []
     for n in info.edge_sizes:
         uid = _stable_uuid(info.loop_id, n, "edge")
-        lines.append(json.dumps({"axes": {"N": n}, "scalar_inputs": {},
+        lines.append(json.dumps({"axes": {"N": n}, "inputs": wl_inputs,
                                   "uuid": uid, "tags": {"source": "edge"}}))
     for n in info.perf_sizes:
         uid = _stable_uuid(info.loop_id, n, "perf")
-        lines.append(json.dumps({"axes": {"N": n}, "scalar_inputs": {},
+        lines.append(json.dumps({"axes": {"N": n}, "inputs": wl_inputs,
                                   "uuid": uid, "tags": {"source": "perf"}}))
 
     content = "\n".join(lines) + "\n"

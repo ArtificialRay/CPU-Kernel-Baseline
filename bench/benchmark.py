@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from bench.compile import BuilderRegistry
-from bench.config import BenchmarkConfig, EvalConfig
+from bench.config import BenchmarkConfig
 from bench.data.definition import Definition
 from bench.data.solution import Solution
 from bench.data.trace import Trace
@@ -43,7 +43,7 @@ class Benchmark:
         dump_traces: bool = True,
     ) -> List[Trace]:
         """Run one Solution against a list of Workloads; persist + return Traces."""
-        eval_cfg = EvalConfig.from_benchmark_config(self._config)
+        eval_cfg = self._config.resolve_eval_config(definition)
         traces = run_solution_on_workloads(
             definition, solution, workloads,
             is_baseline=self._is_baseline(solution),

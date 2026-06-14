@@ -89,7 +89,11 @@ class DefaultEvaluator(Evaluator):
             log = f"kernel call failed: {e}\n{traceback.format_exc()}"
             return None, _error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log)
 
-        c = compare(candidate_np, baseline.ref_np, abs_tol=cfg.abs_tol, rel_tol=cfg.rel_tol)
+        c = compare(
+            candidate_np, baseline.ref_np,
+            abs_tol=cfg.abs_tol, rel_tol=cfg.rel_tol,
+            required_matched_ratio=cfg.required_matched_ratio,
+        )
         if not c.passed:
             status = (
                 EvaluationStatus.INCORRECT_SHAPE if c.fail_reason == "shape"
@@ -99,6 +103,7 @@ class DefaultEvaluator(Evaluator):
             log = (
                 f"correctness {c.fail_reason}: max_abs={c.max_absolute_error:.3e} "
                 f"max_rel={c.max_relative_error:.3e} "
+                f"matched={c.matched_ratio:.4f} "
                 f"first_idx={c.first_mismatch_index} "
                 f"got={c.first_mismatch_got:.6f} ref={c.first_mismatch_ref:.6f}"
             )
@@ -110,6 +115,7 @@ class DefaultEvaluator(Evaluator):
                 correctness=Correctness(
                     max_absolute_error=c.max_absolute_error,
                     max_relative_error=c.max_relative_error,
+                    matched_ratio=c.matched_ratio,
                 ),
             )
 
@@ -117,6 +123,7 @@ class DefaultEvaluator(Evaluator):
             Correctness(
                 max_absolute_error=c.max_absolute_error,
                 max_relative_error=c.max_relative_error,
+                matched_ratio=c.matched_ratio,
             ),
             None,
         )

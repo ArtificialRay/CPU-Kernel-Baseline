@@ -41,8 +41,17 @@ def _load_scalar_inputs(def_name: str) -> Dict[str, int]:
         line = line.strip()
         if not line:
             continue
-        rec = json.loads(line)
-        wl = rec.get("workload", {})
+        wl = json.loads(line).get("workload", {})
+        # New format: inputs[name] = {"type": "scalar", "value": v}
+        if "inputs" in wl:
+            inp = wl["inputs"]
+            if "pad_top" in inp and inp["pad_top"].get("type") == "scalar":
+                return {
+                    "pad_top": int(inp["pad_top"]["value"]),
+                    "pad_left": int(inp["pad_left"]["value"]),
+                    "activation_type": int(inp.get("activation_type", {}).get("value", 0)),
+                }
+        # Legacy format: scalar_inputs = {name: value}
         si = wl.get("scalar_inputs", {})
         if "pad_top" in si:
             return {
@@ -50,7 +59,7 @@ def _load_scalar_inputs(def_name: str) -> Dict[str, int]:
                 "pad_left": int(si["pad_left"]),
                 "activation_type": int(si.get("activation_type", 0)),
             }
-    raise ValueError(f"No workload with scalar_inputs found in {jsonl}")
+    raise ValueError(f"No workload with scalar inputs found in {jsonl}")
 
 
 def _render(tmpl: str, ctx: Dict[str, Any]) -> str:

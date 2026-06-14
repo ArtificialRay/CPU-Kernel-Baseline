@@ -26,6 +26,8 @@ class Correctness(BaseModelWithDocstrings):
 
     max_relative_error: float = 0.0
     max_absolute_error: float = 0.0
+    matched_ratio: Optional[float] = None
+    """Fraction of elements that passed the AND condition (diagnostic; None = not recorded)."""
     extra: Optional[Dict[str, Any]] = None
 
     @field_validator("max_relative_error", "max_absolute_error")

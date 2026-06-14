@@ -1,10 +1,14 @@
-"""Deterministic input generators that bit-exactly reproduce arm-bench/starter/ncnn/ncnn_helpers.h.
+"""Input generators for benchmark workloads.
 
-Why bit-exact: the Phase-2 verification requires the new benchmarker's
-correctness verdicts to match the old EXPECT_MATCH harness one-for-one. That
-only holds if we feed the kernel the same bytes the old harness did.
+`gen_inputs_for_workload` is the main entry point — it reads each input's type
+from `workload.inputs` and either returns the scalar value directly or generates
+a bounded-uniform random tensor seeded from the workload's uuid.
+
+The legacy `make_weights` / `make_mat_ramp` / `make_mat_ramp_2d` functions are
+kept for standalone testing but are no longer called by the harness.
 """
 
+import hashlib
 from typing import Dict, Iterable, Tuple
 
 import numpy as np
@@ -13,58 +17,57 @@ from bench.data.definition import AxisConst, Definition, DType
 from bench.data.workload import Workload
 
 
-# ── Bit-exact ports of ncnn_helpers.h ────────────────────────────────────────
+# ── Legacy bit-exact ports of ncnn_helpers.h (kept for standalone use) ────────
 
 def make_weights(n: int, scale: float = 1.0) -> np.ndarray:
-    """Port of ncnn_helpers.h `make_weights`:
-
-        w[i] = (((i * 1234567 + 7654321) % 1000) / 1000.f - 0.5f) * scale
-
-    Critical: do the LCG in pure Python ints (or np.int64) BEFORE converting to
-    float32 — doing it in float32 would lose precision in the modulo step.
-    """
+    """Port of ncnn_helpers.h `make_weights` (LCG, values in [-0.5, 0.5]*scale)."""
     i = np.arange(n, dtype=np.int64)
-    # The C++ uses signed int32 multiplication which wraps; here int64 is wide
-    # enough to hold the worst case (i ~ 1e8 → product ~ 1e14, fits in int64)
-    # without overflow, matching the C++ result for all practical n.
     lcg = (i * 1234567 + 7654321) % 1000
     return (lcg.astype(np.float32) / 1000.0 - 0.5).astype(np.float32) * np.float32(scale)
 
 
 def make_mat_ramp(shape_chw: Tuple[int, int, int]) -> np.ndarray:
-    """Port of ncnn_helpers.h `make_mat_ramp(w, h, c)`.
-
-    C-major layout (channel outermost), values = `(idx % 100 + 1) * 0.1f`,
-    where idx is the flat c-major index. Returns shape (c, h, w) float32.
-
-    The bounded cycle (0.1..10.0) avoids catastrophic cancellation in long
-    reductions; see the comment in ncnn_helpers.h.
-    """
+    """Port of ncnn_helpers.h `make_mat_ramp` (values 0.1..10.0 cycling, CHW layout)."""
     c, h, w = shape_chw
-    n = c * h * w
-    idx = np.arange(n, dtype=np.int64)
-    flat = ((idx % 100) + 1).astype(np.float32) * np.float32(0.1)
-    return flat.reshape(c, h, w)
+    idx = np.arange(c * h * w, dtype=np.int64)
+    return (((idx % 100) + 1).astype(np.float32) * np.float32(0.1)).reshape(c, h, w)
 
 
 def make_mat_ramp_2d(shape_hw: Tuple[int, int]) -> np.ndarray:
-    """Port of ncnn_helpers.h `make_mat_ramp_2d(w, h)`. Returns (h, w) float32."""
+    """Port of ncnn_helpers.h `make_mat_ramp_2d` (values 0.1..10.0 cycling, HW layout)."""
     h, w = shape_hw
-    n = h * w
-    idx = np.arange(n, dtype=np.int64)
-    flat = ((idx % 100) + 1).astype(np.float32) * np.float32(0.1)
-    return flat.reshape(h, w)
+    idx = np.arange(h * w, dtype=np.int64)
+    return (((idx % 100) + 1).astype(np.float32) * np.float32(0.1)).reshape(h, w)
 
 
-# ── Definition + Workload → concrete numpy inputs ─────────────────────────────
+# ── Random input generation ────────────────────────────────────────────────────
+
+def _uuid_to_seed(uuid_str: str) -> int:
+    """Convert a workload uuid string to a 32-bit rng seed."""
+    try:
+        return int(uuid_str, 16) % (2**32)
+    except ValueError:
+        return int(hashlib.md5(uuid_str.encode()).hexdigest(), 16) % (2**32)
+
+
+def _gen_random_tensor(shape: tuple, dtype, rng: np.random.Generator) -> np.ndarray:
+    """Generate a bounded random tensor suitable for kernel benchmarking.
+
+    Float tensors use uniform(-1, 1) to avoid catastrophic cancellation in
+    long reductions; integer tensors use integers in [1, 100].
+    """
+    if np.issubdtype(dtype, np.floating):
+        return rng.uniform(-1.0, 1.0, shape).astype(dtype)
+    elif np.issubdtype(dtype, np.integer):
+        return rng.integers(1, 101, shape).astype(dtype)
+    else:  # bool
+        return rng.integers(0, 2, shape, dtype=np.uint8).astype(np.bool_)
+
+
+# ── Axis resolution ────────────────────────────────────────────────────────────
 
 def _input_var_axes(d: Definition) -> set:
-    """Var axes that appear in at least one input tensor shape.
-
-    Output-only var axes (e.g. H_out / W_out for conv) are derived; we don't
-    require the workload to provide them since the kernel/harness allocates
-    the output, and Definition.reference can compute its own output shape.
-    """
+    """Var axes that appear in at least one input tensor shape."""
     used: set = set()
     for spec in d.inputs.values():
         if spec.shape is None:
@@ -77,16 +80,12 @@ def _input_var_axes(d: Definition) -> set:
 
 
 def _resolved_axes(d: Definition, w: Workload) -> Dict[str, int]:
-    """Merge a definition's const axes with a workload's var-axis values.
+    """Merge definition const axes with workload var-axis values.
 
-    Workload MUST provide every var axis that appears in some input tensor
-    shape. Var axes that only appear in outputs (derived dims like H_out)
-    are not required — the harness or reference handles them.
-
-    Raises if a workload key is unknown, overrides a const, or misses a
-    required input var axis.
+    Raises if the workload provides an unknown axis, overrides a const, or omits
+    a required input var axis.
     """
-    out: Dict[str, int] = dict(d.const_axes)  # const first
+    out: Dict[str, int] = dict(d.const_axes)
     for name, val in w.axes.items():
         if name not in d.axes:
             raise ValueError(f"Workload axis '{name}' not declared in definition '{d.name}'")
@@ -96,8 +95,7 @@ def _resolved_axes(d: Definition, w: Workload) -> Dict[str, int]:
                 f"{d.const_axes[name]}); workload must not set it"
             )
         out[name] = val
-    required = _input_var_axes(d)
-    missing = required - set(out)
+    missing = _input_var_axes(d) - set(out)
     if missing:
         raise ValueError(
             f"Workload missing required input var axes for '{d.name}': {sorted(missing)}"
@@ -105,11 +103,13 @@ def _resolved_axes(d: Definition, w: Workload) -> Dict[str, int]:
     return out
 
 
+# ── dtype mapping ──────────────────────────────────────────────────────────────
+
 _DTYPE_TO_NP = {
     DType.FLOAT64: np.float64,
     DType.FLOAT32: np.float32,
     DType.FLOAT16: np.float16,
-    DType.BFLOAT16: None,  # numpy lacks native bfloat16; not used in Phase 1
+    DType.BFLOAT16: None,  # numpy lacks native bfloat16
     DType.INT64: np.int64,
     DType.INT32: np.int32,
     DType.INT16: np.int16,
@@ -125,88 +125,41 @@ def _dtype_to_np(dt: DType):
     return np_dt
 
 
+# ── Main entry point ───────────────────────────────────────────────────────────
+
 def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
     """Build the input dict for `Definition.reference.run(**inputs)`.
 
-    Generation policy (matches today's harness):
+    Every entry in `d.inputs` must have a corresponding entry in `w.inputs`:
+    - `{"type": "random"}` → numpy array generated from uuid-seeded rng
+    - `{"type": "scalar", "value": v}` → Python scalar (int / float / bool)
 
-    - Tensor named `input` or `bottom_blob`: 3D ramp via `make_mat_ramp`, else 2D ramp.
-    - Tensor named `weight` (or `weight_data`): seeded LCG via `make_weights`.
-    - Tensor named `bias` (or `bias_data`): seeded LCG, scale 1.0. Caller can
-      zero it out via `scalar_inputs['bias_term'] = 0` if a bias-less variant is needed.
-    - Tensor named `activation_params`: small zeros tensor (today's ncnn passes empty for type=0/1).
-    - Scalar-shape tensors (shape=None): taken from `w.scalar_inputs` (must be set).
-
-    Returns numpy arrays in N-C-H-W layout for tensors and Python scalars for shape=None.
-    The dataset adapter converts those to the framework-native handle (e.g. ncnn::Mat).
+    Raises ValueError if any definition input is absent from the workload.
     """
     axes = _resolved_axes(d, w)
+    rng = np.random.default_rng(_uuid_to_seed(w.uuid))
     out: Dict[str, object] = {}
+
     for tname, tspec in d.inputs.items():
-        if tspec.shape is None:
-            if tname not in w.scalar_inputs:
-                raise ValueError(
-                    f"Workload missing scalar input '{tname}' (definition has shape=None)"
-                )
-            out[tname] = w.scalar_inputs[tname]
+        wi = w.inputs.get(tname)
+        if wi is None:
+            raise ValueError(
+                f"Workload '{w.uuid}' is missing input '{tname}' "
+                f"(definition '{d.name}' requires it)"
+            )
+        if wi.type == "scalar":
+            out[tname] = wi.value
             continue
-
-        # Resolve concrete shape from axis names
+        # type == "random"
+        if tspec.shape is None:
+            raise ValueError(
+                f"Definition '{d.name}' input '{tname}' has shape=null "
+                f"but workload declares it as random (expected scalar)"
+            )
         shape = tuple(axes[a] for a in tspec.shape)
-        np_dt = _dtype_to_np(tspec.dtype)
+        out[tname] = _gen_random_tensor(shape, _dtype_to_np(tspec.dtype), rng)
 
-        if tname in ("input", "bottom_blob"):
-            # Detect dimensionality from declared shape.
-            # NCHW (4D): take c=C*N (treat batch by concatenation along c)
-            if len(shape) == 4:
-                n, c, h, ww = shape
-                arr = np.empty((n, c, h, ww), dtype=np_dt)
-                for bi in range(n):
-                    arr[bi] = make_mat_ramp((c, h, ww))
-                out[tname] = arr
-            elif len(shape) == 3:
-                out[tname] = make_mat_ramp(shape).astype(np_dt, copy=False)
-            elif len(shape) == 2:
-                out[tname] = make_mat_ramp_2d(shape).astype(np_dt, copy=False)
-            elif len(shape) == 1:
-                # 1D flat arrays (simd-loop scalar kernels)
-                n_elems = shape[0]
-                if np.issubdtype(np_dt, np.integer):
-                    idx = np.arange(n_elems, dtype=np.int64)
-                    out[tname] = ((idx * 7 + 13) % 100 + 1).astype(np_dt)
-                else:
-                    out[tname] = make_weights(n_elems, scale=1.0).astype(np_dt, copy=False)
-            else:
-                raise ValueError(
-                    f"Input tensor '{tname}' has unsupported rank {len(shape)}; expected 1/2/3/4"
-                )
-        elif tname in ("weight", "weight_data"):
-            n_elems = int(np.prod(shape))
-            out[tname] = make_weights(n_elems, scale=1.0).reshape(shape).astype(np_dt, copy=False)
-        elif tname in ("bias", "bias_data"):
-            n_elems = int(np.prod(shape))
-            # NB: today's tests use bias = [i * 0.1 for i in range(out_c)] when with_bias=true.
-            # We use make_weights here so both bias and weight are deterministic from a
-            # single seed; if a Phase-2 workload diff shows mismatch, switch this branch
-            # to match the test exactly.
-            out[tname] = make_weights(n_elems, scale=1.0).reshape(shape).astype(np_dt, copy=False)
-        else:
-            n_elems = int(np.prod(shape))
-            if np.issubdtype(np_dt, np.integer):
-                # make_weights produces floats in [-0.5, 0.5] which truncate to 0
-                # for integer casts. Use a deterministic ramp instead (values 1..100).
-                idx = np.arange(n_elems, dtype=np.int64)
-                out[tname] = ((idx * 7 + 13) % 100 + 1).astype(np_dt).reshape(shape)
-            else:
-                out[tname] = make_weights(n_elems, scale=1.0).reshape(shape).astype(np_dt, copy=False)
     return out
-
-
-def gen_constants_for_reference(d: Definition, w: Workload) -> Dict[str, int]:
-    """Expose const-axis values as plain ints so `Definition.reference` can reference
-    them directly (e.g. `run` may need `Sh`, `Sw` to call `F.conv2d`).
-    """
-    return dict(d.const_axes)
 
 
 def shape_of(arr_or_scalar: object) -> Tuple[int, ...]:
@@ -221,6 +174,5 @@ __all__ = [
     "make_mat_ramp",
     "make_mat_ramp_2d",
     "gen_inputs_for_workload",
-    "gen_constants_for_reference",
     "shape_of",
 ]
