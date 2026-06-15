@@ -144,6 +144,12 @@ cost per instance/ISA: the lib is cached and reused across every baseline build.
 
 ### 3. Collect baselines
 
+Before collection, enable perf counter at remote instance by:
+
+```bash
+ssh -i ~/.ssh/id_rsa ubuntu@<host> 'sudo sysctl -w kernel.perf_event_paranoid=1'
+```
+
 Runs every baseline-author Solution against its Definition's workloads, caching
 the timings so candidate `armbench bench` runs can derive `reference_min_ns`
 and `speedup`:

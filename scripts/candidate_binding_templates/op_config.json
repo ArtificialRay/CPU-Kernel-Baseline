@@ -1,0 +1,17 @@
+{
+  "conv2d": {
+    "const_axes": {
+      "Cin":  "C_in",
+      "Cout": "C_out",
+      "Kh":   "Kh",
+      "Kw":   "Kw",
+      "Sh":   "Sh",
+      "Sw":   "Sw",
+      "Dh":   "Dh",
+      "Dw":   "Dw"
+    },
+    "scalar_inputs": ["pad_top", "pad_left", "activation_type"],
+    "defs_family":   "conv",
+    "traces_subdir": "conv2d"
+  }
+}

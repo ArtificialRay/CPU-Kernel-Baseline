@@ -42,7 +42,6 @@ from pathlib import Path
 from typing import List
 
 from bench.benchmark import BenchmarkConfig
-from bench.config import EvalConfig
 from bench.compile import BuilderRegistry
 from bench.data import TraceSet
 from bench.data.solution import Solution, SupportedDatasets
@@ -90,7 +89,7 @@ def main() -> int:
                         format="%(asctime)s  %(levelname)-7s  %(name)s  %(message)s")
 
     ts = TraceSet.from_path(args.root)
-    eval_cfg = EvalConfig.from_benchmark_config(BenchmarkConfig())
+    bench_cfg = BenchmarkConfig()
 
     sols = _author_solutions(ts, args.author)
     if not sols:
@@ -122,6 +121,7 @@ def main() -> int:
             # candidate/raw path. run_solution_on_workloads names that flag
             # `is_baseline`, so simd-loop maps to is_baseline=True.
             path = "simd-loop" if is_simd_loop else "candidate"
+            eval_cfg = bench_cfg.resolve_eval_config(d)
             try:
                 traces: List[Trace] = run_solution_on_workloads(
                     d, s, wls, is_baseline=is_simd_loop, cfg=eval_cfg, trace_set=ts,
