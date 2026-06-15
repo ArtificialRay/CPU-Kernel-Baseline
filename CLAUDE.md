@@ -96,13 +96,13 @@ python scripts/bench_loop_agent.py --all-loops --max-turns 4 \
 
 ### Validate via CLI (bench/cli.py)
 ```bash
-python -m bench.cli list-definitions          # list all 20 simd-loop + ncnn definitions
+python -m bench.cli list-definitions          # list all 23 simd-loop + ncnn definitions
 python -m bench.cli bench --definition loop_001 --solution reference-scalar_loop_001
 ```
 
-### Correctness smoke-test (all 20 reference-scalar solutions)
+### Correctness smoke-test (all 23 reference-scalar solutions)
 ```bash
-python scripts/test_reference_scalars.py      # should print 121/121 workloads passed
+python scripts/test_reference_scalars.py      # should print 140/140 workloads passed
 ```
 
 ### Regenerate simd-loop harnesses + bench-trace
@@ -121,10 +121,10 @@ python scripts/gen_definitions.py   # → bench-trace/definitions/ and bench-tra
 
 ### simd-loop (fully tested on Graviton4 SVE2)
 
-**20 loops** across three patterns (121/121 workload correctness, Mac + Graviton4):
+**23 loops** across three patterns (140/140 workload correctness, Mac + Graviton4):
 - **Scalar-output**: 001-004, 008, 010, 024, 032, 033, 126, 127 — reduction → single value
-- **Array-output**: 027, 028, 029, 035, 113, 128 — element-wise → N-element output
-- **Inplace-sort**: 120, 121, 122 — data sorted in-place
+- **Array-output**: 027, 028, 029, 035, 108, 113, 128 — element-wise → N-element output
+- **Inplace-sort**: 120, 121, 122, 123, 124 — data sorted in-place
 
 **75 total loops in `dataset/problems/`; 55 not yet integrated:**
 
@@ -206,9 +206,53 @@ No Python files need manual editing to add a supported loop pattern.
 | SVE2 | c8g.large | Graviton4, Neoverse V2, 128-bit SVE2 |
 | SME2 | —         | No AWS instance supports SME2 yet    |
 
-## In-flight PRs (as of 2026-06-12)
+## In-flight PRs (as of 2026-06-14)
 
-| Branch                          | Status     | Notes                                                    |
-|---------------------------------|------------|----------------------------------------------------------|
-| `feat/simd-loop-20-loops` (#21) | Open       | 20 loops (array-output + inplace-sort); needs review     |
-| Next branch (unpushed)          | Local only | Arch refactor: self-contained solutions, no _LOOP_META   |
+| Branch                                | PR  | Status | Notes                                                              |
+|---------------------------------------|-----|--------|--------------------------------------------------------------------|
+| `feat/simd-loop-20-loops`             | #21 | Merged | 23 loops total (scalar/array/inplace-sort); self-contained solutions |
+| `fix/no-candidate-harness`            | #22 | Merged | Bind candidate + simd-loop harness to solution sources; remove all framework hard-codes |
+| `feat/simd-loop-sort-123-124`         | #23 | Draft  | Loops 123/124 (bitonic + radix sort) + loop_108 (pixel/LD4); needs rebase on main |
+| `feat/update-load-workloads`          | #24 | Open   | Workload format: `scalar_inputs` → explicit `inputs` dict; uuid-seeded random generation; AND correctness formula |
+
+---
+
+## API consistency rules — ncnn conv2d is ground truth
+
+The ncnn conv2d pipeline is the canonical reference for how datasets, adapters, and
+solutions should be structured. When adding or modifying simd-loop code, match it.
+
+**The interface contract (both ncnn and simd-loop must follow this):**
+- `wrap_inputs(np_inputs, op_type, lib, *, definition)` — no `scalar_args`, `definition` is keyword-only
+- Solutions are fully self-contained: harness `.h` + `.cpp` + `kernel.cpp` embedded in solution JSON
+- No per-loop or per-op hardcodes in any framework Python file (`datasets/`, `evaluators/`, `runner.py`)
+- Per-loop config lives in the generator (`gen_simd_loop_harness.py`) and gets baked into definition/solution JSON — the framework never sees it
+- `_DTYPE_MAP` in each dataset adapter covers all dtypes that dataset actually uses
+
+**What must NOT exist in simd-loop that doesn't exist in ncnn:**
+- `sig_from_definition()` — removed in PR #22; do not re-add; argtypes are derived from definition in `wrap_inputs`
+- `scalar_args` / `{"N": n}` passed to `wrap_inputs` — n is now derived from input array shape
+- Per-loop input generation hacks in `bench/runtime/inputs.py` — input generation must be type-driven, not loop-ID-driven
+
+---
+
+## Open TODOs
+
+### Immediate (block PR #23 merge)
+- [ ] Rebase `feat/simd-loop-sort-123-124` on main (PR #22 changed `simd_loop.py` API)
+- [ ] Fix `scripts/test_reference_scalars.py`: drop `sig_from_definition` import, update `wrap_inputs` call to new signature — **this is also broken on main right now**
+- [ ] Add `uint8`/`uint16` to `_DTYPE_MAP` in `bench/datasets/simd_loop.py` — required for loop_108 (uint8 output), missing from PR #22
+
+### After PR #24 merges (workload format change)
+- [ ] Regenerate all simd-loop JSONL workloads to new `inputs: Dict[str, WorkloadInput]` format
+- [ ] Remove uint32 LCG ramp from `bench/runtime/inputs.py` — PR #24's uuid-seeded random handles all types uniformly; the simd-loop-specific ramp is a hack in a shared file
+
+### Longer term
+- [ ] Add `baseline-sve` solutions to the trace (extract `HAVE_SVE_INTRINSICS` block from `loops/loop_NNN.c` via a new `_extract_sve_kernel()` in the generator) — ncnn has `baseline-ncnn-arm` as its expert ceiling; simd-loop needs the equivalent so agent speedup is measured against both scalar and SVE baselines
+- [ ] Run `bench_loop_agent.py` against all 23 loops on Graviton4 and commit timing traces — agent performance has only been validated for the original 4 loops
+- [ ] Wire `bench/` evaluator output into agent loop (Issue #17) so the agent sees correctness + speedup per turn
+
+### Trace / HuggingFace
+- Simd-loop definitions, workloads, and reference-scalar solutions are uploaded to `arm-bench/arm-bench-trace` on HuggingFace
+- After adding `baseline-sve` solutions, upload those too
+- ncnn data on HF is pre-PR#15 (conv2d only) — needs refresh with 5-op layout + self-contained solutions

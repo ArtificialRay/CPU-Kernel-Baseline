@@ -114,6 +114,10 @@ _DTYPE_TO_NP = {
     DType.INT32: np.int32,
     DType.INT16: np.int16,
     DType.INT8: np.int8,
+    DType.UINT64: np.uint64,
+    DType.UINT32: np.uint32,
+    DType.UINT16: np.uint16,
+    DType.UINT8: np.uint8,
     DType.BOOL: np.bool_,
 }
 

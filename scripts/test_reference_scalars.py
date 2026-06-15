@@ -11,7 +11,7 @@ sys.path.insert(0, str(REPO))
 
 from bench.data import Solution, Definition, Workload
 from bench.compile.builders.simd_loop import SimdLoopBuilder
-from bench.datasets.simd_loop import sig_from_definition, SimdLoopDataset
+from bench.datasets.simd_loop import SimdLoopDataset
 from bench.runtime.inputs import gen_inputs_for_workload
 
 DEFS_DIR  = REPO / "bench-trace/definitions/simd-loop"
@@ -44,7 +44,6 @@ def run_one(loop_id: str) -> tuple[int, int, list[str]]:
         lib = ctypes.CDLL(str(compiled.so_path))
         sym = getattr(lib, f"armbench_entry_{loop_id}")
         sym.restype = ctypes.c_int
-        sym.argtypes = sig_from_definition(defn)
         sym._lib = lib
 
         ds = SimdLoopDataset()
@@ -54,7 +53,7 @@ def run_one(loop_id: str) -> tuple[int, int, list[str]]:
 
         for wl in workloads:
             np_inputs = gen_inputs_for_workload(defn, wl)
-            ctx = ds.wrap_inputs(np_inputs, {"N": wl.axes["N"]}, loop_id, lib, definition=defn)
+            ctx = ds.wrap_inputs(np_inputs, loop_id, lib, definition=defn)
             rc = sym(*ctx.entry_args)
             if rc != 0:
                 errors.append(f"N={wl.axes['N']}: runtime error rc={rc}")

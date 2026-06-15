@@ -21,7 +21,6 @@ Loops requiring custom handling (skipped):
   loop_023 — indexes OOB with generated inputs
   loop_101 — output array is FIRST ptr, size ≠ N
   loop_105 — b is scratch buffer, not an input
-  loop_108 — mixed uint32→uint8 pixel; trivially-zero output with values 1-100
   loop_111 — last ptr is input (exponent), not output
   loop_123, 124 — sort with multiple scratch + extra-scalar params
   p+lmt loops (005, 006, 022, 034, 103) — need string/buffer input generation
@@ -446,6 +445,21 @@ _CUSTOM_SCALAR_KERNELS: dict[str, str] = {
         '    std::sort(data->data, data->data + data->n);\n'
         '}\n'
     ),
+    "loop_108": (
+        '#include "loop_108.h"\n'
+        '#include <stdint.h>\n\n'
+        'extern "C" void inner_loop_108(struct loop_108_data *data) {\n'
+        '    uint32_t *rgba = data->rgba;\n'
+        '    uint8_t *y = data->y;\n'
+        '    int64_t n = data->n;\n'
+        '    for (int64_t i = 0; i < n; i++) {\n'
+        '        y[i] = (rgba[i] >> 24) >> 2;\n'
+        '        y[i] += ((rgba[i] >> 16) & 0xff) >> 1;\n'
+        '        y[i] += ((rgba[i] >> 16) & 0xff) >> 3;\n'
+        '        y[i] += ((rgba[i] >> 8) & 0xff) >> 3;\n'
+        '    }\n'
+        '}\n'
+    ),
 }
 
 
@@ -494,6 +508,18 @@ _CUSTOM_REFS: dict[str, str] = {
         "    valid_od = odd[odd < n]\n"
         "    c[valid_od] = c_od[:len(valid_od)]\n"
         "    return c\n"
+    ),
+    "loop_108": (
+        # Deinterleave RGBA uint32 → luminance-ish uint8.
+        # rgba is stored as uint32 (see _DTYPE_OVERRIDES) so bitwise shifts work correctly.
+        "import numpy as np\n\n"
+        "def run(rgba):\n"
+        "    u = rgba.view(np.uint32)\n"
+        "    y = (u >> 26).astype(np.uint16)\n"           # (alpha >> 2)  = rgba >> 26
+        "    y += ((u >> 17) & np.uint32(0x7f)).astype(np.uint16)\n"   # red >> 1
+        "    y += ((u >> 19) & np.uint32(0x1f)).astype(np.uint16)\n"   # red >> 3
+        "    y += ((u >> 11) & np.uint32(0x1f)).astype(np.uint16)\n"   # green >> 3
+        "    return y.astype(np.uint8)\n"
     ),
     "loop_128": (
         "import numpy as np\n\n"
@@ -664,9 +690,11 @@ def _write_definition(info: LoopInfo) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{info.loop_id}.json"
 
+    dtype_ovr = _DTYPE_OVERRIDES.get(info.loop_id, {})
     inputs = {}
     for f in info.input_ptr_fields:
-        inputs[f.name] = {"shape": ["N"], "dtype": f.numpy_dtype}
+        dtype = dtype_ovr.get(f.name, f.numpy_dtype)
+        inputs[f.name] = {"shape": ["N"], "dtype": dtype}
 
     override = _LOOP_META_OVERRIDES.get(info.loop_id, {})
     simd_loop_meta = {
@@ -831,6 +859,13 @@ _LOOP_META_OVERRIDES: dict[str, dict] = {
     "loop_113": {"array_pad": 2},  # kernel does a[i+1]/b[i+1] — needs 2 extra elements
 }
 
+# Per-loop input dtype overrides.  Use when a field's C type maps to int32 by
+# default (to avoid sign issues with make_weights) but the kernel actually needs
+# the full unsigned range.
+_DTYPE_OVERRIDES: dict[str, dict[str, str]] = {
+    "loop_108": {"rgba": "uint32"},  # pixel values need high bytes set; int32 range gives all-zero output
+}
+
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -850,6 +885,7 @@ TARGET_LOOP_IDS = [
     "loop_028",   # fp64 div   (2 inputs → 1 output)
     "loop_029",   # fp64 scalbn / ldexp (double + int64 scale → double)
     "loop_035",   # fp32 add   (2 inputs → 1 output)
+    "loop_108",   # RGBA pixel deinterleave → uint8 luminance (LD4 + shift-accumulate)
     "loop_113",   # uint32 pair-wise add (2 inputs → 1 output, stride-2)
     "loop_128",   # uint32 add with aliased pointers
     # ── In-place sort (data sorted in-place, output IS data) ─────────────────
