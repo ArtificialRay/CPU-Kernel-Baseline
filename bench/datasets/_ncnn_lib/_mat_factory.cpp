@@ -131,7 +131,7 @@ void* armbench_ncnn_option_create_default()
 {
     auto* opt = new ncnn::Option();
     opt->num_threads = 1;
-    opt->use_packing_layout = false;
+    opt->use_packing_layout = true;
     opt->use_fp16_storage = false;
     opt->use_bf16_storage = false;
     opt->use_sgemm_convolution = false;
@@ -142,6 +142,19 @@ void* armbench_ncnn_option_create_default()
 void armbench_ncnn_option_destroy(void* opt_v)
 {
     delete reinterpret_cast<ncnn::Option*>(opt_v);
+}
+
+// Convert a Mat to a different elempack. Returns a new heap-allocated Mat
+// that the caller must eventually pass to armbench_ncnn_mat_destroy.
+void* armbench_ncnn_convert_packing(void* src_v, int target_elempack, void* opt_v)
+{
+    auto* dst = new ncnn::Mat();
+    ncnn::convert_packing(
+        *reinterpret_cast<ncnn::Mat*>(src_v),
+        *dst,
+        target_elempack,
+        *reinterpret_cast<ncnn::Option*>(opt_v));
+    return dst;
 }
 
 } // extern "C"

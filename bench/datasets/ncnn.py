@@ -47,6 +47,7 @@ class _MatFactoryFns:
     empty: Any
     option_default: Any
     option_destroy: Any
+    convert_packing: Any
 
     @classmethod
     def from_lib(cls, lib: ctypes.CDLL) -> "_MatFactoryFns":
@@ -83,6 +84,8 @@ class _MatFactoryFns:
                                  ctypes.c_void_p, []),
             option_destroy=_bind("armbench_ncnn_option_destroy", None,
                                  [ctypes.c_void_p]),
+            convert_packing=_bind("armbench_ncnn_convert_packing", ctypes.c_void_p,
+                                  [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]),
         )
 
 
@@ -226,17 +229,30 @@ class NcnnDataset:
         output_ptr = ctypes.c_void_p(fns.create_empty())
         created.append(output_ptr)
 
-        # Default Option
+        # Default Option (use_packing_layout=true — see _mat_factory.cpp)
         opt_ptr = ctypes.c_void_p(fns.option_default())
+
+        # Pack the input tensor to elempack=4 so ncnn's forward() takes the
+        # optimised packed path.  Only applies to 3D Mats (conv2d/deconv2d
+        # family); conv1d uses a 2D Mat whose packing semantics differ.
+        # convert_packing returns a new heap Mat; add it to `created` so
+        # release() destroys it.
+        if fns.dims(tensor_ptrs[0]) == 3:
+            packed_input_ptr = ctypes.c_void_p(
+                fns.convert_packing(tensor_ptrs[0], 4, opt_ptr)
+            )
+            created.append(packed_input_ptr)
+        else:
+            packed_input_ptr = tensor_ptrs[0]
 
         # Assemble entry args. Order must match the C signature of
         # armbench_entry_<op_type> (6 Mat/Option pointers).
         base = (
-            tensor_ptrs[0],  # bottom
-            output_ptr,      # top (output, empty — harness allocates)
-            tensor_ptrs[1],  # weight
-            tensor_ptrs[2],  # bias
-            tensor_ptrs[3],  # activation_params
+            packed_input_ptr,  # bottom (pack4)
+            output_ptr,        # top (output, empty — harness allocates)
+            tensor_ptrs[1],    # weight
+            tensor_ptrs[2],    # bias
+            tensor_ptrs[3],    # activation_params
             opt_ptr,
         )
         # Self-contained entry: scalars are baked constexpr in the solution's
@@ -252,9 +268,18 @@ class NcnnDataset:
         )
 
     def unwrap_output(self, ctx: NcnnContext) -> np.ndarray:
-        """Read the output Mat back into numpy."""
+        """Read the output Mat back into numpy, unpacking from pack4 to pack1 first."""
         if ctx.fns.empty(ctx.output_mat_ptr):
             raise RuntimeError("Output Mat is empty — kernel didn't allocate / returned non-zero")
+        # Unpack only 3D output Mats; 2D output (conv1d) is already pack1.
+        if ctx.fns.dims(ctx.output_mat_ptr) == 3:
+            unpacked_ptr = ctypes.c_void_p(
+                ctx.fns.convert_packing(ctx.output_mat_ptr, 1, ctx.opt_ptr)
+            )
+            try:
+                return _mat_to_np(ctx.fns, unpacked_ptr)
+            finally:
+                ctx.fns.destroy(unpacked_ptr)
         return _mat_to_np(ctx.fns, ctx.output_mat_ptr)
 
     def release(self, ctx: NcnnContext) -> None:
