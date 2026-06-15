@@ -22,7 +22,6 @@ Loops requiring custom handling (skipped):
   loop_101 — output array is FIRST ptr, size ≠ N
   loop_105 — b is scratch buffer, not an input
   loop_111 — last ptr is input (exponent), not output
-  loop_123, 124 — sort with multiple scratch + extra-scalar params
   p+lmt loops (005, 006, 022, 034, 103) — need string/buffer input generation
   matrix multiply (025, 130, 135-137, 201-221, 223, 231, 245) — 2D m/n/k axes
   complex structs (012, 019, 037, 109, 110, 112, 204, 211, 222) — custom C types
