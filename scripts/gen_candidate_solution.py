@@ -6,6 +6,18 @@ complete solution JSONs to bench-trace/solutions/ncnn/reference-scalar/<op_type>
 To add a new op type: add its 3 template files and one entry to
 scripts/candidate_binding_templates/op_config.json. No other Python files need to change.
 
+Template files:
+  {op_type}.h.tmpl        — constexpr header (may contain {{placeholder}} tokens)
+  {op_type}.cpp.tmpl      — binding harness (usually no placeholders)
+  {op_type}.kernel.cpp.tmpl — reference kernel (falls back to kernel.cpp.tmpl for conv2d compat)
+
+op_config.json fields per op type:
+  const_axes          — maps {{placeholder}} → axis name in definition JSON
+  name_extract_axes   — maps {{placeholder}} → regex pattern applied to definition name
+  scalar_inputs       — list of scalar input names to read from golden traces (may be [])
+  defs_family         — subdirectory under bench-trace/definitions/
+  traces_subdir       — subdirectory under bench-trace/traces.golden/ (used only if scalar_inputs)
+
 Usage:
     python -m scripts.gen_candidate_solution --op-type conv2d
     python -m scripts.gen_candidate_solution --op-type conv2d --definition conv2d_kh3_kw3_sh1_sw1_dh1_dw1_c64_c64
@@ -16,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -33,13 +46,20 @@ def _load_op_config() -> Dict[str, Any]:
 
 
 def _load_templates(op_type: str) -> Dict[str, str]:
-    names = [f"{op_type}.h", f"{op_type}.cpp", "kernel.cpp"]
+    # kernel.cpp: prefer {op_type}.kernel.cpp.tmpl, fall back to kernel.cpp.tmpl (conv2d compat)
+    kernel_path = _TMPL_DIR / f"{op_type}.kernel.cpp.tmpl"
+    if not kernel_path.exists():
+        kernel_path = _TMPL_DIR / "kernel.cpp.tmpl"
+    named = [f"{op_type}.h", f"{op_type}.cpp"]
     result: Dict[str, str] = {}
-    for name in names:
+    for name in named:
         path = _TMPL_DIR / f"{name}.tmpl"
         if not path.exists():
             raise FileNotFoundError(f"Template not found: {path}")
         result[name] = path.read_text()
+    if not kernel_path.exists():
+        raise FileNotFoundError(f"Template not found: {kernel_path}")
+    result["kernel.cpp"] = kernel_path.read_text()
     return result
 
 
@@ -72,6 +92,16 @@ def _load_scalar_inputs(def_name: str, traces_subdir: str,
     raise ValueError(f"No workload with scalar inputs {names} found in {jsonl}")
 
 
+def _extract_from_name(def_name: str, patterns: Dict[str, str]) -> Dict[str, int]:
+    result: Dict[str, int] = {}
+    for tmpl_key, pattern in patterns.items():
+        m = re.search(pattern, def_name)
+        if m is None:
+            raise ValueError(f"{def_name}: name_extract_axes pattern {pattern!r} found no match")
+        result[tmpl_key] = int(m.group(1))
+    return result
+
+
 def _build_ctx(def_name: str, defn: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
     axes = defn.get("axes", {})
     ctx: Dict[str, Any] = {}
@@ -81,6 +111,9 @@ def _build_ctx(def_name: str, defn: Dict[str, Any], cfg: Dict[str, Any]) -> Dict
         if ax.get("type") != "const":
             raise ValueError(f"{def_name}: axis {axis_name!r} is not const")
         ctx[tmpl_key] = int(ax["value"])
+
+    if cfg.get("name_extract_axes"):
+        ctx.update(_extract_from_name(def_name, cfg["name_extract_axes"]))
 
     if cfg.get("scalar_inputs"):
         ctx.update(_load_scalar_inputs(def_name, cfg["traces_subdir"], cfg["scalar_inputs"]))

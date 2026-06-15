@@ -63,9 +63,10 @@ class Performance(BaseModelWithDocstrings):
     """5th-percentile ns/iter — stability/jitter proxy."""
     reference_min_ns: Optional[int] = Field(default=None, ge=0)
     """Reference (e.g. baseline ncnn) min_ns, if benchmarker computed it."""
-    speedup: Optional[float] = Field(default=None, ge=0.0)
-    """Canonical speedup: reference_cycles / cycles when cycles are present,
-    else reference_min_ns / min_ns. >1 means faster than reference."""
+    cycle_speedup: Optional[float] = Field(default=None, ge=0.0)
+    """reference_cycles / cycles — only present when perf counters are available."""
+    time_speedup: Optional[float] = Field(default=None, ge=0.0)
+    """reference_min_ns / min_ns — always available when a baseline trace exists."""
     repeat: int = Field(ge=1)
     warmup: int = Field(ge=0)
 

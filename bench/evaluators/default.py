@@ -156,10 +156,11 @@ class DefaultEvaluator(Evaluator):
             return None, _error(EvaluationStatus.TIMEOUT, env, timestamp, str(e))
 
         # Baseline lookup → speedup. Skip when this Solution *is* the baseline
-        # (avoids self-divides). Cycles is canonical; fall back to ns.
+        # (avoids self-divides).
         ref_cycles: Optional[int] = None
         ref_min_ns: Optional[int] = None
-        speedup: Optional[float] = None
+        cycle_speedup: Optional[float] = None
+        time_speedup: Optional[float] = None
         if trace_set is not None and not is_baseline:
             ref_cycles = trace_set.get_baseline_min_cycles(
                 definition.name, workload.uuid, baseline_author=cfg.baseline_author
@@ -168,16 +169,17 @@ class DefaultEvaluator(Evaluator):
                 definition.name, workload.uuid, baseline_author=cfg.baseline_author
             )
             if ref_cycles is not None and timing.cycles and timing.cycles > 0:
-                speedup = ref_cycles / timing.cycles
-            elif ref_min_ns is not None and timing.min_ns > 0:
-                speedup = ref_min_ns / timing.min_ns
+                cycle_speedup = ref_cycles / timing.cycles
+            if ref_min_ns is not None and timing.min_ns > 0:
+                time_speedup = ref_min_ns / timing.min_ns
 
         return (
             Performance(
                 min_ns=timing.min_ns,
                 p5_ns=timing.p5_ns,
                 reference_min_ns=ref_min_ns,
-                speedup=speedup,
+                cycle_speedup=cycle_speedup,
+                time_speedup=time_speedup,
                 repeat=timing.repeat,
                 warmup=timing.warmup,
                 cycles=timing.cycles,
