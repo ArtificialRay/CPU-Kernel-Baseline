@@ -1187,6 +1187,79 @@ _MULTI_AXIS: dict[str, dict] = {
             '}\n'
         ),
     },
+    "loop_130": {
+        # Row-major fp32 matmul: c[y,x] = sum_z a[y,z] * b[z,x]  ==  A @ B.
+        # A is [m,k], B is [k,n], C is [m,n], all row-major.
+        "axes":   ["m", "n", "k"],
+        "inputs": {"a": ["m", "k"], "b": ["k", "n"]},
+        "output": ("c", ["m", "n"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    return (a.astype(np.float64) @ b.astype(np.float64)).astype(np.float32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1, "k": 1}, {"m": 2, "n": 3, "k": 4},
+                     {"m": 8, "n": 8, "k": 8}, {"m": 5, "n": 7, "k": 3}],
+            "perf": [{"m": 64, "n": 64, "k": 64}],
+        },
+        "scalar": (
+            '#include "loop_130.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_130(struct loop_130_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    uint64_t k = data->k;\n'
+            '    float *a = data->a;\n'
+            '    float *b = data->b;\n'
+            '    float *c = data->c;\n'
+            '    for (uint64_t y = 0; y < m; y++) {\n'
+            '        for (uint64_t x = 0; x < n; x++) {\n'
+            '            float d = 0;\n'
+            '            for (uint64_t z = 0; z < k; z++) d += a[y * k + z] * b[z * n + x];\n'
+            '            c[y * n + x] = d;\n'
+            '        }\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_135": {
+        # Row-major int8→int32 matmul: c[x,y] = sum_z a[x,z] * b[z,y]  ==  A @ B.
+        # A is [m,k] int8, B is [k,n] int8, C is [m,n] int32. dtypes derived from struct.
+        "axes":   ["m", "n", "k"],
+        "inputs": {"a": ["m", "k"], "b": ["k", "n"]},
+        "output": ("c", ["m", "n"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    return (a.astype(np.int64) @ b.astype(np.int64)).astype(np.int32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1, "k": 1}, {"m": 2, "n": 3, "k": 4},
+                     {"m": 8, "n": 8, "k": 8}, {"m": 5, "n": 7, "k": 3}],
+            "perf": [{"m": 64, "n": 64, "k": 64}],
+        },
+        "scalar": (
+            '#include "loop_135.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_135(struct loop_135_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    uint64_t k = data->k;\n'
+            '    int8_t *a = data->a;\n'
+            '    int8_t *b = data->b;\n'
+            '    int32_t *c = data->c;\n'
+            '    for (uint64_t x = 0; x < m; x++) {\n'
+            '        for (uint64_t y = 0; y < n; y++) {\n'
+            '            int32_t acc = 0;\n'
+            '            for (uint64_t z = 0; z < k; z++)\n'
+            '                acc += (int32_t)a[x * k + z] * (int32_t)b[z * n + y];\n'
+            '            c[x * n + y] = acc;\n'
+            '        }\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
 }
 
 
