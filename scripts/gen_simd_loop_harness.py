@@ -945,7 +945,77 @@ _MULTI_AXIS: dict[str, dict] = {
             '}\n'
         ),
     },
+    "loop_220": {
+        # Row-major GEMV: b[i] = sum_j a[i*n+j] * x[j]  ==  A @ x
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["m", "n"], "x": ["n"]},
+        "output": ("b", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, x):\n"
+            "    return (a.astype(np.float64) @ x.astype(np.float64)).astype(np.float32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_220.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_220(struct loop_220_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    float *a = data->a;\n'
+            '    float *x = data->x;\n'
+            '    float *b = data->b;\n'
+            '    for (uint64_t i = 0; i < m; i++) {\n'
+            '        float d = 0;\n'
+            '        for (uint64_t j = 0; j < n; j++) d += a[(i * n) + j] * x[j];\n'
+            '        b[i] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_221": {
+        # Row-major fp64 GEMV: b[i] = sum_j a[i*n+j] * x[j]  ==  A @ x
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["m", "n"], "x": ["n"]},
+        "output": ("b", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, x):\n"
+            "    return a.astype(np.float64) @ x.astype(np.float64)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_221.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_221(struct loop_221_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    double *a = data->a;\n'
+            '    double *x = data->x;\n'
+            '    double *b = data->b;\n'
+            '    for (uint64_t i = 0; i < m; i++) {\n'
+            '        double d = 0;\n'
+            '        for (uint64_t j = 0; j < n; j++) d += a[(i * n) + j] * x[j];\n'
+            '        b[i] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
 }
+
+
+# ARM scalar typedefs (from <arm_neon.h>) → standard C types. The generated
+# harness compiles standalone (no NEON headers), so normalize to plain types.
+# float16_t / bfloat16_t are left as-is and handled per-loop when those land.
+_NORM_CTYPE = {"float32_t": "float", "float64_t": "double"}
 
 
 def _build_multi_axis_info(loop_id: str) -> Optional[MultiAxisInfo]:
@@ -962,6 +1032,8 @@ def _build_multi_axis_info(loop_id: str) -> Optional[MultiAxisInfo]:
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     fields = _parse_struct(getattr(mod, "STRUCT_DEF", ""))
+    for f in fields:
+        f.c_type = _NORM_CTYPE.get(f.c_type, f.c_type)
     return MultiAxisInfo(
         loop_id=loop_id, loop_num=loop_num, fields=fields,
         axes=cfg["axes"], inputs=cfg["inputs"], output=cfg["output"],

@@ -99,8 +99,8 @@ on the SME-template `.c` files, so supply it explicitly). ABI:
 | 217 | int8 row-major GEMV | ⬜ |
 | 218 | fp64 col-major GEMV | ⬜ |
 | 219 | int8 col-major GEMV | ⬜ |
-| 220 | fp32 row-major GEMV | ⬜ |
-| 221 | fp64 row-major GEMV | ⬜ |
+| 220 | fp32 row-major GEMV | ✅ |
+| 221 | fp64 row-major GEMV | ✅ |
 | 025 | fp32 small fixed-size matmul | ⬜ |
 | 130 | fp32 matmul (m,n,k) | ⬜ |
 | 135 | int8→int32 matmul (SDOT) | ⬜ |
@@ -125,3 +125,4 @@ on the SME-template `.c` files, so supply it explicitly). ABI:
 - 2026-06-15 — P2 regenerated 23 loops to new `inputs` format; test_reference_scalars 140/140 passing.
 - 2026-06-15 — loop_105 integrated (custom ref + custom scalar kernel; `b` treated as scratch input). 147/147 across 24 loops. Confirmed 105 is the only zero-infra win.
 - 2026-06-15 — Cap E multi-axis infra built (axes_order, adapter branch, generator _MULTI_AXIS path); loop_223 transpose integrated as proof. 153/153 across 25 loops.
+- 2026-06-15 — GEMV proven: loop_220 (fp32 row) + loop_221 (fp64 row) integrated; added ARM type normalization (float32_t→float, float64_t→double). 165/165 across 27 loops.
