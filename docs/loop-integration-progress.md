@@ -83,11 +83,18 @@ Proof loop: **031**. Then 005, 006, 034, 022, 103, 026.
 | 107 | uint128→uint256 multiply | ⬜ |
 
 ### Cap E — multi-axis (m/n/k); SVE2-feasible, no SME needed
-Proof loop: **223** or **220**. Then GEMV → matmul → conv.
+**Infra DONE** (✅): `SimdLoopMeta.axes_order` field; adapter multi-axis branch
+(recovers axis sizes from input shapes, passes each as int64, sizes output from
+`out_shape`); generator `_MULTI_AXIS` registry + `MultiAxisInfo` + writers.
+**To add a loop:** add one entry to `_MULTI_AXIS` in `gen_simd_loop_harness.py`
+with `axes`, `inputs` (name→[axes]), `output` (name,[axes]), `reference` (numpy),
+`sizes` (edge/perf axis dicts), and `scalar` (C kernel — extractor is unreliable
+on the SME-template `.c` files, so supply it explicitly). ABI:
+`armbench_entry_loop_NNN(in1.., int64_t <axes..>, void* res_out)`.
 
 | Loop | Description | Status |
 |------|-------------|--------|
-| 223 | matrix transposition (m,n) | ⬜ |
+| 223 | matrix transposition (m,n) | ✅ |
 | 216 | fp32 col-major GEMV | ⬜ |
 | 217 | int8 row-major GEMV | ⬜ |
 | 218 | fp64 col-major GEMV | ⬜ |
@@ -117,3 +124,4 @@ Proof loop: **223** or **220**. Then GEMV → matmul → conv.
 - 2026-06-15 — P1 rebase onto origin/main (PR #24); resolved inputs.py conflict (dropped legacy LCG ramp, #24's uuid-random wins).
 - 2026-06-15 — P2 regenerated 23 loops to new `inputs` format; test_reference_scalars 140/140 passing.
 - 2026-06-15 — loop_105 integrated (custom ref + custom scalar kernel; `b` treated as scratch input). 147/147 across 24 loops. Confirmed 105 is the only zero-infra win.
+- 2026-06-15 — Cap E multi-axis infra built (axes_order, adapter branch, generator _MULTI_AXIS path); loop_223 transpose integrated as proof. 153/153 across 25 loops.

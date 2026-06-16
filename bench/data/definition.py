@@ -30,6 +30,9 @@ class SimdLoopMeta(BaseModelWithDocstrings):
     """Extra elements allocated past N for kernels that read/write beyond the array."""
     scratch: list[ScratchBufSpec] = Field(default_factory=list)
     """Scratch buffers (name + dtype) passed between inputs and N in the ABI."""
+    axes_order: list[str] = Field(default_factory=list)
+    """Ordered axis names passed as int64 args in the ABI (multi-axis loops, e.g.
+    ['m', 'n', 'k']). Empty → single-N loop (n derived from the first input)."""
 
 
 class AxisConst(BaseModelWithDocstrings):
