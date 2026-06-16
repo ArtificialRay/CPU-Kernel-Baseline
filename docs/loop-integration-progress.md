@@ -7,6 +7,20 @@ loss. See `CLAUDE.md` "Adding a new simd-loop problem" and
 
 **Status legend:** ✅ done · 🔵 in progress · ⬜ todo · ⛔ excluded
 
+## Current state (resume here)
+
+- **Integrated this effort (11):** 105 (Cap A); 223, 216, 217, 218, 219, 220, 221,
+  038, 130, 135 (Cap E). Total harness loops: **34 — 205/205 workloads passing.**
+- **Cap E DONE** except 4 documented defers (025 no-scalar-impl, 136 int4/LUT,
+  137 bf16, 222 scratch+asm).
+- **Next, in order:** Cap A remainder (106/101/111/114) → Cap B (strings) →
+  Cap C (histograms) → Cap D (complex). Each: build the shared capability, then
+  fan the batch out to subagents.
+- **Subagent fan-out lesson:** worktree isolation branches from `origin/main`,
+  NOT the branch tip — tell each subagent to fast-forward/reset to
+  `feat/simd-loop-sort-123-124` (so it has the latest infra) before starting,
+  or it will rebuild parallel infra under different names.
+
 ## Baseline
 
 - **Integrated before this effort (23):** 001-004, 008, 010, 024, 027-029, 032,
