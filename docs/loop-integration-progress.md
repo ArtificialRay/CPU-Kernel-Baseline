@@ -101,13 +101,13 @@ on the SME-template `.c` files, so supply it explicitly). ABI:
 | 219 | int8 col-major GEMV | ✅ |
 | 220 | fp32 row-major GEMV | ✅ |
 | 221 | fp64 row-major GEMV | ✅ |
-| 025 | fp32 small fixed-size matmul | ⬜ |
+| 025 | fp32 small fixed-size matmul | ⛔ no scalar impl (kernel is ABORT); fixed-size, no m/n/k |
 | 130 | fp32 matmul (m,n,k) | ⬜ |
 | 135 | int8→int32 matmul (SDOT) | ⬜ |
-| 136 | int4→int32 matmul (LUT) | ⬜ |
-| 137 | bf16→fp32 matmul | ⬜ |
-| 038 | fp16 1D convolution | ⬜ |
-| 222 | fp16 convolution (multi-vector) | ⬜ |
+| 136 | int4→int32 matmul (LUT) | ⬜ defer: rearranged `b_r` buffer + in-struct `lut[16]` |
+| 137 | bf16→fp32 matmul | ⬜ defer: bfloat16 — numpy has no native bf16 |
+| 038 | fp16 stencil convolution (_Float16) | ✅ |
+| 222 | fp16 convolution (multi-vector) | ⬜ defer: scratch `buffer` + border/stride + inline asm in scalar |
 
 ### Deferred — bespoke pointer-structure / low ROI
 | Loop | Reason | Status |
@@ -127,3 +127,4 @@ on the SME-template `.c` files, so supply it explicitly). ABI:
 - 2026-06-15 — Cap E multi-axis infra built (axes_order, adapter branch, generator _MULTI_AXIS path); loop_223 transpose integrated as proof. 153/153 across 25 loops.
 - 2026-06-15 — GEMV proven: loop_220 (fp32 row) + loop_221 (fp64 row) integrated; added ARM type normalization (float32_t→float, float64_t→double). 165/165 across 27 loops.
 - 2026-06-15 — GEMV family complete: loop_216/218 (fp32/fp64 col-major), 217/219 (uint8 row/col-major). col-major handled by storing `a` as (n,m) so flat layout matches. 189/189 across 31 loops.
+- 2026-06-15 — loop_038 fp16 stencil conv integrated; added _Float16 support (norm float16_t→_Float16, dtype maps). 195/195 across 32 loops. 130/135 dispatched to parallel subagents.

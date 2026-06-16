@@ -158,7 +158,7 @@ _RES_NAMES  = {"res", "result", "checksum", "sum", "out", "output"}
 
 # C type → numpy dtype for array outputs (uses proper unsigned types unlike scalar map)
 _array_dtype_map_local = {
-    "float": "float32", "double": "float64",
+    "float": "float32", "double": "float64", "_Float16": "float16",
     "int": "int32", "int32_t": "int32", "int64_t": "int64",
     "uint32_t": "uint32", "uint64_t": "uint64",
     "uint8_t": "uint8", "uint16_t": "uint16",
@@ -1138,13 +1138,62 @@ _MULTI_AXIS: dict[str, dict] = {
             '}\n'
         ),
     },
+    "loop_038": {
+        # fp16 3x3-ish stencil convolution over a dim×dim image. Only the
+        # (dim-1)×(dim-1) interior is written; the last row/col stay zero (the
+        # output buffer is zero-initialised, and the reference matches).
+        # Single axis `dim`; arrays are 2D (dim, dim). Output c == b + 0.25*(4-neighbour sum).
+        "axes":   ["dim"],
+        "inputs": {"a": ["dim", "dim"], "b": ["dim", "dim"]},
+        "output": ("c", ["dim", "dim"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    dim = a.shape[0]\n"
+            "    c = np.zeros((dim, dim), dtype=np.float16)\n"
+            "    if dim >= 2:\n"
+            "        k = np.float16(0.25)\n"
+            "        s0 = a[:-1, :-1]; s1 = a[:-1, 1:]; s2 = a[1:, :-1]; s3 = a[1:, 1:]\n"
+            "        r = (b[:-1, :-1] + s0 * k).astype(np.float16)\n"
+            "        r = (r + s1 * k).astype(np.float16)\n"
+            "        r = (r + s2 * k).astype(np.float16)\n"
+            "        r = (r + s3 * k).astype(np.float16)\n"
+            "        c[:-1, :-1] = r\n"
+            "    return c\n"
+        ),
+        "sizes": {
+            "edge": [{"dim": 1}, {"dim": 2}, {"dim": 3}, {"dim": 8}, {"dim": 17}],
+            "perf": [{"dim": 256}],
+        },
+        "scalar": (
+            '#include "loop_038.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_038(struct loop_038_data *data) {\n'
+            '    _Float16 *a = data->a;\n'
+            '    _Float16 *b = data->b;\n'
+            '    _Float16 *c = data->c;\n'
+            '    int dim = data->dim;\n'
+            '    _Float16 k = (_Float16)0.25f;\n'
+            '    for (int row = 0; row < dim - 1; row++) {\n'
+            '        for (int col = 0; col < dim - 1; col++) {\n'
+            '            _Float16 s0 = a[row * dim + col];\n'
+            '            _Float16 s1 = a[row * dim + col + 1];\n'
+            '            _Float16 s2 = a[(row + 1) * dim + col];\n'
+            '            _Float16 s3 = a[(row + 1) * dim + col + 1];\n'
+            '            _Float16 ac = b[row * dim + col];\n'
+            '            c[row * dim + col] = ac + s0 * k + s1 * k + s2 * k + s3 * k;\n'
+            '        }\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
 }
 
 
 # ARM scalar typedefs (from <arm_neon.h>) → standard C types. The generated
 # harness compiles standalone (no NEON headers), so normalize to plain types.
-# float16_t / bfloat16_t are left as-is and handled per-loop when those land.
-_NORM_CTYPE = {"float32_t": "float", "float64_t": "double"}
+# bfloat16_t is left as-is and handled per-loop when those land.
+_NORM_CTYPE = {"float32_t": "float", "float64_t": "double", "float16_t": "_Float16"}
 
 
 def _build_multi_axis_info(loop_id: str) -> Optional[MultiAxisInfo]:

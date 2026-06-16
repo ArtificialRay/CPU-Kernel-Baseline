@@ -25,7 +25,7 @@ _C_VOID_P = ctypes.c_void_p
 _C_INT64   = ctypes.c_int64
 
 _DTYPE_MAP: dict[str, Any] = {
-    "float32": np.float32, "float64": np.float64,
+    "float32": np.float32, "float64": np.float64, "float16": np.float16,
     "int64":   np.int64,   "int32":   np.int32,
     "int16":   np.int16,   "int8":    np.int8,
     "uint64":  np.uint64,  "uint32":  np.uint32,
