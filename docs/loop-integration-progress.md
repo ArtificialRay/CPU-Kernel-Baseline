@@ -95,10 +95,10 @@ on the SME-template `.c` files, so supply it explicitly). ABI:
 | Loop | Description | Status |
 |------|-------------|--------|
 | 223 | matrix transposition (m,n) | ✅ |
-| 216 | fp32 col-major GEMV | ⬜ |
-| 217 | int8 row-major GEMV | ⬜ |
-| 218 | fp64 col-major GEMV | ⬜ |
-| 219 | int8 col-major GEMV | ⬜ |
+| 216 | fp32 col-major GEMV | ✅ |
+| 217 | int8 row-major GEMV | ✅ |
+| 218 | fp64 col-major GEMV | ✅ |
+| 219 | int8 col-major GEMV | ✅ |
 | 220 | fp32 row-major GEMV | ✅ |
 | 221 | fp64 row-major GEMV | ✅ |
 | 025 | fp32 small fixed-size matmul | ⬜ |
@@ -126,3 +126,4 @@ on the SME-template `.c` files, so supply it explicitly). ABI:
 - 2026-06-15 — loop_105 integrated (custom ref + custom scalar kernel; `b` treated as scratch input). 147/147 across 24 loops. Confirmed 105 is the only zero-infra win.
 - 2026-06-15 — Cap E multi-axis infra built (axes_order, adapter branch, generator _MULTI_AXIS path); loop_223 transpose integrated as proof. 153/153 across 25 loops.
 - 2026-06-15 — GEMV proven: loop_220 (fp32 row) + loop_221 (fp64 row) integrated; added ARM type normalization (float32_t→float, float64_t→double). 165/165 across 27 loops.
+- 2026-06-15 — GEMV family complete: loop_216/218 (fp32/fp64 col-major), 217/219 (uint8 row/col-major). col-major handled by storing `a` as (n,m) so flat layout matches. 189/189 across 31 loops.

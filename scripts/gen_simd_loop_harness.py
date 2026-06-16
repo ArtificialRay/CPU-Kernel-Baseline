@@ -1009,6 +1009,135 @@ _MULTI_AXIS: dict[str, dict] = {
             '}\n'
         ),
     },
+    "loop_216": {
+        # Col-major fp32 GEMV: b[i] = sum_j a[m*j+i] * x[j]. Storing `a` as an
+        # (n, m) C-order array makes flat[m*j+i] == a[j, i], so b == a.T @ x.
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["n", "m"], "x": ["n"]},
+        "output": ("b", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, x):\n"
+            "    return (a.astype(np.float64).T @ x.astype(np.float64)).astype(np.float32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_216.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_216(struct loop_216_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    float *a = data->a;\n'
+            '    float *x = data->x;\n'
+            '    float *b = data->b;\n'
+            '    for (uint64_t i = 0; i < m; i++) {\n'
+            '        float d = 0;\n'
+            '        for (uint64_t j = 0; j < n; j++) d += a[(m * j) + i] * x[j];\n'
+            '        b[i] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_218": {
+        # Col-major fp64 GEMV: b[i] = sum_j a[m*j+i] * x[j]  ==  a.T @ x  (a is (n,m)).
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["n", "m"], "x": ["n"]},
+        "output": ("b", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, x):\n"
+            "    return a.astype(np.float64).T @ x.astype(np.float64)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_218.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_218(struct loop_218_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    double *a = data->a;\n'
+            '    double *x = data->x;\n'
+            '    double *b = data->b;\n'
+            '    for (uint64_t i = 0; i < m; i++) {\n'
+            '        double d = 0;\n'
+            '        for (uint64_t j = 0; j < n; j++) d += a[(m * j) + i] * x[j];\n'
+            '        b[i] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_217": {
+        # Row-major uint8 GEMV: c[y] = sum_x a[y*n+x] * b[x]  ==  a @ b, into uint32.
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["m", "n"], "b": ["n"]},
+        "output": ("c", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    return (a.astype(np.uint64) @ b.astype(np.uint64)).astype(np.uint32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_217.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_217(struct loop_217_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    uint8_t *a = data->a;\n'
+            '    uint8_t *b = data->b;\n'
+            '    uint32_t *c = data->c;\n'
+            '    for (uint64_t y = 0; y < m; y++) {\n'
+            '        uint32_t d = 0;\n'
+            '        for (uint64_t x = 0; x < n; x++) d += (uint32_t)a[y * n + x] * (uint32_t)b[x];\n'
+            '        c[y] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_219": {
+        # Col-major uint8 GEMV: c[y] = sum_x a[x*m+y] * b[x]  ==  a.T @ b (a is (n,m)), into uint32.
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["n", "m"], "b": ["n"]},
+        "output": ("c", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    return (a.astype(np.uint64).T @ b.astype(np.uint64)).astype(np.uint32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_219.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_219(struct loop_219_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    uint8_t *a = data->a;\n'
+            '    uint8_t *b = data->b;\n'
+            '    uint32_t *c = data->c;\n'
+            '    for (uint64_t y = 0; y < m; y++) {\n'
+            '        uint32_t d = 0;\n'
+            '        for (uint64_t x = 0; x < n; x++) d += (uint32_t)a[x * m + y] * (uint32_t)b[x];\n'
+            '        c[y] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
 }
 
 
