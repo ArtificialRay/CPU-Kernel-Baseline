@@ -38,16 +38,21 @@ untouched. `bench-trace/` is gitignored → regenerate, don't migrate.
 Capabilities are **sequential**; loops within a capability are **parallelizable**
 once the capability lands (fan out to subagents).
 
-### Cap A — scalar-scratch + output-override + multi-output
-Proof loop: **106**. Then 105, 101, 111, 114.
+### Cap A — output-override + fixed-size aux input + multi-output + scalar params
+Each loop here needs a **different** generator capability, so this is NOT a
+homogeneous fan-out batch — each is bespoke infra. Heterogeneous; do serially.
 
-| Loop | Description | Shape note | Status |
-|------|-------------|-----------|--------|
-| 106 | sheep-and-goats partition | array-output, fits today; custom ref | ⬜ |
-| 105 | cascade summation | scalar out + scratch buffer `b` | ⬜ |
+| Loop | Description | Capability needed | Status |
+|------|-------------|-------------------|--------|
+| 105 | cascade summation | none — fit existing scalar pattern (`b`=scratch), custom ref + custom scalar kernel | ✅ |
+| 106 | sheep-and-goats partition | output = MIDDLE ptr `b` + fixed-size-5 `perm` input | ⬜ |
 | 101 | upscale filter | output `a` is FIRST ptr, size ~2N | ⬜ |
 | 111 | fp64 overflow | two outputs (`output` + `exponent`) | ⬜ |
 | 114 | auto-correlation | out size = `lags`; extra scalars `n,lags,scale` | ⬜ |
+
+**Note:** loop_105 was the ONLY remaining loop that fits an existing pattern with
+just a custom ref. All other in-scope loops need a capability built first — there
+is no zero-infra parallel batch. Fan-out must follow each capability landing.
 
 ### Cap B — sentinel begin/end ABI + string/buffer input generator
 Proof loop: **031**. Then 005, 006, 034, 022, 103, 026.
@@ -111,3 +116,4 @@ Proof loop: **223** or **220**. Then GEMV → matmul → conv.
 <!-- append one line per completed loop/capability: date — what — validation result -->
 - 2026-06-15 — P1 rebase onto origin/main (PR #24); resolved inputs.py conflict (dropped legacy LCG ramp, #24's uuid-random wins).
 - 2026-06-15 — P2 regenerated 23 loops to new `inputs` format; test_reference_scalars 140/140 passing.
+- 2026-06-15 — loop_105 integrated (custom ref + custom scalar kernel; `b` treated as scratch input). 147/147 across 24 loops. Confirmed 105 is the only zero-infra win.

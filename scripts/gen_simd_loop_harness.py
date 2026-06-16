@@ -459,6 +459,19 @@ _CUSTOM_SCALAR_KERNELS: dict[str, str] = {
         '    }\n'
         '}\n'
     ),
+    # Recursive cascade_summation helper chain in loops/loop_105.c can't be
+    # auto-extracted; the cascade result equals the total sum, so accumulate in
+    # double (matches the float64 Python reference). `b` scratch is unused here.
+    "loop_105": (
+        '#include "loop_105.h"\n\n'
+        'extern "C" void inner_loop_105(struct loop_105_data *data) {\n'
+        '    float *a = data->a;\n'
+        '    int n = data->n;\n'
+        '    double res = 0.0;\n'
+        '    for (int i = 0; i < n; i++) res += (double)a[i];\n'
+        '    data->res = (float)res;\n'
+        '}\n'
+    ),
 }
 
 
@@ -530,6 +543,14 @@ _CUSTOM_REFS: dict[str, str] = {
     "loop_121": "import numpy as np\n\ndef run(data):\n    return np.sort(data)\n",
     "loop_122": "import numpy as np\n\ndef run(data):\n    return np.sort(data)\n",
     # ── Scalar-output loops ───────────────────────────────────────────────────
+    "loop_105": (
+        # Cascade (balanced pairwise) summation of `a`. `b` is a scratch buffer
+        # the kernel overwrites — passed as a 2nd "input" by the generic scalar
+        # ABI, ignored by the reference. n is always a power-of-2 >= 16.
+        "import numpy as np\n\n"
+        "def run(a, b):\n"
+        "    return np.float32(np.sum(a.astype(np.float64)))\n"
+    ),
     "loop_010": (
         "import numpy as np\n\n"
         "def run(a):\n"
@@ -879,6 +900,7 @@ TARGET_LOOP_IDS = [
     "loop_033",   # fp64 inner product (int64 n)
     "loop_126",   # conditional dot product
     "loop_127",   # dot product with early exit
+    "loop_105",   # cascade pairwise summation (b is scratch; n is power-of-2 >= 16)
     # ── Array-output (element-wise transform → output array) ─────────────────
     "loop_027",   # fp32 sqrt  (1 input → 1 output)
     "loop_028",   # fp64 div   (2 inputs → 1 output)
