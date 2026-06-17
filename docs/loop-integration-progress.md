@@ -9,8 +9,8 @@ loss. See `CLAUDE.md` "Adding a new simd-loop problem" and
 
 ## Current state (resume here)
 
-- **Integrated this effort (11):** 105 (Cap A); 223, 216, 217, 218, 219, 220, 221,
-  038, 130, 135 (Cap E). Total harness loops: **34 — 205/205 workloads passing.**
+- **Integrated this effort (12):** 105 (Cap A); 223, 216, 217, 218, 219, 220, 221,
+  038, 130, 135 (Cap E); 101 (Cap A). Total harness loops: **35 — 211/211 workloads passing.**
 - **Cap E DONE** except 4 documented defers (025 no-scalar-impl, 136 int4/LUT,
   137 bf16, 222 scratch+asm).
 - **Next, in order:** Cap A remainder (106/101/111/114) → Cap B (strings) →
@@ -60,7 +60,7 @@ homogeneous fan-out batch — each is bespoke infra. Heterogeneous; do serially.
 |------|-------------|-------------------|--------|
 | 105 | cascade summation | none — fit existing scalar pattern (`b`=scratch), custom ref + custom scalar kernel | ✅ |
 | 106 | sheep-and-goats partition | output = MIDDLE ptr `b` + fixed-size-5 `perm` input | ⬜ |
-| 101 | upscale filter | output `a` is FIRST ptr, size ~2N | ⬜ |
+| 101 | upscale filter | output-override + derived axis (output 2*(N-1)) | ✅ |
 | 111 | fp64 overflow | two outputs (`output` + `exponent`) | ⬜ |
 | 114 | auto-correlation | out size = `lags`; extra scalars `n,lags,scale` | ⬜ |
 
@@ -143,3 +143,4 @@ on the SME-template `.c` files, so supply it explicitly). ABI:
 - 2026-06-15 — GEMV family complete: loop_216/218 (fp32/fp64 col-major), 217/219 (uint8 row/col-major). col-major handled by storing `a` as (n,m) so flat layout matches. 189/189 across 31 loops.
 - 2026-06-15 — loop_038 fp16 stencil conv integrated; added _Float16 support (norm float16_t→_Float16, dtype maps). 195/195 across 32 loops. 130/135 dispatched to parallel subagents.
 - 2026-06-15 — matmul 130 (fp32) + 135 (int8→int32) integrated via two parallel subagents; merged their validated entries into canonical _MULTI_AXIS. 205/205 across 34 loops. Cap E complete except documented defers (025/136/137/222).
+- 2026-06-16 — Cap A loop_101 (pixel upscale): added output-override + derived-axis + abi_axes to _MULTI_AXIS (output is first ptr, size 2*(N-1)). Validated via bench.cli + smoke-test. 211/211 across 35 loops.
