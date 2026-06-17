@@ -83,12 +83,19 @@ class SimdLoopDataset:
         # ABI: armbench_entry(in1, ..., int64_t axis0, axis1, ..., void* res_out)
         if meta.axes_order:
             arrays = [np.ascontiguousarray(np_inputs[name]) for name in definition.inputs]
-            # Recover concrete axis sizes from input array shapes.
-            axis_values: Dict[str, int] = {}
+            # Recover concrete axis sizes from three sources, in precedence order:
+            #   1. const axes declared in the definition (e.g. a fixed `scale`),
+            #   2. var axes read off the input array shapes,
+            #   3. output-only axes read off the reference output shape (e.g. `lags`,
+            #      a length that appears only in the output) handed in by the evaluator.
+            axis_values: Dict[str, int] = {n: int(v) for n, v in definition.const_axes.items()}
             for name, spec in definition.inputs.items():
                 if spec.shape:
                     for axis_name, dim in zip(spec.shape, np_inputs[name].shape):
                         axis_values[axis_name] = int(dim)
+            if out_shape is not None and out_spec.shape:
+                for axis_name, dim in zip(out_spec.shape, out_shape):
+                    axis_values.setdefault(axis_name, int(dim))
             # Output buffer: prefer the reference shape handed in by the evaluator;
             # otherwise resolve the declared output shape from recovered axes.
             if out_shape is None:
