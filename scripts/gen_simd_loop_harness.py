@@ -1358,6 +1358,106 @@ _MULTI_AXIS: dict[str, dict] = {
             '}\n'
         ),
     },
+    "loop_106": {
+        # Sheep-and-goats bit permutation: b[i] = permute(a[i], p). Output `b` is
+        # the MIDDLE struct ptr (output-override), same length n as input `a`.
+        # `perm` is a fixed constant precomputed from `permutation[5]` via sag(), so
+        # we bake the whole permute (compress/sag) into both the scalar kernel and
+        # the reference and do NOT pass perm. Integer-exact (no tolerance).
+        "axes":     ["n"],
+        "abi_axes": ["n"],
+        "inputs":   {"a": ["n"]},
+        "output":   ("b", ["n"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "_M = 0xFFFFFFFF\n\n"
+            "def _popcount(x):\n"
+            "    return bin(x & _M).count('1')\n\n"
+            "def _compress(x, m):\n"
+            "    x &= m\n"
+            "    mk = (~m << 1) & _M\n"
+            "    for i in range(5):\n"
+            "        mp = (mk ^ (mk << 1)) & _M\n"
+            "        mp = (mp ^ (mp << 2)) & _M\n"
+            "        mp = (mp ^ (mp << 4)) & _M\n"
+            "        mp = (mp ^ (mp << 8)) & _M\n"
+            "        mp = (mp ^ (mp << 16)) & _M\n"
+            "        mv = mp & m\n"
+            "        m = (m ^ mv) | (mv >> (1 << i))\n"
+            "        t = x & mv\n"
+            "        x = (x ^ t) | (t >> (1 << i))\n"
+            "        mk &= (~mp) & _M\n"
+            "    return x & _M\n\n"
+            "def _sag(x, m):\n"
+            "    return (((_compress(x, m) << _popcount(m)) & _M) | _compress(x, (~m) & _M)) & _M\n\n"
+            "_PC = [0xaaaaaaaa, 0xcccccccc, 0x0f0f0f0f, 0x0ff00ff0, 0x0ffff000]\n"
+            "_P = [_PC[0], _sag(_PC[1], _PC[0]), _sag(_PC[2], _PC[0]),\n"
+            "      _sag(_PC[3], _PC[0]), _sag(_PC[4], _PC[0])]\n\n"
+            "def _permute(x):\n"
+            "    for pi in _P:\n"
+            "        x = _sag(x, pi)\n"
+            "    return x\n\n"
+            "def run(a):\n"
+            "    return np.array([_permute(int(v)) for v in a], dtype=np.uint32)\n"
+        ),
+        "sizes": {
+            "edge": [{"n": 1}, {"n": 3}, {"n": 8}, {"n": 64}, {"n": 201}],
+            "perf": [{"n": 4096}],
+        },
+        "scalar": (
+            '#include "loop_106.h"\n'
+            '#include <stdint.h>\n\n'
+            'static uint32_t popcount106(uint32_t x) {\n'
+            '    x = (x & 0x55555555u) + ((x >> 1) & 0x55555555u);\n'
+            '    x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);\n'
+            '    x = (x & 0x0F0F0F0Fu) + ((x >> 4) & 0x0F0F0F0Fu);\n'
+            '    x = (x & 0x00FF00FFu) + ((x >> 8) & 0x00FF00FFu);\n'
+            '    x = (x & 0x0000FFFFu) + ((x >> 16) & 0x0000FFFFu);\n'
+            '    return x;\n'
+            '}\n'
+            'static uint32_t compress106(uint32_t x, uint32_t m) {\n'
+            '    uint32_t mk, mp, mv, t;\n'
+            '    x = x & m;\n'
+            '    mk = ~m << 1;\n'
+            '    for (int i = 0; i < 5; i++) {\n'
+            '        mp = mk ^ (mk << 1);\n'
+            '        mp = mp ^ (mp << 2);\n'
+            '        mp = mp ^ (mp << 4);\n'
+            '        mp = mp ^ (mp << 8);\n'
+            '        mp = mp ^ (mp << 16);\n'
+            '        mv = mp & m;\n'
+            '        m = (m ^ mv) | (mv >> (1 << i));\n'
+            '        t = x & mv;\n'
+            '        x = (x ^ t) | (t >> (1 << i));\n'
+            '        mk = mk & ~mp;\n'
+            '    }\n'
+            '    return x;\n'
+            '}\n'
+            'static uint32_t sag106(uint32_t x, uint32_t m) {\n'
+            '    return (compress106(x, m) << popcount106(m)) | compress106(x, ~m);\n'
+            '}\n'
+            'static uint32_t permute106(uint32_t x, uint32_t p[5]) {\n'
+            '    x = sag106(x, p[0]);\n'
+            '    x = sag106(x, p[1]);\n'
+            '    x = sag106(x, p[2]);\n'
+            '    x = sag106(x, p[3]);\n'
+            '    return sag106(x, p[4]);\n'
+            '}\n'
+            'extern "C" void inner_loop_106(struct loop_106_data *data) {\n'
+            '    uint32_t *a = data->a;\n'
+            '    uint32_t *b = data->b;\n'
+            '    int64_t n = data->n;\n'
+            '    uint32_t permutation[5] = {0xaaaaaaaau, 0xccccccccu, 0x0f0f0f0fu, 0x0ff00ff0u, 0x0ffff000u};\n'
+            '    uint32_t p[5];\n'
+            '    p[0] = permutation[0];\n'
+            '    p[1] = sag106(permutation[1], permutation[0]);\n'
+            '    p[2] = sag106(permutation[2], permutation[0]);\n'
+            '    p[3] = sag106(permutation[3], permutation[0]);\n'
+            '    p[4] = sag106(permutation[4], permutation[0]);\n'
+            '    for (int64_t i = 0; i < n; i++) b[i] = permute106(a[i], p);\n'
+            '}\n'
+        ),
+    },
 }
 
 
