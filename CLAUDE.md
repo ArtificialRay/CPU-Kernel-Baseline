@@ -66,7 +66,7 @@ scripts/
   gen_definitions.py            # Regenerate ncnn definitions+workloads from test files
   gen_simd_loop_harness.py      # Code-gen all simd-loop harnesses + bench-trace artifacts
   bench_loop_agent.py           # Local iterative LLM agent (Path 2, works locally + on Graviton)
-  test_reference_scalars.py     # Correctness smoke-test: all reference-scalar solutions vs Python ref
+  test_reference_scalars.py     # Correctness smoke-test: reference/autovec baseline solutions vs Python ref
 ```
 
 ---
@@ -96,13 +96,18 @@ python scripts/bench_loop_agent.py --all-loops --max-turns 4 \
 
 ### Validate via CLI (bench/cli.py)
 ```bash
-python -m bench.cli list-definitions          # list all 23 simd-loop + ncnn definitions
-python -m bench.cli bench --definition loop_001 --solution reference-scalar_loop_001
+python -m bench.cli list-definitions          # list all simd-loop + ncnn definitions
+python -m bench.cli bench --definition loop_001 --solution reference_loop_001
+python -m bench.cli bench --definition loop_001 --solution autovec_loop_001
 ```
 
-### Correctness smoke-test (all 23 reference-scalar solutions)
+Each simd-loop has two baseline solutions from the same kernel source:
+`reference` (scalar, `-fno-vectorize`) and `autovec` (`-O3 -march=native`).
+
+### Correctness smoke-test (all reference baseline solutions)
 ```bash
-python scripts/test_reference_scalars.py      # should print 140/140 workloads passed
+python scripts/test_reference_scalars.py          # `reference` author; prints N/N workloads passed
+python scripts/test_reference_scalars.py autovec  # smoke-test the autovec baseline instead
 ```
 
 ### Regenerate simd-loop harnesses + bench-trace
@@ -193,8 +198,9 @@ This writes (idempotently):
 1. `bench/compile/builders/simd_loop_harness/loop_NNN.{h,cpp}` — on-disk copies (legacy fallback)
 2. `bench-trace/definitions/simd-loop/loop_NNN.json` — includes `simd_loop_meta` for the adapter
 3. `bench-trace/workloads/simd-loop/loop_NNN.jsonl`
-4. `bench-trace/solutions/simd-loop/reference-scalar/loop_NNN/reference-scalar_loop_NNN.json`
-   — sources include fused `loop_NNN.h` + `loop_NNN.cpp` + `kernel.cpp`
+4. `bench-trace/solutions/simd-loop/{reference,autovec}/loop_NNN/{reference,autovec}_loop_NNN.json`
+   — two baseline authors from the same fused sources (`loop_NNN.h` + `loop_NNN.cpp` +
+   `kernel.cpp`); `reference` is scalar (`-fno-vectorize`), `autovec` is `-O3 -march=native`
 
 No Python files need manual editing to add a supported loop pattern.
 
@@ -253,6 +259,6 @@ solutions should be structured. When adding or modifying simd-loop code, match i
 - [ ] Wire `bench/` evaluator output into agent loop (Issue #17) so the agent sees correctness + speedup per turn
 
 ### Trace / HuggingFace
-- Simd-loop definitions, workloads, and reference-scalar solutions are uploaded to `arm-bench/arm-bench-trace` on HuggingFace
+- Simd-loop definitions, workloads, and `reference`/`autovec` baseline solutions are uploaded to `arm-bench/arm-bench-trace` on HuggingFace
 - After adding `baseline-sve` solutions, upload those too
 - ncnn data on HF is pre-PR#15 (conv2d only) — needs refresh with 5-op layout + self-contained solutions

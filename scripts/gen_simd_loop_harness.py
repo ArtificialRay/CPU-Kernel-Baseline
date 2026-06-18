@@ -8,7 +8,7 @@ Outputs (all idempotent — safe to re-run):
   bench/compile/builders/simd_loop_harness/loop_NNN.{h,cpp}
   bench-trace/definitions/simd-loop/loop_NNN.json
   bench-trace/workloads/simd-loop/loop_NNN.jsonl
-  bench-trace/solutions/simd-loop/reference-scalar/loop_NNN/reference-scalar_loop_NNN.json
+  bench-trace/solutions/simd-loop/{reference,autovec}/loop_NNN/{reference,autovec}_loop_NNN.json
   bench/datasets/simd_loop.py   ← fully regenerated
 
 Supported loop patterns (auto-generated):
@@ -816,58 +816,79 @@ def _write_workloads(info: LoopInfo) -> None:
         print(f"  wrote {out_path.relative_to(REPO)}")
 
 
+# Baseline solution authors. Both compile the SAME kernel source; they differ
+# only in compile flags, giving two baselines per loop:
+#   reference — honest scalar (auto-vectorization disabled): the speedup denominator.
+#   autovec   — same source, let the compiler auto-vectorize: the "free compiler" ceiling.
+# (On Graviton, swap autovec's `-march=native` for `-march=armv9-a+sve2`.)
+_SOLUTION_AUTHORS = [
+    {
+        "author": "reference",
+        "compile_flags": ["-O2", "-std=c++14", "-fno-vectorize", "-fno-slp-vectorize"],
+        "desc": "Scalar reference (auto-vectorization disabled)",
+    },
+    {
+        "author": "autovec",
+        "compile_flags": ["-O3", "-std=c++14", "-march=native"],
+        "desc": "Compiler auto-vectorized baseline",
+    },
+]
+
+
+def _write_solution_pair(lid: str, sources: list) -> None:
+    """Emit one solution JSON per baseline author (reference + autovec), same source."""
+    for spec in _SOLUTION_AUTHORS:
+        author = spec["author"]
+        out_dir = BENCH_TRACE / "solutions" / "simd-loop" / author / lid
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{author}_{lid}.json"
+        solution = {
+            "name": f"{author}_{lid}",
+            "definition": lid,
+            "dataset": "simd-loop",
+            "author": author,
+            "spec": {
+                "language": "cpp",
+                "target_hardware": ["aarch64"],
+                "entry_point": f"kernel.cpp::inner_{lid}",
+                "dependencies": [],
+                "isa_features": [],
+                "compile_flags": spec["compile_flags"],
+                "link_flags": [],
+            },
+            "sources": sources,
+            "description": f"{spec['desc']} for {lid}. Baseline for speedup measurement.",
+        }
+        content = json.dumps(solution, indent=2) + "\n"
+        if not out_path.exists() or out_path.read_text() != content:
+            out_path.write_text(content)
+            print(f"  wrote {out_path.relative_to(REPO)}")
+
+
+def _scalar_kernel_src(lid: str) -> str:
+    """Build the scalar kernel source for a single-axis loop (custom → extracted → stub)."""
+    if lid in _CUSTOM_SCALAR_KERNELS:
+        return _CUSTOM_SCALAR_KERNELS[lid]
+    extracted = _extract_scalar_kernel(lid)
+    if extracted:
+        return f'#include "{lid}.h"\n#include <stdint.h>\n\n' + extracted + "\n"
+    return (
+        f'#include "{lid}.h"\n'
+        f'#include <stdint.h>\n\n'
+        f'extern "C" void inner_{lid}(struct {lid}_data *data) {{\n'
+        f'    // TODO: implement scalar reference\n'
+        f'}}\n'
+    )
+
+
 def _write_reference_solution(info: LoopInfo) -> None:
     lid = info.loop_id
-    out_dir = BENCH_TRACE / "solutions" / "simd-loop" / "reference-scalar" / lid
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"reference-scalar_{lid}.json"
-
-    # 1. Custom scalar kernel (e.g. sort loops that can't use extracted code)
-    if lid in _CUSTOM_SCALAR_KERNELS:
-        scalar_src = _CUSTOM_SCALAR_KERNELS[lid]
-    else:
-        # 2. Extract from loops/loop_NNN.c
-        scalar_src = _extract_scalar_kernel(lid)
-        if scalar_src:
-            scalar_src = f'#include "{lid}.h"\n#include <stdint.h>\n\n' + scalar_src + "\n"
-        else:
-            # 3. Fallback stub
-            fallback_field = (info.res_field.name if info.res_field else
-                              info.output_ptr.name if info.output_ptr else
-                              info.input_ptr_fields[0].name if info.input_ptr_fields else "?")
-            scalar_src = (
-                f'#include "{lid}.h"\n'
-                f'#include <stdint.h>\n\n'
-                f'extern "C" void inner_{lid}(struct {lid}_data *data) {{\n'
-                f'    // TODO: implement scalar reference\n'
-                f'}}\n'
-            )
-
-    solution = {
-        "name": f"reference-scalar_{lid}",
-        "definition": lid,
-        "dataset": "simd-loop",
-        "author": "reference-scalar",
-        "spec": {
-            "language": "cpp",
-            "target_hardware": ["aarch64"],
-            "entry_point": f"kernel.cpp::inner_{lid}",
-            "dependencies": [],
-            "isa_features": [],
-            "compile_flags": ["-O2", "-std=c++14"],
-            "link_flags": [],
-        },
-        "sources": [
-            {"path": f"{lid}.h",   "content": _gen_harness_h(info)},
-            {"path": f"{lid}.cpp", "content": _gen_harness_cpp(info)},
-            {"path": "kernel.cpp", "content": scalar_src},
-        ],
-        "description": f"Scalar reference for {lid}. Baseline for speedup measurement.",
-    }
-    content = json.dumps(solution, indent=2) + "\n"
-    if not out_path.exists() or out_path.read_text() != content:
-        out_path.write_text(content)
-        print(f"  wrote {out_path.relative_to(REPO)}")
+    sources = [
+        {"path": f"{lid}.h",   "content": _gen_harness_h(info)},
+        {"path": f"{lid}.cpp", "content": _gen_harness_cpp(info)},
+        {"path": "kernel.cpp", "content": _scalar_kernel_src(lid)},
+    ]
+    _write_solution_pair(lid, sources)
 
 
 # ── Per-loop meta overrides ────────────────────────────────────────────────────
@@ -1626,8 +1647,8 @@ def _write_multi_axis(info: MultiAxisInfo) -> None:
         wl_path.write_text(content)
         print(f"  wrote {wl_path.relative_to(REPO)}")
 
-    # 4. Reference-scalar solution. Prefer the explicit scalar kernel from the
-    #    config; fall back to extracting from loops/loop_NNN.c.
+    # 4. Baseline solutions (reference + autovec). Prefer the explicit scalar
+    #    kernel from the config; fall back to extracting from loops/loop_NNN.c.
     if info.scalar:
         scalar_src = info.scalar
     elif (extracted := _extract_scalar_kernel(lid)):
@@ -1636,34 +1657,12 @@ def _write_multi_axis(info: MultiAxisInfo) -> None:
         scalar_src = (f'#include "{lid}.h"\n#include <stdint.h>\n\n'
                       f'extern "C" void inner_{lid}(struct {lid}_data *data) {{\n'
                       f'    // TODO: implement scalar reference\n}}\n')
-    solution = {
-        "name": f"reference-scalar_{lid}",
-        "definition": lid,
-        "dataset": "simd-loop",
-        "author": "reference-scalar",
-        "spec": {
-            "language": "cpp",
-            "target_hardware": ["aarch64"],
-            "entry_point": f"kernel.cpp::inner_{lid}",
-            "dependencies": [],
-            "isa_features": [],
-            "compile_flags": ["-O2", "-std=c++14"],
-            "link_flags": [],
-        },
-        "sources": [
-            {"path": f"{lid}.h",   "content": _gen_ma_harness_h(info)},
-            {"path": f"{lid}.cpp", "content": _gen_ma_harness_cpp(info)},
-            {"path": "kernel.cpp", "content": scalar_src},
-        ],
-        "description": f"Scalar reference for {lid}. Baseline for speedup measurement.",
-    }
-    sol_dir = BENCH_TRACE / "solutions" / "simd-loop" / "reference-scalar" / lid
-    sol_dir.mkdir(parents=True, exist_ok=True)
-    sol_path = sol_dir / f"reference-scalar_{lid}.json"
-    content = json.dumps(solution, indent=2) + "\n"
-    if not sol_path.exists() or sol_path.read_text() != content:
-        sol_path.write_text(content)
-        print(f"  wrote {sol_path.relative_to(REPO)}")
+    sources = [
+        {"path": f"{lid}.h",   "content": _gen_ma_harness_h(info)},
+        {"path": f"{lid}.cpp", "content": _gen_ma_harness_cpp(info)},
+        {"path": "kernel.cpp", "content": scalar_src},
+    ]
+    _write_solution_pair(lid, sources)
 
 
 def _description_ma(info: MultiAxisInfo) -> str:

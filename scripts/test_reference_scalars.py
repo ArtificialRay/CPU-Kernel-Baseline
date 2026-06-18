@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Correctness smoke-test: run every simd-loop reference-scalar solution through
-the full bench pipeline (SimdLoopBuilder → DefaultEvaluator → SimdLoopDataset).
+"""Correctness smoke-test: run every simd-loop `reference` baseline solution
+through the full bench pipeline (SimdLoopBuilder → DefaultEvaluator → SimdLoopDataset).
 
 Each loop must produce PASSED on every workload — same gate as bench.cli bench.
+Pass an author as argv[1] (e.g. `autovec`) to smoke-test that baseline instead.
 """
 import sys
 from collections import defaultdict
@@ -19,8 +20,9 @@ BENCH_TRACE = REPO / "bench-trace"
 
 
 def main() -> int:
+    author = sys.argv[1] if len(sys.argv) > 1 else "reference"
     ts = TraceSet.from_path(BENCH_TRACE)
-    cfg = BenchmarkConfig(baseline_author="reference-scalar")
+    cfg = BenchmarkConfig(baseline_author=author)
     bench = Benchmark(ts, cfg)
     try:
         traces = bench.collect_baselines(dump_traces=False)
