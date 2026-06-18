@@ -221,3 +221,4 @@ and sentinel ABI exist.
 ### Definition of done
 005, 006, 034, 103, 031 each passing via bench.cli + smoke-test; 022/026 marked ⛔;
 tracker + change log updated; everything committed.
+- 2026-06-18 — Two baseline authors per loop: `reference` (scalar, -fno-vectorize) + `autovec` (-O3 -march=native), same source. Replaces single `reference-scalar` author. Both pass 223/223 across 37 loops (bench.cli + smoke). Aligns with partner's HF trace authors.
