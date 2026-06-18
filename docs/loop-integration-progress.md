@@ -9,11 +9,12 @@ loss. See `CLAUDE.md` "Adding a new simd-loop problem" and
 
 ## Current state (resume here)
 
-- **Integrated this effort (12):** 105 (Cap A); 223, 216, 217, 218, 219, 220, 221,
-  038, 130, 135 (Cap E); 101 (Cap A). Total harness loops: **35 — 211/211 workloads passing.**
+- **Integrated this effort (14):** 105, 101, 114, 106 (Cap A); 223, 216, 217, 218,
+  219, 220, 221, 038, 130, 135 (Cap E). Total harness loops: **37 — 223/223 workloads passing.**
+- **Cap A DONE** except 111 (two outputs — needs evaluator multi-output support).
 - **Cap E DONE** except 4 documented defers (025 no-scalar-impl, 136 int4/LUT,
   137 bf16, 222 scratch+asm).
-- **Next, in order:** Cap A done (111 deferred: needs evaluator multi-output) → Cap B (strings) →
+- **Next, in order:** Cap B (strings — see `## Cap B handoff` at bottom) →
   Cap C (histograms) → Cap D (complex). Each: build the shared capability, then
   fan the batch out to subagents.
 - **Subagent fan-out lesson:** worktree isolation branches from `origin/main`,
@@ -61,25 +62,34 @@ homogeneous fan-out batch — each is bespoke infra. Heterogeneous; do serially.
 | 105 | cascade summation | none — fit existing scalar pattern (`b`=scratch), custom ref + custom scalar kernel | ✅ |
 | 106 | sheep-and-goats partition | output-override (middle ptr `b`); perm baked as const | ✅ |
 | 101 | upscale filter | output-override + derived axis (output 2*(N-1)) | ✅ |
-| 111 | fp64 overflow | two outputs (`output` + `exponent`) | ⬜ |
-| 114 | auto-correlation | out size = `lags`; extra scalars `n,lags,scale` | ⬜ |
+| 111 | fp64 overflow | ⬜ defer: TWO outputs — needs evaluator multi-output support |
+| 114 | auto-correlation | out-only axis (lags, from out_shape) + const scalar (scale) | ✅ |
 
 **Note:** loop_105 was the ONLY remaining loop that fits an existing pattern with
 just a custom ref. All other in-scope loops need a capability built first — there
 is no zero-infra parallel batch. Fan-out must follow each capability landing.
 
 ### Cap B — sentinel begin/end ABI + string/buffer input generator
-Proof loop: **031**. Then 005, 006, 034, 022, 103, 026.
+**Integrable: 005, 006, 034, 103, 031** (real scalar impls). **Exclude 022, 026**
+— their HAVE_AUTOVEC block is `ABORT: No implementations` (no scalar reference,
+like 025). Verify before excluding. Full handoff prompt: `## Cap B handoff` at the
+bottom of this file.
 
 | Loop | Description | Status |
 |------|-------------|--------|
-| 031 | inline memcpy (two buffers) | ⬜ |
-| 005 | strlen short strings | ⬜ |
-| 006 | strlen long strings | ⬜ |
-| 034 | short string compares | ⬜ |
-| 022 | tcp checksum (packet-length buffers) | ⬜ |
-| 103 | whitespace scan | ⬜ |
-| 026 | utf-16 → ascii | ⬜ |
+| 031 | chunked memcpy (two buffers, fixed `count[]` table, output = 10× copies) | ⬜ |
+| 005 | strlen short strings (p/lmt sentinel; out=checksum=Σ lengths) | ⬜ |
+| 006 | strlen long strings (same ABI as 005) | ⬜ |
+| 034 | short string compares (a/b/lmt; out=checksum) | ⬜ |
+| 103 | whitespace word-count (p/end; skip_whitespace/skip_word; out=count) | ⬜ |
+| 022 | tcp checksum | ⛔ HAVE_AUTOVEC = ABORT (no scalar impl) |
+| 026 | utf-16 → ascii | ⛔ HAVE_AUTOVEC = ABORT (no scalar impl) |
+
+**Cap B is the messiest cap** — not a clean homogeneous batch. Sentinel pointers
+(`p`+`lmt`/`end`) instead of `int n`; 031 has neither (fixed `count[]` table);
+103 needs a faithful port of `skip_whitespace`/`skip_word`; 005/006 need
+null-terminated-string buffers. The real new infra is a **byte-buffer input
+generator**, not a uniform ABI.
 
 ### Cap C — non-N output sizing + extra scalar params (partly from Cap A)
 | Loop | Description | Status |
@@ -145,3 +155,69 @@ on the SME-template `.c` files, so supply it explicitly). ABI:
 - 2026-06-15 — matmul 130 (fp32) + 135 (int8→int32) integrated via two parallel subagents; merged their validated entries into canonical _MULTI_AXIS. 205/205 across 34 loops. Cap E complete except documented defers (025/136/137/222).
 - 2026-06-16 — Cap A loop_101 (pixel upscale): added output-override + derived-axis + abi_axes to _MULTI_AXIS (output is first ptr, size 2*(N-1)). Validated via bench.cli + smoke-test. 211/211 across 35 loops.
 - 2026-06-17 — Cap A loop_106 (sheep-and-goats): output-override (output is middle ptr `b`); compress/sag/permute baked into both C kernel and a faithful numpy port; perm constant baked (not passed). Integer-exact via bench.cli + smoke. 223/223 across 37 loops. Cap A complete (111 deferred).
+
+## Cap B handoff
+
+Paste this to a fresh agent/session to continue with Cap B (string/sentinel loops).
+
+---
+
+You are continuing the simd-loop integration effort in CPU-Kernel-Baseline, branch
+`feat/simd-loop-sort-123-124`. **Read `docs/loop-integration-progress.md` first** —
+it has the full state. 37 loops integrated, 223/223 workloads passing. Caps A and E
+are done. Your job is **Cap B: string / sentinel-pointer loops**.
+
+### Ground rules (standards)
+- Validate EVERY loop two ways: `python -m bench.cli bench --definition loop_NNN
+  --solution reference-scalar_loop_NNN` (all workloads PASSED) AND
+  `python scripts/test_reference_scalars.py` (shows `[PASS] loop_NNN  N/N`, and the
+  total count must not drop). Commit per loop with a clear message; never break the
+  suite.
+- The generator is `scripts/gen_simd_loop_harness.py`. Single-axis loops live in
+  `_classify`/TARGET_LOOP_IDS; multi-axis/override loops live in the `_MULTI_AXIS`
+  dict (study `loop_106` for output-override, `loop_114` for const axes + an
+  output-only axis). Adapter: `bench/datasets/simd_loop.py`. Input gen:
+  `bench/runtime/inputs.py`. Workload schema: `bench/data/workload.py`.
+- `bench-trace/` is gitignored/generated — regenerate, don't hand-edit.
+- If you use worktree subagents, tell each to `git reset --hard
+  feat/simd-loop-sort-123-124` FIRST (worktrees branch from origin/main, missing
+  this session's infra) and to RETURN their validated config entry (don't rely on
+  their worktree commits).
+
+### Scope
+Integrate: **005, 006, 034, 103, 031**. Skip **022, 026** (their HAVE_AUTOVEC block
+is `ABORT: No implementations` — confirm, then mark ⛔ in the tracker like 025).
+
+### The two pieces of new infra to build first
+1. **Byte-buffer / string input generation.** Today `inputs.py` only makes
+   `{"type":"random"}` (uniform `[1,100]`) and `{"type":"scalar"}`. String loops need
+   structured byte buffers. Add a new workload input type (e.g. `{"type":"bytes",
+   ...}` or `{"type":"string", ...}`) in `bench/data/workload.py` (a new
+   `WorkloadInput` variant) and generate it in `inputs.py`. Decide the layout per
+   loop: 005/006 need concatenated NUL-terminated strings; 103 needs bytes that
+   include whitespace codes (9,10,13,32) so word-count is non-trivial; 031 just needs
+   raw bytes.
+2. **Sentinel begin/end ABI.** These kernels take pointer pairs, not `int n`:
+   - 005/006: `struct {uint8_t *p; uint8_t *lmt; uint32_t checksum;}` — p=begin,
+     lmt=end; output = checksum (scalar). The ABI must pass begin and end pointers
+     (or begin + a length the harness computes). Easiest: allocate the buffer, pass
+     `p` = base and `lmt` = base+len.
+   - 034: `{uint8_t *a; uint8_t *b; uint8_t *lmt; uint32_t checksum;}` — two buffers
+     + end sentinel.
+   - 103: `{uint8_t *p; uint8_t *end; int checksum;}` — port `skip_whitespace` /
+     `skip_word` from `loops/loop_103.c` into BOTH the C scalar kernel and the numpy
+     reference (the byte test is exact).
+   - 031: `{uint8_t *a; uint8_t *b;}` — NO size/sentinel. The kernel copies in
+     chunks using a fixed static `count[]` table (CHUNKS entries), 10 outer
+     iterations; output `b` and input `a` are each `10 * sum(count)` bytes. Bake the
+     `count[]` table into the scalar kernel; the reference just reproduces the copy.
+
+Recommended order: **031 first** (simplest — raw bytes, no sentinel, output =
+deterministic copy), to land the byte-buffer input type. Then **103** (proves the
+sentinel begin/end ABI + a helper port). Then **005/006/034** (NUL-terminated
+strings) — these three can fan out to parallel subagents once the string input type
+and sentinel ABI exist.
+
+### Definition of done
+005, 006, 034, 103, 031 each passing via bench.cli + smoke-test; 022/026 marked ⛔;
+tracker + change log updated; everything committed.
