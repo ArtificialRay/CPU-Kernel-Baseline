@@ -20,12 +20,14 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import time
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from bench.config import BenchmarkConfig
 from bench.data.trace_set import TraceSet
 from eval.config import REPO_ROOT
 from eval.evaluator import run_agentic_eval
@@ -42,7 +44,9 @@ BENCH_TRACE = REPO_ROOT / "bench-trace"
 RESULTS_DIR = REPO_ROOT / "results"
 load_dotenv(REPO_ROOT / ".env")
 
-# Dataset → bench.cli collect-baselines --baseline-author value
+# Dataset → bench.cli collect-baselines --baseline-author value.
+# Must match the baseline_author used by AgentTools (BenchmarkConfig default in
+# eval/agent_tools/base.py is "reference-scalar"), so speedup computation works.
 _DATASET_BASELINE_AUTHOR: dict[str, str] = {
     "ncnn": "baseline-ncnn-arm",
     "simd-loop": "reference-scalar",
@@ -54,6 +58,19 @@ def _author_from_model(model: str) -> str:
     return model.split("/")[-1]
 
 
+def _defs_for_dataset(ts: TraceSet, dataset: str) -> list:
+    """Return definitions that have at least one solution in the given dataset.
+
+    Uses the solution metadata already loaded by TraceSet — no filesystem scan.
+    """
+    matching = {
+        def_name
+        for def_name, sols in ts.solutions.items()
+        if any(s.dataset.value == dataset for s in sols)
+    }
+    return [ts.definitions[n] for n in sorted(matching) if n in ts.definitions]
+
+
 def _ensure_baselines(
     handle: InstanceHandle,
     definitions: list,
@@ -62,19 +79,39 @@ def _ensure_baselines(
 ) -> None:
     """Lazily collect baseline traces on the remote for any definitions missing them.
 
-    Runs one SSH check to find missing definitions, then calls
-    `bench.cli collect-baselines` per missing definition (idempotent).
+    Runs one SSH call to find definitions that lack traces for `baseline_author`,
+    then calls `bench.cli collect-baselines` per missing definition (idempotent).
+    The check is author-specific — a trace file for a *different* author does not
+    satisfy the requirement.
     """
     if not definitions:
         return
 
-    # One SSH call: for each definition name, print it if its trace file is absent/empty
-    names = " ".join(d.name for d in definitions)
+    # Build a Python script that checks each definition for author-specific traces,
+    # then encode it as base64 to avoid all shell-quoting issues.
+    check_code = (
+        "import json; from pathlib import Path\n"
+        "bench = Path.home() / 'arm-bench' / 'bench-trace'\n"
+        f"auth = {baseline_author!r}\n"
+        f"names = {[d.name for d in definitions]!r}\n"
+        "td = bench / 'traces'\n"
+        "for n in names:\n"
+        "    found = False\n"
+        "    if td.exists():\n"
+        "        for f in sorted(td.rglob(n + '.jsonl')):\n"
+        "            try:\n"
+        "                for line in f.open():\n"
+        "                    line = line.strip()\n"
+        "                    if line and json.loads(line).get('solution', '').startswith(auth):\n"
+        "                        found = True; break\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "            if found: break\n"
+        "    if not found: print(n)\n"
+    )
+    b64 = base64.b64encode(check_code.encode()).decode()
     _, out, _ = handle.run(
-        f"for n in {names}; do "
-        f"  f=$(ls ~/arm-bench/bench-trace/traces/*/$n.jsonl 2>/dev/null | head -1); "
-        f"  [ -s \"$f\" ] || echo \"$n\"; "
-        f"done",
+        f"echo {b64!r} | base64 -d | python3",
         timeout=30,
     )
     missing_names = set(out.split())
@@ -169,29 +206,32 @@ def main():
 
     # ── Load TraceSet + filter definitions ────────────────────────────────
     ts = TraceSet.from_path(BENCH_TRACE)
-    all_defs = list(ts.definitions.values())
 
     if args.problem:
-        # Match by exact name or by op_type prefix
-        problem_defs = [
-            d for d in all_defs
-            if d.op_type == args.problem
-        ]
+        # Match by op_type within the selected dataset
+        dataset_defs = _defs_for_dataset(ts, args.dataset)
+        problem_defs = [d for d in dataset_defs if d.op_type == args.problem]
         if not problem_defs:
-            available = sorted({d.op_type for d in all_defs})
+            available = sorted({d.op_type for d in dataset_defs})
             print(f"No definitions matching {args.problem!r} in dataset {args.dataset!r}.")
             print(f"Available op_types: {available}")
             return
     else:
-        problem_defs = all_defs
+        # --all: restrict to definitions that belong to the selected dataset
+        problem_defs = _defs_for_dataset(ts, args.dataset)
 
     print(f"Running {len(problem_defs)} definition(s) "
           f"(dataset: {args.dataset}, model: {args.model}, instance: {instance_type})")
 
     # ── Lazy baseline collection ──────────────────────────────────────────
+    baseline_author = _DATASET_BASELINE_AUTHOR.get(args.dataset, "reference-scalar")
     if not args.skip_baselines:
-        baseline_author = _DATASET_BASELINE_AUTHOR.get(args.dataset, "reference-scalar")
         _ensure_baselines(handle, problem_defs, baseline_author, verbose=not args.quiet)
+
+    # bench_cfg carries the correct baseline_author for this dataset so that
+    # AgentTools (and DefaultEvaluator on the remote) use the same author when
+    # computing speedup — otherwise speedup is always None.
+    bench_cfg = BenchmarkConfig(baseline_author=baseline_author)
 
     # ── Run evaluations ───────────────────────────────────────────────────
     author = _author_from_model(args.model)
@@ -208,6 +248,7 @@ def main():
                 model=args.model,
                 handle=handle,
                 dataset=args.dataset,
+                bench_cfg=bench_cfg,
                 max_turns=args.max_turns,
                 verbose=not args.quiet,
             )

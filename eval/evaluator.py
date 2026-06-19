@@ -50,7 +50,7 @@ Before every tool call, write 3–5 sentences:
 
 Key rules:
   - The harness files (.h and the entry .cpp) are provided automatically — write only kernel.cpp.
-  - Use SVE2 intrinsics freely; the build system passes the correct -march flag.
+  - Use {isa_name} intrinsics freely; the build system passes the correct -march flag.
   - Always verify correctness before profiling: evaluate(measure=false) first.
   - Do NOT submit without at least one evaluate(measure=true) showing a speedup.
 """
@@ -58,6 +58,12 @@ Key rules:
 _AGENT_ISA_LABELS: dict[str, str] = {
     "c7g": "Graviton3 (SVE, 256-bit vector length)",
     "c8g": "Graviton4 (SVE2, 128-bit vector length)",
+}
+
+# Maps EC2 family → the ISA intrinsic family the agent should use.
+_AGENT_ISA_NAMES: dict[str, str] = {
+    "c7g": "SVE",
+    "c8g": "SVE2",
 }
 
 
@@ -228,10 +234,12 @@ def run_agentic_eval(
 
     family = handle.instance_type.split(".")[0] if handle.instance_type else ""
     isa_desc = _AGENT_ISA_LABELS.get(family, handle.instance_type or "AArch64")
+    isa_name = _AGENT_ISA_NAMES.get(family, "SVE2")
 
     system = AGENT_SYSTEM_PROMPT.format(
         op_type=definition.op_type,
         isa_desc=isa_desc,
+        isa_name=isa_name,
     )
     user_msg = build_user_prompt(definition, ref_solution)
 
