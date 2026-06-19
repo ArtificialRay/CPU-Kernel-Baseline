@@ -32,6 +32,9 @@ from eval.provision import InstanceHandle
 from .trajectory import TrajectoryWriter
 
 
+ASM_TRUNCATE_LINES: int = 300
+
+
 class AgentTools(ABC):
     """Per-dataset tool surface for the agent optimization loop.
 
@@ -142,7 +145,7 @@ class AgentTools(ABC):
             source_file=source_file,
             metrics={"status": "OK", "version": version},
         )
-        return {"status": "OK", "version": version}
+        return {"status": "OK", "version": version, "source_file": str(self._run_dir / source_file)}
 
     def evaluate(self, measure: bool = True) -> dict:
         """Run correctness (and optionally timing) on the remote for all workloads."""
@@ -198,7 +201,15 @@ class AgentTools(ABC):
 
         asm_file: Optional[str] = None
         if "asm" in result:
+            # Save full asm to disk, then truncate what the LLM sees.
             asm_file = self._trajectory.write_asm(result["asm"], lc["version"])
+            lines = result["asm"].splitlines()
+            if len(lines) > ASM_TRUNCATE_LINES:
+                n_truncated = len(lines) - ASM_TRUNCATE_LINES
+                lines = lines[:ASM_TRUNCATE_LINES] + [
+                    f"... ({n_truncated} more lines truncated)"
+                ]
+                result = {**result, "asm": "\n".join(lines)}
 
         self._trajectory.write_turn(
             turn=self._turn,
@@ -206,10 +217,18 @@ class AgentTools(ABC):
             asm_file=asm_file,
             metrics={"symbol": symbol, "lines": result["asm"].count("\n") if "asm" in result else 0},
         )
+        if asm_file is not None:
+            result = {**result, "asm_file": str(self._run_dir / asm_file)}
         return result
 
-    def submit(self, code: str, explanation: str = "") -> dict:
-        """Compile code, run full evaluation sweep, score, persist to warehouse."""
+    def submit(self, code: str, explanation: str = "",
+               source_version: Optional[int] = None) -> dict:
+        """Compile code, run full evaluation sweep, score, persist to warehouse.
+
+        source_version: if provided, the source was already recorded as v{N}.cpp
+        during an earlier compile call (e.g. auto-submit of best version).
+        Skip writing a duplicate file and reference the existing one instead.
+        """
         self._turn += 1
 
         # Compile
@@ -229,9 +248,14 @@ class AgentTools(ABC):
 
         so_path = compile_result["so_path"]
 
-        # Write source file for the submitted version
-        version = self._trajectory.next_version()
-        source_file = self._trajectory.write_source(code, version)
+        # Reuse existing source file when the best version is being auto-submitted;
+        # otherwise write a fresh file for an LLM-triggered submit.
+        if source_version is not None:
+            version = source_version
+            source_file = f"v{source_version}.cpp"
+        else:
+            version = self._trajectory.next_version()
+            source_file = self._trajectory.write_source(code, version)
 
         # Full evaluate sweep (always measure=True for submit)
         bench_cfg = dataclasses.replace(self._bench_cfg, collect_perf_counters=True)
@@ -292,6 +316,30 @@ class AgentTools(ABC):
             "correctness": eval_result.get("correctness"),
             "explanation": explanation,
         }
+
+    def read_code(self, filename: str) -> dict:
+        """Read a .cpp or .s file from the current session's run directory."""
+        p = Path(filename)
+        if p.suffix not in (".cpp", ".s"):
+            return {"error": f"only .cpp and .s files are readable, got {filename!r}"}
+        run_dir_resolved = self._run_dir.resolve()
+        if p.is_absolute():
+            target = p.resolve()
+            try:
+                target.relative_to(run_dir_resolved)
+            except ValueError:
+                return {"error": f"{filename!r} is outside the session run directory"}
+        else:
+            target = (self._run_dir / p.name).resolve()
+            if target.parent != run_dir_resolved:
+                return {"error": "path traversal not allowed"}
+        if not target.exists():
+            available = sorted(
+                str(f.resolve()) for f in self._run_dir.iterdir()
+                if f.suffix in (".cpp", ".s")
+            )
+            return {"error": f"{filename!r} not found", "available": available}
+        return {"filename": str(target), "content": target.read_text(encoding="utf-8")}
 
     def dispatch_tool_call(self, name: str, args: dict) -> dict:
         """Route a tool name to its method; return error dict on unknown name."""

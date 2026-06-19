@@ -342,13 +342,20 @@ def run_agentic_eval(
                     elif fn_name == "evaluate":
                         status = result_dict.get("status", "?")
                         perf = result_dict.get("performance", {})
+                        correctness = result_dict.get("correctness", {})
                         ts = perf.get("time_speedup_geomean")
                         cs = perf.get("cycle_speedup_geomean")
-                        suffix = (
+                        mae = correctness.get("max_absolute_error")
+                        mre = correctness.get("max_relative_error")
+                        perf_str = (
                             f", time_speedup={ts:.3f}, cycle_speedup={cs:.3f}"
                             if ts is not None else ""
                         )
-                        print(f"  ← evaluate: {status}{suffix}")
+                        correct_str = (
+                            f", mae={mae:.2e}, mre={mre:.2e}"
+                            if mae is not None else ""
+                        )
+                        print(f"  ← evaluate: {status}{perf_str}{correct_str}")
                         if status != "PASSED":
                             wl = result_dict.get("failed_workload", "")
                             log = str(result_dict.get("log", ""))[:200]
@@ -424,6 +431,7 @@ def run_agentic_eval(
                         f"[auto-submitted: v{best_version['version']} had best "
                         f"time_speedup={best_version.get('time_speedup', '?')}]"
                     ),
+                    source_version=best_version["version"],
                 )
                 if result.get("status") == "PASSED":
                     final_result = {

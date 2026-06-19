@@ -178,6 +178,25 @@ class NCNNAgentTools(AgentTools):
                 },
             },
             {
+                "name": "read_code",
+                "description": (
+                    "Read a source file or disassembly saved during this session. "
+                    "Compiled versions are saved as v1.cpp, v2.cpp, ... (N from compile() result). "
+                    "Disassembled versions are saved as v1.s, v2.s, ... (written by disassemble()). "
+                    "On error, returns the list of available files so you can pick the right one."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "File to read, e.g. 'v2.cpp' or 'v1.s'.",
+                        }
+                    },
+                    "required": ["filename"],
+                },
+            },
+            {
                 "name": "submit",
                 "description": (
                     "Compile, run correctness + timing on all workloads, score, and "

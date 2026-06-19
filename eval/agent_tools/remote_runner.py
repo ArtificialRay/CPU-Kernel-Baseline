@@ -203,7 +203,7 @@ def cmd_evaluate(args: dict) -> dict:
 # ── disassemble ───────────────────────────────────────────────────────────────
 
 def cmd_disassemble(args: dict) -> dict:
-    """Run llvm-objdump on so_path; filter to one symbol; truncate to 300 lines."""
+    """Run llvm-objdump on so_path; filter to one symbol; return full output."""
     import subprocess
 
     so_path: str = args["so_path"]
@@ -215,11 +215,7 @@ def cmd_disassemble(args: dict) -> dict:
             ["llvm-objdump", "-d", f"--disassemble-symbols={symbol}", so_path],
             capture_output=True, text=True, timeout=30,
         )
-        lines = result.stdout.splitlines()
-        if len(lines) > 300:
-            truncated = len(lines) - 300
-            lines = lines[:300] + [f"... ({truncated} more lines truncated)"]
-        return {"asm": "\n".join(lines)}
+        return {"asm": result.stdout}
     except FileNotFoundError:
         return {"error": "llvm-objdump not found on PATH"}
     except Exception as e:
