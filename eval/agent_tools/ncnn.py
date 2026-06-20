@@ -199,28 +199,25 @@ class NCNNAgentTools(AgentTools):
             {
                 "name": "submit",
                 "description": (
-                    "Compile, run correctness + timing on all workloads, score, and "
-                    "persist to the solution warehouse. Use this when you are confident "
-                    "in your implementation. "
+                    "Score and persist the best-performing version from this session. "
+                    "Automatically selects the version with the highest cycle speedup "
+                    "seen in evaluate() calls. Call this when you have finished optimizing. "
                     "Returns {\"status\": \"PASSED\", \"time_speedup\": X, "
                     "\"cycle_speedup\": Y} on success."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "code": {
-                            "type": "string",
-                            "description": "Final kernel.cpp source to submit.",
-                        },
                         "explanation": {
                             "type": "string",
                             "description": (
-                                "Brief description of the optimization approach "
-                                "(e.g. 'SVE2 fmla tiling with 4×8 register blocking')."
+                                "Brief description of the optimization approach and key "
+                                "perf observations (e.g. 'SVE2 fmla tiling with 4×8 "
+                                "register blocking; IPC improved from 1.3 to 2.1')."
                             ),
                         },
                     },
-                    "required": ["code"],
+                    "required": [],
                 },
             },
         ]

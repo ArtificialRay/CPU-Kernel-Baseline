@@ -78,6 +78,9 @@ class AgentTools(ABC):
         # Session state
         self._last_compile: Optional[dict] = None
         # {so_path, solution, version, source_file}
+        self._best_compile: Optional[dict] = None
+        # snapshot of _last_compile at the highest cycle_speedup_geomean PASSED result
+        # {so_path, solution, version, source_file, cycle_speedup}
 
     # ── abstract interface ────────────────────────────────────────────────────
 
@@ -173,6 +176,17 @@ class AgentTools(ABC):
                 "ipc_mean": perf.get("ipc_mean"),
                 "cache_misses_mean": perf.get("cache_misses_mean"),
             })
+            cs = perf.get("cycle_speedup_geomean")
+            if cs is not None and self._last_compile is not None:
+                if (self._best_compile is None
+                        or cs > (self._best_compile.get("cycle_speedup") or 0.0)):
+                    self._best_compile = {**self._last_compile, "cycle_speedup": cs}
+        elif status == "PASSED":
+            correctness = result.get("correctness", {})
+            metrics.update({
+                "max_absolute_error":correctness.get("max_absolute_error"),
+                "max_relative_error":correctness.get("max_relative_error")
+            })
         elif status != "PASSED":
             metrics["failed_workload"] = result.get("failed_workload")
             metrics["log"] = result.get("log", "")
@@ -221,15 +235,35 @@ class AgentTools(ABC):
             result = {**result, "asm_file": str(self._run_dir / asm_file)}
         return result
 
-    def submit(self, code: str, explanation: str = "",
-               source_version: Optional[int] = None) -> dict:
-        """Compile code, run full evaluation sweep, score, persist to warehouse.
+    def submit(self, explanation: str = "") -> dict:
+        """Compile the best-performing version, run full evaluation sweep, persist.
 
-        source_version: if provided, the source was already recorded as v{N}.cpp
-        during an earlier compile call (e.g. auto-submit of best version).
-        Skip writing a duplicate file and reference the existing one instead.
+        Always uses the version with the highest cycle_speedup_geomean seen during
+        this session (falling back to the last compiled version if no measured
+        evaluate() has run yet). The LLM calls this with no arguments.
         """
         self._turn += 1
+
+        chosen = self._best_compile or self._last_compile
+        if chosen is None:
+            self._trajectory.write_turn(
+                turn=self._turn, tool="submit",
+                metrics={"status": "COMPILE_ERROR"},
+            )
+            return {"status": "COMPILE_ERROR", "error": "nothing compiled yet — call compile() first"}
+
+        kernel_src = next(
+            (s for s in chosen["solution"].sources if s.path == "kernel.cpp"), None
+        )
+        if kernel_src is None:
+            self._trajectory.write_turn(
+                turn=self._turn, tool="submit",
+                metrics={"status": "COMPILE_ERROR"},
+            )
+            return {"status": "COMPILE_ERROR", "error": "cannot retrieve code from last compiled solution"}
+
+        code = kernel_src.content
+        source_version = chosen["version"]
 
         # Compile
         solution = self.make_solution(code)
@@ -248,14 +282,8 @@ class AgentTools(ABC):
 
         so_path = compile_result["so_path"]
 
-        # Reuse existing source file when the best version is being auto-submitted;
-        # otherwise write a fresh file for an LLM-triggered submit.
-        if source_version is not None:
-            version = source_version
-            source_file = f"v{source_version}.cpp"
-        else:
-            version = self._trajectory.next_version()
-            source_file = self._trajectory.write_source(code, version)
+        # The code was already written to disk as v{source_version}.cpp during compile().
+        source_file = f"v{source_version}.cpp"
 
         # Full evaluate sweep (always measure=True for submit)
         bench_cfg = dataclasses.replace(self._bench_cfg, collect_perf_counters=True)
@@ -301,6 +329,7 @@ class AgentTools(ABC):
         self._trajectory.write_turn(
             turn=self._turn,
             tool="submit",
+            reasoning=explanation,
             source_file=source_file,
             metrics={
                 "status": "PASSED",
@@ -319,26 +348,48 @@ class AgentTools(ABC):
 
     def read_code(self, filename: str) -> dict:
         """Read a .cpp or .s file from the current session's run directory."""
+        self._turn += 1
         p = Path(filename)
         if p.suffix not in (".cpp", ".s"):
-            return {"error": f"only .cpp and .s files are readable, got {filename!r}"}
+            result = {"error": f"only .cpp and .s files are readable, got {filename!r}"}
+            self._trajectory.write_turn(
+                turn=self._turn, tool="read_code",
+                metrics={"filename": filename, "status": "error"},
+            )
+            return result
         run_dir_resolved = self._run_dir.resolve()
         if p.is_absolute():
             target = p.resolve()
             try:
                 target.relative_to(run_dir_resolved)
             except ValueError:
+                self._trajectory.write_turn(
+                    turn=self._turn, tool="read_code",
+                    metrics={"filename": filename, "status": "error"},
+                )
                 return {"error": f"{filename!r} is outside the session run directory"}
         else:
             target = (self._run_dir / p.name).resolve()
             if target.parent != run_dir_resolved:
+                self._trajectory.write_turn(
+                    turn=self._turn, tool="read_code",
+                    metrics={"filename": filename, "status": "error"},
+                )
                 return {"error": "path traversal not allowed"}
         if not target.exists():
             available = sorted(
                 str(f.resolve()) for f in self._run_dir.iterdir()
                 if f.suffix in (".cpp", ".s")
             )
+            self._trajectory.write_turn(
+                turn=self._turn, tool="read_code",
+                metrics={"filename": filename, "status": "not_found"},
+            )
             return {"error": f"{filename!r} not found", "available": available}
+        self._trajectory.write_turn(
+            turn=self._turn, tool="read_code",
+            metrics={"filename": filename, "status": "ok"},
+        )
         return {"filename": str(target), "content": target.read_text(encoding="utf-8")}
 
     def dispatch_tool_call(self, name: str, args: dict) -> dict:

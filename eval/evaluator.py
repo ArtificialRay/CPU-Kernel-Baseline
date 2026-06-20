@@ -25,7 +25,7 @@ Tools:
   compile(code)              — compile kernel.cpp on the remote ARM instance
   evaluate(measure=true)     — run all workloads: correctness + timing
   disassemble(fn=None)       — view AArch64 assembly (up to 300 lines)
-  submit(code, explanation)  — finalize and persist your best implementation
+  submit(explanation=...)    — finalize and persist the best version from this session
 
 Workflow:
   1. compile() your first attempt.
@@ -36,8 +36,8 @@ Workflow:
   6. submit() when satisfied.
 
 Metrics from evaluate(measure=true):
-  time_speedup_geomean   — wall-time speedup vs reference-scalar (geomean across workloads; >1.0 = faster)
-  cycle_speedup_geomean  — cycle count speedup (geomean)
+  time_speedup_geomean   — wall-time speedup vs {baseline_label} (geomean across workloads; >1.0 = faster than baseline)
+  cycle_speedup_geomean  — cycle count speedup vs {baseline_label} (geomean)
   ipc_mean               — mean IPC across workloads
   cache_misses_mean      — mean LLC misses
 
@@ -51,6 +51,7 @@ Before every tool call, write 3–5 sentences:
 Key rules:
   - The harness files (.h and the entry .cpp) are provided automatically — write only kernel.cpp.
   - Use {isa_name} intrinsics freely; the build system passes the correct -march flag.
+  - Can write asm directly to your implementation if you think it may bring performance gain
   - Always verify correctness before profiling: evaluate(measure=false) first.
   - Do NOT submit without at least one evaluate(measure=true) showing a speedup.
 """
@@ -236,10 +237,18 @@ def run_agentic_eval(
     isa_desc = _AGENT_ISA_LABELS.get(family, handle.instance_type or "AArch64")
     isa_name = _AGENT_ISA_NAMES.get(family, "SVE2")
 
+    baseline_author = bench_cfg.baseline_author if bench_cfg else "reference-scalar"
+    _BASELINE_LABELS = {
+        "baseline-ncnn-arm": "hand-optimized ncnn ARM baseline",
+        "reference-scalar":  "reference scalar implementation",
+    }
+    baseline_label = _BASELINE_LABELS.get(baseline_author, baseline_author)
+
     system = AGENT_SYSTEM_PROMPT.format(
         op_type=definition.op_type,
         isa_desc=isa_desc,
         isa_name=isa_name,
+        baseline_label=baseline_label,
     )
     user_msg = build_user_prompt(definition, ref_solution)
 
@@ -352,7 +361,7 @@ def run_agentic_eval(
                             if ts is not None else ""
                         )
                         correct_str = (
-                            f", mae={mae:.2e}, mre={mre:.2e}"
+                            f", max_absolute_error={mae:.2e}, max_relative_error={mre:.2e}"
                             if mae is not None else ""
                         )
                         print(f"  ← evaluate: {status}{perf_str}{correct_str}")
@@ -426,7 +435,6 @@ def run_agentic_eval(
                       f"v{best_version['version']} (time_speedup={ts})...")
             try:
                 result = tools.submit(
-                    best_version["code"],
                     explanation=(
                         f"[auto-submitted: v{best_version['version']} had best "
                         f"time_speedup={best_version.get('time_speedup', '?')}]"
