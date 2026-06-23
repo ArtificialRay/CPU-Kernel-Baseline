@@ -23,7 +23,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 TERRAFORM_DIR = REPO_ROOT / "terraform"
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
-
+DATASET_BUILDS_PATH = REPO_ROOT / "eval" / "dataset_builds.json"
 # Map ISA targets to instance types
 ISA_INSTANCE_MAP = {
     "neon": "c7g.large",
@@ -100,14 +100,59 @@ def _tf_output() -> dict:
     return json.loads(result.stdout)
 
 
-def provision(instance_type: str = "c7g.large", initial_build: str = "") -> InstanceHandle:
+
+def _run_dataset_build(handle: InstanceHandle, dataset: str) -> None:
+    """Run dataset-specific build steps on the remote, as defined in dataset_builds.json."""
+    if not DATASET_BUILDS_PATH.exists():
+        return
+    steps = json.load(DATASET_BUILDS_PATH.open()).get(dataset, [])
+    if not steps:
+        return
+    print(f"[provision] Building dataset '{dataset}' ({len(steps)} step(s))...")
+    for step in steps:
+        label = step["label"]
+        print(f"[provision]   {label}...")
+        rc, _, err = handle.run(step["cmd"], timeout=step.get("timeout", 300))
+        if rc != 0:
+            print(f"[provision]   WARNING: {label} failed: {err[:200]}")
+
+
+def _install_deps(handle: InstanceHandle) -> None:
+    """Install system and Python dependencies on the remote instance."""
+    steps = [
+        (
+            "apt packages",
+            "sudo apt-get update -qq && "
+            "sudo apt-get install -y -qq python3-pip clang-18 cmake libomp-18-dev",
+            300,
+        ),
+        (
+            "pip packages",
+            "pip3 install --user --break-system-packages -r ~/arm-bench/requirements.txt",
+            120,
+        ),
+        (
+            "perf counters",
+            "sudo sysctl -w kernel.perf_event_paranoid=1",
+            10,
+        ),
+    ]
+    for label, cmd, timeout in steps:
+        print(f"[provision] Installing {label}...")
+        rc, _, err = handle.run(cmd, timeout=timeout)
+        if rc != 0:
+            print(f"[provision] WARNING: {label} failed: {err[:200]}")
+
+
+def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset: str = "") -> InstanceHandle:
     """
-    Run terraform apply to provision an instance. Blocks until SSH is available
-    and source is rsynced.
+    Run terraform apply to provision an instance. Blocks until SSH is available,
+    rsyncs source, installs deps, and runs dataset-specific build steps.
 
     Args:
         instance_type: EC2 instance type string (e.g. "c7g.large", "c8g.large")
         initial_build: make target for initial build, e.g. "c-scalar". Empty = skip.
+        dataset: Dataset name (e.g. "ncnn") — triggers build steps from dataset_builds.json.
     """
     is_c8g = "c8g" in instance_type
     print(f"[provision] Provisioning {instance_type} via Terraform...")
@@ -157,6 +202,10 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "") -> Inst
         excludes=["build", ".git", "terraform", "generations", "results",
                   "__pycache__", "*.pyc"],
     )
+
+    _install_deps(handle)
+    if dataset:
+        _run_dataset_build(handle, dataset)
 
     _save_config(handle)
     print(f"[provision] Done. SSH: ssh -i {key_file} ubuntu@{host}")

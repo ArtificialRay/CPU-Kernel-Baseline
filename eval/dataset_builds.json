@@ -1,0 +1,19 @@
+{
+  "ncnn": [
+    {
+      "label": "clone ncnn",
+      "cmd": "cd ~ && git clone https://github.com/Tencent/ncnn.git",
+      "timeout": 120
+    },
+    {
+      "label": "cmake configure ncnn",
+      "cmd": "cd ~/ncnn && CC=clang-18 CXX=clang++-18 cmake -B build -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF",
+      "timeout": 120
+    },
+    {
+      "label": "cmake build ncnn",
+      "cmd": "cd ~/ncnn && cmake --build build -j$(nproc) --target ncnn",
+      "timeout": 600
+    }
+  ]
+}

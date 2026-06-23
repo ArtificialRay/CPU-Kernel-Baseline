@@ -3,195 +3,304 @@ eval/run_benchmark.py — Agentic benchmark CLI for arm-bench.
 
 Full end-to-end: provision (if needed) → run agentic LLM eval → score → (optionally) teardown.
 
-SIMD-loop bench
 Usage:
-    # Single problem, agentic mode:
-    python eval/run_benchmark.py --problem loop_001 --isa sve2 --model anthropic/claude-opus-4-6
+    # Single definition by name or op_type prefix:
+    python eval/run_benchmark.py --problem conv2d --dataset ncnn --model anthropic/claude-opus-4-8
 
-    # Full benchmark (all problems for an ISA):
-    python eval/run_benchmark.py --all --isa sve2 --model anthropic/claude-opus-4-6
+    # All definitions for a dataset:
+    python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-8
 
     # Provision a fresh instance, run, then tear it down:
-    python eval/run_benchmark.py --problem loop_001 --isa sve2 --model anthropic/claude-opus-4-6 \\
+    python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-8 \\
         --provision --teardown
 
-    # Use an already-running instance (from eval_config.json):
-    python eval/run_benchmark.py --all --isa sve --model openai/gpt-4o
-
-NCNN kernel bench
-    # set `--mode ncnn` to bench ncnn kernel problems, e.g.
-    python -m eval.run_benchmark --problem conv --mode ncnn --isa sve2 --model anthropic/claude-opus-4-6
-    python -m eval.run_benchmark --all --mode ncnn --isa sve --model openrouter/anthropic/claude-opus-4.6
-    # if use openrouter, set `--model` to `openrouter/anthropic/claude-opus-4-6`
-!! Remember run `sync_remote.sh` to reset candidate kernel at every run! 
+    # Override ISA (e.g. Graviton3 SVE):
+    python eval/run_benchmark.py --all --dataset simd-loop --model anthropic/claude-opus-4-8 \\
+        --isa sve
 """
 
 import argparse
+import base64
 import json
 import time
 from pathlib import Path
-from dotenv import load_dotenv
-from eval.config import REPO_ROOT, load_problems, load_ncnn_problems, ISA_TIER
-from eval.evaluator import run_agentic_eval
-from eval.provision import get_or_provision, get_running_instance, teardown, provision, ISA_INSTANCE_MAP
-from eval.tools import EvalResult, NCNNTools, NCNN_SYSTEM_PROMPT, build_ncnn_user_prompt
 
+from dotenv import load_dotenv
+
+from bench.config import BenchmarkConfig
+from bench.data.trace_set import TraceSet
+from eval.config import REPO_ROOT
+from eval.evaluator import run_agentic_eval
+from eval.provision import (
+    get_or_provision,
+    get_running_instance,
+    teardown,
+    provision,
+    ISA_INSTANCE_MAP,
+    InstanceHandle,
+)
+
+BENCH_TRACE = REPO_ROOT / "bench-trace"
 RESULTS_DIR = REPO_ROOT / "results"
 load_dotenv(REPO_ROOT / ".env")
 
+# Dataset → bench.cli collect-baselines --baseline-author value.
+# Must match the baseline_author used by AgentTools (BenchmarkConfig default in
+# eval/agent_tools/base.py is "reference-scalar"), so speedup computation works.
+_DATASET_BASELINE_AUTHOR: dict[str, str] = {
+    "ncnn": "baseline-ncnn-arm",
+    "simd-loop": "reference-scalar",
+}
+
+
+def _author_from_model(model: str) -> str:
+    """Derive a short author label from the model string."""
+    return model.split("/")[-1]
+
+
+def _defs_for_dataset(ts: TraceSet, dataset: str) -> list:
+    """Return definitions that have at least one solution in the given dataset.
+
+    Uses the solution metadata already loaded by TraceSet — no filesystem scan.
+    """
+    matching = {
+        def_name
+        for def_name, sols in ts.solutions.items()
+        if any(s.dataset.value == dataset for s in sols)
+    }
+    return [ts.definitions[n] for n in sorted(matching) if n in ts.definitions]
+
+
+def _ensure_baselines(
+    handle: InstanceHandle,
+    definitions: list,
+    baseline_author: str,
+    verbose: bool = True,
+) -> None:
+    """Lazily collect baseline traces on the remote for any definitions missing them.
+
+    Runs one SSH call to find definitions that lack traces for `baseline_author`,
+    then calls `bench.cli collect-baselines` per missing definition (idempotent).
+    The check is author-specific — a trace file for a *different* author does not
+    satisfy the requirement.
+    """
+    if not definitions:
+        return
+
+    # Build a Python script that checks each definition for author-specific traces,
+    # then encode it as base64 to avoid all shell-quoting issues.
+    check_code = (
+        "import json; from pathlib import Path\n"
+        "bench = Path.home() / 'arm-bench' / 'bench-trace'\n"
+        f"auth = {baseline_author!r}\n"
+        f"names = {[d.name for d in definitions]!r}\n"
+        "td = bench / 'traces'\n"
+        "for n in names:\n"
+        "    found = False\n"
+        "    if td.exists():\n"
+        "        for f in sorted(td.rglob(n + '.jsonl')):\n"
+        "            try:\n"
+        "                for line in f.open():\n"
+        "                    line = line.strip()\n"
+        "                    if line and json.loads(line).get('solution', '').startswith(auth):\n"
+        "                        found = True; break\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "            if found: break\n"
+        "    if not found: print(n)\n"
+    )
+    b64 = base64.b64encode(check_code.encode()).decode()
+    _, out, _ = handle.run(
+        f"echo {b64!r} | base64 -d | python3",
+        timeout=30,
+    )
+    missing_names = set(out.split())
+    missing = [d for d in definitions if d.name in missing_names]
+
+    if not missing:
+        if verbose:
+            print(f"[baselines] All {len(definitions)} baseline trace(s) present.")
+        return
+
+    if verbose:
+        print(
+            f"\n[baselines] {len(missing)}/{len(definitions)} definition(s) missing baseline "
+            f"traces — collecting (author={baseline_author!r})..."
+        )
+
+    for i, d in enumerate(missing):
+        if verbose:
+            print(f"  [{i+1}/{len(missing)}] {d.name} ...", end=" ", flush=True)
+        rc, out, err = handle.run(
+            f"cd ~/arm-bench && python3 -m bench.cli collect-baselines "
+            f"--baseline-author {baseline_author} --definition {d.name}",
+            timeout=600,
+        )
+        if verbose:
+            if rc == 0:
+                print("OK")
+            else:
+                combined = "\n".join(filter(None, [out.strip(), err.strip()]))
+                print(f"WARNING: {combined}")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Agentic LLM benchmark for arm-bench SIMD kernels and ncnn kernels"
+        description="Agentic LLM benchmark for arm-bench (ncnn / simd-loop)"
     )
 
-    # Mode selection
+    # Dataset selection
     parser.add_argument(
-        "--mode", choices=["simd", "ncnn"], default="simd",
-        help="Evaluation mode: 'simd' for SIMD loop problems (default), "
-             "'ncnn' for ncnn kernel optimization problems",
+        "--dataset", default="ncnn", choices=["ncnn", "simd-loop"],
+        help="Dataset to benchmark (default: ncnn)",
     )
 
     # Problem selection
     grp = parser.add_mutually_exclusive_group(required=True)
-    grp.add_argument("--problem", help="Single problem ID, e.g. loop_001 (simd) or conv (ncnn)")
-    grp.add_argument("--all", action="store_true", help="Run all problems for the given ISA")
+    grp.add_argument(
+        "--problem",
+        help=(
+            "Definition name or op_type prefix to run "
+            "(e.g. 'conv2d_kh3_kw3_sh1_sw1' or just 'conv2d')"
+        ),
+    )
+    grp.add_argument("--all", action="store_true", help="Run all definitions for the dataset")
 
-    # Model and ISA
-    parser.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
+    # Model
     parser.add_argument("--model", required=True,
-                        help="LiteLLM model string, e.g. anthropic/claude-opus-4-6")
+                        help="LiteLLM model string, e.g. anthropic/claude-opus-4-8")
 
     # Instance lifecycle
     parser.add_argument("--provision", action="store_true",
                         help="Provision a new instance even if one is already configured")
     parser.add_argument("--teardown", action="store_true",
                         help="Destroy the instance after evaluation")
-    parser.add_argument("--instance", default=None,
-                        help="EC2 instance type override (default: inferred from ISA)")
+    parser.add_argument(
+        "--isa", default=None, choices=["neon", "sve", "sve2", "sme2"],
+        help="ISA target (default: sve2). Determines the EC2 instance type via ISA_INSTANCE_MAP.",
+    )
 
     # Eval options
     parser.add_argument("--max-turns", type=int, default=20,
-                        help="Max agent turns per problem (default: 20)")
+                        help="Max agent turns per definition (default: 20)")
     parser.add_argument("--quiet", action="store_true", help="Suppress per-turn output")
     parser.add_argument("--no-save", action="store_true", help="Don't save results to results/")
     parser.add_argument("--save-trace", action="store_true",
-                        help="Save full conversation trace to traces/ alongside results")
+                        help="Save full version_history to traces/ alongside results")
+    parser.add_argument("--skip-baselines", action="store_true",
+                        help="Skip lazy baseline collection (use if baselines are already present)")
 
     args = parser.parse_args()
 
-    # SME2 requires hardware not yet available on AWS (no EC2 instance supports SME2).
-    # The problems are kept in the dataset for future use.
-    if args.isa == "sme2":
-        print("ERROR: SME2 is not yet supported — no AWS EC2 instance implements the "
-              "Scalable Matrix Extension. SME2 problems are reserved for future hardware. "
-              "Use --isa sve (c7g) or --isa sve2 (c8g) instead.")
-        return
-
-    # ── Resolve instance ───────────────────────────────────────────────────
-    instance_type = args.instance or ISA_INSTANCE_MAP.get(args.isa, "c7g.large")
+    # ── Resolve ISA → instance type ────────────────────────────────────────
+    isa = args.isa or "sve2"
+    instance_type = ISA_INSTANCE_MAP.get(isa, "c8g.large")
 
     if args.provision:
-        handle = provision(instance_type)
+        handle = provision(instance_type, dataset=args.dataset)
     else:
-        handle = get_running_instance(args.isa)
+        handle = get_running_instance(isa)
         if handle is None:
-            print(f"No running instance for ISA={args.isa}. Provisioning {instance_type}...")
-            handle = provision(instance_type)
+            print(f"No running {instance_type} instance ({isa}). Provisioning...")
+            handle = provision(instance_type, dataset=args.dataset)
 
-    # ── Resolve problems ──────────────────────────────────────────────────
-    if args.mode == "ncnn":
-        problems = load_ncnn_problems()
-    else:
-        problems = load_problems()
+    # ── Load TraceSet + filter definitions ────────────────────────────────
+    ts = TraceSet.from_path(BENCH_TRACE)
 
     if args.problem:
-        if args.problem not in problems:
-            src = "starter/problems.json" if args.mode == "ncnn" else "problems.json"
-            print(f"Problem {args.problem!r} not found in {src}")
+        # Match by op_type within the selected dataset
+        dataset_defs = _defs_for_dataset(ts, args.dataset)
+        problem_defs = [d for d in dataset_defs if d.op_type == args.problem]
+        if not problem_defs:
+            available = sorted({d.op_type for d in dataset_defs})
+            print(f"No definitions matching {args.problem!r} in dataset {args.dataset!r}.")
+            print(f"Available op_types: {available}")
             return
-        problem_ids = [args.problem]
     else:
-        if args.isa == "sve2":
-            valid_targets = {"sve", "sve2"}
-        else:
-            valid_targets = {args.isa}
-        problem_ids = [
-            pid for pid, p in problems.items()
-            if p.get("isa_target") in valid_targets
-        ]
-        print(f"Running {len(problem_ids)} problems (mode: {args.mode}, ISA: {args.isa})")
+        # --all: restrict to definitions that belong to the selected dataset
+        problem_defs = _defs_for_dataset(ts, args.dataset)
+
+    print(f"Running {len(problem_defs)} definition(s) "
+          f"(dataset: {args.dataset}, model: {args.model}, instance: {instance_type})")
+
+    # ── Lazy baseline collection ──────────────────────────────────────────
+    baseline_author = _DATASET_BASELINE_AUTHOR.get(args.dataset, "reference-scalar")
+    if not args.skip_baselines:
+        _ensure_baselines(handle, problem_defs, baseline_author, verbose=not args.quiet)
+
+    # bench_cfg carries the correct baseline_author for this dataset so that
+    # AgentTools (and DefaultEvaluator on the remote) use the same author when
+    # computing speedup — otherwise speedup is always None.
+    bench_cfg = BenchmarkConfig(baseline_author=baseline_author)
 
     # ── Run evaluations ───────────────────────────────────────────────────
-    results: dict[str, EvalResult] = {}
+    author = _author_from_model(args.model)
+    results: dict[str, dict] = {}
     RESULTS_DIR.mkdir(exist_ok=True)
 
-    # NCNN mode: pass custom tools class, system prompt, and user prompt builder
-    ncnn_kwargs = {}
-    if args.mode == "ncnn":
-        ncnn_kwargs = {
-            "tools_class": NCNNTools,
-            "system_prompt_override": NCNN_SYSTEM_PROMPT,
-            "user_prompt_builder": build_ncnn_user_prompt,
-        }
-
-    for i, pid in enumerate(problem_ids):
-        print(f"\n[{i+1}/{len(problem_ids)}] {pid}")
+    for i, defn in enumerate(problem_defs):
+        print(f"\n[{i+1}/{len(problem_defs)}] {defn.name}")
         try:
             result = run_agentic_eval(
-                problem_id=pid,
-                isa=args.isa,
+                definition=defn,
+                trace_set=ts,
+                author=author,
                 model=args.model,
                 handle=handle,
+                dataset=args.dataset,
+                bench_cfg=bench_cfg,
                 max_turns=args.max_turns,
                 verbose=not args.quiet,
-                problem_override=problems[pid] if args.mode == "ncnn" else None,
-                **ncnn_kwargs,
             )
         except Exception as e:
             print(f"  ERROR: {e}")
-            result = EvalResult(correct=False, level=0, compile_error=str(e))
+            result = {
+                "status": "ERROR",
+                "error": str(e),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "version_history": [],
+            }
 
-        results[pid] = result
+        results[defn.name] = result
 
         if not args.no_save:
-            stem = f"{pid}_{args.isa}_{args.model.replace('/', '_')}"
-            data = result.to_dict()
-            data.update({"problem_id": pid, "isa": args.isa, "model": args.model})
+            stem = f"{defn.name}_{args.dataset}_{args.model.replace('/', '_')}"
+            data = {
+                **{k: v for k, v in result.items() if k != "version_history"},
+                "definition": defn.name,
+                "dataset": args.dataset,
+                "model": args.model,
+            }
 
-            # Overwrite the latest-run JSON (backward-compat)
             out = RESULTS_DIR / f"{stem}.json"
             out.write_text(json.dumps(data, indent=2))
 
-            # Append to JSONL for time-series tracking (one record per line)
             jsonl_out = RESULTS_DIR / f"{stem}.jsonl"
             with jsonl_out.open("a") as f:
                 f.write(json.dumps(data) + "\n")
 
-            # Optionally save full conversation trace to traces/
-            if args.save_trace and result.trace:
+            if args.save_trace and result.get("version_history"):
                 traces_dir = REPO_ROOT / "traces"
                 traces_dir.mkdir(exist_ok=True)
-                ts = result.timestamp.replace(":", "-")
-                trace_out = traces_dir / f"{stem}_{ts}.json"
-                # Strip full code from trace args (already in code_versions)
+                ts_stamp = result.get("timestamp", "").replace(":", "-")
+                trace_out = traces_dir / f"{stem}_{ts_stamp}.json"
                 trace_out.write_text(json.dumps({
-                    "problem_id": pid,
-                    "isa": args.isa,
+                    "definition": defn.name,
+                    "dataset": args.dataset,
                     "model": args.model,
-                    "timestamp": result.timestamp,
-                    "trace": result.trace,
-                    "code_versions": result.code_versions,
+                    "timestamp": result.get("timestamp"),
+                    "version_history": result.get("version_history"),
                 }, indent=2))
 
     # ── Print summary ─────────────────────────────────────────────────────
-    _print_summary(results, args.isa, args.model)
+    _print_summary(results, args.dataset, args.model)
 
     # ── Teardown ──────────────────────────────────────────────────────────
     if args.teardown:
         print("\n[teardown] Destroying instance...")
         teardown()
     else:
-        handle = get_running_instance(args.isa)
+        handle = get_running_instance(instance_type)
         if handle and handle.host:
             print(
                 f"\n[WARNING] Instance at {handle.host} is still running and accruing cost. "
@@ -200,35 +309,44 @@ def main():
             )
 
 
-def _print_summary(results: dict[str, EvalResult], isa: str, model: str):
+def _print_summary(results: dict[str, dict], dataset: str, model: str):
     n = len(results)
     if n == 0:
         return
 
-    by_level = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
-    speedups = []
-    for r in results.values():
-        by_level[r.level] = by_level.get(r.level, 0) + 1
-        if r.speedup_vs_scalar is not None:
-            speedups.append(r.speedup_vs_scalar)
+    n_passed = sum(1 for r in results.values() if r.get("status") == "PASSED")
+    time_speedups = [
+        r["time_speedup"]
+        for r in results.values()
+        if r.get("time_speedup") is not None
+    ]
+    cycle_speedups = [
+        r["cycle_speedup"]
+        for r in results.values()
+        if r.get("cycle_speedup") is not None
+    ]
 
-    n_correct = sum(v for k, v in by_level.items() if k >= 1)
-    n_fast = sum(v for k, v in by_level.items() if k >= 2)
-    n_autovec = sum(v for k, v in by_level.items() if k >= 3)
-    n_ref = by_level.get(4, 0)
-    avg_speedup = round(sum(speedups) / len(speedups), 2) if speedups else None
+    def _geomean(vals: list[float]) -> float | None:
+        if not vals:
+            return None
+        product = 1.0
+        for v in vals:
+            product *= v
+        return product ** (1.0 / len(vals))
+
+    gm_time = _geomean(time_speedups)
+    gm_cycle = _geomean(cycle_speedups)
 
     print(f"\n{'='*60}")
     print(f"  Benchmark Summary")
-    print(f"  Model: {model}  |  ISA: {isa}")
+    print(f"  Dataset: {dataset}  |  Model: {model}")
     print(f"{'='*60}")
-    print(f"  Total problems:           {n}")
-    print(f"  Correct (level ≥ 1):      {n_correct}/{n}  ({100*n_correct//n}%)")
-    print(f"  Beats scalar (level ≥ 2): {n_fast}/{n}  ({100*n_fast//n}%)  ← fast_p")
-    print(f"  Beats autovec (level ≥ 3): {n_autovec}/{n}  ({100*n_autovec//n}%)")
-    print(f"  Beats hand-written (level 4): {n_ref}/{n}  ({100*n_ref//n}%)")
-    if avg_speedup is not None:
-        print(f"  Avg speedup vs scalar:    {avg_speedup}×  (correct submissions)")
+    print(f"  Total definitions:        {n}")
+    print(f"  Passed:                   {n_passed}/{n}  ({100*n_passed//n}%)")
+    if gm_time is not None:
+        print(f"  Geomean time speedup:     {gm_time:.3f}×")
+    if gm_cycle is not None:
+        print(f"  Geomean cycle speedup:    {gm_cycle:.3f}×")
     print(f"{'='*60}")
 
 

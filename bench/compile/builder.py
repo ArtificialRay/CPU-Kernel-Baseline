@@ -19,7 +19,9 @@ which selects the builder via `can_build(solution, is_baseline)`.
 
 from __future__ import annotations
 
+import functools
 import logging
+import shutil
 import subprocess
 import tempfile
 from abc import ABC, abstractmethod
@@ -31,6 +33,15 @@ from bench.data.definition import Definition
 from bench.data.solution import Solution
 
 logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_cxx() -> Optional[str]:
+    """Return the first available clang++ binary on this host."""
+    for name in ("clang++", "clang++-18", "clang++-17", "clang++-16"):
+        if shutil.which(name):
+            return name
+    return None
 
 
 # ── Build error ──────────────────────────────────────────────────────────────
@@ -80,9 +91,14 @@ class Builder(ABC):
         self._build_dir_name = build_dir_name
 
     @staticmethod
-    @abstractmethod
     def is_available() -> bool:
-        """True if this builder's toolchain is present on the host."""
+        """True if a clang++ binary is present on the host."""
+        return _resolve_cxx() is not None
+
+    @property
+    def _cxx(self) -> str:
+        """The clang++ binary to use (versioned fallback if unversioned is absent)."""
+        return _resolve_cxx() or "clang++"
 
     @abstractmethod
     def can_build(self, solution: Solution, is_baseline: bool) -> bool:
