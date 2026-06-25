@@ -86,10 +86,6 @@ class NcnnBuilder(Builder):
         super().__init__(build_dir_name="armbench-ncnn")
         self._arm_bench_root = Path(__file__).resolve().parents[3] # repo dir
         self._base_root = self._arm_bench_root.parent # home dir
-    @staticmethod
-    def is_available() -> bool:
-        return shutil.which("clang++") is not None
-
     def can_build(self, solution: Solution, is_baseline: bool) -> bool:
         return is_baseline and solution.dataset == SupportedDatasets.NCNN
 
@@ -136,7 +132,7 @@ class NcnnBuilder(Builder):
             include_dirs.insert(0, cmake_src)
 
         so_path = build_dir / f"{solution.name[:64]}.so"
-        cmd: List[str] = ["clang++", "-shared", "-fPIC"]
+        cmd: List[str] = [self._cxx, "-shared", "-fPIC"]
         cmd += list(solution.spec.compile_flags or [])
         for inc in include_dirs:
             cmd += ["-I", str(inc)]

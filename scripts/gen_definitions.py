@@ -1,117 +1,36 @@
 #!/usr/bin/env python3
-"""Generate Definition JSON and Workload JSONL files for conv1d, conv2d_depthwise,
-deconv2d, and deconv2d_depthwise from the EXPECT_MATCH calls in the candidate test files.
+"""Generate Definition JSON and Workload JSONL files for all 5 ncnn op types.
 
 Run from arm-bench/:
     python scripts/gen_definitions.py
+
+Produces 17 definitions total:
+  conv2d (6)               bench-trace/definitions/conv/
+  conv1d (2)               bench-trace/definitions/conv1d/
+  conv2d_depthwise (3)     bench-trace/definitions/conv2d_depthwise/
+  deconv2d (4)             bench-trace/definitions/deconv2d/
+  deconv2d_depthwise (2)   bench-trace/definitions/deconv2d_depthwise/
+
+Channel (C_in / C) is a workload-level var axis — one definition covers all
+channel widths.  Odd spatial inputs (H=113, H=57, etc.) account for ~17-20 % of
+total workloads to stress stride=2 / deconv boundary logic.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Any, Dict, List, Tuple
 
 # ── Repo layout ───────────────────────────────────────────────────────────────
 
-REPO = Path(__file__).resolve().parent.parent
-TESTS_DIR = REPO / "tests" / "ncnn" / "candidate"
-DEFS_DIR  = REPO / "bench-trace" / "definitions"
-WLS_DIR   = REPO / "bench-trace" / "workloads"
+REPO     = Path(__file__).resolve().parent.parent
+DEFS_DIR = REPO / "bench-trace" / "definitions"
+WLS_DIR  = REPO / "bench-trace" / "workloads"
 
 
-# ── Reference code templates ─────────────────────────────────────────────────
-# Each template is a Python format string; brace-escaped literal braces use {{/}}.
-# The result is stored as a single JSON string with \n separating lines.
-
-def _ref_conv1d(kw: int, sw: int, dw: int, pad: int) -> str:
-    return (
-        "import torch\n"
-        "import torch.nn.functional as F\n"
-        "\n"
-        "def run(input, weight, bias):\n"
-        "    x = torch.from_numpy(input).unsqueeze(0)\n"
-        "    w = torch.from_numpy(weight)\n"
-        "    b = torch.from_numpy(bias)\n"
-        f"    return F.conv1d(x, w, b, stride={sw}, padding={pad}, dilation={dw}).squeeze(0).numpy()\n"
-    )
-
-
-def _ref_conv2d_depthwise(kh: int, kw: int, sh: int, sw: int, dh: int, dw: int,
-                           pad_top: int, pad_left: int) -> str:
-    return (
-        "import torch\n"
-        "import torch.nn.functional as F\n"
-        "\n"
-        "def run(input, weight, bias):\n"
-        "    n, c = input.shape[0], input.shape[1]\n"
-        "    x = torch.from_numpy(input)\n"
-        "    w = torch.from_numpy(weight).unsqueeze(1)\n"
-        "    b = torch.from_numpy(bias)\n"
-        f"    return F.conv2d(x, w, b, stride=({sh}, {sw}), padding=({pad_top}, {pad_left}), "
-        f"dilation=({dh}, {dw}), groups=c).numpy()\n"
-    )
-
-
-def _ref_deconv2d(kh: int, kw: int, sh: int, sw: int) -> str:
-    return (
-        "import torch\n"
-        "import torch.nn.functional as F\n"
-        "\n"
-        "def run(input, weight, bias):\n"
-        "    x = torch.from_numpy(input)\n"
-        "    w = torch.from_numpy(weight).permute(1, 0, 2, 3)\n"
-        "    b = torch.from_numpy(bias)\n"
-        f"    return F.conv_transpose2d(x, w, b, stride=({sh}, {sw}), padding=(0, 0), "
-        f"dilation=(1, 1)).numpy()\n"
-    )
-
-
-def _ref_deconv2d_depthwise(kh: int, kw: int, sh: int, sw: int) -> str:
-    return (
-        "import torch\n"
-        "import torch.nn.functional as F\n"
-        "\n"
-        "def run(input, weight, bias):\n"
-        "    n, c = input.shape[0], input.shape[1]\n"
-        "    x = torch.from_numpy(input)\n"
-        "    w = torch.from_numpy(weight).unsqueeze(1)\n"
-        "    b = torch.from_numpy(bias)\n"
-        f"    return F.conv_transpose2d(x, w, b, stride=({sh}, {sw}), padding=(0, 0), "
-        f"dilation=(1, 1), groups=c).numpy()\n"
-    )
-
-
-# ── EXPECT_MATCH parser ───────────────────────────────────────────────────────
-
-def _parse_expect_match(src: str) -> List[Tuple[int, ...]]:
-    """Extract the integer argument lists from all EXPECT_MATCH calls in src."""
-    # Find everything inside EXPECT_MATCH(run_fn, ref_fn, <args...>)
-    pattern = re.compile(
-        r'EXPECT_MATCH\s*\(\s*\w+\s*,\s*\w+\s*,\s*([^)]+)\)',
-        re.MULTILINE
-    )
-    results = []
-    for m in pattern.finditer(src):
-        raw_args = m.group(1)
-        # Split on commas, strip whitespace, filter out `true`/`false` bool args
-        parts = [p.strip() for p in raw_args.split(',')]
-        int_parts = []
-        for p in parts:
-            if p in ('true', 'false'):
-                break  # with_bias is always last and optional; stop here
-            try:
-                int_parts.append(int(p))
-            except ValueError:
-                break
-        if int_parts:
-            results.append(tuple(int_parts))
-    return results
-
-
-# ── Definition / Workload builders ────────────────────────────────────────────
+# ── I/O helpers ───────────────────────────────────────────────────────────────
 
 def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,226 +40,454 @@ def _write_json(path: Path, obj: Any) -> None:
 def _write_jsonl(path: Path, lines: List[Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "\n".join(json.dumps(l) for l in lines) + "\n",
+        "\n".join(json.dumps(line) for line in lines) + "\n",
         encoding="utf-8",
     )
 
 
+def _wl(axes: Dict[str, int], inputs: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "axes": axes,
+        "inputs": inputs,
+        "uuid": uuid.uuid4().hex,
+        "tags": {"from": "gen_definitions"},
+    }
+
+
+def _rand(*names: str) -> Dict[str, Any]:
+    return {n: {"type": "random"} for n in names}
+
+
+# ── Reference code builders ───────────────────────────────────────────────────
+
+def _ref_conv2d(sh: int, sw: int, dh: int, dw: int,
+                pad_top: int, pad_left: int) -> str:
+    return (
+        "import torch\n"
+        "import torch.nn.functional as F\n"
+        "\n"
+        "def run(input, weight, activation_type, with_bias):\n"
+        "    x = torch.from_numpy(input)\n"
+        "    w = torch.from_numpy(weight)\n"
+        f"    return F.conv2d(x, w, None, stride=({sh}, {sw}), "
+        f"padding=({pad_top}, {pad_left}), dilation=({dh}, {dw})).numpy()\n"
+    )
+
+
+def _ref_conv1d(sw: int, dw: int, pad: int) -> str:
+    return (
+        "import torch\n"
+        "import torch.nn.functional as F\n"
+        "\n"
+        "def run(input, weight, bias):\n"
+        "    x = torch.from_numpy(input).unsqueeze(0)\n"
+        "    w = torch.from_numpy(weight)\n"
+        "    b = torch.from_numpy(bias)\n"
+        f"    return F.conv1d(x, w, b, stride={sw}, padding={pad}, "
+        f"dilation={dw}).squeeze(0).numpy()\n"
+    )
+
+
+def _ref_conv2d_depthwise(sh: int, sw: int, dh: int, dw: int, pad: int) -> str:
+    return (
+        "import torch\n"
+        "import torch.nn.functional as F\n"
+        "\n"
+        "def run(input, weight, bias):\n"
+        "    c = input.shape[1]\n"
+        "    x = torch.from_numpy(input)\n"
+        "    w = torch.from_numpy(weight).unsqueeze(1)\n"
+        "    b = torch.from_numpy(bias)\n"
+        f"    return F.conv2d(x, w, b, stride=({sh}, {sw}), padding=({pad}, {pad}), "
+        f"dilation=({dh}, {dw}), groups=c).numpy()\n"
+    )
+
+
+def _ref_deconv2d(sh: int, sw: int) -> str:
+    return (
+        "import torch\n"
+        "import torch.nn.functional as F\n"
+        "\n"
+        "def run(input, weight, bias):\n"
+        "    x = torch.from_numpy(input)\n"
+        "    w = torch.from_numpy(weight).permute(1, 0, 2, 3)\n"
+        "    b = torch.from_numpy(bias)\n"
+        f"    return F.conv_transpose2d(x, w, b, stride=({sh}, {sw}), "
+        f"padding=(0, 0), dilation=(1, 1)).numpy()\n"
+    )
+
+
+def _ref_deconv2d_depthwise(sh: int, sw: int) -> str:
+    return (
+        "import torch\n"
+        "import torch.nn.functional as F\n"
+        "\n"
+        "def run(input, weight, bias):\n"
+        "    c = input.shape[1]\n"
+        "    x = torch.from_numpy(input)\n"
+        "    w = torch.from_numpy(weight).unsqueeze(1)\n"
+        "    b = torch.from_numpy(bias)\n"
+        f"    return F.conv_transpose2d(x, w, b, stride=({sh}, {sw}), "
+        f"padding=(0, 0), dilation=(1, 1), groups=c).numpy()\n"
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# conv1d
-# Args from EXPECT_MATCH: (in_c, out_c, in_w, kw, stride_w, pad_left[, dil_w])
+# conv2d — 6 definitions; C_in is a workload-level var axis
 # ─────────────────────────────────────────────────────────────────────────────
+
+# (Kh, Kw, Sh, Sw, Dh, Dw, C_out, pad_top, pad_left)
+_CONV2D_PARAMS: List[Tuple] = [
+    (1, 1, 1, 1, 1, 1, 256, 0, 0),
+    (3, 3, 1, 1, 1, 1, 128, 1, 1),
+    (3, 3, 1, 1, 2, 2, 256, 2, 2),
+    (3, 3, 2, 2, 1, 1, 128, 1, 1),
+    (5, 5, 1, 1, 1, 1,  64, 2, 2),
+    (7, 7, 2, 2, 1, 1,  64, 3, 3),
+]
+
+# Workloads per definition: list of (C_in, H, W)
+_CONV2D_WORKLOADS: Dict[Tuple, List[Tuple[int, int, int]]] = {
+    (1, 1, 1, 1, 1, 1, 256, 0, 0): [
+        ( 64, 224, 224),
+        (128,  56,  56),
+        (512,  14,  14),
+        (512,   7,   7),
+        ( 11,  28,  28),   # non-divisible channels
+        ( 64, 113, 113),   # odd spatial
+    ],
+    (3, 3, 1, 1, 1, 1, 128, 1, 1): [
+        ( 64, 224, 224),
+        (128,  56,  56),
+        ( 64,  28,  28),
+        ( 64,  14,  14),
+        ( 11,  28,  28),   # non-divisible channels
+        ( 64, 113, 113),   # odd spatial
+    ],
+    (3, 3, 1, 1, 2, 2, 256, 2, 2): [
+        ( 64,  56,  56),
+        (128,  28,  28),
+        (256,  14,  14),
+        ( 11,  28,  28),   # non-divisible channels
+        ( 64,  29,  29),   # odd spatial
+    ],
+    (3, 3, 2, 2, 1, 1, 128, 1, 1): [
+        ( 64, 224, 224),
+        (128,  56,  56),
+        ( 64,  28,  28),
+        ( 11,  56,  56),   # non-divisible channels
+        ( 64, 113, 113),   # odd spatial (stride=2 boundary)
+        ( 64,  57,  57),   # odd spatial (stride=2 boundary)
+    ],
+    (5, 5, 1, 1, 1, 1, 64, 2, 2): [
+        ( 32, 224, 224),
+        ( 64,  56,  56),
+        ( 32,  28,  28),
+        ( 32,  14,  14),
+        ( 11,  28,  28),   # non-divisible channels
+        ( 32, 113, 113),   # odd spatial
+    ],
+    (7, 7, 2, 2, 1, 1, 64, 3, 3): [
+        (  3, 224, 224),   # ResNet first-layer (cin=3)
+        ( 32, 224, 224),
+        (  3, 112, 112),
+        ( 11, 224, 224),   # non-divisible channels
+        (  3, 113, 113),   # odd spatial + cin=3
+        (  3,  56,  56),
+    ],
+}
+
+
+def _gen_conv2d() -> None:
+    for params in _CONV2D_PARAMS:
+        kh, kw, sh, sw, dh, dw, cout, pad_top, pad_left = params
+        name = f"conv2d_kh{kh}_kw{kw}_sh{sh}_sw{sw}_dh{dh}_dw{dw}_cout{cout}"
+
+        defn = {
+            "name": name,
+            "op_type": "conv2d",
+            "description": (
+                f"2D conv {kh}x{kw} stride=({sh},{sw}) dilation=({dh},{dw}) "
+                f"pad=({pad_top},{pad_left}) C_out={cout}. C_in varies per workload."
+            ),
+            "tags": ["status:active"],
+            "axes": {
+                "N":      {"type": "var"},
+                "H":      {"type": "var", "parent": "N"},
+                "W":      {"type": "var", "parent": "N"},
+                "H_out":  {"type": "var", "parent": "N"},
+                "W_out":  {"type": "var", "parent": "N"},
+                "C_in":   {"type": "var"},
+                "C_out":  {"type": "const", "value": cout},
+                "Kh":     {"type": "const", "value": kh},
+                "Kw":     {"type": "const", "value": kw},
+                "Sh":     {"type": "const", "value": sh},
+                "Sw":     {"type": "const", "value": sw},
+                "Dh":     {"type": "const", "value": dh},
+                "Dw":     {"type": "const", "value": dw},
+                "pad_top":  {"type": "const", "value": pad_top},
+                "pad_left": {"type": "const", "value": pad_left},
+            },
+            "inputs": {
+                "input":           {"shape": ["N", "C_in", "H", "W"], "dtype": "float32"},
+                "weight":          {"shape": ["C_out", "C_in", "Kh", "Kw"], "dtype": "float32"},
+                "activation_type": {"shape": None, "dtype": "int32"},
+                "with_bias":       {"shape": None, "dtype": "int32"},
+            },
+            "outputs": {
+                "output": {"shape": ["N", "C_out", "H_out", "W_out"], "dtype": "float32"},
+            },
+            "constraints": [
+                "H_out == (H + 2*pad_top - Dh*(Kh-1) - 1) // Sh + 1",
+                "W_out == (W + 2*pad_left - Dw*(Kw-1) - 1) // Sw + 1",
+            ],
+            "reference": _ref_conv2d(sh, sw, dh, dw, pad_top, pad_left),
+        }
+
+        scalar_in = {
+            "activation_type": {"type": "scalar", "value": 0},
+            "with_bias":       {"type": "scalar", "value": 0},
+        }
+        workload_lines = [
+            _wl({"N": 1, "C_in": cin, "H": h, "W": w},
+                {**_rand("input", "weight"), **scalar_in})
+            for cin, h, w in _CONV2D_WORKLOADS[params]
+        ]
+
+        _write_json(DEFS_DIR / "conv" / f"{name}.json", defn)
+        _write_jsonl(WLS_DIR / "conv" / f"{name}.jsonl", workload_lines)
+        print(f"  [conv2d] {name}  ({len(workload_lines)} workloads)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# conv1d — 2 definitions; C_in is a workload-level var axis
+# ─────────────────────────────────────────────────────────────────────────────
+
+# (Kw, Sw, Dw, C_out, pad)
+_CONV1D_PARAMS: List[Tuple] = [
+    (1, 1, 1, 512, 0),
+    (3, 1, 1, 512, 1),
+]
+
+# Workloads per definition: list of (C_in, W)
+_CONV1D_WORKLOADS: Dict[Tuple, List[Tuple[int, int]]] = {
+    (1, 1, 1, 512, 0): [
+        ( 64, 512),
+        (128, 256),
+        (256, 128),
+        (512,  64),
+        ( 11, 256),   # non-divisible channels
+    ],
+    (3, 1, 1, 512, 1): [
+        ( 64, 512),
+        (128, 256),
+        (256, 128),
+        (  3, 256),   # cin=3 input-specialisation path
+        ( 11, 256),   # non-divisible channels
+    ],
+}
+
 
 def _gen_conv1d() -> None:
-    src = (TESTS_DIR / "convolution1d.cpp").read_text()
-    calls = _parse_expect_match(src)
+    for params in _CONV1D_PARAMS:
+        kw, sw, dw, cout, pad = params
+        name = f"conv1d_kw{kw}_sw{sw}_dw{dw}_cout{cout}_p{pad}"
 
-    # Group by (out_c, kw, sw, dw, pad_left) → list of (in_c, in_w)
-    groups: Dict[Tuple, List[Tuple[int, int, int]]] = {}
-    for args in calls:
-        in_c, out_c, in_w, kw, sw, pad_left = args[0], args[1], args[2], args[3], args[4], args[5]
-        dw = args[6] if len(args) > 6 else 1
-        key = (out_c, kw, sw, dw, pad_left)
-        groups.setdefault(key, []).append((in_c, in_w))
+        defn = {
+            "name": name,
+            "op_type": "conv1d",
+            "description": (
+                f"1D conv kw={kw} stride={sw} dilation={dw} pad={pad} "
+                f"C_out={cout}. C_in varies per workload."
+            ),
+            "tags": ["status:active"],
+            "axes": {
+                "W":     {"type": "var"},
+                "W_out": {"type": "var"},
+                "C_in":  {"type": "var"},
+                "C_out": {"type": "const", "value": cout},
+                "Kw":    {"type": "const", "value": kw},
+                "Sw":    {"type": "const", "value": sw},
+                "Dw":    {"type": "const", "value": dw},
+                "pad":   {"type": "const", "value": pad},
+            },
+            "inputs": {
+                "input":  {"shape": ["C_in", "W"], "dtype": "float32"},
+                "weight": {"shape": ["C_out", "C_in", "Kw"], "dtype": "float32"},
+                "bias":   {"shape": ["C_out"], "dtype": "float32"},
+            },
+            "outputs": {
+                "output": {"shape": ["C_out", "W_out"], "dtype": "float32"},
+            },
+            "constraints": [
+                "W_out == (W + 2*pad - Dw*(Kw-1) - 1) // Sw + 1",
+            ],
+            "reference": _ref_conv1d(sw, dw, pad),
+        }
 
-    for (out_c, kw, sw, dw, pad_left), variants in groups.items():
-        # Use first variant's in_c as the const axis (all variants share the same
-        # in_c actually? No — they vary. We need per-definition const in_c.
-        # Group further by in_c since C_in is const in the Definition.
-        by_cin: Dict[int, List[int]] = {}
-        for in_c, in_w in variants:
-            by_cin.setdefault(in_c, []).append(in_w)
+        workload_lines = [
+            _wl({"C_in": cin, "W": w}, _rand("input", "weight", "bias"))
+            for cin, w in _CONV1D_WORKLOADS[params]
+        ]
 
-        for in_c, widths in by_cin.items():
-            name = f"conv1d_kw{kw}_sw{sw}_dw{dw}_p{pad_left}_cin{in_c}_cout{out_c}"
-            ref = _ref_conv1d(kw, sw, dw, pad_left)
-
-            defn = {
-                "name": name,
-                "op_type": "conv1d",
-                "description": (
-                    f"1D convolution: kw={kw} stride={sw} dilation={dw} pad={pad_left} "
-                    f"C_in={in_c} C_out={out_c}"
-                ),
-                "tags": ["status:draft"],
-                "axes": {
-                    "N":     {"type": "var"},
-                    "W":     {"type": "var", "parent": "N"},
-                    "W_out": {"type": "var", "parent": "N",
-                              "description": "Derived: (W + 2*pad - dw*(kw-1) - 1) / sw + 1"},
-                    "C_in":  {"type": "const", "value": in_c},
-                    "C_out": {"type": "const", "value": out_c},
-                    "Kw":    {"type": "const", "value": kw},
-                    "Sw":    {"type": "const", "value": sw},
-                    "Dw":    {"type": "const", "value": dw},
-                },
-                "inputs": {
-                    # conv1d is modeled natively 2D (ncnn::Convolution1D has no
-                    # batch dim): input is (C_in, W), output (C_out, W_out). The
-                    # reference adds/removes the batch dim via unsqueeze/squeeze.
-                    "input":  {"shape": ["C_in", "W"], "dtype": "float32"},
-                    "weight": {"shape": ["C_out", "C_in", "Kw"], "dtype": "float32"},
-                    "bias":   {"shape": ["C_out"], "dtype": "float32"},
-                },
-                "outputs": {
-                    "output": {"shape": ["C_out", "W_out"], "dtype": "float32"},
-                },
-                "constraints": [
-                    f"W_out == (W + 2*{pad_left} - {dw}*(Kw-1) - 1) // Sw + 1",
-                ],
-                "reference": ref,
-            }
-
-            workload_lines = []
-            for w in sorted(set(widths)):
-                wl = {
-                    "axes": {"N": 1, "W": w},
-                    "scalar_inputs": {
-                        "pad_left": pad_left,
-                        "activation_type": 0,
-                    },
-                    "uuid": uuid.uuid4().hex,
-                    "tags": {"from": "gen_definitions"},
-                }
-                workload_lines.append(wl)
-
-            _write_json(DEFS_DIR / "conv1d" / f"{name}.json", defn)
-            _write_jsonl(WLS_DIR / "conv1d" / f"{name}.jsonl", workload_lines)
-            print(f"  [conv1d] {name}  ({len(workload_lines)} workloads)")
+        _write_json(DEFS_DIR / "conv1d" / f"{name}.json", defn)
+        _write_jsonl(WLS_DIR / "conv1d" / f"{name}.jsonl", workload_lines)
+        print(f"  [conv1d] {name}  ({len(workload_lines)} workloads)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# conv2d_depthwise
-# Args: (c, in_h, in_w, kh, kw, stride_h, stride_w, pad_top, pad_left[, dil_h, dil_w])
+# conv2d_depthwise — 3 definitions; C is a workload-level var axis
 # ─────────────────────────────────────────────────────────────────────────────
+
+# (Kh, Kw, Sh, Sw, Dh, Dw, pad)
+_DW_PARAMS: List[Tuple] = [
+    (3, 3, 1, 1, 1, 1, 1),
+    (5, 5, 1, 1, 1, 1, 2),
+    (3, 3, 2, 2, 1, 1, 1),
+]
+
+# Workloads per definition: list of (C, H, W)
+_DW_WORKLOADS: Dict[Tuple, List[Tuple[int, int, int]]] = {
+    (3, 3, 1, 1, 1, 1, 1): [
+        ( 64, 112, 112),
+        (128,  56,  56),
+        (256,  28,  28),
+        ( 11,  56,  56),   # non-divisible channels
+        ( 64, 113, 113),   # odd spatial
+    ],
+    (5, 5, 1, 1, 1, 1, 2): [
+        ( 64,  56,  56),
+        (128,  28,  28),
+        ( 11,  28,  28),   # non-divisible channels
+        ( 64,  57,  57),   # odd spatial
+    ],
+    (3, 3, 2, 2, 1, 1, 1): [
+        ( 64, 112, 112),
+        (128,  56,  56),
+        ( 64,  28,  28),
+        ( 64, 113, 113),   # odd spatial (stride=2 boundary)
+        ( 11,  57,  57),   # non-divisible + odd spatial
+    ],
+}
+
 
 def _gen_conv2d_depthwise() -> None:
-    src = (TESTS_DIR / "convolutiondepwise.cpp").read_text()
-    calls = _parse_expect_match(src)
+    for params in _DW_PARAMS:
+        kh, kw, sh, sw, dh, dw, pad = params
+        name = f"conv2d_depthwise_kh{kh}_kw{kw}_sh{sh}_sw{sw}_dh{dh}_dw{dw}_p{pad}"
 
-    # Group by (kh, kw, sh, sw, dh, dw, pad_top, pad_left) → list of (c, h, w)
-    groups: Dict[Tuple, List[Tuple[int, int, int]]] = {}
-    for args in calls:
-        c, in_h, in_w, kh, kw, sh, sw, pad_top, pad_left = (
-            args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]
-        )
-        dh = args[9]  if len(args) > 9  else 1
-        dw = args[10] if len(args) > 10 else 1
-        key = (kh, kw, sh, sw, dh, dw, pad_top, pad_left)
-        groups.setdefault(key, []).append((c, in_h, in_w))
+        defn = {
+            "name": name,
+            "op_type": "conv2d_depthwise",
+            "description": (
+                f"Depthwise 2D conv {kh}x{kw} stride=({sh},{sw}) "
+                f"dilation=({dh},{dw}) pad={pad}. C varies per workload."
+            ),
+            "tags": ["status:active"],
+            "axes": {
+                "N":     {"type": "var"},
+                "H":     {"type": "var", "parent": "N"},
+                "W":     {"type": "var", "parent": "N"},
+                "H_out": {"type": "var", "parent": "N"},
+                "W_out": {"type": "var", "parent": "N"},
+                "C":     {"type": "var"},
+                "Kh":    {"type": "const", "value": kh},
+                "Kw":    {"type": "const", "value": kw},
+                "Sh":    {"type": "const", "value": sh},
+                "Sw":    {"type": "const", "value": sw},
+                "Dh":    {"type": "const", "value": dh},
+                "Dw":    {"type": "const", "value": dw},
+                "pad":   {"type": "const", "value": pad},
+            },
+            "inputs": {
+                "input":  {"shape": ["N", "C", "H", "W"], "dtype": "float32"},
+                "weight": {"shape": ["C", "Kh", "Kw"], "dtype": "float32"},
+                "bias":   {"shape": ["C"], "dtype": "float32"},
+            },
+            "outputs": {
+                "output": {"shape": ["N", "C", "H_out", "W_out"], "dtype": "float32"},
+            },
+            "constraints": [
+                "H_out == (H + 2*pad - Dh*(Kh-1) - 1) // Sh + 1",
+                "W_out == (W + 2*pad - Dw*(Kw-1) - 1) // Sw + 1",
+            ],
+            "reference": _ref_conv2d_depthwise(sh, sw, dh, dw, pad),
+        }
 
-    for (kh, kw, sh, sw, dh, dw, pad_top, pad_left), variants in groups.items():
-        # C is a const axis per definition (each unique C gets its own def here)
-        by_c: Dict[int, List[Tuple[int, int]]] = {}
-        for c, h, w in variants:
-            by_c.setdefault(c, []).append((h, w))
+        workload_lines = [
+            _wl({"N": 1, "C": c, "H": h, "W": w}, _rand("input", "weight", "bias"))
+            for c, h, w in _DW_WORKLOADS[params]
+        ]
 
-        for c, hw_pairs in by_c.items():
-            name = (
-                f"conv2d_depthwise_kh{kh}_kw{kw}_sh{sh}_sw{sw}"
-                f"_dh{dh}_dw{dw}_p{pad_top}_c{c}"
-            )
-            ref = _ref_conv2d_depthwise(kh, kw, sh, sw, dh, dw, pad_top, pad_left)
-
-            defn = {
-                "name": name,
-                "op_type": "conv2d_depthwise",
-                "description": (
-                    f"Depthwise 2D conv: kh={kh} kw={kw} stride=({sh},{sw}) "
-                    f"dilation=({dh},{dw}) pad=({pad_top},{pad_left}) C={c}"
-                ),
-                "tags": ["status:draft"],
-                "axes": {
-                    "N":     {"type": "var"},
-                    "H":     {"type": "var", "parent": "N"},
-                    "W":     {"type": "var", "parent": "N"},
-                    "H_out": {"type": "var", "parent": "N",
-                              "description": "Derived: (H + 2*pad_top - dh*(kh-1) - 1) / sh + 1"},
-                    "W_out": {"type": "var", "parent": "N",
-                              "description": "Derived: (W + 2*pad_left - dw*(kw-1) - 1) / sw + 1"},
-                    "C":     {"type": "const", "value": c},
-                    "Kh":    {"type": "const", "value": kh},
-                    "Kw":    {"type": "const", "value": kw},
-                    "Sh":    {"type": "const", "value": sh},
-                    "Sw":    {"type": "const", "value": sw},
-                    "Dh":    {"type": "const", "value": dh},
-                    "Dw":    {"type": "const", "value": dw},
-                },
-                "inputs": {
-                    "input":  {"shape": ["N", "C", "H", "W"], "dtype": "float32"},
-                    "weight": {"shape": ["C", "Kh", "Kw"], "dtype": "float32"},
-                    "bias":   {"shape": ["C"], "dtype": "float32"},
-                },
-                "outputs": {
-                    "output": {"shape": ["N", "C", "H_out", "W_out"], "dtype": "float32"},
-                },
-                "constraints": [
-                    f"H_out == (H + 2*{pad_top} - {dh}*(Kh-1) - 1) // Sh + 1",
-                    f"W_out == (W + 2*{pad_left} - {dw}*(Kw-1) - 1) // Sw + 1",
-                ],
-                "reference": ref,
-            }
-
-            workload_lines = []
-            for h, w in sorted(set(hw_pairs)):
-                wl = {
-                    "axes": {"N": 1, "H": h, "W": w},
-                    "scalar_inputs": {
-                        "pad_left": pad_left,
-                        "pad_top": pad_top,
-                        "activation_type": 0,
-                    },
-                    "uuid": uuid.uuid4().hex,
-                    "tags": {"from": "gen_definitions"},
-                }
-                workload_lines.append(wl)
-
-            _write_json(DEFS_DIR / "conv2d_depthwise" / f"{name}.json", defn)
-            _write_jsonl(WLS_DIR / "conv2d_depthwise" / f"{name}.jsonl", workload_lines)
-            print(f"  [conv2d_depthwise] {name}  ({len(workload_lines)} workloads)")
+        _write_json(DEFS_DIR / "conv2d_depthwise" / f"{name}.json", defn)
+        _write_jsonl(WLS_DIR / "conv2d_depthwise" / f"{name}.jsonl", workload_lines)
+        print(f"  [conv2d_depthwise] {name}  ({len(workload_lines)} workloads)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# deconv2d
-# Args: (in_c, out_c, in_h, in_w, kh, kw, stride_h, stride_w)
-# dilation always 1 in these tests.
+# deconv2d — 4 definitions; C_in is a workload-level var axis
 # ─────────────────────────────────────────────────────────────────────────────
+
+# (Kh, Kw, Sh, Sw, C_out)
+_DECONV2D_PARAMS: List[Tuple] = [
+    (3, 3, 1, 1, 256),
+    (3, 3, 2, 2, 256),
+    (4, 4, 1, 1, 128),
+    (4, 4, 2, 2, 128),
+]
+
+# Workloads per definition: list of (C_in, H, W)
+_DECONV2D_WORKLOADS: Dict[Tuple, List[Tuple[int, int, int]]] = {
+    (3, 3, 1, 1, 256): [
+        ( 64,  56,  56),
+        (128,  28,  28),
+        ( 11,  28,  28),   # non-divisible channels
+        ( 64,  57,  57),   # odd spatial input
+    ],
+    (3, 3, 2, 2, 256): [
+        ( 64,  56,  56),
+        (128,  28,  28),
+        ( 64,  14,  14),
+        ( 11,  28,  28),   # non-divisible channels
+        ( 64,  29,  29),   # odd spatial (output=(29-1)*2+3=59)
+    ],
+    (4, 4, 1, 1, 128): [
+        ( 64,  56,  56),
+        (128,  28,  28),
+        (256,  14,  14),
+        ( 11,  28,  28),   # non-divisible channels
+    ],
+    (4, 4, 2, 2, 128): [
+        ( 64,  56,  56),
+        (128,  28,  28),
+        ( 64,  14,  14),
+        ( 11,  28,  28),   # non-divisible channels
+        ( 64,  29,  29),   # odd spatial (output=(29-1)*2+4=60)
+    ],
+}
+
 
 def _gen_deconv2d() -> None:
-    src = (TESTS_DIR / "deconvolution.cpp").read_text()
-    calls = _parse_expect_match(src)
-
-    # Group by (in_c, out_c, kh, kw, sh, sw) — dilation=1 always
-    groups: Dict[Tuple, List[Tuple[int, int]]] = {}
-    for args in calls:
-        in_c, out_c, in_h, in_w, kh, kw, sh, sw = (
-            args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]
-        )
-        key = (in_c, out_c, kh, kw, sh, sw)
-        groups.setdefault(key, []).append((in_h, in_w))
-
-    for (in_c, out_c, kh, kw, sh, sw), hw_pairs in groups.items():
-        name = f"deconv2d_kh{kh}_kw{kw}_sh{sh}_sw{sw}_cin{in_c}_cout{out_c}"
-        ref = _ref_deconv2d(kh, kw, sh, sw)
+    for params in _DECONV2D_PARAMS:
+        kh, kw, sh, sw, cout = params
+        name = f"deconv2d_kh{kh}_kw{kw}_sh{sh}_sw{sw}_cout{cout}"
 
         defn = {
             "name": name,
             "op_type": "deconv2d",
             "description": (
-                f"Transposed 2D conv: kh={kh} kw={kw} stride=({sh},{sw}) "
-                f"dilation=(1,1) pad=0 C_in={in_c} C_out={out_c}"
+                f"Transposed 2D conv {kh}x{kw} stride=({sh},{sw}) "
+                f"dilation=(1,1) pad=0 C_out={cout}. C_in varies per workload."
             ),
-            "tags": ["status:draft"],
+            "tags": ["status:active"],
             "axes": {
                 "N":     {"type": "var"},
                 "H":     {"type": "var", "parent": "N"},
                 "W":     {"type": "var", "parent": "N"},
-                "H_out": {"type": "var", "parent": "N",
-                          "description": "Derived: (H - 1) * sh + kh"},
-                "W_out": {"type": "var", "parent": "N",
-                          "description": "Derived: (W - 1) * sw + kw"},
-                "C_in":  {"type": "const", "value": in_c},
-                "C_out": {"type": "const", "value": out_c},
+                "H_out": {"type": "var", "parent": "N"},
+                "W_out": {"type": "var", "parent": "N"},
+                "C_in":  {"type": "var"},
+                "C_out": {"type": "const", "value": cout},
                 "Kh":    {"type": "const", "value": kh},
                 "Kw":    {"type": "const", "value": kw},
                 "Sh":    {"type": "const", "value": sh},
@@ -360,20 +507,14 @@ def _gen_deconv2d() -> None:
                 "H_out == (H - 1) * Sh + Kh",
                 "W_out == (W - 1) * Sw + Kw",
             ],
-            "reference": ref,
+            "reference": _ref_deconv2d(sh, sw),
         }
 
-        workload_lines = []
-        for h, w in sorted(set(hw_pairs)):
-            wl = {
-                "axes": {"N": 1, "H": h, "W": w},
-                "scalar_inputs": {
-                    "activation_type": 0,
-                },
-                "uuid": uuid.uuid4().hex,
-                "tags": {"from": "gen_definitions"},
-            }
-            workload_lines.append(wl)
+        workload_lines = [
+            _wl({"N": 1, "C_in": cin, "H": h, "W": w},
+                _rand("input", "weight", "bias"))
+            for cin, h, w in _DECONV2D_WORKLOADS[params]
+        ]
 
         _write_json(DEFS_DIR / "deconv2d" / f"{name}.json", defn)
         _write_jsonl(WLS_DIR / "deconv2d" / f"{name}.jsonl", workload_lines)
@@ -381,103 +522,95 @@ def _gen_deconv2d() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# deconv2d_depthwise
-# Args: (c, in_h, in_w, kh, kw, stride_h, stride_w)
+# deconv2d_depthwise — 2 definitions; C is a workload-level var axis
 # ─────────────────────────────────────────────────────────────────────────────
 
+# (Kh, Kw, Sh, Sw)
+_DECONV2D_DW_PARAMS: List[Tuple] = [
+    (2, 2, 2, 2),
+    (3, 3, 1, 1),
+]
+
+# Workloads per definition: list of (C, H, W)
+_DECONV2D_DW_WORKLOADS: Dict[Tuple, List[Tuple[int, int, int]]] = {
+    (2, 2, 2, 2): [
+        ( 64,  56,  56),
+        (128,  28,  28),
+        ( 11,  28,  28),   # non-divisible channels
+        ( 64,  29,  29),   # odd spatial (output=(29-1)*2+2=58)
+    ],
+    (3, 3, 1, 1): [
+        ( 64,  56,  56),
+        (128,  28,  28),
+        (256,  14,  14),
+        ( 11,  28,  28),   # non-divisible channels
+    ],
+}
+
+
 def _gen_deconv2d_depthwise() -> None:
-    src = (TESTS_DIR / "deconvolutiondepwise.cpp").read_text()
-    calls = _parse_expect_match(src)
-
-    # Group by (kh, kw, sh, sw) — dilation=1 always
-    groups: Dict[Tuple, List[Tuple[int, int, int]]] = {}
-    for args in calls:
-        c, in_h, in_w, kh, kw, sh, sw = (
-            args[0], args[1], args[2], args[3], args[4], args[5], args[6]
-        )
-        key = (kh, kw, sh, sw)
-        groups.setdefault(key, []).append((c, in_h, in_w))
-
-    for (kh, kw, sh, sw), variants in groups.items():
-        # C varies per workload for depthwise deconv (channels == in_c == out_c)
-        # All spatial sizes and channels become workloads in the same definition
+    for params in _DECONV2D_DW_PARAMS:
+        kh, kw, sh, sw = params
         name = f"deconv2d_depthwise_kh{kh}_kw{kw}_sh{sh}_sw{sw}"
-        ref = _ref_deconv2d_depthwise(kh, kw, sh, sw)
 
-        # Collect unique channel values to create one definition per channel count
-        by_c: Dict[int, List[Tuple[int, int]]] = {}
-        for c, h, w in variants:
-            by_c.setdefault(c, []).append((h, w))
+        defn = {
+            "name": name,
+            "op_type": "deconv2d_depthwise",
+            "description": (
+                f"Depthwise transposed 2D conv {kh}x{kw} stride=({sh},{sw}) "
+                f"dilation=(1,1) pad=0. C varies per workload."
+            ),
+            "tags": ["status:active"],
+            "axes": {
+                "N":     {"type": "var"},
+                "H":     {"type": "var", "parent": "N"},
+                "W":     {"type": "var", "parent": "N"},
+                "H_out": {"type": "var", "parent": "N"},
+                "W_out": {"type": "var", "parent": "N"},
+                "C":     {"type": "var"},
+                "Kh":    {"type": "const", "value": kh},
+                "Kw":    {"type": "const", "value": kw},
+                "Sh":    {"type": "const", "value": sh},
+                "Sw":    {"type": "const", "value": sw},
+                "Dh":    {"type": "const", "value": 1},
+                "Dw":    {"type": "const", "value": 1},
+            },
+            "inputs": {
+                "input":  {"shape": ["N", "C", "H", "W"], "dtype": "float32"},
+                "weight": {"shape": ["C", "Kh", "Kw"], "dtype": "float32"},
+                "bias":   {"shape": ["C"], "dtype": "float32"},
+            },
+            "outputs": {
+                "output": {"shape": ["N", "C", "H_out", "W_out"], "dtype": "float32"},
+            },
+            "constraints": [
+                "H_out == (H - 1) * Sh + Kh",
+                "W_out == (W - 1) * Sw + Kw",
+            ],
+            "reference": _ref_deconv2d_depthwise(sh, sw),
+        }
 
-        for c, hw_pairs in by_c.items():
-            def_name = f"{name}_c{c}"
-            ref_code = _ref_deconv2d_depthwise(kh, kw, sh, sw)
+        workload_lines = [
+            _wl({"N": 1, "C": c, "H": h, "W": w},
+                _rand("input", "weight", "bias"))
+            for c, h, w in _DECONV2D_DW_WORKLOADS[params]
+        ]
 
-            defn = {
-                "name": def_name,
-                "op_type": "deconv2d_depthwise",
-                "description": (
-                    f"Depthwise transposed 2D conv: kh={kh} kw={kw} stride=({sh},{sw}) "
-                    f"dilation=(1,1) pad=0 C={c}"
-                ),
-                "tags": ["status:draft"],
-                "axes": {
-                    "N":     {"type": "var"},
-                    "H":     {"type": "var", "parent": "N"},
-                    "W":     {"type": "var", "parent": "N"},
-                    "H_out": {"type": "var", "parent": "N",
-                              "description": "Derived: (H - 1) * sh + kh"},
-                    "W_out": {"type": "var", "parent": "N",
-                              "description": "Derived: (W - 1) * sw + kw"},
-                    "C":     {"type": "const", "value": c},
-                    "Kh":    {"type": "const", "value": kh},
-                    "Kw":    {"type": "const", "value": kw},
-                    "Sh":    {"type": "const", "value": sh},
-                    "Sw":    {"type": "const", "value": sw},
-                    "Dh":    {"type": "const", "value": 1},
-                    "Dw":    {"type": "const", "value": 1},
-                },
-                "inputs": {
-                    "input":  {"shape": ["N", "C", "H", "W"], "dtype": "float32"},
-                    "weight": {"shape": ["C", "Kh", "Kw"], "dtype": "float32"},
-                    "bias":   {"shape": ["C"], "dtype": "float32"},
-                },
-                "outputs": {
-                    "output": {"shape": ["N", "C", "H_out", "W_out"], "dtype": "float32"},
-                },
-                "constraints": [
-                    "H_out == (H - 1) * Sh + Kh",
-                    "W_out == (W - 1) * Sw + Kw",
-                ],
-                "reference": ref_code,
-            }
-
-            workload_lines = []
-            for h, w in sorted(set(hw_pairs)):
-                wl = {
-                    "axes": {"N": 1, "H": h, "W": w},
-                    "scalar_inputs": {
-                        "activation_type": 0,
-                    },
-                    "uuid": uuid.uuid4().hex,
-                    "tags": {"from": "gen_definitions"},
-                }
-                workload_lines.append(wl)
-
-            _write_json(DEFS_DIR / "deconv2d_depthwise" / f"{def_name}.json", defn)
-            _write_jsonl(WLS_DIR / "deconv2d_depthwise" / f"{def_name}.jsonl", workload_lines)
-            print(f"  [deconv2d_depthwise] {def_name}  ({len(workload_lines)} workloads)")
+        _write_json(DEFS_DIR / "deconv2d_depthwise" / f"{name}.json", defn)
+        _write_jsonl(WLS_DIR / "deconv2d_depthwise" / f"{name}.jsonl", workload_lines)
+        print(f"  [deconv2d_depthwise] {name}  ({len(workload_lines)} workloads)")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     print("Generating definitions and workloads...")
+    _gen_conv2d()
     _gen_conv1d()
     _gen_conv2d_depthwise()
     _gen_deconv2d()
     _gen_deconv2d_depthwise()
-    print("Done.")
+    print("\nDone.")
 
 
 if __name__ == "__main__":

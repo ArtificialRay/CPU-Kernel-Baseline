@@ -23,7 +23,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 TERRAFORM_DIR = REPO_ROOT / "terraform"
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
-
+DATASET_BUILDS_PATH = REPO_ROOT / "eval" / "dataset_builds.json"
 # Map ISA targets to instance types
 ISA_INSTANCE_MAP = {
     "neon": "c7g.large",
@@ -100,14 +100,59 @@ def _tf_output() -> dict:
     return json.loads(result.stdout)
 
 
-def provision(instance_type: str = "c7g.large", initial_build: str = "") -> InstanceHandle:
+
+def _run_dataset_build(handle: InstanceHandle, dataset: str) -> None:
+    """Run dataset-specific build steps on the remote, as defined in dataset_builds.json."""
+    if not DATASET_BUILDS_PATH.exists():
+        return
+    steps = json.load(DATASET_BUILDS_PATH.open()).get(dataset, [])
+    if not steps:
+        return
+    print(f"[provision] Building dataset '{dataset}' ({len(steps)} step(s))...")
+    for step in steps:
+        label = step["label"]
+        print(f"[provision]   {label}...")
+        rc, _, err = handle.run(step["cmd"], timeout=step.get("timeout", 300))
+        if rc != 0:
+            print(f"[provision]   WARNING: {label} failed: {err[:200]}")
+
+
+def _install_deps(handle: InstanceHandle) -> None:
+    """Install system and Python dependencies on the remote instance."""
+    steps = [
+        (
+            "apt packages",
+            "sudo apt-get update -qq && "
+            "sudo apt-get install -y -qq python3-pip clang-18 cmake libomp-18-dev",
+            300,
+        ),
+        (
+            "pip packages",
+            "pip3 install --user --break-system-packages -r ~/arm-bench/requirements.txt",
+            120,
+        ),
+        (
+            "perf counters",
+            "sudo sysctl -w kernel.perf_event_paranoid=1",
+            10,
+        ),
+    ]
+    for label, cmd, timeout in steps:
+        print(f"[provision] Installing {label}...")
+        rc, _, err = handle.run(cmd, timeout=timeout)
+        if rc != 0:
+            print(f"[provision] WARNING: {label} failed: {err[:200]}")
+
+
+def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset: str = "") -> InstanceHandle:
     """
-    Run terraform apply to provision an instance. Blocks until SSH is available
-    and source is rsynced.
+    Run terraform apply to provision an instance. Blocks until SSH is available,
+    rsyncs source, installs deps, and runs dataset-specific build steps.
 
     Args:
         instance_type: EC2 instance type string (e.g. "c7g.large", "c8g.large")
         initial_build: make target for initial build, e.g. "c-scalar". Empty = skip.
+        dataset: Dataset name (e.g. "ncnn") — triggers build steps from dataset_builds.json.
     """
     is_c8g = "c8g" in instance_type
     print(f"[provision] Provisioning {instance_type} via Terraform...")
@@ -157,6 +202,10 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "") -> Inst
         excludes=["build", ".git", "terraform", "generations", "results",
                   "__pycache__", "*.pyc"],
     )
+
+    _install_deps(handle)
+    if dataset:
+        _run_dataset_build(handle, dataset)
 
     _save_config(handle)
     print(f"[provision] Done. SSH: ssh -i {key_file} ubuntu@{host}")
@@ -250,32 +299,61 @@ def teardown():
         raise RuntimeError("terraform destroy failed")
     if EVAL_CONFIG_PATH.exists():
         config = json.loads(EVAL_CONFIG_PATH.read_text())
-        # Clear host entries but keep structure
+        # Clear host entries but keep structure; handle both dict and list formats.
         for tier in config.get("instances", {}):
-            config["instances"][tier]["host"] = ""
+            val = config["instances"][tier]
+            if isinstance(val, list):
+                for entry in val:
+                    entry["host"] = ""
+            elif isinstance(val, dict):
+                val["host"] = ""
         EVAL_CONFIG_PATH.write_text(json.dumps(config, indent=2))
     print("[teardown] Instance terminated.")
 
 
-def get_running_instance(isa: str) -> InstanceHandle | None:
-    """
-    Return a handle to a running instance for the given ISA, if configured.
-    Reads from eval_config.json.
+def get_running_instances(isa: str, n: int = 1) -> list[InstanceHandle]:
+    """Return up to n InstanceHandles for running instances of the given ISA.
+
+    Reads from eval_config.json. The value for each tier can be a single dict
+    (legacy, single-instance) or a list of dicts (multi-instance). Entries with
+    an empty host are skipped.
+
+    Multi-instance example (eval_config.json):
+        {"instances": {"c8g": [
+            {"host": "1.2.3.4", "user": "ubuntu", "key_file": "~/.ssh/id_rsa"},
+            {"host": "5.6.7.8", "user": "ubuntu", "key_file": "~/.ssh/id_rsa"}
+        ]}}
     """
     if not EVAL_CONFIG_PATH.exists():
-        return None
+        return []
     config = json.loads(EVAL_CONFIG_PATH.read_text())
     tier = "c8g" if isa in ("sve2", "sme2") else "c7g"
-    inst = config.get("instances", {}).get(tier, {})
-    host = inst.get("host", "")
-    if not host:
-        return None
-    return InstanceHandle(
-        host=host,
-        user=inst.get("user", "ubuntu"),
-        key_file=inst.get("key_file", "~/.ssh/id_rsa"),
-        instance_type=ISA_INSTANCE_MAP.get(isa, "c7g.large"),
-    )
+    raw = config.get("instances", {}).get(tier)
+    if raw is None:
+        return []
+
+    instance_type = ISA_INSTANCE_MAP.get(isa, "c7g.large")
+    entries = raw if isinstance(raw, list) else [raw]
+
+    handles = []
+    for entry in entries[:n]:
+        host = entry.get("host", "")
+        if not host:
+            continue
+        handles.append(InstanceHandle(
+            host=host,
+            user=entry.get("user", "ubuntu"),
+            key_file=entry.get("key_file", "~/.ssh/id_rsa"),
+            instance_type=instance_type,
+            instance_id=entry.get("instance_id"),
+        ))
+    return handles
+
+
+def get_running_instance(isa: str) -> InstanceHandle | None:
+    """Return a handle to a single running instance for the given ISA, if configured."""
+    handles = get_running_instances(isa, 1)
+    return handles[0] if handles else None
 
 
 def get_or_provision(isa: str) -> InstanceHandle:
@@ -315,11 +393,11 @@ def _save_config(handle: InstanceHandle):
 
     tier = "c8g" if "c8g" in handle.instance_type else "c7g"
     config.setdefault("instances", {})
-    config["instances"][tier] = {
-        "host": handle.host,
-        "user": handle.user,
-        "key_file": handle.key_file,
-    }
+    entry: dict = {"host": handle.host, "user": handle.user, "key_file": handle.key_file}
+    if handle.instance_id:
+        entry["instance_id"] = handle.instance_id
+    # Single-instance dict format; users may manually convert to list for multi-instance.
+    config["instances"][tier] = entry
     EVAL_CONFIG_PATH.write_text(json.dumps(config, indent=2))
 
 

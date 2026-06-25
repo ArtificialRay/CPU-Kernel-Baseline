@@ -30,10 +30,6 @@ class SimdLoopBuilder(Builder):
     def __init__(self) -> None:
         super().__init__(build_dir_name="armbench-simdloop")
 
-    @staticmethod
-    def is_available() -> bool:
-        return shutil.which("clang++") is not None
-
     def can_build(self, solution: Solution, is_baseline: bool) -> bool:
         return solution.dataset == SupportedDatasets.SIMD_LOOP
 
@@ -69,7 +65,7 @@ class SimdLoopBuilder(Builder):
                 include_dirs = [_HARNESS_DIR, sources_dir]
 
             so_path = build_dir / f"{solution.name[:64]}.so"
-            cmd: List[str] = ["clang++", "-shared", "-fPIC"]
+            cmd: List[str] = [self._cxx, "-shared", "-fPIC"]
             cmd += list(solution.spec.compile_flags or [])
             for inc in include_dirs:
                 cmd += ["-I", str(inc)]

@@ -3,3 +3,5 @@ litellm
 pydantic>=2.0
 numpy
 torch
+dotenv
+boto3
