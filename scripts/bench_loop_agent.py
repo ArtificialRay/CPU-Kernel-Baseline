@@ -240,12 +240,22 @@ def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
 
         ds = SimdLoopDataset()
         import numpy as np
-        workloads = [w for w in ts.workloads.get(op_type, [])
-                     if (edge_only and w.tags.get("source") == "edge") or not edge_only]
+        # Correctness is checked on the small EDGE workloads (fast feedback); the
+        # reported latency comes from the large PERF workloads (N in the millions)
+        # — same scale the timing sweep / autovec baseline use. Timing only the
+        # edge workloads is meaningless: max N≈10k is dominated by call overhead.
+        edge_wls = sorted((w for w in ts.workloads.get(op_type, [])
+                           if w.tags.get("source") == "edge"), key=lambda w: w.axes["N"])
+        perf_wls = sorted((w for w in ts.workloads.get(op_type, [])
+                           if w.tags.get("source") == "perf"), key=lambda w: w.axes["N"])
+        workloads = edge_wls if edge_only else (edge_wls + perf_wls)
 
         results = []
         all_passed = True
         for wl in workloads:
+            # Don't run a huge perf input through a kernel that already failed edge.
+            if wl.tags.get("source") == "perf" and not all_passed:
+                break
             np_inputs = gen_inputs_for_workload(d, wl)
             ctx = ds.wrap_inputs(np_inputs, op_type, lib, definition=d)
             rc = sym(*ctx.entry_args)
@@ -266,9 +276,16 @@ def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
             if hasattr(ref_arr, "detach"):
                 ref_arr = ref_arr.detach().numpy()
 
-            diff = abs(float(out[0]) - float(ref_arr.flat[0]))
-            tol = 1e-2 if d.inputs["a"].dtype.value in ("float32", "float64") else 1
-            ok = diff <= tol
+            ref_scalar = float(ref_arr.flat[0])
+            diff = abs(float(out[0]) - ref_scalar)
+            # Hybrid abs+rel tolerance: at perf N (millions) float reductions
+            # differ from numpy purely by summation order, so a fixed abs tol
+            # would false-fail correct kernels. Integers must be near-exact.
+            if d.inputs["a"].dtype.value in ("float32", "float64"):
+                ok = diff <= max(1e-2, 1e-2 * abs(ref_scalar))
+            else:
+                ok = diff <= 1
+            tol = None
 
             # Time it (only if correct)
             min_ns = None
@@ -281,6 +298,7 @@ def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
 
             results.append({
                 "N": wl.axes["N"],
+                "source": wl.tags.get("source"),
                 "status": "passed" if ok else "incorrect",
                 "diff": diff,
                 "min_ns": min_ns,
@@ -363,7 +381,7 @@ def run_agent(loop_id: str, model: str, api_key: str, max_turns: int, compiler: 
         messages.append({"role": "assistant", "content": raw})
 
         print(f"Kernel preview: {kernel[:120].replace(chr(10), ' ')}...")
-        result = _eval_kernel(kernel, prob, ts)
+        result = _eval_kernel(kernel, prob, ts, edge_only=False)
         status = result["status"]
 
         if status == "compile_error":
@@ -380,21 +398,25 @@ def run_agent(loop_id: str, model: str, api_key: str, max_turns: int, compiler: 
                 print(f"    N={r['N']:6d}: {r['status']}  diff={r.get('diff', '?'):.2e}")
 
         elif status == "passed":
-            ns_list = [r["min_ns"] for r in result["results"] if r.get("min_ns")]
-            min_ns = min(ns_list) if ns_list else None
+            # Optimize on the PERF latency: the largest-N timed workload, not the
+            # min (which would be the tiny edge case ≈ call overhead).
+            timed = [r for r in result["results"] if r.get("min_ns")]
+            perf_r = max(timed, key=lambda r: r["N"]) if timed else None
+            perf_ns = perf_r["min_ns"] if perf_r else None
+            n_perf = perf_r["N"] if perf_r else 0
             print(f"  PASSED — timing:")
             for r in result["results"]:
                 ns_str = f"{r['min_ns']} ns" if r.get("min_ns") else "n/a"
-                print(f"    N={r['N']:6d}: {r['status']}  {ns_str}")
+                tag = f" [{r.get('source')}]" if r.get("source") else ""
+                print(f"    N={r['N']:>9d}: {r['status']}  {ns_str}{tag}")
 
-            if min_ns is not None and (best_ns is None or min_ns < best_ns):
-                best_ns = min_ns
+            if perf_ns is not None and (best_ns is None or perf_ns < best_ns):
+                best_ns = perf_ns
                 best_kernel = kernel
-                print(f"  → New best: {best_ns} ns")
+                print(f"  → New best (perf N={n_perf}): {best_ns} ns")
 
             if turn < max_turns:
-                n_perf = next((r["N"] for r in result["results"] if r.get("min_ns")), 0)
-                ns_perf = next((r["min_ns"] for r in result["results"] if r.get("min_ns")), None)
+                ns_perf = perf_ns
                 feedback = (
                     f"Correct! Best timing so far: {ns_perf} ns at N={n_perf}.\n"
                     f"Can you optimize further? Try unrolling more, using wider accumulators, "
