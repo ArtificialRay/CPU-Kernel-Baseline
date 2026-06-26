@@ -1479,6 +1479,63 @@ _MULTI_AXIS: dict[str, dict] = {
             '}\n'
         ),
     },
+    "loop_104": {
+        # Byte-value histogram: histogram[data[i]]++ over a uint8 buffer.
+        # Output `histogram` (output-override, first ptr) has `histogram_size`
+        # buckets (const = 256, the full byte range); input `data` has n bytes.
+        "axes":       ["n"],
+        "abi_axes":   ["histogram_size", "n"],
+        "const_axes": {"histogram_size": 256},
+        "inputs":     {"data": ["n"]},
+        "output":     ("histogram", ["histogram_size"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(data):\n"
+            "    return np.bincount(data.astype(np.int64), minlength=256)[:256].astype(np.uint32)\n"
+        ),
+        "sizes": {"edge": [{"n": 1}, {"n": 7}, {"n": 64}, {"n": 9999}, {"n": 10001}],
+                  "perf": [{"n": 50000}]},
+        "scalar": (
+            '#include "loop_104.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_104(struct loop_104_data *data) {\n'
+            '    uint32_t *histogram = data->histogram;\n'
+            '    uint64_t histogram_size = data->histogram_size;\n'
+            '    uint8_t *d = data->data;\n'
+            '    int n = data->n;\n'
+            '    for (uint64_t i = 0; i < histogram_size; i++) histogram[i] = 0;\n'
+            '    for (int i = 0; i < n; i++) histogram[d[i]] += 1;\n'
+            '}\n'
+        ),
+    },
+    "loop_102": {
+        # General histogram: histogram[records[i]]++ over a uint32 record stream.
+        # Output `histogram` (output-override) has `histogram_size` buckets
+        # (const = 128; random records are [1,100] < 128); input `records` has num_records.
+        "axes":       ["num_records"],
+        "abi_axes":   ["histogram_size", "num_records"],
+        "const_axes": {"histogram_size": 128},
+        "inputs":     {"records": ["num_records"]},
+        "output":     ("histogram", ["histogram_size"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(records):\n"
+            "    return np.bincount(records.astype(np.int64), minlength=128)[:128].astype(np.uint32)\n"
+        ),
+        "sizes": {"edge": [{"num_records": 1}, {"num_records": 7}, {"num_records": 64},
+                           {"num_records": 9999}, {"num_records": 10001}],
+                  "perf": [{"num_records": 50000}]},
+        "scalar": (
+            '#include "loop_102.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_102(struct loop_102_data *data) {\n'
+            '    uint32_t *histogram = data->histogram;\n'
+            '    uint64_t histogram_size = data->histogram_size;\n'
+            '    uint32_t *records = data->records;\n'
+            '    int64_t num_records = data->num_records;\n'
+            '    for (uint64_t i = 0; i < histogram_size; i++) histogram[i] = 0;\n'
+            '    for (int64_t i = 0; i < num_records; i++) histogram[records[i]] += 1;\n'
+            '}\n'
+        ),
+    },
 }
 
 
