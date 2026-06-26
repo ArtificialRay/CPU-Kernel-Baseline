@@ -8,7 +8,7 @@ Real SVE2 latency for both baseline solutions of every simd-loop, measured on a
 - **autovec**   = same source, `-O3 -march=native` (→ `armv9-a+sve2` on Graviton)
 - **speedup**   = reference / autovec (how much the compiler's auto-vectorization wins)
 
-Date: 2026-06-26. Instance torn down after the run.
+Date: 2026-06-26 (re-run; instance `c8g.large` still live for follow-up agent runs).
 
 ## Headline
 **Geomean autovec/reference speedup = 1.42× across 47 loops.** Auto-vectorization
@@ -38,56 +38,58 @@ reassociated without fast-math, or the scalar code is already optimal.
 
 ## Full table
 ```
-loop          reference us   autovec us   speedup
-loop_001          11496.09     11514.42     1.00x
-loop_002           6521.86      3936.37     1.66x
-loop_003          23235.07     23053.38     1.01x
-loop_004          19760.60     14946.43     1.32x
-loop_005             15.30        15.27     1.00x
-loop_006             31.05        30.92     1.00x
-loop_008          22987.98     22976.74     1.00x
-loop_010           9964.61      9958.61     1.00x
-loop_024          10292.12      1995.52     5.16x
-loop_027         144233.92    140891.20     1.02x
-loop_028          29161.96     28676.01     1.02x
-loop_029          24891.99     24875.84     1.00x
-loop_032           8646.02      8950.07     0.97x
-loop_033          23184.93     23065.37     1.01x
-loop_034              3.95         3.96     1.00x
-loop_035           8451.63      4198.30     2.01x
-loop_037             38.67        30.07     1.29x
-loop_038            301.14        11.36    26.51x
-loop_101              4.66         1.11     4.20x
-loop_102             26.73        27.03     0.99x
-loop_103             14.27        14.37     0.99x
-loop_104             26.17        26.08     1.00x
-loop_105          12034.69     12038.72     1.00x
-loop_106            307.14       307.18     1.00x
-loop_108          36917.49     10280.17     3.59x
-loop_109             38.11        12.10     3.15x
-loop_110             58.76        20.79     2.83x
-loop_112             46.21        34.67     1.33x
-loop_113          13257.23      8990.43     1.47x
-loop_114           4804.84       920.38     5.22x
-loop_120             49.82        50.48     0.99x
-loop_121           1229.12      1236.16     0.99x
-loop_122             23.75        23.34     1.02x
-loop_123            481.00       478.78     1.00x
-loop_124          28992.51     28890.24     1.00x
-loop_126             14.89        14.90     1.00x
-loop_127              5.48         5.48     1.00x
-loop_128           9079.79      4158.88     2.18x
-loop_130            123.55       124.72     0.99x
-loop_135             98.90        98.99     1.00x
-loop_216             52.46        52.27     1.00x
-loop_217             26.55         5.80     4.58x
-loop_218             54.24        53.90     1.01x
-loop_219             31.30        30.27     1.03x
-loop_220             41.48        37.16     1.12x
-loop_221             41.51        39.65     1.05x
-loop_223             70.17        70.03     1.00x
+loop          reference us   autovec us   speedup  status
+loop_001          11586.91     11550.13     1.00x  ok
+loop_002           6717.95      3829.74     1.75x  ok
+loop_003          23581.25     23359.25     1.01x  ok
+loop_004          19024.34     15145.92     1.26x  ok
+loop_005             15.30        15.34     1.00x  ok
+loop_006             31.04        30.81     1.01x  ok
+loop_008          23068.37     22989.93     1.00x  ok
+loop_010           9969.95     10013.62     1.00x  ok
+loop_024          10305.95      1998.64     5.16x  ok
+loop_027         144466.01    141920.11     1.02x  ok
+loop_028          29256.82     28793.58     1.02x  ok
+loop_029          25037.63     25012.07     1.00x  ok
+loop_032           9527.77      8861.44     1.08x  ok
+loop_033          23211.42     23061.86     1.01x  ok
+loop_034              3.94         3.96     0.99x  ok
+loop_035           8494.91      4374.56     1.94x  ok
+loop_037             37.78        29.91     1.26x  ok
+loop_038            301.11        11.70    25.74x  ok
+loop_101              4.69         1.13     4.15x  ok
+loop_102             26.65        27.04     0.99x  ok
+loop_103             14.49        14.58     0.99x  ok
+loop_104             26.18        26.11     1.00x  ok
+loop_105          12030.63     12026.87     1.00x  ok
+loop_106            307.09       307.03     1.00x  ok
+loop_108          36996.22     10217.74     3.62x  ok
+loop_109             38.17        12.51     3.05x  ok
+loop_110             58.75        20.79     2.83x  ok
+loop_112             45.67        32.24     1.42x  ok
+loop_113          13159.23      8874.48     1.48x  ok
+loop_114           4811.80       916.78     5.25x  ok
+loop_120             50.45        50.34     1.00x  ok
+loop_121           1270.03      1222.60     1.04x  ok
+loop_122             23.52        23.30     1.01x  ok
+loop_123            480.70       477.37     1.01x  ok
+loop_124          28985.97     31264.44     0.93x  ok
+loop_126             14.90        14.92     1.00x  ok
+loop_127              5.49         5.51     1.00x  ok
+loop_128           9074.30      4327.49     2.10x  ok
+loop_130            123.68       124.78     0.99x  ok
+loop_135             98.91        98.97     1.00x  ok
+loop_216             52.34        52.26     1.00x  ok
+loop_217             26.54         5.80     4.58x  ok
+loop_218             54.20        54.04     1.00x  ok
+loop_219             30.68        29.85     1.03x  ok
+loop_220             41.48        37.15     1.12x  ok
+loop_221             41.52        39.63     1.05x  ok
+loop_223             69.97        70.01     1.00x  ok
 geomean: 1.42x over 47 loops
 ```
+(Run-to-run noise is sub-percent on most loops; loop_124 radix sort is the one
+mild autovec regression — 0.93×.)
 
 ## Notes
 - Reproduce: `python eval/provision.py --isa sve2 --codebase ""`, then on the
