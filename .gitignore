@@ -14,7 +14,6 @@ build/
 .DS_Store
 
 # Claude Code session data
-.claude/
 .codegraph/
 
 # Python
@@ -60,3 +59,7 @@ notebooks/
 
 # Local clone of the HuggingFace arm-bench-trace dataset (not part of the repo)
 arm-bench/
+
+# Claude Code project settings (keep skills/ but not local config)
+.claude/settings.json
+.claude/settings.local.json
