@@ -109,95 +109,6 @@ PROBLEMS = {
     },
 }
 
-# ── Auto-extend the problem table from bench-trace reference solutions ─────────
-# The three loops above are hand-curated. Every other scalar-output loop has a
-# `reference` solution whose harness sources already contain exactly what the
-# agent prompt needs: the struct (in `loop_NNN.h`) and the scalar inner loop
-# (in `kernel.cpp`). Extract them so the agent can target many loops without
-# hand-writing each one. Loops the extractor can't cleanly parse are skipped.
-
-# Scalar-output reduction loops whose eval shape matches `_eval_kernel`
-# (input `a` present, single scalar `res` output).
-_AUTO_SCALAR_LOOPS = [
-    "loop_004", "loop_008", "loop_010", "loop_024",
-    "loop_032", "loop_033", "loop_126", "loop_127",
-]
-
-
-def _extract_braced_block(text: str, start_idx: int) -> Optional[str]:
-    """Return text[start_idx:] up to and including the brace-balanced block."""
-    open_brace = text.find("{", start_idx)
-    if open_brace == -1:
-        return None
-    depth = 0
-    for i in range(open_brace, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                # include trailing ';' for structs
-                end = i + 1
-                if end < len(text) and text[end] == ";":
-                    end += 1
-                return text[start_idx:end]
-    return None
-
-
-def _load_problem_from_trace(loop_id: str) -> Optional[dict]:
-    """Build a PROBLEMS-style entry from the `reference` solution sources."""
-    import glob
-    sol_glob = str(BENCH_TRACE / "solutions" / "simd-loop" / "reference" / loop_id / "*.json")
-    matches = glob.glob(sol_glob)
-    if not matches:
-        return None
-    try:
-        sol = json.loads(Path(matches[0]).read_text())
-        srcs = {s["path"]: s["content"] for s in sol.get("sources", [])}
-        hdr = srcs.get(f"{loop_id}.h", "")
-        kern = srcs.get("kernel.cpp", "")
-
-        si = hdr.find(f"struct {loop_id}_data")
-        struct_def = _extract_braced_block(hdr, si) if si != -1 else None
-
-        func = f"inner_{loop_id}"
-        fi = kern.find(f"void {func}")
-        scalar_code = None
-        if fi != -1:
-            # back up to the start of the declaration (extern "C" ...)
-            line_start = kern.rfind("\n", 0, fi) + 1
-            block = _extract_braced_block(kern, line_start)
-            if block:
-                scalar_code = block.strip()
-
-        if not struct_def or not scalar_code:
-            return None
-
-        dpath = BENCH_TRACE / "definitions" / "simd-loop" / f"{loop_id}.json"
-        name = loop_id
-        purpose = "Vectorize the scalar reduction below for SVE2/NEON."
-        if dpath.exists():
-            d = json.loads(dpath.read_text())
-            name = d.get("name", loop_id)
-            purpose = d.get("description", purpose)
-
-        return {
-            "name": name, "purpose": purpose,
-            "struct_def": struct_def.strip(),
-            "scalar_code": scalar_code,
-            "header": f"{loop_id}.h", "func": func,
-        }
-    except (OSError, ValueError, KeyError):
-        return None
-
-
-for _lid in _AUTO_SCALAR_LOOPS:
-    if _lid not in PROBLEMS:
-        _entry = _load_problem_from_trace(_lid)
-        if _entry is not None:
-            PROBLEMS[_lid] = _entry
-
-
 # ── Compile + eval ────────────────────────────────────────────────────────────
 
 def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
@@ -240,22 +151,12 @@ def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
 
         ds = SimdLoopDataset()
         import numpy as np
-        # Correctness is checked on the small EDGE workloads (fast feedback); the
-        # reported latency comes from the large PERF workloads (N in the millions)
-        # — same scale the timing sweep / autovec baseline use. Timing only the
-        # edge workloads is meaningless: max N≈10k is dominated by call overhead.
-        edge_wls = sorted((w for w in ts.workloads.get(op_type, [])
-                           if w.tags.get("source") == "edge"), key=lambda w: w.axes["N"])
-        perf_wls = sorted((w for w in ts.workloads.get(op_type, [])
-                           if w.tags.get("source") == "perf"), key=lambda w: w.axes["N"])
-        workloads = edge_wls if edge_only else (edge_wls + perf_wls)
+        workloads = [w for w in ts.workloads.get(op_type, [])
+                     if (edge_only and w.tags.get("source") == "edge") or not edge_only]
 
         results = []
         all_passed = True
         for wl in workloads:
-            # Don't run a huge perf input through a kernel that already failed edge.
-            if wl.tags.get("source") == "perf" and not all_passed:
-                break
             np_inputs = gen_inputs_for_workload(d, wl)
             ctx = ds.wrap_inputs(np_inputs, op_type, lib, definition=d)
             rc = sym(*ctx.entry_args)
@@ -276,16 +177,9 @@ def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
             if hasattr(ref_arr, "detach"):
                 ref_arr = ref_arr.detach().numpy()
 
-            ref_scalar = float(ref_arr.flat[0])
-            diff = abs(float(out[0]) - ref_scalar)
-            # Hybrid abs+rel tolerance: at perf N (millions) float reductions
-            # differ from numpy purely by summation order, so a fixed abs tol
-            # would false-fail correct kernels. Integers must be near-exact.
-            if d.inputs["a"].dtype.value in ("float32", "float64"):
-                ok = diff <= max(1e-2, 1e-2 * abs(ref_scalar))
-            else:
-                ok = diff <= 1
-            tol = None
+            diff = abs(float(out[0]) - float(ref_arr.flat[0]))
+            tol = 1e-2 if d.inputs["a"].dtype.value in ("float32", "float64") else 1
+            ok = diff <= tol
 
             # Time it (only if correct)
             min_ns = None
@@ -298,7 +192,6 @@ def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
 
             results.append({
                 "N": wl.axes["N"],
-                "source": wl.tags.get("source"),
                 "status": "passed" if ok else "incorrect",
                 "diff": diff,
                 "min_ns": min_ns,
@@ -381,7 +274,7 @@ def run_agent(loop_id: str, model: str, api_key: str, max_turns: int, compiler: 
         messages.append({"role": "assistant", "content": raw})
 
         print(f"Kernel preview: {kernel[:120].replace(chr(10), ' ')}...")
-        result = _eval_kernel(kernel, prob, ts, edge_only=False)
+        result = _eval_kernel(kernel, prob, ts)
         status = result["status"]
 
         if status == "compile_error":
@@ -398,25 +291,21 @@ def run_agent(loop_id: str, model: str, api_key: str, max_turns: int, compiler: 
                 print(f"    N={r['N']:6d}: {r['status']}  diff={r.get('diff', '?'):.2e}")
 
         elif status == "passed":
-            # Optimize on the PERF latency: the largest-N timed workload, not the
-            # min (which would be the tiny edge case ≈ call overhead).
-            timed = [r for r in result["results"] if r.get("min_ns")]
-            perf_r = max(timed, key=lambda r: r["N"]) if timed else None
-            perf_ns = perf_r["min_ns"] if perf_r else None
-            n_perf = perf_r["N"] if perf_r else 0
+            ns_list = [r["min_ns"] for r in result["results"] if r.get("min_ns")]
+            min_ns = min(ns_list) if ns_list else None
             print(f"  PASSED — timing:")
             for r in result["results"]:
                 ns_str = f"{r['min_ns']} ns" if r.get("min_ns") else "n/a"
-                tag = f" [{r.get('source')}]" if r.get("source") else ""
-                print(f"    N={r['N']:>9d}: {r['status']}  {ns_str}{tag}")
+                print(f"    N={r['N']:6d}: {r['status']}  {ns_str}")
 
-            if perf_ns is not None and (best_ns is None or perf_ns < best_ns):
-                best_ns = perf_ns
+            if min_ns is not None and (best_ns is None or min_ns < best_ns):
+                best_ns = min_ns
                 best_kernel = kernel
-                print(f"  → New best (perf N={n_perf}): {best_ns} ns")
+                print(f"  → New best: {best_ns} ns")
 
             if turn < max_turns:
-                ns_perf = perf_ns
+                n_perf = next((r["N"] for r in result["results"] if r.get("min_ns")), 0)
+                ns_perf = next((r["min_ns"] for r in result["results"] if r.get("min_ns")), None)
                 feedback = (
                     f"Correct! Best timing so far: {ns_perf} ns at N={n_perf}.\n"
                     f"Can you optimize further? Try unrolling more, using wider accumulators, "
@@ -442,63 +331,24 @@ def run_agent(loop_id: str, model: str, api_key: str, max_turns: int, compiler: 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def _run_self_test(loops: list, compiler: str) -> int:
-    """Compile + run each loop's scalar baseline through the eval path.
-
-    Validates that every selected loop is wired end-to-end (struct extraction,
-    definition lookup, input gen, correctness, timing) WITHOUT calling any LLM —
-    so the overnight agent run can't be blocked by a mis-wired loop. Returns the
-    number of loops that failed.
-    """
-    ts = TraceSet.from_path(str(BENCH_TRACE))
-    failed = 0
-    for loop_id in loops:
-        prob = PROBLEMS[loop_id]
-        result = _eval_kernel(prob["scalar_code"], prob, ts)
-        status = result["status"]
-        ok = status == "passed"
-        print(f"  {loop_id:10s} {'OK ' if ok else 'FAIL'}  {status}"
-              + ("" if ok else f"  {result.get('message','')[:80]}"))
-        if not ok:
-            failed += 1
-    print(f"\nself-test: {len(loops) - failed}/{len(loops)} loops wired correctly")
-    return failed
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--loop", default="loop_001", choices=list(PROBLEMS))
     ap.add_argument("--all-loops", action="store_true")
-    ap.add_argument("--loops", default="", help="comma-separated loop ids, e.g. loop_001,loop_024")
     ap.add_argument("--max-turns", type=int, default=5)
     ap.add_argument("--model", default="openrouter/anthropic/claude-opus-4-6")
     ap.add_argument("--key", default=os.environ.get("OPENROUTER_API_KEY", ""))
-    ap.add_argument("--self-test", action="store_true",
-                    help="validate loop wiring via the scalar baseline (no LLM/key needed)")
     args = ap.parse_args()
-
-    if args.loops:
-        loops = [l.strip() for l in args.loops.split(",") if l.strip()]
-        unknown = [l for l in loops if l not in PROBLEMS]
-        if unknown:
-            print(f"ERROR: unknown loop(s): {unknown}\nknown: {sorted(PROBLEMS)}")
-            sys.exit(1)
-    elif args.all_loops:
-        loops = list(PROBLEMS)
-    else:
-        loops = [args.loop]
-
-    compiler = _find_compiler()
-    print(f"Using compiler: {compiler}")
-    _patch_compiler(compiler)
-
-    if args.self_test:
-        sys.exit(1 if _run_self_test(loops, compiler) else 0)
 
     if not args.key:
         print("ERROR: set OPENROUTER_API_KEY or pass --key")
         sys.exit(1)
 
+    compiler = _find_compiler()
+    print(f"Using compiler: {compiler}")
+    _patch_compiler(compiler)
+
+    loops = list(PROBLEMS) if args.all_loops else [args.loop]
     for loop_id in loops:
         run_agent(loop_id, args.model, args.key, args.max_turns, compiler)
 

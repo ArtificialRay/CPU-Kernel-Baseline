@@ -244,14 +244,14 @@ solutions should be structured. When adding or modifying simd-loop code, match i
 
 ## Open TODOs
 
-### Immediate (block PR #23 merge)
-- [ ] Rebase `feat/simd-loop-sort-123-124` on main (PR #22 changed `simd_loop.py` API)
-- [ ] Fix `scripts/test_reference_scalars.py`: drop `sig_from_definition` import, update `wrap_inputs` call to new signature — **this is also broken on main right now**
-- [ ] Add `uint8`/`uint16` to `_DTYPE_MAP` in `bench/datasets/simd_loop.py` — required for loop_108 (uint8 output), missing from PR #22
-
-### After PR #24 merges (workload format change)
-- [ ] Regenerate all simd-loop JSONL workloads to new `inputs: Dict[str, WorkloadInput]` format
-- [ ] Remove uint32 LCG ramp from `bench/runtime/inputs.py` — PR #24's uuid-seeded random handles all types uniformly; the simd-loop-specific ramp is a hack in a shared file
+### Resolved (was "block PR #23 merge"; all verified done 2026-06-26)
+- [x] Rebased on origin/main (branch is 0 commits behind).
+- [x] `scripts/test_reference_scalars.py` no longer imports `sig_from_definition`; uses the new `wrap_inputs` signature.
+- [x] `uint8`/`uint16` present in `_DTYPE_MAP` (`bench/datasets/simd_loop.py`).
+- [x] Workloads regenerated to `inputs: Dict[str, WorkloadInput]` (PR #24 merged).
+- [x] uint32 LCG ramp removed from `bench/runtime/inputs.py` — generation is type-driven
+  (`_gen_random_tensor` by dtype, `_gen_byte_buffer` for the `bytes` type); the
+  `make_*_ramp` helpers that remain are ncnn's, not a simd-loop hack.
 
 ### Longer term
 - [ ] Add `baseline-sve` solutions to the trace (extract `HAVE_SVE_INTRINSICS` block from `loops/loop_NNN.c` via a new `_extract_sve_kernel()` in the generator) — ncnn has `baseline-ncnn-arm` as its expert ceiling; simd-loop needs the equivalent so agent speedup is measured against both scalar and SVE baselines
