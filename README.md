@@ -1,184 +1,105 @@
 # CPU-Kernel-Baseline
 CPU Kernels/Operators for vision model / LLM extracted from 5 codebases, serving as baseline for the project
 
-sync local codebase with remote instance
-**add new files:**
+## Sync local codebase with remote instance
+
+**Add new files:**
 ```bash
 ./arm-bench/sync_remote.sh
 ```
 
-**force mirror:**
+**Force mirror:**
 ```bash
 ./arm-bench/sync_remote.sh --mirror
 ```
 
-**change another instance via ip address**
+**Change another instance via IP address:**
 ```bash
 HOST=1.2.3.4 ./arm-bench/sync_remote.sh
 ```
 
-## How to bench ncnn kernel with arm-bench
-arm-bench is an agentic kernel optimization pipeline for arm SIMD loops. Now arm-bench supports iteratively optimize and evaluate NN operator/kernel. 
+---
 
-### 1. Install dependencies
+## Prerequisites
 
+**Install Python dependencies:**
 ```bash
-pip install litellm
-```
-then cd to arm-bench
-```bash
-cd arm-bench
+pip install litellm python-dotenv
 ```
 
-### 2. Provision an instance
+## Running the benchmark
 
-For the first time to provision an instance, run
-```bash
-cd your-repo-dir/terraform
-```
-then run 
-```bash
-terraform init
-```
+All evaluation is driven by a single entry point:
 
 ```bash
-python eval/provision.py --isa sve2
-# Runs terraform apply, waits for cloud-init, rsyncs source.
-# Writes connection info to eval/eval_config.json automatically.
+python eval/run_benchmark.py --problem <op_type> --dataset <dataset> --model <model>
 ```
 
-Requires: AWS credentials in environment, Terraform installed, `~/.ssh/id_rsa` key pair.
+The benchmark script will prepare all relevant dependencies at remote instance.
 
-### 3. Verify the pipeline (optional)
+---
 
+### Usage examples
+
+**Run a single op type (ncnn dataset, SVE2 / Graviton4 by default):**
 ```bash
-python -m eval.test_workflow --isa sve2
+python eval/run_benchmark.py --problem conv2d --dataset ncnn --model anthropic/claude-opus-4-8
 ```
 
-Injects a known-good scalar candidate for `loop_001`, then exercises compile → run → perf → disassemble end-to-end. Useful after first provisioning to confirm SSH, build, and PMU access all work.
-
-### 4. Collect baselines (run once)
-
+**Run all definitions for a dataset:**
 ```bash
-python scripts/collect_baselines_ncnn.py --isa sve    # c7g (Graviton3, SVE)
-python scripts/collect_baselines_ncnn.py --isa sve2   # c8g (Graviton4, SVE2)
+python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-8
 ```
 
-Builds candidate and baseline targets; records timings to `baselines/{tier}.json` (candidate_ms, baseline_ms).
-
-### 5. Run the benchmark
-set `--mode ncnn` to bench ncnn kernels
-**Agentic mode** (LLM uses tools iteratively):
+**Provision a fresh instance, run, then tear it down automatically:**
 ```bash
-python -m eval.run_benchmark --all --mode ncnn --isa sve --model anthropic/claude-opus-4.6
-python -m eval.run_benchmark --problem conv --mode ncnn --isa sve --model anthropic/claude-sonnet-4.6
+python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-8 \
+    --provision --teardown
 ```
 
-### 6. Teardown
+**Override ISA (e.g. Graviton3 SVE):**
+```bash
+python eval/run_benchmark.py --all --dataset simd-loop --model anthropic/claude-opus-4-8 \
+    --isa sve
+```
+
+**Run simd-loop dataset:**
+```bash
+python eval/run_benchmark.py --problem loop_001 --dataset simd-loop --model anthropic/claude-opus-4-8
+```
+
+---
+
+### All options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--problem <name>` | — | Definition name or op_type prefix (e.g. `conv2d`) |
+| `--all` | — | Run all definitions for the dataset (mutually exclusive with `--problem`) |
+| `--dataset` | `ncnn` | Dataset to benchmark: `ncnn` or `simd-loop` |
+| `--model` | (required) | LiteLLM model string, e.g. `anthropic/claude-opus-4-8` |
+| `--isa` | `sve2` | ISA target: `neon`, `sve`, `sve2`, `sme2` |
+| `--provision` | off | Provision a new instance even if one is already configured |
+| `--teardown` | off | Destroy the instance after evaluation |
+| `--max-turns` | `20` | Max agent turns per definition |
+| `--quiet` | off | Suppress per-turn output |
+| `--no-save` | off | Don't save results to `results/` |
+| `--save-trace` | off | Save full `version_history` to `traces/` |
+| `--skip-baselines` | off | Skip lazy baseline collection (use if baselines are already present) |
+
+### Instance types
+
+| ISA | Instance | Notes |
+|-----|----------|-------|
+| `sve` | `c7g.large` | Graviton3, Neoverse V1, 256-bit SVE |
+| `sve2` | `c8g.large` | Graviton4, Neoverse V2, 128-bit SVE2 (default) |
+
+---
+
+### Teardown
 
 ```bash
 python eval/provision.py --teardown
 ```
 
----
-
-## arm-bench/bench: Walkthroughs & Collect Baseline Kernel Performance(only convolution kernel is supported)
-
-The `bench/` package replaces the per-op `starter/` + `tests/` + `perf/` +
-`candidate_src/` trio with the following schema:
-
-| | |
-|---|---|
-| `definitions/<op>/<name>.json` | framework-agnostic op spec (axes, inputs, outputs, PyTorch reference) |
-| `solutions/<dataset>/<author>/<op>/<name>.json` | concrete C++ kernel + compile/link spec |
-| `solutions/<dataset>/_harness/<op>.{cpp,h}` | shared dataset harness (data, not bench code) |
-| `workloads/<op>/<name>.jsonl` | per-Definition concrete sizes + scalar inputs |
-| `traces/<op>/<name>.jsonl` | one record per benchmarked (Definition, Solution, Workload) |
-
-The workflow to collect runtime performance of convolution kernel
-
-### 1. Install Python deps (once per instance)
-
-Remote (Ubuntu ARM, after `python eval/provision.py --instance c7g.large`):
-```bash
-ssh -i ~/.ssh/id_rsa ubuntu@<host> '
-  sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip clang cmake libomp-dev
-  pip3 install --user --break-system-packages -r ~/arm-bench/requirements.txt
-'
-```
-
-### 2. Build the full ncnn static lib on the instance (one-time per ISA)
-
-Every baseline Solution links against a full `libncnn.a` built from the ncnn
-checkout (`~/ncnn`, a sibling of `~/arm-bench`). It is required for two reasons:
-it resolves Convolution_arm's whole per-ISA helper tree (`convolution_arm_i8mm.cpp`,
-`..._asimddp.cpp`, `..._sve.cpp`, …, each compiled with its own `-march` flags),
-and its CMake configure step generates the `platform.h` the per-solution build
-includes. A hand-picked subset would leave undefined symbols at dlopen, so build
-the whole thing once.
-
-**a. Configure** (fast; also generates `build/src/platform.h`):
-
-```bash
-ssh -i ~/.ssh/id_rsa ubuntu@<host> 'cd ~/ncnn && CC=clang CXX=clang++ cmake -B build -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF'
-```
-
-**b. Build the `ncnn` target only** (compiles the full library — a few minutes
-on a 2-core c7g.large; scale `-j` to the instance):
-
-```bash
-ssh -i ~/.ssh/id_rsa ubuntu@<host> 'cd ~/ncnn && cmake --build build -j"$(nproc)" --target ncnn'
-```
-
-**c. Verify** the archive and generated header exist:
-
-```bash
-ssh -i ~/.ssh/id_rsa ubuntu@<host> 'ls -la ~/ncnn/build/src/libncnn.a ~/ncnn/build/src/platform.h'
-# output: ~/ncnn/build/src/libncnn.a  (the lib the NcnnBuilder links against)
-```
-
-The builder auto-discovers `<repo>/ncnn/build/src/libncnn.a` (override the
-checkout location with `NCNN_ROOT=<path>` when ncnn lives elsewhere — e.g.
-`NCNN_ROOT=/home/ubuntu/ncnn`, a sibling of `arm-bench`). This is a one-time
-cost per instance/ISA: the lib is cached and reused across every baseline build.
-
-### 3. Collect baselines
-
-Before collection, enable perf counter at remote instance by:
-
-```bash
-ssh -i ~/.ssh/id_rsa ubuntu@<host> 'sudo sysctl -w kernel.perf_event_paranoid=1'
-```
-
-Runs every baseline-author Solution against its Definition's workloads, caching
-the timings so candidate `armbench bench` runs can derive `reference_min_ns`
-and `speedup`:
-
-```bash
-ssh -i ~/.ssh/id_rsa ubuntu@<host> 'cd arm-bench && python3 -m bench.cli collect-baselines'
-# → appends a PASSED trace per (Definition, Workload) to traces/conv2d/<def>.jsonl
-```
-
-Pull traces back locally for inspection / source-of-truth versioning:
-```bash
-rsync -avz -e "ssh -i ~/.ssh/id_rsa" ubuntu@<host>:arm-bench/bench-trace/traces/ bench-trace/traces/
-```
-
-### 4. Inspect / run a candidate Solution
-
-Read traces at local or remote instance
-```bash
-cd arm-bench
-python -m bench.cli summary                    # JSON: counts + pass/fail
-python -m bench.cli list-definitions           # def → #solutions / #workloads
-python -m bench.cli list-solutions             # all authors + datasets
-```
-
-Run bench at remote instance
-```bash
-ssh -i ~/.ssh/id_rsa ubuntu@<host> 'cd arm-bench && python -m bench.cli bench \
-  --definition conv2d_kh3_kw3_sh1_sw1_dh1_dw1_c64_c128 \
-  --solution   my-author_my-kernel '
-```
-my-author: reference-scalar / baseline-ncnn-arm
-my-kernel: all solutions under `arm-bench/bench/reference-scalar/conv2d/` or under `arm-bench/bench/baseline-ncnn-arm/conv2d/`
+Or pass `--teardown` directly to `run_benchmark.py` to destroy automatically after evaluation.
