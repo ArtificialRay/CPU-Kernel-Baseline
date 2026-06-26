@@ -21,7 +21,23 @@ class ScalarInput(BaseModelWithDocstrings):
     value: Union[int, float, bool]
 
 
-WorkloadInput = Annotated[Union[RandomInput, ScalarInput], Field(discriminator="type")]
+class BytesInput(BaseModelWithDocstrings):
+    """uint8 byte-buffer input with a structural layout (for sentinel/string loops).
+
+    - ``raw``: uniform random bytes in [1, 100] (no NUL) — for byte-scan loops
+      whose semantics depend only on byte values (e.g. whitespace word-count).
+    - ``cstrings``: random non-NUL bytes [1, 100] with NUL terminators sprinkled in
+      and a guaranteed trailing NUL — concatenated null-terminated strings for
+      strlen/strcmp-style loops that walk to a sentinel `lmt`/`end` pointer.
+    """
+
+    type: Literal["bytes"]
+    layout: Literal["raw", "cstrings"] = "raw"
+
+
+WorkloadInput = Annotated[
+    Union[RandomInput, ScalarInput, BytesInput], Field(discriminator="type")
+]
 
 
 class Workload(BaseModelWithDocstrings):
@@ -44,4 +60,4 @@ class Workload(BaseModelWithDocstrings):
     description: Optional[str] = None
 
 
-__all__ = ["RandomInput", "ScalarInput", "WorkloadInput", "Workload"]
+__all__ = ["RandomInput", "ScalarInput", "BytesInput", "WorkloadInput", "Workload"]

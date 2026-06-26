@@ -64,6 +64,24 @@ def _gen_random_tensor(shape: tuple, dtype, rng: np.random.Generator) -> np.ndar
         return rng.integers(0, 2, shape, dtype=np.uint8).astype(np.bool_)
 
 
+def _gen_byte_buffer(shape: tuple, layout: str, rng: np.random.Generator) -> np.ndarray:
+    """Generate a 1-D uint8 byte buffer for sentinel/string loops.
+
+    ``raw`` — random bytes in [1, 100] (no NUL).
+    ``cstrings`` — random non-NUL bytes with NUL terminators sprinkled in plus a
+    guaranteed trailing NUL, so the buffer is a run of null-terminated strings that
+    always terminates at/before the sentinel `lmt`/`end` pointer.
+    """
+    n = int(np.prod(shape)) if shape else 0
+    buf = rng.integers(1, 101, n, dtype=np.uint8)
+    if layout == "cstrings" and n > 0:
+        # sprinkle ~1/8 NULs, and force a trailing NUL so strlen never runs past lmt
+        nul_idx = rng.random(n) < 0.125
+        buf[nul_idx] = 0
+        buf[n - 1] = 0
+    return buf.reshape(shape)
+
+
 # ── Axis resolution ────────────────────────────────────────────────────────────
 
 def _input_var_axes(d: Definition) -> set:
@@ -114,6 +132,10 @@ _DTYPE_TO_NP = {
     DType.INT32: np.int32,
     DType.INT16: np.int16,
     DType.INT8: np.int8,
+    DType.UINT64: np.uint64,
+    DType.UINT32: np.uint32,
+    DType.UINT16: np.uint16,
+    DType.UINT8: np.uint8,
     DType.BOOL: np.bool_,
 }
 
@@ -150,13 +172,16 @@ def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
         if wi.type == "scalar":
             out[tname] = wi.value
             continue
-        # type == "random"
         if tspec.shape is None:
             raise ValueError(
                 f"Definition '{d.name}' input '{tname}' has shape=null "
-                f"but workload declares it as random (expected scalar)"
+                f"but workload declares it as random/bytes (expected scalar)"
             )
         shape = tuple(axes[a] for a in tspec.shape)
+        if wi.type == "bytes":
+            out[tname] = _gen_byte_buffer(shape, wi.layout, rng)
+            continue
+        # type == "random"
         out[tname] = _gen_random_tensor(shape, _dtype_to_np(tspec.dtype), rng)
 
     return out

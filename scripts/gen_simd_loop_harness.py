@@ -8,7 +8,7 @@ Outputs (all idempotent — safe to re-run):
   bench/compile/builders/simd_loop_harness/loop_NNN.{h,cpp}
   bench-trace/definitions/simd-loop/loop_NNN.json
   bench-trace/workloads/simd-loop/loop_NNN.jsonl
-  bench-trace/solutions/simd-loop/reference-scalar/loop_NNN/reference-scalar_loop_NNN.json
+  bench-trace/solutions/simd-loop/{reference,autovec}/loop_NNN/{reference,autovec}_loop_NNN.json
   bench/datasets/simd_loop.py   ← fully regenerated
 
 Supported loop patterns (auto-generated):
@@ -21,9 +21,7 @@ Loops requiring custom handling (skipped):
   loop_023 — indexes OOB with generated inputs
   loop_101 — output array is FIRST ptr, size ≠ N
   loop_105 — b is scratch buffer, not an input
-  loop_108 — mixed uint32→uint8 pixel; trivially-zero output with values 1-100
   loop_111 — last ptr is input (exponent), not output
-  loop_123, 124 — sort with multiple scratch + extra-scalar params
   p+lmt loops (005, 006, 022, 034, 103) — need string/buffer input generation
   matrix multiply (025, 130, 135-137, 201-221, 223, 231, 245) — 2D m/n/k axes
   complex structs (012, 019, 037, 109, 110, 112, 204, 211, 222) — custom C types
@@ -160,7 +158,7 @@ _RES_NAMES  = {"res", "result", "checksum", "sum", "out", "output"}
 
 # C type → numpy dtype for array outputs (uses proper unsigned types unlike scalar map)
 _array_dtype_map_local = {
-    "float": "float32", "double": "float64",
+    "float": "float32", "double": "float64", "_Float16": "float16",
     "int": "int32", "int32_t": "int32", "int64_t": "int64",
     "uint32_t": "uint32", "uint64_t": "uint64",
     "uint8_t": "uint8", "uint16_t": "uint16",
@@ -171,9 +169,11 @@ _array_dtype_map_local = {
 # In-place sort loops: only "data" is meaningful input/output; extra ptrs are scratch.
 # Custom scalar kernel (std::sort) is injected instead of extracting from loops/*.c.
 _SORT_LOOPS: dict[str, list] = {
-    "loop_120": [],          # no scratch buffers
-    "loop_121": ["temp"],    # temp is scratch
+    "loop_120": [],                       # no scratch buffers
+    "loop_121": ["temp"],                 # temp is scratch
     "loop_122": [],
+    "loop_123": ["temp", "block_sizes"],  # bitonic sort; edge sizes are all powers-of-2
+    "loop_124": ["temp", "hist", "prfx"], # radix sort; hist/prfx oversized to n (SVE uses ≤mvl*16)
 }
 
 
@@ -430,6 +430,48 @@ _CUSTOM_SCALAR_KERNELS: dict[str, str] = {
         '    std::sort(data->data, data->data + data->n);\n'
         '}\n'
     ),
+    "loop_123": (
+        '#include "loop_123.h"\n'
+        '#include <algorithm>\n\n'
+        'extern "C" void inner_loop_123(struct loop_123_data *data) {\n'
+        '    std::sort(data->data, data->data + data->n);\n'
+        '}\n'
+    ),
+    "loop_124": (
+        '#include "loop_124.h"\n'
+        '#include <algorithm>\n\n'
+        'extern "C" void inner_loop_124(struct loop_124_data *data) {\n'
+        '    std::sort(data->data, data->data + data->n);\n'
+        '}\n'
+    ),
+    "loop_108": (
+        '#include "loop_108.h"\n'
+        '#include <stdint.h>\n\n'
+        'extern "C" void inner_loop_108(struct loop_108_data *data) {\n'
+        '    uint32_t *rgba = data->rgba;\n'
+        '    uint8_t *y = data->y;\n'
+        '    int64_t n = data->n;\n'
+        '    for (int64_t i = 0; i < n; i++) {\n'
+        '        y[i] = (rgba[i] >> 24) >> 2;\n'
+        '        y[i] += ((rgba[i] >> 16) & 0xff) >> 1;\n'
+        '        y[i] += ((rgba[i] >> 16) & 0xff) >> 3;\n'
+        '        y[i] += ((rgba[i] >> 8) & 0xff) >> 3;\n'
+        '    }\n'
+        '}\n'
+    ),
+    # Recursive cascade_summation helper chain in loops/loop_105.c can't be
+    # auto-extracted; the cascade result equals the total sum, so accumulate in
+    # double (matches the float64 Python reference). `b` scratch is unused here.
+    "loop_105": (
+        '#include "loop_105.h"\n\n'
+        'extern "C" void inner_loop_105(struct loop_105_data *data) {\n'
+        '    float *a = data->a;\n'
+        '    int n = data->n;\n'
+        '    double res = 0.0;\n'
+        '    for (int i = 0; i < n; i++) res += (double)a[i];\n'
+        '    data->res = (float)res;\n'
+        '}\n'
+    ),
 }
 
 
@@ -479,6 +521,18 @@ _CUSTOM_REFS: dict[str, str] = {
         "    c[valid_od] = c_od[:len(valid_od)]\n"
         "    return c\n"
     ),
+    "loop_108": (
+        # Deinterleave RGBA uint32 → luminance-ish uint8.
+        # rgba is stored as uint32 (see _DTYPE_OVERRIDES) so bitwise shifts work correctly.
+        "import numpy as np\n\n"
+        "def run(rgba):\n"
+        "    u = rgba.view(np.uint32)\n"
+        "    y = (u >> 26).astype(np.uint16)\n"           # (alpha >> 2)  = rgba >> 26
+        "    y += ((u >> 17) & np.uint32(0x7f)).astype(np.uint16)\n"   # red >> 1
+        "    y += ((u >> 19) & np.uint32(0x1f)).astype(np.uint16)\n"   # red >> 3
+        "    y += ((u >> 11) & np.uint32(0x1f)).astype(np.uint16)\n"   # green >> 3
+        "    return y.astype(np.uint8)\n"
+    ),
     "loop_128": (
         "import numpy as np\n\n"
         "def run(a, b):\n"
@@ -489,6 +543,14 @@ _CUSTOM_REFS: dict[str, str] = {
     "loop_121": "import numpy as np\n\ndef run(data):\n    return np.sort(data)\n",
     "loop_122": "import numpy as np\n\ndef run(data):\n    return np.sort(data)\n",
     # ── Scalar-output loops ───────────────────────────────────────────────────
+    "loop_105": (
+        # Cascade (balanced pairwise) summation of `a`. `b` is a scratch buffer
+        # the kernel overwrites — passed as a 2nd "input" by the generic scalar
+        # ABI, ignored by the reference. n is always a power-of-2 >= 16.
+        "import numpy as np\n\n"
+        "def run(a, b):\n"
+        "    return np.float32(np.sum(a.astype(np.float64)))\n"
+    ),
     "loop_010": (
         "import numpy as np\n\n"
         "def run(a):\n"
@@ -648,9 +710,11 @@ def _write_definition(info: LoopInfo) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{info.loop_id}.json"
 
+    dtype_ovr = _DTYPE_OVERRIDES.get(info.loop_id, {})
     inputs = {}
     for f in info.input_ptr_fields:
-        inputs[f.name] = {"shape": ["N"], "dtype": f.numpy_dtype}
+        dtype = dtype_ovr.get(f.name, f.numpy_dtype)
+        inputs[f.name] = {"shape": ["N"], "dtype": dtype}
 
     override = _LOOP_META_OVERRIDES.get(info.loop_id, {})
     simd_loop_meta = {
@@ -752,58 +816,79 @@ def _write_workloads(info: LoopInfo) -> None:
         print(f"  wrote {out_path.relative_to(REPO)}")
 
 
+# Baseline solution authors. Both compile the SAME kernel source; they differ
+# only in compile flags, giving two baselines per loop:
+#   reference — honest scalar (auto-vectorization disabled): the speedup denominator.
+#   autovec   — same source, let the compiler auto-vectorize: the "free compiler" ceiling.
+# (On Graviton, swap autovec's `-march=native` for `-march=armv9-a+sve2`.)
+_SOLUTION_AUTHORS = [
+    {
+        "author": "reference",
+        "compile_flags": ["-O2", "-std=c++14", "-fno-vectorize", "-fno-slp-vectorize"],
+        "desc": "Scalar reference (auto-vectorization disabled)",
+    },
+    {
+        "author": "autovec",
+        "compile_flags": ["-O3", "-std=c++14", "-march=native"],
+        "desc": "Compiler auto-vectorized baseline",
+    },
+]
+
+
+def _write_solution_pair(lid: str, sources: list) -> None:
+    """Emit one solution JSON per baseline author (reference + autovec), same source."""
+    for spec in _SOLUTION_AUTHORS:
+        author = spec["author"]
+        out_dir = BENCH_TRACE / "solutions" / "simd-loop" / author / lid
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{author}_{lid}.json"
+        solution = {
+            "name": f"{author}_{lid}",
+            "definition": lid,
+            "dataset": "simd-loop",
+            "author": author,
+            "spec": {
+                "language": "cpp",
+                "target_hardware": ["aarch64"],
+                "entry_point": f"kernel.cpp::inner_{lid}",
+                "dependencies": [],
+                "isa_features": [],
+                "compile_flags": spec["compile_flags"],
+                "link_flags": [],
+            },
+            "sources": sources,
+            "description": f"{spec['desc']} for {lid}. Baseline for speedup measurement.",
+        }
+        content = json.dumps(solution, indent=2) + "\n"
+        if not out_path.exists() or out_path.read_text() != content:
+            out_path.write_text(content)
+            print(f"  wrote {out_path.relative_to(REPO)}")
+
+
+def _scalar_kernel_src(lid: str) -> str:
+    """Build the scalar kernel source for a single-axis loop (custom → extracted → stub)."""
+    if lid in _CUSTOM_SCALAR_KERNELS:
+        return _CUSTOM_SCALAR_KERNELS[lid]
+    extracted = _extract_scalar_kernel(lid)
+    if extracted:
+        return f'#include "{lid}.h"\n#include <stdint.h>\n\n' + extracted + "\n"
+    return (
+        f'#include "{lid}.h"\n'
+        f'#include <stdint.h>\n\n'
+        f'extern "C" void inner_{lid}(struct {lid}_data *data) {{\n'
+        f'    // TODO: implement scalar reference\n'
+        f'}}\n'
+    )
+
+
 def _write_reference_solution(info: LoopInfo) -> None:
     lid = info.loop_id
-    out_dir = BENCH_TRACE / "solutions" / "simd-loop" / "reference-scalar" / lid
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"reference-scalar_{lid}.json"
-
-    # 1. Custom scalar kernel (e.g. sort loops that can't use extracted code)
-    if lid in _CUSTOM_SCALAR_KERNELS:
-        scalar_src = _CUSTOM_SCALAR_KERNELS[lid]
-    else:
-        # 2. Extract from loops/loop_NNN.c
-        scalar_src = _extract_scalar_kernel(lid)
-        if scalar_src:
-            scalar_src = f'#include "{lid}.h"\n#include <stdint.h>\n\n' + scalar_src + "\n"
-        else:
-            # 3. Fallback stub
-            fallback_field = (info.res_field.name if info.res_field else
-                              info.output_ptr.name if info.output_ptr else
-                              info.input_ptr_fields[0].name if info.input_ptr_fields else "?")
-            scalar_src = (
-                f'#include "{lid}.h"\n'
-                f'#include <stdint.h>\n\n'
-                f'extern "C" void inner_{lid}(struct {lid}_data *data) {{\n'
-                f'    // TODO: implement scalar reference\n'
-                f'}}\n'
-            )
-
-    solution = {
-        "name": f"reference-scalar_{lid}",
-        "definition": lid,
-        "dataset": "simd-loop",
-        "author": "reference-scalar",
-        "spec": {
-            "language": "cpp",
-            "target_hardware": ["aarch64"],
-            "entry_point": f"kernel.cpp::inner_{lid}",
-            "dependencies": [],
-            "isa_features": [],
-            "compile_flags": ["-O2", "-std=c++14"],
-            "link_flags": [],
-        },
-        "sources": [
-            {"path": f"{lid}.h",   "content": _gen_harness_h(info)},
-            {"path": f"{lid}.cpp", "content": _gen_harness_cpp(info)},
-            {"path": "kernel.cpp", "content": scalar_src},
-        ],
-        "description": f"Scalar reference for {lid}. Baseline for speedup measurement.",
-    }
-    content = json.dumps(solution, indent=2) + "\n"
-    if not out_path.exists() or out_path.read_text() != content:
-        out_path.write_text(content)
-        print(f"  wrote {out_path.relative_to(REPO)}")
+    sources = [
+        {"path": f"{lid}.h",   "content": _gen_harness_h(info)},
+        {"path": f"{lid}.cpp", "content": _gen_harness_cpp(info)},
+        {"path": "kernel.cpp", "content": _scalar_kernel_src(lid)},
+    ]
+    _write_solution_pair(lid, sources)
 
 
 # ── Per-loop meta overrides ────────────────────────────────────────────────────
@@ -814,6 +899,1185 @@ def _write_reference_solution(info: LoopInfo) -> None:
 _LOOP_META_OVERRIDES: dict[str, dict] = {
     "loop_113": {"array_pad": 2},  # kernel does a[i+1]/b[i+1] — needs 2 extra elements
 }
+
+# Per-loop input dtype overrides.  Use when a field's C type maps to int32 by
+# default (to avoid sign issues with make_weights) but the kernel actually needs
+# the full unsigned range.
+_DTYPE_OVERRIDES: dict[str, dict[str, str]] = {
+    "loop_108": {"rgba": "uint32"},  # pixel values need high bytes set; int32 range gives all-zero output
+}
+
+
+# ── Multi-axis loops (m/n/k): GEMV / matmul / transpose / conv ─────────────────
+# These have >1 var axis, so the generic single-N _classify path doesn't apply.
+# Each entry declares, explicitly:
+#   axes    — ordered axis names (also the int64 ABI arg order)
+#   inputs  — input ptr field -> list of axis names giving its (multi-dim) shape
+#   output  — (output ptr field, list of axis names giving its shape)
+#   reference — Python reference source (receives inputs as numpy arrays)
+#   sizes   — {"edge": [{axis: val, ...}, ...], "perf": [...]} workload points
+# C types are read from the parsed STRUCT_DEF, so dtypes stay in sync with the loop.
+# ABI: armbench_entry_loop_NNN(in1, ..., int64_t <axes...>, void* res_out)
+
+@dataclass
+class MultiAxisInfo:
+    loop_id:   str
+    loop_num:  str
+    fields:    List[Field]            # parsed struct fields, original order
+    axes:      List[str]              # all var axes (definition), incl. derived
+    inputs:    dict                   # name -> [axis names]
+    output:    tuple                  # (name, [axis names])
+    reference: str
+    sizes:     dict                   # {"edge": [...], "perf": [...]} — base (abi) axes only
+    scalar:    Optional[str] = None   # explicit scalar kernel; None → extract from loops/*.c
+    abi_axes:  Optional[List[str]] = None  # axes passed to the kernel ABI (default: all axes)
+    derived:   dict = field(default_factory=dict)  # axis -> formula str over base axes (output sizing)
+    const_axes: dict = field(default_factory=dict)  # axis -> fixed value (const param, e.g. scale)
+    typedefs:  list = field(default_factory=list)   # C typedef lines emitted before the struct (complex types)
+    dtypes:    dict = field(default_factory=dict)   # field name -> numpy dtype override (e.g. complex component type)
+
+    @property
+    def abi(self) -> List[str]:
+        """Axes passed to the kernel as int64 args (struct fields). Derived axes
+        exist only for output sizing/declaration and are NOT passed."""
+        return self.abi_axes if self.abi_axes is not None else self.axes
+
+    def field(self, name: str) -> Field:
+        return next(f for f in self.fields if f.name == name)
+
+
+_MULTI_AXIS: dict[str, dict] = {
+    "loop_223": {
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["m", "n"]},
+        "output": ("at", ["n", "m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a):\n"
+            "    return np.ascontiguousarray(a.T)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 2, "n": 3}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 33, "n": 4}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        # Real inner_loop_223 lives under `#if defined(HAVE_AUTOVEC)...` (not #elif),
+        # which the generic extractor misses — supply it directly.
+        "scalar": (
+            '#include "loop_223.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_223(struct loop_223_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    uint32_t *a = data->a;\n'
+            '    uint32_t *at = data->at;\n'
+            '    for (uint64_t i = 0; i < m; i++)\n'
+            '        for (uint64_t j = 0; j < n; j++)\n'
+            '            at[j * m + i] = a[i * n + j];\n'
+            '}\n'
+        ),
+    },
+    "loop_220": {
+        # Row-major GEMV: b[i] = sum_j a[i*n+j] * x[j]  ==  A @ x
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["m", "n"], "x": ["n"]},
+        "output": ("b", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, x):\n"
+            "    return (a.astype(np.float64) @ x.astype(np.float64)).astype(np.float32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_220.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_220(struct loop_220_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    float *a = data->a;\n'
+            '    float *x = data->x;\n'
+            '    float *b = data->b;\n'
+            '    for (uint64_t i = 0; i < m; i++) {\n'
+            '        float d = 0;\n'
+            '        for (uint64_t j = 0; j < n; j++) d += a[(i * n) + j] * x[j];\n'
+            '        b[i] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_221": {
+        # Row-major fp64 GEMV: b[i] = sum_j a[i*n+j] * x[j]  ==  A @ x
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["m", "n"], "x": ["n"]},
+        "output": ("b", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, x):\n"
+            "    return a.astype(np.float64) @ x.astype(np.float64)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_221.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_221(struct loop_221_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    double *a = data->a;\n'
+            '    double *x = data->x;\n'
+            '    double *b = data->b;\n'
+            '    for (uint64_t i = 0; i < m; i++) {\n'
+            '        double d = 0;\n'
+            '        for (uint64_t j = 0; j < n; j++) d += a[(i * n) + j] * x[j];\n'
+            '        b[i] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_216": {
+        # Col-major fp32 GEMV: b[i] = sum_j a[m*j+i] * x[j]. Storing `a` as an
+        # (n, m) C-order array makes flat[m*j+i] == a[j, i], so b == a.T @ x.
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["n", "m"], "x": ["n"]},
+        "output": ("b", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, x):\n"
+            "    return (a.astype(np.float64).T @ x.astype(np.float64)).astype(np.float32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_216.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_216(struct loop_216_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    float *a = data->a;\n'
+            '    float *x = data->x;\n'
+            '    float *b = data->b;\n'
+            '    for (uint64_t i = 0; i < m; i++) {\n'
+            '        float d = 0;\n'
+            '        for (uint64_t j = 0; j < n; j++) d += a[(m * j) + i] * x[j];\n'
+            '        b[i] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_218": {
+        # Col-major fp64 GEMV: b[i] = sum_j a[m*j+i] * x[j]  ==  a.T @ x  (a is (n,m)).
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["n", "m"], "x": ["n"]},
+        "output": ("b", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, x):\n"
+            "    return a.astype(np.float64).T @ x.astype(np.float64)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_218.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_218(struct loop_218_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    double *a = data->a;\n'
+            '    double *x = data->x;\n'
+            '    double *b = data->b;\n'
+            '    for (uint64_t i = 0; i < m; i++) {\n'
+            '        double d = 0;\n'
+            '        for (uint64_t j = 0; j < n; j++) d += a[(m * j) + i] * x[j];\n'
+            '        b[i] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_217": {
+        # Row-major uint8 GEMV: c[y] = sum_x a[y*n+x] * b[x]  ==  a @ b, into uint32.
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["m", "n"], "b": ["n"]},
+        "output": ("c", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    return (a.astype(np.uint64) @ b.astype(np.uint64)).astype(np.uint32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_217.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_217(struct loop_217_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    uint8_t *a = data->a;\n'
+            '    uint8_t *b = data->b;\n'
+            '    uint32_t *c = data->c;\n'
+            '    for (uint64_t y = 0; y < m; y++) {\n'
+            '        uint32_t d = 0;\n'
+            '        for (uint64_t x = 0; x < n; x++) d += (uint32_t)a[y * n + x] * (uint32_t)b[x];\n'
+            '        c[y] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_219": {
+        # Col-major uint8 GEMV: c[y] = sum_x a[x*m+y] * b[x]  ==  a.T @ b (a is (n,m)), into uint32.
+        "axes":   ["m", "n"],
+        "inputs": {"a": ["n", "m"], "b": ["n"]},
+        "output": ("c", ["m"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    return (a.astype(np.uint64).T @ b.astype(np.uint64)).astype(np.uint32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
+                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
+            "perf": [{"m": 256, "n": 256}],
+        },
+        "scalar": (
+            '#include "loop_219.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_219(struct loop_219_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    uint8_t *a = data->a;\n'
+            '    uint8_t *b = data->b;\n'
+            '    uint32_t *c = data->c;\n'
+            '    for (uint64_t y = 0; y < m; y++) {\n'
+            '        uint32_t d = 0;\n'
+            '        for (uint64_t x = 0; x < n; x++) d += (uint32_t)a[x * m + y] * (uint32_t)b[x];\n'
+            '        c[y] = d;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_038": {
+        # fp16 3x3-ish stencil convolution over a dim×dim image. Only the
+        # (dim-1)×(dim-1) interior is written; the last row/col stay zero (the
+        # output buffer is zero-initialised, and the reference matches).
+        # Single axis `dim`; arrays are 2D (dim, dim). Output c == b + 0.25*(4-neighbour sum).
+        "axes":   ["dim"],
+        "inputs": {"a": ["dim", "dim"], "b": ["dim", "dim"]},
+        "output": ("c", ["dim", "dim"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    dim = a.shape[0]\n"
+            "    c = np.zeros((dim, dim), dtype=np.float16)\n"
+            "    if dim >= 2:\n"
+            "        k = np.float16(0.25)\n"
+            "        s0 = a[:-1, :-1]; s1 = a[:-1, 1:]; s2 = a[1:, :-1]; s3 = a[1:, 1:]\n"
+            "        r = (b[:-1, :-1] + s0 * k).astype(np.float16)\n"
+            "        r = (r + s1 * k).astype(np.float16)\n"
+            "        r = (r + s2 * k).astype(np.float16)\n"
+            "        r = (r + s3 * k).astype(np.float16)\n"
+            "        c[:-1, :-1] = r\n"
+            "    return c\n"
+        ),
+        "sizes": {
+            "edge": [{"dim": 1}, {"dim": 2}, {"dim": 3}, {"dim": 8}, {"dim": 17}],
+            "perf": [{"dim": 256}],
+        },
+        "scalar": (
+            '#include "loop_038.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_038(struct loop_038_data *data) {\n'
+            '    _Float16 *a = data->a;\n'
+            '    _Float16 *b = data->b;\n'
+            '    _Float16 *c = data->c;\n'
+            '    int dim = data->dim;\n'
+            '    _Float16 k = (_Float16)0.25f;\n'
+            '    for (int row = 0; row < dim - 1; row++) {\n'
+            '        for (int col = 0; col < dim - 1; col++) {\n'
+            '            _Float16 s0 = a[row * dim + col];\n'
+            '            _Float16 s1 = a[row * dim + col + 1];\n'
+            '            _Float16 s2 = a[(row + 1) * dim + col];\n'
+            '            _Float16 s3 = a[(row + 1) * dim + col + 1];\n'
+            '            _Float16 ac = b[row * dim + col];\n'
+            '            c[row * dim + col] = ac + s0 * k + s1 * k + s2 * k + s3 * k;\n'
+            '        }\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_130": {
+        # Row-major fp32 matmul: c[y,x] = sum_z a[y,z] * b[z,x]  ==  A @ B.
+        # A is [m,k], B is [k,n], C is [m,n], all row-major.
+        "axes":   ["m", "n", "k"],
+        "inputs": {"a": ["m", "k"], "b": ["k", "n"]},
+        "output": ("c", ["m", "n"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    return (a.astype(np.float64) @ b.astype(np.float64)).astype(np.float32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1, "k": 1}, {"m": 2, "n": 3, "k": 4},
+                     {"m": 8, "n": 8, "k": 8}, {"m": 5, "n": 7, "k": 3}],
+            "perf": [{"m": 64, "n": 64, "k": 64}],
+        },
+        "scalar": (
+            '#include "loop_130.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_130(struct loop_130_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    uint64_t k = data->k;\n'
+            '    float *a = data->a;\n'
+            '    float *b = data->b;\n'
+            '    float *c = data->c;\n'
+            '    for (uint64_t y = 0; y < m; y++) {\n'
+            '        for (uint64_t x = 0; x < n; x++) {\n'
+            '            float d = 0;\n'
+            '            for (uint64_t z = 0; z < k; z++) d += a[y * k + z] * b[z * n + x];\n'
+            '            c[y * n + x] = d;\n'
+            '        }\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_135": {
+        # Row-major int8→int32 matmul: c[x,y] = sum_z a[x,z] * b[z,y]  ==  A @ B.
+        # A is [m,k] int8, B is [k,n] int8, C is [m,n] int32. dtypes derived from struct.
+        "axes":   ["m", "n", "k"],
+        "inputs": {"a": ["m", "k"], "b": ["k", "n"]},
+        "output": ("c", ["m", "n"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    return (a.astype(np.int64) @ b.astype(np.int64)).astype(np.int32)\n"
+        ),
+        "sizes": {
+            "edge": [{"m": 1, "n": 1, "k": 1}, {"m": 2, "n": 3, "k": 4},
+                     {"m": 8, "n": 8, "k": 8}, {"m": 5, "n": 7, "k": 3}],
+            "perf": [{"m": 64, "n": 64, "k": 64}],
+        },
+        "scalar": (
+            '#include "loop_135.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_135(struct loop_135_data *data) {\n'
+            '    uint64_t m = data->m;\n'
+            '    uint64_t n = data->n;\n'
+            '    uint64_t k = data->k;\n'
+            '    int8_t *a = data->a;\n'
+            '    int8_t *b = data->b;\n'
+            '    int32_t *c = data->c;\n'
+            '    for (uint64_t x = 0; x < m; x++) {\n'
+            '        for (uint64_t y = 0; y < n; y++) {\n'
+            '            int32_t acc = 0;\n'
+            '            for (uint64_t z = 0; z < k; z++)\n'
+            '                acc += (int32_t)a[x * k + z] * (int32_t)b[z * n + y];\n'
+            '            c[x * n + y] = acc;\n'
+            '        }\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_101": {
+        # Pixel upscale. Output `a` is the FIRST struct ptr (output-override) and
+        # has 2*(n-1) elements; input `b` has n. Only `n` is passed to the kernel;
+        # `out_len` is a derived axis used to declare/size the output.
+        #   a[2i]   = (3*b[i] + b[i+1] + 2) >> 2
+        #   a[2i+1] = (3*b[i+1] + b[i] + 2) >> 2     for i in 0..n-2
+        "axes":     ["n", "out_len"],
+        "abi_axes": ["n"],
+        "derived":  {"out_len": "2 * (n - 1)"},
+        "inputs":   {"b": ["n"]},
+        "output":   ("a", ["out_len"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(b):\n"
+            "    n = b.shape[0]\n"
+            "    a = np.zeros(2 * (n - 1), dtype=np.uint8)\n"
+            "    if n >= 2:\n"
+            "        s1 = b[:-1].astype(np.uint16)\n"
+            "        s2 = b[1:].astype(np.uint16)\n"
+            "        a[0::2] = ((3 * s1 + s2 + 2) >> 2).astype(np.uint8)\n"
+            "        a[1::2] = ((3 * s2 + s1 + 2) >> 2).astype(np.uint8)\n"
+            "    return a\n"
+        ),
+        "sizes": {
+            "edge": [{"n": 2}, {"n": 8}, {"n": 17}, {"n": 33}, {"n": 64}],
+            "perf": [{"n": 4096}],
+        },
+        "scalar": (
+            '#include "loop_101.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_101(struct loop_101_data *data) {\n'
+            '    uint8_t *a = data->a;\n'
+            '    uint8_t *b = data->b;\n'
+            '    int n = data->n;\n'
+            '    for (int i = 0; i < n - 1; i++) {\n'
+            '        uint16_t s1 = b[i];\n'
+            '        uint16_t s2 = b[i + 1];\n'
+            '        a[2 * i]     = (3 * s1 + s2 + 2) >> 2;\n'
+            '        a[2 * i + 1] = (3 * s2 + s1 + 2) >> 2;\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_114": {
+        # Auto-correlation. Input `data` (int16, length n) → output `res` (int16,
+        # length `lags`). We compute full autocorrelation (lags == n, a derived
+        # axis recovered from the output shape). `scale` is a fixed shift amount
+        # passed as a const axis. res[lag] = (Σ_{i<n-lag} (data[i]*data[i+lag])>>scale) >> 16.
+        "axes":       ["n", "lags"],
+        "abi_axes":   ["n", "lags", "scale"],
+        "derived":    {"lags": "n"},
+        "const_axes": {"scale": 4},
+        "inputs":     {"data": ["n"]},
+        "output":     ("res", ["lags"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(data):\n"
+            "    n = int(data.shape[0])\n"
+            "    scale = 4\n"
+            "    d = data.astype(np.int64)\n"
+            "    res = np.zeros(n, dtype=np.int16)\n"
+            "    for lag in range(n):\n"
+            "        acc = int(((d[:n - lag] * d[lag:]) >> scale).sum())\n"
+            "        res[lag] = np.int16(acc >> 16)\n"
+            "    return res\n"
+        ),
+        "sizes": {
+            "edge": [{"n": 1}, {"n": 3}, {"n": 8}, {"n": 17}, {"n": 64}],
+            "perf": [{"n": 4096}],
+        },
+        "scalar": (
+            '#include "loop_114.h"\n'
+            '#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_114(struct loop_114_data *data) {\n'
+            '    int16_t *d = data->data;\n'
+            '    int16_t *res = data->res;\n'
+            '    int32_t n = data->n;\n'
+            '    int32_t lags = data->lags;\n'
+            '    int16_t scale = data->scale;\n'
+            '    for (int lag = 0; lag < lags; lag++) {\n'
+            '        int32_t acc = 0;\n'
+            '        int lmt = n - lag;\n'
+            '        for (int i = 0; i < lmt; i++)\n'
+            '            acc += ((int32_t)d[i] * (int32_t)d[i + lag]) >> scale;\n'
+            '        res[lag] = (int16_t)(acc >> 16);\n'
+            '    }\n'
+            '}\n'
+        ),
+    },
+    "loop_106": {
+        # Sheep-and-goats bit permutation: b[i] = permute(a[i], p). Output `b` is
+        # the MIDDLE struct ptr (output-override), same length n as input `a`.
+        # `perm` is a fixed constant precomputed from `permutation[5]` via sag(), so
+        # we bake the whole permute (compress/sag) into both the scalar kernel and
+        # the reference and do NOT pass perm. Integer-exact (no tolerance).
+        "axes":     ["n"],
+        "abi_axes": ["n"],
+        "inputs":   {"a": ["n"]},
+        "output":   ("b", ["n"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "_M = 0xFFFFFFFF\n\n"
+            "def _popcount(x):\n"
+            "    return bin(x & _M).count('1')\n\n"
+            "def _compress(x, m):\n"
+            "    x &= m\n"
+            "    mk = (~m << 1) & _M\n"
+            "    for i in range(5):\n"
+            "        mp = (mk ^ (mk << 1)) & _M\n"
+            "        mp = (mp ^ (mp << 2)) & _M\n"
+            "        mp = (mp ^ (mp << 4)) & _M\n"
+            "        mp = (mp ^ (mp << 8)) & _M\n"
+            "        mp = (mp ^ (mp << 16)) & _M\n"
+            "        mv = mp & m\n"
+            "        m = (m ^ mv) | (mv >> (1 << i))\n"
+            "        t = x & mv\n"
+            "        x = (x ^ t) | (t >> (1 << i))\n"
+            "        mk &= (~mp) & _M\n"
+            "    return x & _M\n\n"
+            "def _sag(x, m):\n"
+            "    return (((_compress(x, m) << _popcount(m)) & _M) | _compress(x, (~m) & _M)) & _M\n\n"
+            "_PC = [0xaaaaaaaa, 0xcccccccc, 0x0f0f0f0f, 0x0ff00ff0, 0x0ffff000]\n"
+            "_P = [_PC[0], _sag(_PC[1], _PC[0]), _sag(_PC[2], _PC[0]),\n"
+            "      _sag(_PC[3], _PC[0]), _sag(_PC[4], _PC[0])]\n\n"
+            "def _permute(x):\n"
+            "    for pi in _P:\n"
+            "        x = _sag(x, pi)\n"
+            "    return x\n\n"
+            "def run(a):\n"
+            "    return np.array([_permute(int(v)) for v in a], dtype=np.uint32)\n"
+        ),
+        "sizes": {
+            "edge": [{"n": 1}, {"n": 3}, {"n": 8}, {"n": 64}, {"n": 201}],
+            "perf": [{"n": 4096}],
+        },
+        "scalar": (
+            '#include "loop_106.h"\n'
+            '#include <stdint.h>\n\n'
+            'static uint32_t popcount106(uint32_t x) {\n'
+            '    x = (x & 0x55555555u) + ((x >> 1) & 0x55555555u);\n'
+            '    x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);\n'
+            '    x = (x & 0x0F0F0F0Fu) + ((x >> 4) & 0x0F0F0F0Fu);\n'
+            '    x = (x & 0x00FF00FFu) + ((x >> 8) & 0x00FF00FFu);\n'
+            '    x = (x & 0x0000FFFFu) + ((x >> 16) & 0x0000FFFFu);\n'
+            '    return x;\n'
+            '}\n'
+            'static uint32_t compress106(uint32_t x, uint32_t m) {\n'
+            '    uint32_t mk, mp, mv, t;\n'
+            '    x = x & m;\n'
+            '    mk = ~m << 1;\n'
+            '    for (int i = 0; i < 5; i++) {\n'
+            '        mp = mk ^ (mk << 1);\n'
+            '        mp = mp ^ (mp << 2);\n'
+            '        mp = mp ^ (mp << 4);\n'
+            '        mp = mp ^ (mp << 8);\n'
+            '        mp = mp ^ (mp << 16);\n'
+            '        mv = mp & m;\n'
+            '        m = (m ^ mv) | (mv >> (1 << i));\n'
+            '        t = x & mv;\n'
+            '        x = (x ^ t) | (t >> (1 << i));\n'
+            '        mk = mk & ~mp;\n'
+            '    }\n'
+            '    return x;\n'
+            '}\n'
+            'static uint32_t sag106(uint32_t x, uint32_t m) {\n'
+            '    return (compress106(x, m) << popcount106(m)) | compress106(x, ~m);\n'
+            '}\n'
+            'static uint32_t permute106(uint32_t x, uint32_t p[5]) {\n'
+            '    x = sag106(x, p[0]);\n'
+            '    x = sag106(x, p[1]);\n'
+            '    x = sag106(x, p[2]);\n'
+            '    x = sag106(x, p[3]);\n'
+            '    return sag106(x, p[4]);\n'
+            '}\n'
+            'extern "C" void inner_loop_106(struct loop_106_data *data) {\n'
+            '    uint32_t *a = data->a;\n'
+            '    uint32_t *b = data->b;\n'
+            '    int64_t n = data->n;\n'
+            '    uint32_t permutation[5] = {0xaaaaaaaau, 0xccccccccu, 0x0f0f0f0fu, 0x0ff00ff0u, 0x0ffff000u};\n'
+            '    uint32_t p[5];\n'
+            '    p[0] = permutation[0];\n'
+            '    p[1] = sag106(permutation[1], permutation[0]);\n'
+            '    p[2] = sag106(permutation[2], permutation[0]);\n'
+            '    p[3] = sag106(permutation[3], permutation[0]);\n'
+            '    p[4] = sag106(permutation[4], permutation[0]);\n'
+            '    for (int64_t i = 0; i < n; i++) b[i] = permute106(a[i], p);\n'
+            '}\n'
+        ),
+    },
+    "loop_104": {
+        # Byte-value histogram: histogram[data[i]]++ over a uint8 buffer.
+        # Output `histogram` (output-override, first ptr) has `histogram_size`
+        # buckets (const = 256, the full byte range); input `data` has n bytes.
+        "axes":       ["n"],
+        "abi_axes":   ["histogram_size", "n"],
+        "const_axes": {"histogram_size": 256},
+        "inputs":     {"data": ["n"]},
+        "output":     ("histogram", ["histogram_size"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(data):\n"
+            "    return np.bincount(data.astype(np.int64), minlength=256)[:256].astype(np.uint32)\n"
+        ),
+        "sizes": {"edge": [{"n": 1}, {"n": 7}, {"n": 64}, {"n": 9999}, {"n": 10001}],
+                  "perf": [{"n": 50000}]},
+        "scalar": (
+            '#include "loop_104.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_104(struct loop_104_data *data) {\n'
+            '    uint32_t *histogram = data->histogram;\n'
+            '    uint64_t histogram_size = data->histogram_size;\n'
+            '    uint8_t *d = data->data;\n'
+            '    int n = data->n;\n'
+            '    for (uint64_t i = 0; i < histogram_size; i++) histogram[i] = 0;\n'
+            '    for (int i = 0; i < n; i++) histogram[d[i]] += 1;\n'
+            '}\n'
+        ),
+    },
+    "loop_102": {
+        # General histogram: histogram[records[i]]++ over a uint32 record stream.
+        # Output `histogram` (output-override) has `histogram_size` buckets
+        # (const = 128; random records are [1,100] < 128); input `records` has num_records.
+        "axes":       ["num_records"],
+        "abi_axes":   ["histogram_size", "num_records"],
+        "const_axes": {"histogram_size": 128},
+        "inputs":     {"records": ["num_records"]},
+        "output":     ("histogram", ["histogram_size"]),
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(records):\n"
+            "    return np.bincount(records.astype(np.int64), minlength=128)[:128].astype(np.uint32)\n"
+        ),
+        "sizes": {"edge": [{"num_records": 1}, {"num_records": 7}, {"num_records": 64},
+                           {"num_records": 9999}, {"num_records": 10001}],
+                  "perf": [{"num_records": 50000}]},
+        "scalar": (
+            '#include "loop_102.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_102(struct loop_102_data *data) {\n'
+            '    uint32_t *histogram = data->histogram;\n'
+            '    uint64_t histogram_size = data->histogram_size;\n'
+            '    uint32_t *records = data->records;\n'
+            '    int64_t num_records = data->num_records;\n'
+            '    for (uint64_t i = 0; i < histogram_size; i++) histogram[i] = 0;\n'
+            '    for (int64_t i = 0; i < num_records; i++) histogram[records[i]] += 1;\n'
+            '}\n'
+        ),
+    },
+    # ── Interleaved complex loops (cfloat32_t / cuint32_t = {re, im}) ──────────
+    # Modelled as 2-D [size, 2] arrays (C-order flat == interleaved re/im), so the
+    # kernel can read them as a complex-struct pointer. `cdim`=2 is a const axis.
+    "loop_037": {  # cfloat32 element-wise complex multiply
+        "axes": ["size"], "abi_axes": ["size"], "const_axes": {"cdim": 2},
+        "typedefs": ["typedef struct { float re; float im; } cfloat32_t;"],
+        "inputs": {"a0": ["size", "cdim"], "b0": ["size", "cdim"]},
+        "output": ("c0", ["size", "cdim"]),
+        "dtypes": {"a0": "float32", "b0": "float32", "c0": "float32"},
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a0, b0):\n"
+            "    ar, ai = a0[:, 0], a0[:, 1]\n"
+            "    br, bi = b0[:, 0], b0[:, 1]\n"
+            "    cr = ar * br - ai * bi\n"
+            "    ci = ar * bi + ai * br\n"
+            "    return np.stack([cr, ci], axis=1).astype(np.float32)\n"
+        ),
+        "sizes": {"edge": [{"size": 1}, {"size": 7}, {"size": 64}, {"size": 9999},
+                           {"size": 10001}], "perf": [{"size": 50000}]},
+        "scalar": (
+            '#include "loop_037.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_037(struct loop_037_data *data) {\n'
+            '    cfloat32_t *a = data->a0; cfloat32_t *b = data->b0; cfloat32_t *c = data->c0;\n'
+            '    uint64_t size = data->size;\n'
+            '    for (uint64_t i = 0; i < size; i++) {\n'
+            '        c[i].re = (a[i].re * b[i].re) - (a[i].im * b[i].im);\n'
+            '        c[i].im = (a[i].re * b[i].im) + (a[i].im * b[i].re);\n'
+            '    }\n}\n'
+        ),
+    },
+    "loop_112": {  # cuint32 element-wise complex multiply (wraps mod 2^32)
+        "axes": ["size"], "abi_axes": ["size"], "const_axes": {"cdim": 2},
+        "typedefs": ["typedef struct { uint32_t re; uint32_t im; } cuint32_t;"],
+        "inputs": {"a0": ["size", "cdim"], "b0": ["size", "cdim"]},
+        "output": ("c0", ["size", "cdim"]),
+        "dtypes": {"a0": "uint32", "b0": "uint32", "c0": "uint32"},
+        "reference": (
+            "import numpy as np\n\n"
+            "_M = np.uint64(0xffffffff)\n\n"
+            "def run(a0, b0):\n"
+            "    ar = a0[:, 0].astype(np.uint64); ai = a0[:, 1].astype(np.uint64)\n"
+            "    br = b0[:, 0].astype(np.uint64); bi = b0[:, 1].astype(np.uint64)\n"
+            "    cr = (ar * br - ai * bi) & _M\n"
+            "    ci = (ar * bi + ai * br) & _M\n"
+            "    return np.stack([cr, ci], axis=1).astype(np.uint32)\n"
+        ),
+        "sizes": {"edge": [{"size": 1}, {"size": 7}, {"size": 64}, {"size": 9999},
+                           {"size": 10001}], "perf": [{"size": 50000}]},
+        "scalar": (
+            '#include "loop_112.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_112(struct loop_112_data *data) {\n'
+            '    cuint32_t *a = data->a0; cuint32_t *b = data->b0; cuint32_t *c = data->c0;\n'
+            '    uint64_t size = data->size;\n'
+            '    for (uint64_t i = 0; i < size; i++) {\n'
+            '        c[i].re = (a[i].re * b[i].re) - (a[i].im * b[i].im);\n'
+            '        c[i].im = (a[i].re * b[i].im) + (a[i].im * b[i].re);\n'
+            '    }\n}\n'
+        ),
+    },
+    "loop_109": {  # cuint32 "complex addition": c.re = a.re - b.im; c.im = a.im + b.re
+        "axes": ["size"], "abi_axes": ["size"], "const_axes": {"cdim": 2},
+        "typedefs": ["typedef struct { uint32_t re; uint32_t im; } cuint32_t;"],
+        "inputs": {"a0": ["size", "cdim"], "b0": ["size", "cdim"]},
+        "output": ("c0", ["size", "cdim"]),
+        "dtypes": {"a0": "uint32", "b0": "uint32", "c0": "uint32"},
+        "reference": (
+            "import numpy as np\n\n"
+            "_M = np.uint64(0xffffffff)\n\n"
+            "def run(a0, b0):\n"
+            "    cr = (a0[:, 0].astype(np.uint64) - b0[:, 1].astype(np.uint64)) & _M\n"
+            "    ci = (a0[:, 1].astype(np.uint64) + b0[:, 0].astype(np.uint64)) & _M\n"
+            "    return np.stack([cr, ci], axis=1).astype(np.uint32)\n"
+        ),
+        "sizes": {"edge": [{"size": 1}, {"size": 7}, {"size": 64}, {"size": 9999},
+                           {"size": 10001}], "perf": [{"size": 50000}]},
+        "scalar": (
+            '#include "loop_109.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_109(struct loop_109_data *data) {\n'
+            '    cuint32_t *a = data->a0; cuint32_t *b = data->b0; cuint32_t *c = data->c0;\n'
+            '    uint64_t size = data->size;\n'
+            '    for (uint64_t i = 0; i < size; i++) {\n'
+            '        c[i].re = a[i].re - b[i].im;\n'
+            '        c[i].im = a[i].im + b[i].re;\n'
+            '    }\n}\n'
+        ),
+    },
+    "loop_110": {  # cint8 2-tap complex dot → cint32. Inputs have 2*size complex elems.
+        "axes": ["size", "size2"], "abi_axes": ["size"],
+        "const_axes": {"cdim": 2}, "derived": {"size2": "2 * size"},
+        "typedefs": ["typedef struct { int8_t re; int8_t im; } cint8_t;",
+                     "typedef struct { int32_t re; int32_t im; } cint32_t;"],
+        "inputs": {"a0": ["size2", "cdim"], "b0": ["size2", "cdim"]},
+        "output": ("c0", ["size", "cdim"]),
+        "dtypes": {"a0": "int8", "b0": "int8", "c0": "int32"},
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a0, b0):\n"
+            "    a = a0.astype(np.int64); b = b0.astype(np.int64)\n"
+            "    ae, ao = a[0::2], a[1::2]; be, bo = b[0::2], b[1::2]\n"
+            "    cr = (ae[:, 0]*be[:, 0] - ae[:, 1]*be[:, 1]) + (ao[:, 0]*bo[:, 0] - ao[:, 1]*bo[:, 1])\n"
+            "    ci = (ae[:, 1]*be[:, 0] + ae[:, 0]*be[:, 1]) + (ao[:, 1]*bo[:, 0] + ao[:, 0]*bo[:, 1])\n"
+            "    return np.stack([cr, ci], axis=1).astype(np.int32)\n"
+        ),
+        "sizes": {"edge": [{"size": 1}, {"size": 7}, {"size": 64}, {"size": 4999},
+                           {"size": 5001}], "perf": [{"size": 25000}]},
+        "scalar": (
+            '#include "loop_110.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_110(struct loop_110_data *data) {\n'
+            '    cint8_t *a = data->a0; cint8_t *b = data->b0; cint32_t *c = data->c0;\n'
+            '    uint64_t size = data->size;\n'
+            '    for (uint64_t i = 0; i < size; i++) {\n'
+            '        c[i].re = (int32_t)(((a[2*i].re * b[2*i].re) - (a[2*i].im * b[2*i].im)) +\n'
+            '                            ((a[2*i+1].re * b[2*i+1].re) - (a[2*i+1].im * b[2*i+1].im)));\n'
+            '        c[i].im = (int32_t)(((a[2*i].im * b[2*i].re) + (a[2*i].re * b[2*i].im)) +\n'
+            '                            ((a[2*i+1].im * b[2*i+1].re) + (a[2*i+1].re * b[2*i+1].im)));\n'
+            '    }\n}\n'
+        ),
+    },
+}
+
+
+# ARM scalar typedefs (from <arm_neon.h>) → standard C types. The generated
+# harness compiles standalone (no NEON headers), so normalize to plain types.
+# bfloat16_t is left as-is and handled per-loop when those land.
+_NORM_CTYPE = {"float32_t": "float", "float64_t": "double", "float16_t": "_Float16"}
+
+
+def _build_multi_axis_info(loop_id: str) -> Optional[MultiAxisInfo]:
+    cfg = _MULTI_AXIS.get(loop_id)
+    if cfg is None:
+        return None
+    loop_num = re.search(r'loop_(\d+)', loop_id).group(1)
+    prob_dir = next((d for d in PROBLEMS_DIR.iterdir()
+                     if d.name.startswith(loop_id + "_")), None)
+    if not prob_dir:
+        return None
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("prob", prob_dir / "problem.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    fields = _parse_struct(getattr(mod, "STRUCT_DEF", ""))
+    for f in fields:
+        f.c_type = _NORM_CTYPE.get(f.c_type, f.c_type)
+    return MultiAxisInfo(
+        loop_id=loop_id, loop_num=loop_num, fields=fields,
+        axes=cfg["axes"], inputs=cfg["inputs"], output=cfg["output"],
+        reference=cfg["reference"], sizes=cfg["sizes"], scalar=cfg.get("scalar"),
+        abi_axes=cfg.get("abi_axes"), derived=cfg.get("derived", {}),
+        const_axes=cfg.get("const_axes", {}),
+        typedefs=cfg.get("typedefs", []), dtypes=cfg.get("dtypes", {}),
+    )
+
+
+def _gen_ma_harness_h(info: MultiAxisInfo) -> str:
+    lid = info.loop_id
+    struct_lines = []
+    for f in info.fields:
+        if f.is_ptr:
+            struct_lines.append(f"    {f.c_type} *{f.name};")
+        else:
+            struct_lines.append(f"    {f.c_type} {f.name};")
+    in_args = [f"void *{name}" for name in info.inputs]
+    axis_args = [f"int64_t {a}" for a in info.abi]
+    args = ", ".join(in_args + axis_args + ["void *res_out"])
+    typedef_block = ("\n" + "\n".join(info.typedefs) + "\n") if info.typedefs else ""
+    return f"""\
+// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
+#pragma once
+#include <stdint.h>
+{typedef_block}
+struct {lid}_data {{
+{chr(10).join(struct_lines)}
+}};
+
+#ifdef __cplusplus
+extern "C" {{
+#endif
+int armbench_entry_{lid}({args});
+#ifdef __cplusplus
+}}
+#endif
+"""
+
+
+def _gen_ma_harness_cpp(info: MultiAxisInfo) -> str:
+    lid = info.loop_id
+    in_args = [f"void *{name}" for name in info.inputs]
+    axis_args = [f"int64_t {a}" for a in info.abi]
+    args = ", ".join(in_args + axis_args + ["void *res_out"])
+
+    # Local struct is named `_kd` (not `data`) so it never collides with an input
+    # pointer parameter that happens to be named `data` (e.g. loop_114).
+    assigns = []
+    for name in info.inputs:
+        ct = info.field(name).c_type
+        assigns.append(f"    _kd.{name} = static_cast<{ct} *>({name});")
+    out_name = info.output[0]
+    out_ct = info.field(out_name).c_type
+    assigns.append(f"    _kd.{out_name} = static_cast<{out_ct} *>(res_out);")
+    for a in info.abi:
+        ct = info.field(a).c_type
+        assigns.append(f"    _kd.{a} = static_cast<{ct}>({a});")
+
+    return f"""\
+// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
+#include "{lid}.h"
+#include <stdint.h>
+
+extern "C" void inner_{lid}(struct {lid}_data *data);
+
+extern "C" int armbench_entry_{lid}({args}) {{
+    struct {lid}_data _kd;
+{chr(10).join(assigns)}
+    inner_{lid}(&_kd);
+    return 0;
+}}
+"""
+
+
+def _write_multi_axis(info: MultiAxisInfo) -> None:
+    lid = info.loop_id
+    h_content   = _gen_ma_harness_h(info)
+    cpp_content = _gen_ma_harness_cpp(info)
+
+    # 1. On-disk harness copies (legacy fallback)
+    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    for path, content in ((HARNESS_DIR / f"{lid}.h", h_content),
+                          (HARNESS_DIR / f"{lid}.cpp", cpp_content)):
+        if not path.exists() or path.read_text() != content:
+            path.write_text(content)
+            print(f"  wrote {path.relative_to(REPO)}")
+
+    # 2. Definition. `dtypes` overrides the component dtype for fields whose C type
+    #    isn't a plain scalar (e.g. complex `cfloat32_t` → "float32").
+    inputs = {}
+    for name, ax in info.inputs.items():
+        dtype = info.dtypes.get(name) or _array_dtype_map_local.get(info.field(name).c_type, "int32")
+        inputs[name] = {"shape": ax, "dtype": dtype}
+    out_name, out_ax = info.output
+    out_dtype = info.dtypes.get(out_name) or _array_dtype_map_local.get(info.field(out_name).c_type, "int32")
+    axes_spec = {a: {"type": "var", "description": f"axis {a}"} for a in info.axes}
+    for a, val in info.const_axes.items():
+        axes_spec[a] = {"type": "const", "value": int(val), "description": f"const {a}"}
+    definition = {
+        "name": lid,
+        "op_type": lid,
+        "description": _description_ma(info),
+        "tags": ["simd-loop"],
+        "axes": axes_spec,
+        "inputs": inputs,
+        "outputs": {out_name: {"shape": out_ax, "dtype": out_dtype,
+                               "description": "Output array"}},
+        "reference": info.reference,
+        "simd_loop_meta": {
+            "output_inplace": False,
+            "array_pad": 0,
+            "scratch": [],
+            "axes_order": info.abi,
+        },
+    }
+    def_dir = BENCH_TRACE / "definitions" / "simd-loop"
+    def_dir.mkdir(parents=True, exist_ok=True)
+    def_path = def_dir / f"{lid}.json"
+    content = json.dumps(definition, indent=2) + "\n"
+    if not def_path.exists() or def_path.read_text() != content:
+        def_path.write_text(content)
+        print(f"  wrote {def_path.relative_to(REPO)}")
+
+    # 3. Workloads. `sizes` lists base (abi) axis values; derived axes are
+    #    computed from them via their formula so the output can be declared/sized.
+    wl_inputs = {name: {"type": "random"} for name in info.inputs}
+    lines = []
+    for source in ("edge", "perf"):
+        for base in info.sizes.get(source, []):
+            axvals = dict(base)
+            for dax, formula in info.derived.items():
+                axvals[dax] = int(eval(formula, {"__builtins__": {}}, base))
+            key = "_".join(f"{a}{axvals[a]}" for a in info.axes)
+            uid = _uuid.uuid5(_uuid.NAMESPACE_DNS, f"{lid}_{key}_{source}").hex
+            lines.append(json.dumps({"axes": axvals, "inputs": wl_inputs,
+                                     "uuid": uid, "tags": {"source": source}}))
+    wl_dir = BENCH_TRACE / "workloads" / "simd-loop"
+    wl_dir.mkdir(parents=True, exist_ok=True)
+    wl_path = wl_dir / f"{lid}.jsonl"
+    content = "\n".join(lines) + "\n"
+    if not wl_path.exists() or wl_path.read_text() != content:
+        wl_path.write_text(content)
+        print(f"  wrote {wl_path.relative_to(REPO)}")
+
+    # 4. Baseline solutions (reference + autovec). Prefer the explicit scalar
+    #    kernel from the config; fall back to extracting from loops/loop_NNN.c.
+    if info.scalar:
+        scalar_src = info.scalar
+    elif (extracted := _extract_scalar_kernel(lid)):
+        scalar_src = f'#include "{lid}.h"\n#include <stdint.h>\n\n' + extracted + "\n"
+    else:
+        scalar_src = (f'#include "{lid}.h"\n#include <stdint.h>\n\n'
+                      f'extern "C" void inner_{lid}(struct {lid}_data *data) {{\n'
+                      f'    // TODO: implement scalar reference\n}}\n')
+    sources = [
+        {"path": f"{lid}.h",   "content": _gen_ma_harness_h(info)},
+        {"path": f"{lid}.cpp", "content": _gen_ma_harness_cpp(info)},
+        {"path": "kernel.cpp", "content": scalar_src},
+    ]
+    _write_solution_pair(lid, sources)
+
+
+def _description_ma(info: MultiAxisInfo) -> str:
+    prob_dir = next((d for d in PROBLEMS_DIR.iterdir()
+                     if d.name.startswith(info.loop_id + "_")), None)
+    if prob_dir:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("prob", prob_dir / "problem.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        meta = getattr(mod, "METADATA", {})
+        return meta.get("description", info.loop_id)
+    return info.loop_id
+
+
+# ── Sentinel loops (begin/end pointer ABI, byte buffers, scalar output) ───────
+# Structs use (begin ptr[s], end/lmt ptr, scalar result) instead of (ptr, int n).
+# ABI: armbench_entry_loop_NNN(void* buf0, [void* buf1,] int64_t n, void* res_out)
+# — the harness derives `<sentinel> = buf0 + n`, so the adapter's normal
+# scalar-output path (input ptrs + n + res_out) works unchanged. Buffers are fed
+# by the `bytes` workload input type (raw or null-terminated cstrings).
+
+_SENTINEL: dict[str, dict] = {
+    "loop_103": {  # whitespace word-count
+        "buffers": ["p"], "sentinel": "end", "result": "checksum", "layout": "raw",
+        "reference": (
+            "import numpy as np\n\n"
+            "_WS = {32, 10, 13, 9}\n\n"
+            "def run(p):\n"
+            "    b = p; n = len(b); i = 0\n"
+            "    while i < n and int(b[i]) in _WS: i += 1\n"
+            "    count = 0\n"
+            "    while i < n:\n"
+            "        count += 1\n"
+            "        while i < n and int(b[i]) not in _WS: i += 1\n"
+            "        while i < n and int(b[i]) in _WS: i += 1\n"
+            "    return np.int32(count)\n"
+        ),
+        "scalar": (
+            '#include "loop_103.h"\n#include <stdint.h>\n\n'
+            'static uint8_t *skip_ws(uint8_t *p, uint8_t *end) {\n'
+            "    while (p != end && (*p == ' ' || *p == '\\n' || *p == '\\r' || *p == '\\t')) p++;\n"
+            '    return p;\n}\n'
+            'static uint8_t *skip_wd(uint8_t *p, uint8_t *end) {\n'
+            "    while (p != end && *p != ' ' && *p != '\\n' && *p != '\\r' && *p != '\\t') p++;\n"
+            '    return p;\n}\n'
+            'extern "C" void inner_loop_103(struct loop_103_data *data) {\n'
+            '    uint8_t *p = data->p; uint8_t *end = data->end;\n'
+            '    int count = 0;\n'
+            '    p = skip_ws(p, end);\n'
+            '    while (p != end) { count++; p = skip_wd(p, end); p = skip_ws(p, end); }\n'
+            '    data->checksum = count;\n}\n'
+        ),
+        "sizes": {"edge": [1, 3, 64, 1999, 2001], "perf": [20000]},
+    },
+    "loop_005": {  # strlen of short null-terminated strings
+        "buffers": ["p"], "sentinel": "lmt", "result": "checksum", "layout": "cstrings",
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(p):\n"
+            "    b = p; n = len(b); i = 0; res = 0\n"
+            "    while i < n:\n"
+            "        j = i\n"
+            "        while j < n and int(b[j]) != 0: j += 1\n"
+            "        length = j - i; i = j + 1\n"
+            "        res = (res + 1) & 0xffffffff\n"
+            "        res ^= ((length % 0xffff) << 16) & 0xffffffff\n"
+            "        res &= 0xffffffff\n"
+            "    return np.uint32(res)\n"
+        ),
+        "scalar": (
+            '#include "loop_005.h"\n#include <cstring>\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_005(struct loop_005_data *data) {\n'
+            '    uint8_t *p = data->p; uint8_t *lmt = data->lmt;\n'
+            '    uint32_t res = 0;\n'
+            '    while (p < lmt) {\n'
+            '        uint32_t len = (uint32_t)strlen((const char *)p);\n'
+            '        p += len + 1; res += 1; res ^= (len % 0xffff) << 16;\n'
+            '    }\n'
+            '    data->checksum = res;\n}\n'
+        ),
+        "sizes": {"edge": [1, 10, 100, 3999, 4001], "perf": [20000]},
+    },
+    "loop_006": {  # strlen of long null-terminated strings (same logic as 005)
+        "buffers": ["p"], "sentinel": "lmt", "result": "checksum", "layout": "cstrings",
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(p):\n"
+            "    b = p; n = len(b); i = 0; res = 0\n"
+            "    while i < n:\n"
+            "        j = i\n"
+            "        while j < n and int(b[j]) != 0: j += 1\n"
+            "        length = j - i; i = j + 1\n"
+            "        res = (res + 1) & 0xffffffff\n"
+            "        res ^= ((length % 0xffff) << 16) & 0xffffffff\n"
+            "        res &= 0xffffffff\n"
+            "    return np.uint32(res)\n"
+        ),
+        "scalar": (
+            '#include "loop_006.h"\n#include <cstring>\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_006(struct loop_006_data *data) {\n'
+            '    uint8_t *p = data->p; uint8_t *lmt = data->lmt;\n'
+            '    uint32_t res = 0;\n'
+            '    while (p < lmt) {\n'
+            '        uint32_t len = (uint32_t)strlen((const char *)p);\n'
+            '        p += len + 1; res += 1; res ^= (len % 0xffff) << 16;\n'
+            '    }\n'
+            '    data->checksum = res;\n}\n'
+        ),
+        "sizes": {"edge": [1, 10, 100, 9999, 10001], "perf": [40000]},
+    },
+    "loop_034": {  # strided strcmp of two cstring buffers
+        "buffers": ["a", "b"], "sentinel": "lmt", "result": "checksum", "layout": "cstrings",
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    n = len(a); res = 0; cnt = 0; length = 13; off = 0\n"
+            "    while off < n:\n"
+            "        k = off\n"
+            "        while k < n and a[k] == b[k] and int(a[k]) != 0: k += 1\n"
+            "        av = int(a[k]) if k < n else 0\n"
+            "        bv = int(b[k]) if k < n else 0\n"
+            "        r = av - bv\n"
+            "        cmp = 2 if r > 0 else (3 if r < 0 else 1)\n"
+            "        res = (res + cnt * cmp) & 0xffffffff\n"
+            "        off += length; cnt += 1; length = 3 + (length + 11) % 43\n"
+            "    return np.uint32(res)\n"
+        ),
+        "scalar": (
+            '#include "loop_034.h"\n#include <cstring>\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_034(struct loop_034_data *data) {\n'
+            '    uint8_t *p1 = data->a; uint8_t *p2 = data->b; uint8_t *lmt = data->lmt;\n'
+            '    uint32_t res = 0, cnt = 0; int length = 13;\n'
+            '    while (p1 < lmt) {\n'
+            '        int64_t r = strcmp((const char *)p1, (const char *)p2);\n'
+            '        uint32_t cmp = 1; if (r > 0) cmp = 2; if (r < 0) cmp = 3;\n'
+            '        res += cnt * cmp; p1 += length; p2 += length; cnt++;\n'
+            '        length = 3 + (length + 11) % 43;\n'
+            '    }\n'
+            '    data->checksum = res;\n}\n'
+        ),
+        "sizes": {"edge": [1, 5, 64, 5999, 6001], "perf": [20000]},
+    },
+}
+
+
+def _write_sentinel(loop_id: str) -> None:
+    cfg = _SENTINEL[loop_id]
+    prob_dir = next((d for d in PROBLEMS_DIR.iterdir()
+                     if d.name.startswith(loop_id + "_")), None)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("prob", prob_dir / "problem.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    fields = _parse_struct(getattr(mod, "STRUCT_DEF", ""))
+    fmap = {f.name: f for f in fields}
+
+    buffers, sentinel, result = cfg["buffers"], cfg["sentinel"], cfg["result"]
+    elem_ct = fmap[buffers[0]].c_type
+    elem_dtype = _array_dtype_map_local.get(elem_ct, "uint8")
+    r_ct = fmap[result].c_type
+    r_dtype = _array_dtype_map_local.get(r_ct, "int32")
+
+    struct_lines = [(f"    {f.c_type} *{f.name};" if f.is_ptr
+                     else f"    {f.c_type} {f.name};") for f in fields]
+    in_args = ", ".join([f"void *{b}" for b in buffers] + ["int64_t n", "void *res_out"])
+
+    h = (f"// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.\n"
+         f"#pragma once\n#include <stdint.h>\n\n"
+         f"struct {loop_id}_data {{\n{chr(10).join(struct_lines)}\n}};\n\n"
+         f"#ifdef __cplusplus\nextern \"C\" {{\n#endif\n"
+         f"int armbench_entry_{loop_id}({in_args});\n"
+         f"#ifdef __cplusplus\n}}\n#endif\n")
+
+    assigns = [f"    _kd.{b} = static_cast<{elem_ct} *>({b});" for b in buffers]
+    assigns.append(f"    _kd.{sentinel} = static_cast<{elem_ct} *>({buffers[0]}) + n;")
+    assigns.append(f"    _kd.{result} = 0;")
+    cpp = (f"// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.\n"
+           f'#include "{loop_id}.h"\n#include <stdint.h>\n\n'
+           f'extern "C" void inner_{loop_id}(struct {loop_id}_data *data);\n\n'
+           f'extern "C" int armbench_entry_{loop_id}({in_args}) {{\n'
+           f"    struct {loop_id}_data _kd;\n{chr(10).join(assigns)}\n"
+           f"    inner_{loop_id}(&_kd);\n"
+           f"    *static_cast<{r_ct} *>(res_out) = _kd.{result};\n"
+           f"    return 0;\n}}\n")
+
+    # on-disk harness copies
+    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    for path, content in ((HARNESS_DIR / f"{loop_id}.h", h),
+                          (HARNESS_DIR / f"{loop_id}.cpp", cpp)):
+        if not path.exists() or path.read_text() != content:
+            path.write_text(content); print(f"  wrote {path.relative_to(REPO)}")
+
+    # definition
+    definition = {
+        "name": loop_id, "op_type": loop_id,
+        "description": _description(_FakeInfo(loop_id)),
+        "tags": ["simd-loop"],
+        "axes": {"N": {"type": "var", "description": "Buffer length (bytes)"}},
+        "inputs": {b: {"shape": ["N"], "dtype": elem_dtype} for b in buffers},
+        "outputs": {result: {"shape": None, "dtype": r_dtype, "description": "Scalar checksum"}},
+        "reference": cfg["reference"],
+        "simd_loop_meta": {"output_inplace": False, "array_pad": 0, "scratch": [], "axes_order": []},
+    }
+    def_dir = BENCH_TRACE / "definitions" / "simd-loop"; def_dir.mkdir(parents=True, exist_ok=True)
+    def_path = def_dir / f"{loop_id}.json"
+    content = json.dumps(definition, indent=2) + "\n"
+    if not def_path.exists() or def_path.read_text() != content:
+        def_path.write_text(content); print(f"  wrote {def_path.relative_to(REPO)}")
+
+    # workloads (bytes inputs)
+    wl_inputs = {b: {"type": "bytes", "layout": cfg["layout"]} for b in buffers}
+    lines = []
+    for source in ("edge", "perf"):
+        for nval in cfg["sizes"].get(source, []):
+            uid = _stable_uuid(loop_id, nval, source)
+            lines.append(json.dumps({"axes": {"N": nval}, "inputs": wl_inputs,
+                                     "uuid": uid, "tags": {"source": source}}))
+    wl_dir = BENCH_TRACE / "workloads" / "simd-loop"; wl_dir.mkdir(parents=True, exist_ok=True)
+    wl_path = wl_dir / f"{loop_id}.jsonl"
+    content = "\n".join(lines) + "\n"
+    if not wl_path.exists() or wl_path.read_text() != content:
+        wl_path.write_text(content); print(f"  wrote {wl_path.relative_to(REPO)}")
+
+    # solutions (reference + autovec)
+    sources = [{"path": f"{loop_id}.h", "content": h},
+               {"path": f"{loop_id}.cpp", "content": cpp},
+               {"path": "kernel.cpp", "content": cfg["scalar"]}]
+    _write_solution_pair(loop_id, sources)
+
+
+class _FakeInfo:
+    """Minimal shim so _description() (expects .loop_id) works for sentinel loops."""
+    def __init__(self, loop_id: str): self.loop_id = loop_id
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -829,17 +2093,21 @@ TARGET_LOOP_IDS = [
     "loop_033",   # fp64 inner product (int64 n)
     "loop_126",   # conditional dot product
     "loop_127",   # dot product with early exit
+    "loop_105",   # cascade pairwise summation (b is scratch; n is power-of-2 >= 16)
     # ── Array-output (element-wise transform → output array) ─────────────────
     "loop_027",   # fp32 sqrt  (1 input → 1 output)
     "loop_028",   # fp64 div   (2 inputs → 1 output)
     "loop_029",   # fp64 scalbn / ldexp (double + int64 scale → double)
     "loop_035",   # fp32 add   (2 inputs → 1 output)
+    "loop_108",   # RGBA pixel deinterleave → uint8 luminance (LD4 + shift-accumulate)
     "loop_113",   # uint32 pair-wise add (2 inputs → 1 output, stride-2)
     "loop_128",   # uint32 add with aliased pointers
     # ── In-place sort (data sorted in-place, output IS data) ─────────────────
     "loop_120",   # insertion sort
     "loop_121",   # quicksort (with temp scratch buffer)
     "loop_122",   # odd-even transposition sort
+    "loop_123",   # bitonic mergesort (temp + block_sizes scratch; n must be power-of-2)
+    "loop_124",   # radix sort (temp + hist + prfx scratch)
 ]
 
 
@@ -891,10 +2159,36 @@ def main() -> None:
 
         all_infos.append(info)
 
-    if not dry_run and all_infos:
-        print(f"\nDone. Generated {len(all_infos)} loops.")
+    # ── Multi-axis loops (m/n/k) ──────────────────────────────────────────────
+    ma_count = 0
+    for loop_id in _MULTI_AXIS:
+        ma = _build_multi_axis_info(loop_id)
+        if ma is None:
+            print(f"[skip] {loop_id}: problem dir / struct not found")
+            continue
+        in_desc = {n: ax for n, ax in ma.inputs.items()}
+        print(f"[gen]  {loop_id} (multi-axis {ma.axes}): {in_desc} -> "
+              f"{ma.output[0]}{ma.output[1]}")
+        if not dry_run:
+            _write_multi_axis(ma)
+        ma_count += 1
+
+    # ── Sentinel loops (begin/end pointer ABI) ────────────────────────────────
+    sn_count = 0
+    for loop_id in _SENTINEL:
+        cfg = _SENTINEL[loop_id]
+        print(f"[gen]  {loop_id} (sentinel {cfg['layout']}): {cfg['buffers']} + n -> "
+              f"{cfg['result']}")
+        if not dry_run:
+            _write_sentinel(loop_id)
+        sn_count += 1
+
+    total = len(all_infos) + ma_count + sn_count
+    if not dry_run and total:
+        print(f"\nDone. Generated {len(all_infos)} single/array/inplace + "
+              f"{ma_count} multi-axis + {sn_count} sentinel loops.")
     elif dry_run:
-        print(f"\nDry run: would generate {len(all_infos)} loops.")
+        print(f"\nDry run: would generate {total} loops.")
 
 
 if __name__ == "__main__":

@@ -25,10 +25,11 @@ _C_VOID_P = ctypes.c_void_p
 _C_INT64   = ctypes.c_int64
 
 _DTYPE_MAP: dict[str, Any] = {
-    "float32": np.float32, "float64": np.float64,
+    "float32": np.float32, "float64": np.float64, "float16": np.float16,
     "int64":   np.int64,   "int32":   np.int32,
     "int16":   np.int16,   "int8":    np.int8,
     "uint64":  np.uint64,  "uint32":  np.uint32,
+    "uint16":  np.uint16,  "uint8":   np.uint8,
 }
 
 
@@ -77,6 +78,37 @@ class SimdLoopDataset:
         out_spec = next(iter(definition.outputs.values()))
         result_dtype = _DTYPE_MAP[out_spec.dtype.value]
         output_is_array = out_spec.shape is not None
+
+        # ── Multi-axis loops (m/n/k): pass each axis as a separate int64 ───────
+        # ABI: armbench_entry(in1, ..., int64_t axis0, axis1, ..., void* res_out)
+        if meta.axes_order:
+            arrays = [np.ascontiguousarray(np_inputs[name]) for name in definition.inputs]
+            # Recover concrete axis sizes from three sources, in precedence order:
+            #   1. const axes declared in the definition (e.g. a fixed `scale`),
+            #   2. var axes read off the input array shapes,
+            #   3. output-only axes read off the reference output shape (e.g. `lags`,
+            #      a length that appears only in the output) handed in by the evaluator.
+            axis_values: Dict[str, int] = {n: int(v) for n, v in definition.const_axes.items()}
+            for name, spec in definition.inputs.items():
+                if spec.shape:
+                    for axis_name, dim in zip(spec.shape, np_inputs[name].shape):
+                        axis_values[axis_name] = int(dim)
+            if out_shape is not None and out_spec.shape:
+                for axis_name, dim in zip(out_spec.shape, out_shape):
+                    axis_values.setdefault(axis_name, int(dim))
+            # Output buffer: prefer the reference shape handed in by the evaluator;
+            # otherwise resolve the declared output shape from recovered axes.
+            if out_shape is None:
+                out_shape = tuple(axis_values[a] for a in out_spec.shape)
+            res_buf = np.zeros(out_shape, dtype=result_dtype)
+            ptrs = [ctypes.cast(a.ctypes.data, _C_VOID_P) for a in arrays]
+            axis_args = tuple(_C_INT64(axis_values[a]) for a in meta.axes_order)
+            entry_args = (
+                tuple(ptrs) + axis_args
+                + (ctypes.cast(res_buf.ctypes.data, _C_VOID_P),)
+            )
+            return SimdLoopContext(entry_args=entry_args, _arrays=arrays + [res_buf],
+                                   res_buf=res_buf, _n=0)
 
         if meta.output_inplace:
             # In-place: the first input is sorted in-place; scratch bufs follow.

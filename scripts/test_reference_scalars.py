@@ -1,110 +1,58 @@
 #!/usr/bin/env python3
-"""
-Quick correctness smoke-test: compile and run every reference-scalar solution
-against the Python reference for all registered simd-loop problems.
-"""
-import ctypes, shutil, sys, pathlib
-import numpy as np
+"""Correctness smoke-test: run every simd-loop `reference` baseline solution
+through the full bench pipeline (SimdLoopBuilder → DefaultEvaluator → SimdLoopDataset).
 
-REPO = pathlib.Path(__file__).parent.parent
+Each loop must produce PASSED on every workload — same gate as bench.cli bench.
+Pass an author as argv[1] (e.g. `autovec`) to smoke-test that baseline instead.
+"""
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+REPO = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO))
 
-from bench.data import Solution, Definition, Workload
-from bench.compile.builders.simd_loop import SimdLoopBuilder
-from bench.datasets.simd_loop import sig_from_definition, SimdLoopDataset
-from bench.runtime.inputs import gen_inputs_for_workload
+from bench.benchmark import Benchmark
+from bench.config import BenchmarkConfig
+from bench.data.trace_set import TraceSet
 
-DEFS_DIR  = REPO / "bench-trace/definitions/simd-loop"
-WL_DIR    = REPO / "bench-trace/workloads/simd-loop"
-SOL_DIR   = REPO / "bench-trace/solutions/simd-loop/reference-scalar"
+BENCH_TRACE = REPO / "bench-trace"
 
-def run_one(loop_id: str) -> tuple[int, int, list[str]]:
-    """Returns (passed, total, [error_messages])."""
-    def_path = DEFS_DIR / f"{loop_id}.json"
-    wl_path  = WL_DIR  / f"{loop_id}.jsonl"
-    sol_path = SOL_DIR / loop_id / f"reference-scalar_{loop_id}.json"
 
-    if not all(p.exists() for p in [def_path, wl_path, sol_path]):
-        return 0, 0, [f"missing files for {loop_id}"]
-
-    defn = Definition.model_validate_json(def_path.read_text())
-    sol  = Solution.model_validate_json(sol_path.read_text())
-    workloads = [Workload.model_validate_json(l)
-                 for l in wl_path.read_text().splitlines() if l.strip()]
-
-    builder = SimdLoopBuilder()
+def main() -> int:
+    author = sys.argv[1] if len(sys.argv) > 1 else "reference"
+    ts = TraceSet.from_path(BENCH_TRACE)
+    cfg = BenchmarkConfig(baseline_author=author)
+    bench = Benchmark(ts, cfg)
     try:
-        compiled = builder.build(defn, sol)
-    except Exception as e:
-        return 0, len(workloads), [f"compile error: {e}"]
-
-    errors = []
-    passed = 0
-    try:
-        lib = ctypes.CDLL(str(compiled.so_path))
-        sym = getattr(lib, f"armbench_entry_{loop_id}")
-        sym.restype = ctypes.c_int
-        sym.argtypes = sig_from_definition(defn)
-        sym._lib = lib
-
-        ds = SimdLoopDataset()
-        exec_ns: dict = {}
-        exec(defn.reference, exec_ns)
-        ref_fn = exec_ns["run"]
-
-        for wl in workloads:
-            np_inputs = gen_inputs_for_workload(defn, wl)
-            ctx = ds.wrap_inputs(np_inputs, {"N": wl.axes["N"]}, loop_id, lib, definition=defn)
-            rc = sym(*ctx.entry_args)
-            if rc != 0:
-                errors.append(f"N={wl.axes['N']}: runtime error rc={rc}")
-                ds.release(ctx)
-                continue
-
-            out = ds.unwrap_output(ctx)
-            ref_val = ref_fn(**np_inputs)
-            ref_arr = np.asarray([ref_val]) if isinstance(ref_val, np.generic) else np.asarray(ref_val)
-            got_arr = np.asarray(out).flatten()[:ref_arr.size]
-
-            # Hybrid abs+rel tolerance (same as correctness.py defaults)
-            abs_tol, rel_tol = 1e-3, 1e-3
-            diff = np.abs(got_arr.astype(np.float64) - ref_arr.astype(np.float64).flatten())
-            tol  = abs_tol + rel_tol * np.abs(ref_arr.astype(np.float64).flatten())
-            if np.any(diff > tol):
-                idx = int(np.argmax(diff > tol))
-                errors.append(
-                    f"N={wl.axes['N']}: FAIL max_abs={diff.max():.3e} "
-                    f"max_rel={float(diff[idx]/max(abs(float(ref_arr.flat[idx])),1e-12)):.3e} "
-                    f"got={float(got_arr.flat[idx]):.6f} ref={float(ref_arr.flat[idx]):.6f}"
-                )
-            else:
-                passed += 1
-            ds.release(ctx)
+        traces = bench.collect_baselines(dump_traces=False)
     finally:
-        shutil.rmtree(compiled.build_dir, ignore_errors=True)
+        bench.close()
 
-    return passed, len(workloads), errors
+    by_def: dict = defaultdict(list)
+    for t in traces:
+        by_def[t.definition].append(t)
 
-
-def main():
-    loop_ids = sorted(p.stem for p in DEFS_DIR.glob("loop_*.json"))
     total_pass = total_wl = 0
     any_fail = False
 
-    for loop_id in loop_ids:
-        p, t, errs = run_one(loop_id)
-        total_pass += p
-        total_wl   += t
-        status = "PASS" if not errs else "FAIL"
-        if errs:
+    for loop_id in sorted(by_def):
+        loop_traces = by_def[loop_id]
+        passed = sum(1 for t in loop_traces if t.is_successful())
+        total = len(loop_traces)
+        total_pass += passed
+        total_wl += total
+        status = "PASS" if passed == total else "FAIL"
+        if passed != total:
             any_fail = True
-        print(f"  [{status}] {loop_id:<12} {p}/{t}")
-        for e in errs:
-            print(f"           {e}")
+        print(f"  [{status}] {loop_id:<12} {passed}/{total}")
+        for t in loop_traces:
+            if not t.is_successful() and t.evaluation:
+                print(f"           {t.evaluation.log[:120]}")
 
-    print(f"\n{total_pass}/{total_wl} workloads passed across {len(loop_ids)} loops")
-    sys.exit(1 if any_fail else 0)
+    print(f"\n{total_pass}/{total_wl} workloads passed across {len(by_def)} loops")
+    return 1 if any_fail else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
