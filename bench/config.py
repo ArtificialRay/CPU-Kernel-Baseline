@@ -28,6 +28,8 @@ DEFAULT_CORRECTNESS_ABS_TOL = 1e-3
 DEFAULT_CORRECTNESS_REL_TOL = 1e-3
 DEFAULT_REQUIRED_MATCHED_RATIO = 1.0
 DEFAULT_COLLECT_PERF_COUNTERS = True
+DEFAULT_LOW_BIT_LSB_TOL = 1.0
+"""Allowed integer LSB (least-significant-bit) error for quantised/low-bit outputs."""
 
 
 @dataclass
@@ -41,6 +43,7 @@ class EvalOverride:
     abs_tol: Optional[float] = None
     rel_tol: Optional[float] = None
     required_matched_ratio: Optional[float] = None
+    low_bit_lsb_tol: Optional[float] = None
 
 
 @dataclass
@@ -57,6 +60,7 @@ class BenchmarkConfig:
     abs_tol: float = DEFAULT_CORRECTNESS_ABS_TOL
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
     required_matched_ratio: float = DEFAULT_REQUIRED_MATCHED_RATIO
+    low_bit_lsb_tol: float = DEFAULT_LOW_BIT_LSB_TOL
     op_type_config: Dict[str, EvalOverride] = field(default_factory=dict)
     """Per-op-type tolerance overrides keyed by definition.op_type."""
     watchdog_s: float = DEFAULT_WATCHDOG_S
@@ -71,6 +75,7 @@ class BenchmarkConfig:
         atol = self.abs_tol
         rtol = self.rel_tol
         ratio = self.required_matched_ratio
+        lsb = self.low_bit_lsb_tol
         if definition is not None and self.op_type_config:
             op = self.op_type_config.get(definition.op_type)
             if op is not None:
@@ -80,10 +85,13 @@ class BenchmarkConfig:
                     rtol = op.rel_tol
                 if op.required_matched_ratio is not None:
                     ratio = op.required_matched_ratio
+                if op.low_bit_lsb_tol is not None:
+                    lsb = op.low_bit_lsb_tol
         return EvalConfig(
             abs_tol=atol,
             rel_tol=rtol,
             required_matched_ratio=ratio,
+            low_bit_lsb_tol=lsb,
             warmup=self.warmup,
             repeat=self.repeat,
             inner_iters=self.inner_iters,
@@ -106,6 +114,7 @@ class EvalConfig:
     abs_tol: float = DEFAULT_CORRECTNESS_ABS_TOL
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
     required_matched_ratio: float = DEFAULT_REQUIRED_MATCHED_RATIO
+    low_bit_lsb_tol: float = DEFAULT_LOW_BIT_LSB_TOL
     # timing
     warmup: int = DEFAULT_WARMUP
     repeat: int = DEFAULT_REPEAT
@@ -132,4 +141,5 @@ __all__ = [
     "DEFAULT_CORRECTNESS_REL_TOL",
     "DEFAULT_REQUIRED_MATCHED_RATIO",
     "DEFAULT_COLLECT_PERF_COUNTERS",
+    "DEFAULT_LOW_BIT_LSB_TOL",
 ]
