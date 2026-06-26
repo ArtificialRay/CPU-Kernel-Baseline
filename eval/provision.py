@@ -200,7 +200,7 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
         str(REPO_ROOT),
         "~/arm-bench",
         excludes=["build", ".git", "terraform", "generations", "results",
-                  "__pycache__", "*.pyc"],
+                  "__pycache__", "*.pyc", ".venv"], # avoid sync local venv to remote instance
     )
 
     _install_deps(handle)
@@ -212,87 +212,136 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
     return handle
 
 
-def provision_codebase(instance_type: str = "c7g.large", initial_build: str = "", codebase: str = "") -> InstanceHandle:
+def provision_n(
+    n: int,
+    instance_type: str = "c8g.large",
+    initial_build: str = "",
+    dataset: str = "",
+) -> list[InstanceHandle]:
+    """Provision n instances of instance_type.
+
+    The first instance is created via Terraform (existing path). Additional
+    instances are launched via boto3 by cloning the primary's AMI, key, SG,
+    and subnet — so no separate Terraform config is needed.
+
+    All extra instances are set up in parallel (rsync + deps + dataset build).
+    All n handles are written to eval_config.json as a list for future re-use.
+
+    Requires:
+      - AWS credentials available locally (boto3 reads ~/.aws/credentials or env)
+      - Primary Terraform instance must expose instance_id in terraform outputs
     """
-    Sync the codebase to the remote instance for cpu kernel codebase evaluation.
+    import concurrent.futures
 
-    The codebase source is expected at CPU-Kernel-Baseline/{codebase}/ relative to arm-bench's
-    parent directory. It is rsynced to ~/{codebase}/ on the remote instance, which is
-    the path that NCNNTools expects.
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
 
-    Args:
-        handle: An InstanceHandle already connected to the remote instance.
-    """
-    is_c8g = "c8g" in instance_type
-    print(f"[provision] Provisioning {instance_type} via Terraform...")
+    # Step 1: provision primary via Terraform
+    primary = provision(instance_type, initial_build=initial_build, dataset=dataset)
 
-    if is_c8g:
-        # c8g has its own fixed resource block — target it directly
-        result = _tf("apply", "-auto-approve",
-                     "-target=aws_instance.c8g",
-                     "-target=null_resource.deploy_c8g")
-    else:
-        skip_build = initial_build == ""
-        vars = [
-            f"-var=instance_type={instance_type}",
-            f"-var=skip_initial_build={'true' if skip_build else 'false'}",
-        ]
-        if not skip_build:
-            vars.append(f"-var=build_target={initial_build}")
-        result = _tf("apply", "-auto-approve",
-             "-target=aws_instance.kernel_testing",
-             "-target=null_resource.deploy",
-             *vars)
+    if n == 1:
+        return [primary]
 
+    if not primary.instance_id:
+        raise RuntimeError(
+            "Cannot clone instances: primary has no instance_id. "
+            "Check that terraform output includes instance_id / c8g_instance_id."
+        )
 
-    if result.returncode != 0:
-        raise RuntimeError("terraform apply failed")
+    # Step 2: describe primary to get launch config for cloning
+    import boto3
+    ec2 = boto3.client("ec2")
 
-    outputs = _tf_output()
-    if is_c8g:
-        host = outputs["c8g_public_ip"]["value"]
-        instance_id = outputs.get("c8g_instance_id", {}).get("value")
-    else:
-        host = outputs["instance_public_ip"]["value"]
-        instance_id = outputs.get("instance_id", {}).get("value")
-    key_file = outputs.get("ssh_key_path", {}).get("value", "~/.ssh/id_rsa")
+    info = ec2.describe_instances(InstanceIds=[primary.instance_id])
+    src = info["Reservations"][0]["Instances"][0]
+    ami_id   = src["ImageId"]
+    key_name = src["KeyName"]
+    sg_ids   = [sg["GroupId"] for sg in src["SecurityGroups"]]
+    subnet_id = src["SubnetId"]
 
-    handle = InstanceHandle(
-        host=host,
-        user="ubuntu",
-        key_file=key_file,
-        instance_type=instance_type,
-        instance_id=instance_id,
+    n_extra = n - 1
+    print(f"[provision_n] Launching {n_extra} extra {instance_type} via boto3...")
+    resp = ec2.run_instances(
+        ImageId=ami_id,
+        InstanceType=instance_type,
+        KeyName=key_name,
+        SecurityGroupIds=sg_ids,
+        SubnetId=subnet_id,
+        MinCount=n_extra,
+        MaxCount=n_extra,
+        TagSpecifications=[{
+            "ResourceType": "instance",
+            "Tags": [{"Key": "Name", "Value": "arm-bench-worker"}],
+        }],
     )
+    new_ids = [i["InstanceId"] for i in resp["Instances"]]
 
-    print(f"[provision] Instance ready at {host}, waiting for SSH...")
-    _wait_for_ssh(handle)
+    print(f"[provision_n] Waiting for {n_extra} instance(s) to reach running state...")
+    ec2.get_waiter("instance_running").wait(InstanceIds=new_ids)
 
-    # Look for ncnn/ in the CPU-Kernel-Baseline repo next to arm-bench
-    codebase_dir = REPO_ROOT.parent / "CPU-Kernel-Baseline" / codebase
-    if not codebase_dir.exists():
-        # Fallback: look for ncnn/ directly next to arm-bench
-        codebase_dir = REPO_ROOT.parent / codebase
-        if not codebase_dir.exists():
-            raise FileNotFoundError(
-                f"ncnn codebase not found. Looked at:\n"
-                f"  {REPO_ROOT.parent / 'CPU-Kernel-Baseline' / codebase}\n"
-                f"  {REPO_ROOT.parent / codebase}\n"
-                f"Make sure CPU-Kernel-Baseline/{codebase} exists relative to arm-bench."
-            )
+    extra_handles: list[InstanceHandle] = []
+    for inst_id in new_ids:
+        desc = ec2.describe_instances(InstanceIds=[inst_id])
+        ip = desc["Reservations"][0]["Instances"][0]["PublicIpAddress"]
+        extra_handles.append(InstanceHandle(
+            host=ip,
+            user=primary.user,
+            key_file=primary.key_file,
+            instance_type=instance_type,
+            instance_id=inst_id,
+        ))
 
-    print(f"[provision_codebase] Rsyncing {codebase_dir} → {handle.host}:~/{codebase}/ ...")
-    handle.rsync_to(
-        str(codebase_dir),
-        f"~/{codebase}",
-        excludes=["build", ".git", "__pycache__", "*.o", "*.d", "*.pyc"],
-    )
-    _save_config(handle)
-    print(f"[provision_codebase] {codebase} codebase synced.")
-    return handle
+    # Step 3: parallel SSH wait + rsync + deps on extra instances
+    def _setup(h: InstanceHandle) -> None:
+        print(f"[provision_n] Setting up {h.host} ...")
+        _wait_for_ssh(h)
+        h.rsync_to(
+            str(REPO_ROOT), "~/arm-bench",
+            excludes=["build", ".git", "terraform", "generations", "results",
+                      "__pycache__", "*.pyc", ".venv"],
+        )  # avoid sync local venv to remote instance
+        _install_deps(h)
+        if dataset:
+            _run_dataset_build(h, dataset)
+        print(f"[provision_n] {h.host} ready.")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(extra_handles)) as pool:
+        for fut in concurrent.futures.as_completed(
+            [pool.submit(_setup, h) for h in extra_handles]
+        ):
+            fut.result()  # re-raise if setup failed
+
+    all_handles = [primary] + extra_handles
+    _save_config_multi(all_handles)
+    print(f"[provision_n] {n} instance(s) ready: {[h.host for h in all_handles]}")
+    return all_handles
+
+
+def _save_config_multi(handles: list[InstanceHandle]) -> None:
+    """Write all handles for the same tier as a list in eval_config.json."""
+    if not handles:
+        return
+    config = {}
+    if EVAL_CONFIG_PATH.exists():
+        config = json.loads(EVAL_CONFIG_PATH.read_text())
+
+    tier = "c8g" if "c8g" in handles[0].instance_type else "c7g"
+    config.setdefault("instances", {})
+
+    entries = []
+    for h in handles:
+        entry: dict = {"host": h.host, "user": h.user, "key_file": h.key_file}
+        if h.instance_id:
+            entry["instance_id"] = h.instance_id
+        entries.append(entry)
+
+    # Keep single-dict format when n=1 for backward compat; list when n>1.
+    config["instances"][tier] = entries if len(entries) > 1 else entries[0]
+    EVAL_CONFIG_PATH.write_text(json.dumps(config, indent=2))
+
 
 def teardown():
-    """Run terraform destroy to terminate the instance."""
+    """Run terraform destroy to terminate the Terraform-managed instance."""
     print("[teardown] Running terraform destroy...")
     result = _tf("destroy", "-auto-approve")
     if result.returncode != 0:
@@ -428,17 +477,12 @@ if __name__ == "__main__":
     parser.add_argument("--status", action="store_true", help="Show instance status")
     parser.add_argument("--initial-build", default="",
                         help="Run make <target> after provision (default: skip)")
-    parser.add_argument("--codebase",default="ncnn",help="CPU kernel baseline codebase selection")
     args = parser.parse_args()
 
     if args.status:
         status()
     elif args.teardown:
         teardown()
-    elif args.codebase:
-        instance_type = ISA_INSTANCE_MAP.get(args.isa, args.instance) if args.isa else args.instance
-        handle = provision_codebase(instance_type, args.initial_build, args.codebase)
-        print(f"\nInstance handle: {handle}")
     else:
         instance_type = ISA_INSTANCE_MAP.get(args.isa, args.instance) if args.isa else args.instance
         handle = provision(instance_type, args.initial_build)

@@ -57,3 +57,4 @@ __pycache__/
 agent-runs/
 uv.lock
 notebooks/
+case-study/

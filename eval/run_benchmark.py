@@ -42,7 +42,7 @@ from eval.evaluator import run_agentic_eval
 from eval.provision import (
     get_running_instances,
     teardown,
-    provision,
+    provision_n,
     ISA_INSTANCE_MAP,
     InstanceHandle,
 )
@@ -69,11 +69,6 @@ class BaselineCollectionError(RuntimeError):
         )
         self.def_name = def_name
         self.host = host
-
-
-def _author_from_model(model: str) -> str:
-    """Derive a short author label from the model string."""
-    return model.split("/")[-1]
 
 
 def _defs_for_dataset(ts: TraceSet, dataset: str) -> list:
@@ -268,18 +263,19 @@ def main():
                         help="Skip lazy baseline collection (use if baselines are already present)")
 
     args = parser.parse_args()
+    _start = time.time()
 
     # ── Resolve ISA → instance type ────────────────────────────────────────
     isa = args.isa or "sve2"
     instance_type = ISA_INSTANCE_MAP.get(isa, "c8g.large")
 
     if args.provision:
-        handles = [provision(instance_type, dataset=args.dataset)]
+        handles = provision_n(args.num_instances, instance_type, dataset=args.dataset)
     else:
         handles = get_running_instances(isa, args.num_instances)
         if not handles:
             print(f"No running {instance_type} instance(s) for {isa}. Provisioning...")
-            handles = [provision(instance_type, dataset=args.dataset)]
+            handles = provision_n(args.num_instances, instance_type, dataset=args.dataset)
         elif len(handles) < args.num_instances:
             print(
                 f"[WARNING] Requested {args.num_instances} instance(s) but only "
@@ -318,7 +314,7 @@ def main():
     bench_cfg = BenchmarkConfig(baseline_author=baseline_author)
 
     # ── Create pipeline + run evaluations ─────────────────────────────────
-    author = _author_from_model(args.model)
+    author = args.model.split("/")[-1]
     pipeline = BenchPipeline(handles)
 
     # Single ThreadPoolExecutor path: max_workers=1 is equivalent to the old
@@ -359,10 +355,19 @@ def main():
 
     # ── Print summary ─────────────────────────────────────────────────────
     _print_summary(results, args.dataset, args.model)
+    elapsed = time.time() - _start
+    print(f"  Total elapsed:            {elapsed:.1f}s ({elapsed/60:.1f}m)")
 
     # ── Teardown ──────────────────────────────────────────────────────────
     if args.teardown:
-        print("\n[teardown] Destroying instance...")
+        # Terminate boto3-launched extra instances (handles[1:]) before Terraform
+        # destroy, which only manages the primary (handles[0]).
+        extra_ids = [h.instance_id for h in handles[1:] if h.instance_id]
+        if extra_ids:
+            print(f"\n[teardown] Terminating {len(extra_ids)} extra instance(s) via boto3...")
+            import boto3
+            boto3.client("ec2").terminate_instances(InstanceIds=extra_ids)
+        print("\n[teardown] Destroying primary instance via Terraform...")
         teardown()
     else:
         running_hosts = [h.host for h in handles if h.host]

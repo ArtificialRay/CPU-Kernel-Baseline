@@ -125,6 +125,7 @@ resource "null_resource" "deploy" {
         --exclude=build \
         --exclude=.git \
         --exclude=terraform \
+        --exclude=.venv \
         -e 'ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' \
         ${path.module}/../ \
         ubuntu@${aws_instance.kernel_testing.public_ip}:~/arm-bench/
@@ -187,6 +188,7 @@ resource "null_resource" "deploy_c8g" {
         --exclude=build \
         --exclude=.git \
         --exclude=terraform \
+        --exclude=.venv \
         -e 'ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' \
         ${path.module}/../ \
         ubuntu@${aws_instance.c8g.public_ip}:~/arm-bench/
