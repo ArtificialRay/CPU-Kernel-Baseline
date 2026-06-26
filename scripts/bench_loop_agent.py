@@ -34,7 +34,7 @@ from bench.data.definition import Definition
 from bench.data.solution import Solution, SolutionSpec, SourceFile, SupportedDatasets
 from bench.data.trace_set import TraceSet
 from bench.data.workload import Workload
-from bench.datasets.simd_loop import SimdLoopDataset
+from bench.datasets.simd_loop import sig_from_definition, SimdLoopDataset
 from bench.runtime.inputs import gen_inputs_for_workload
 from bench.runtime.timing import time_callable
 
@@ -147,6 +147,7 @@ def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
         lib = ctypes.CDLL(str(compiled.so_path))
         sym = getattr(lib, f"armbench_entry_{op_type}")
         sym.restype = ctypes.c_int
+        sym.argtypes = sig_from_definition(d)
         sym._lib = lib
 
         ds = SimdLoopDataset()
@@ -158,7 +159,7 @@ def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
         all_passed = True
         for wl in workloads:
             np_inputs = gen_inputs_for_workload(d, wl)
-            ctx = ds.wrap_inputs(np_inputs, op_type, lib, definition=d)
+            ctx = ds.wrap_inputs(np_inputs, {"N": wl.axes["N"]}, op_type, lib, definition=d)
             rc = sym(*ctx.entry_args)
             if rc != 0:
                 results.append({"N": wl.axes["N"], "status": "runtime_error", "rc": rc})
