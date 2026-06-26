@@ -27,7 +27,7 @@ import platform
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -176,7 +176,6 @@ def _eval_solution(ts: TraceSet, loop_id: str, kernel_code: str, cfg: EvalConfig
             "source": t.workload.tags.get("source"),
             "status": "passed" if st == EvaluationStatus.PASSED else st.value,
             "min_ns": ev.performance.min_ns if (st == EvaluationStatus.PASSED and ev.performance) else None,
-            "max_rel": ev.correctness.max_relative_error if ev.correctness else None,
             "log": "" if st == EvaluationStatus.PASSED else (ev.log or "")[:200],
         }
         if st != EvaluationStatus.PASSED:
