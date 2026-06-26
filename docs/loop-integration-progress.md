@@ -9,15 +9,15 @@ loss. See `CLAUDE.md` "Adding a new simd-loop problem" and
 
 ## Current state (resume here)
 
-- **Integrated this effort (20):** 105, 101, 114, 106 (Cap A); 223, 216-221, 038,
-  130, 135 (Cap E); 005, 006, 034, 103 (Cap B); 102, 104 (Cap C). Total: **43 loops — 259/259 passing.**
+- **Integrated this effort (24):** Cap A 105/101/114/106; Cap E 223/216-221/038/130/135;
+  Cap B 005/006/034/103; Cap C 102/104; Cap D 037/109/110/112. Total: **47 loops — 283/283 passing.**
 - **Cap A DONE** except 111 (two outputs — needs evaluator multi-output support).
 - **Cap E DONE** except 4 documented defers (025 no-scalar-impl, 136 int4/LUT,
   137 bf16, 222 scratch+asm).
 - **Cap B DONE** except 031 (deferred: no size field). New: `bytes` workload
   input type (raw/cstrings) + sentinel begin/end ABI in the generator.
 - **Cap C DONE** (102/104 via output-override + const histogram_size axis).
-- **Next:** Cap D (complex 037/109/110/112/107).
+- **Cap D DONE** (037/109/110/112 via typedef emitter + 2D [size,2] interleaved; 107 deferred).
 - **Subagent fan-out lesson:** worktree isolation branches from `origin/main`,
   NOT the branch tip — tell each subagent to fast-forward/reset to
   `feat/simd-loop-sort-123-124` (so it has the latest infra) before starting,
@@ -101,11 +101,11 @@ generator**, not a uniform ABI.
 ### Cap D — custom C types (interleaved complex first)
 | Loop | Description | Status |
 |------|-------------|--------|
-| 037 | cfloat32 complex vector product | ⬜ |
-| 109 | cuint32 complex addition | ⬜ |
-| 110 | cint8/cint32 complex dot | ⬜ |
-| 112 | cuint32 complex MAC | ⬜ |
-| 107 | uint128→uint256 multiply | ⬜ |
+| 037 | cfloat32 complex vector product | ✅ |
+| 109 | cuint32 complex addition | ✅ |
+| 110 | cint8/cint32 complex dot | ✅ |
+| 112 | cuint32 complex MAC | ✅ |
+| 107 | uint128→uint256 multiply | ⬜ defer: 128-bit type, no numpy native |
 
 ### Cap E — multi-axis (m/n/k); SVE2-feasible, no SME needed
 **Infra DONE** (✅): `SimdLoopMeta.axes_order` field; adapter multi-axis branch
@@ -225,3 +225,4 @@ tracker + change log updated; everything committed.
 - 2026-06-18 — Two baseline authors per loop: `reference` (scalar, -fno-vectorize) + `autovec` (-O3 -march=native), same source. Replaces single `reference-scalar` author. Both pass 223/223 across 37 loops (bench.cli + smoke). Aligns with partner's HF trace authors.
 - 2026-06-25 — Cap B: integrated 005/006 (strlen), 034 (strcmp), 103 (whitespace word-count). Added `bytes` workload input type (raw + cstrings layouts) in workload.py/inputs.py and a `_SENTINEL` generator path (begin/end ptr ABI; harness derives end=buf+n so the adapter is unchanged). 022/026 excluded (ABORT). 031 deferred. 247/247 across 41 loops (reference + autovec) via bench.cli + smoke.
 - 2026-06-25 — Cap C: histograms 102 (general, uint32 records) + 104 (byte, uint8 data) via the multi-axis output-override + const histogram_size axis; canonical scalar histogram (bypasses ABORT/SVE branches), np.bincount reference. 259/259 across 43 loops.
+- 2026-06-25 — Cap D: complex loops 037 (cfloat32 mul), 112 (cuint32 mul), 109 (cuint32 add), 110 (cint8 2-tap dot→cint32). Added typedef emitter + per-field dtype override to the multi-axis path; complex modelled as 2D [size,2] interleaved arrays. 107 (uint128) deferred. 283/283 across 47 loops.

@@ -933,6 +933,8 @@ class MultiAxisInfo:
     abi_axes:  Optional[List[str]] = None  # axes passed to the kernel ABI (default: all axes)
     derived:   dict = field(default_factory=dict)  # axis -> formula str over base axes (output sizing)
     const_axes: dict = field(default_factory=dict)  # axis -> fixed value (const param, e.g. scale)
+    typedefs:  list = field(default_factory=list)   # C typedef lines emitted before the struct (complex types)
+    dtypes:    dict = field(default_factory=dict)   # field name -> numpy dtype override (e.g. complex component type)
 
     @property
     def abi(self) -> List[str]:
@@ -1536,6 +1538,125 @@ _MULTI_AXIS: dict[str, dict] = {
             '}\n'
         ),
     },
+    # ── Interleaved complex loops (cfloat32_t / cuint32_t = {re, im}) ──────────
+    # Modelled as 2-D [size, 2] arrays (C-order flat == interleaved re/im), so the
+    # kernel can read them as a complex-struct pointer. `cdim`=2 is a const axis.
+    "loop_037": {  # cfloat32 element-wise complex multiply
+        "axes": ["size"], "abi_axes": ["size"], "const_axes": {"cdim": 2},
+        "typedefs": ["typedef struct { float re; float im; } cfloat32_t;"],
+        "inputs": {"a0": ["size", "cdim"], "b0": ["size", "cdim"]},
+        "output": ("c0", ["size", "cdim"]),
+        "dtypes": {"a0": "float32", "b0": "float32", "c0": "float32"},
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a0, b0):\n"
+            "    ar, ai = a0[:, 0], a0[:, 1]\n"
+            "    br, bi = b0[:, 0], b0[:, 1]\n"
+            "    cr = ar * br - ai * bi\n"
+            "    ci = ar * bi + ai * br\n"
+            "    return np.stack([cr, ci], axis=1).astype(np.float32)\n"
+        ),
+        "sizes": {"edge": [{"size": 1}, {"size": 7}, {"size": 64}, {"size": 9999},
+                           {"size": 10001}], "perf": [{"size": 50000}]},
+        "scalar": (
+            '#include "loop_037.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_037(struct loop_037_data *data) {\n'
+            '    cfloat32_t *a = data->a0; cfloat32_t *b = data->b0; cfloat32_t *c = data->c0;\n'
+            '    uint64_t size = data->size;\n'
+            '    for (uint64_t i = 0; i < size; i++) {\n'
+            '        c[i].re = (a[i].re * b[i].re) - (a[i].im * b[i].im);\n'
+            '        c[i].im = (a[i].re * b[i].im) + (a[i].im * b[i].re);\n'
+            '    }\n}\n'
+        ),
+    },
+    "loop_112": {  # cuint32 element-wise complex multiply (wraps mod 2^32)
+        "axes": ["size"], "abi_axes": ["size"], "const_axes": {"cdim": 2},
+        "typedefs": ["typedef struct { uint32_t re; uint32_t im; } cuint32_t;"],
+        "inputs": {"a0": ["size", "cdim"], "b0": ["size", "cdim"]},
+        "output": ("c0", ["size", "cdim"]),
+        "dtypes": {"a0": "uint32", "b0": "uint32", "c0": "uint32"},
+        "reference": (
+            "import numpy as np\n\n"
+            "_M = np.uint64(0xffffffff)\n\n"
+            "def run(a0, b0):\n"
+            "    ar = a0[:, 0].astype(np.uint64); ai = a0[:, 1].astype(np.uint64)\n"
+            "    br = b0[:, 0].astype(np.uint64); bi = b0[:, 1].astype(np.uint64)\n"
+            "    cr = (ar * br - ai * bi) & _M\n"
+            "    ci = (ar * bi + ai * br) & _M\n"
+            "    return np.stack([cr, ci], axis=1).astype(np.uint32)\n"
+        ),
+        "sizes": {"edge": [{"size": 1}, {"size": 7}, {"size": 64}, {"size": 9999},
+                           {"size": 10001}], "perf": [{"size": 50000}]},
+        "scalar": (
+            '#include "loop_112.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_112(struct loop_112_data *data) {\n'
+            '    cuint32_t *a = data->a0; cuint32_t *b = data->b0; cuint32_t *c = data->c0;\n'
+            '    uint64_t size = data->size;\n'
+            '    for (uint64_t i = 0; i < size; i++) {\n'
+            '        c[i].re = (a[i].re * b[i].re) - (a[i].im * b[i].im);\n'
+            '        c[i].im = (a[i].re * b[i].im) + (a[i].im * b[i].re);\n'
+            '    }\n}\n'
+        ),
+    },
+    "loop_109": {  # cuint32 "complex addition": c.re = a.re - b.im; c.im = a.im + b.re
+        "axes": ["size"], "abi_axes": ["size"], "const_axes": {"cdim": 2},
+        "typedefs": ["typedef struct { uint32_t re; uint32_t im; } cuint32_t;"],
+        "inputs": {"a0": ["size", "cdim"], "b0": ["size", "cdim"]},
+        "output": ("c0", ["size", "cdim"]),
+        "dtypes": {"a0": "uint32", "b0": "uint32", "c0": "uint32"},
+        "reference": (
+            "import numpy as np\n\n"
+            "_M = np.uint64(0xffffffff)\n\n"
+            "def run(a0, b0):\n"
+            "    cr = (a0[:, 0].astype(np.uint64) - b0[:, 1].astype(np.uint64)) & _M\n"
+            "    ci = (a0[:, 1].astype(np.uint64) + b0[:, 0].astype(np.uint64)) & _M\n"
+            "    return np.stack([cr, ci], axis=1).astype(np.uint32)\n"
+        ),
+        "sizes": {"edge": [{"size": 1}, {"size": 7}, {"size": 64}, {"size": 9999},
+                           {"size": 10001}], "perf": [{"size": 50000}]},
+        "scalar": (
+            '#include "loop_109.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_109(struct loop_109_data *data) {\n'
+            '    cuint32_t *a = data->a0; cuint32_t *b = data->b0; cuint32_t *c = data->c0;\n'
+            '    uint64_t size = data->size;\n'
+            '    for (uint64_t i = 0; i < size; i++) {\n'
+            '        c[i].re = a[i].re - b[i].im;\n'
+            '        c[i].im = a[i].im + b[i].re;\n'
+            '    }\n}\n'
+        ),
+    },
+    "loop_110": {  # cint8 2-tap complex dot → cint32. Inputs have 2*size complex elems.
+        "axes": ["size", "size2"], "abi_axes": ["size"],
+        "const_axes": {"cdim": 2}, "derived": {"size2": "2 * size"},
+        "typedefs": ["typedef struct { int8_t re; int8_t im; } cint8_t;",
+                     "typedef struct { int32_t re; int32_t im; } cint32_t;"],
+        "inputs": {"a0": ["size2", "cdim"], "b0": ["size2", "cdim"]},
+        "output": ("c0", ["size", "cdim"]),
+        "dtypes": {"a0": "int8", "b0": "int8", "c0": "int32"},
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a0, b0):\n"
+            "    a = a0.astype(np.int64); b = b0.astype(np.int64)\n"
+            "    ae, ao = a[0::2], a[1::2]; be, bo = b[0::2], b[1::2]\n"
+            "    cr = (ae[:, 0]*be[:, 0] - ae[:, 1]*be[:, 1]) + (ao[:, 0]*bo[:, 0] - ao[:, 1]*bo[:, 1])\n"
+            "    ci = (ae[:, 1]*be[:, 0] + ae[:, 0]*be[:, 1]) + (ao[:, 1]*bo[:, 0] + ao[:, 0]*bo[:, 1])\n"
+            "    return np.stack([cr, ci], axis=1).astype(np.int32)\n"
+        ),
+        "sizes": {"edge": [{"size": 1}, {"size": 7}, {"size": 64}, {"size": 4999},
+                           {"size": 5001}], "perf": [{"size": 25000}]},
+        "scalar": (
+            '#include "loop_110.h"\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_110(struct loop_110_data *data) {\n'
+            '    cint8_t *a = data->a0; cint8_t *b = data->b0; cint32_t *c = data->c0;\n'
+            '    uint64_t size = data->size;\n'
+            '    for (uint64_t i = 0; i < size; i++) {\n'
+            '        c[i].re = (int32_t)(((a[2*i].re * b[2*i].re) - (a[2*i].im * b[2*i].im)) +\n'
+            '                            ((a[2*i+1].re * b[2*i+1].re) - (a[2*i+1].im * b[2*i+1].im)));\n'
+            '        c[i].im = (int32_t)(((a[2*i].im * b[2*i].re) + (a[2*i].re * b[2*i].im)) +\n'
+            '                            ((a[2*i+1].im * b[2*i+1].re) + (a[2*i+1].re * b[2*i+1].im)));\n'
+            '    }\n}\n'
+        ),
+    },
 }
 
 
@@ -1567,6 +1688,7 @@ def _build_multi_axis_info(loop_id: str) -> Optional[MultiAxisInfo]:
         reference=cfg["reference"], sizes=cfg["sizes"], scalar=cfg.get("scalar"),
         abi_axes=cfg.get("abi_axes"), derived=cfg.get("derived", {}),
         const_axes=cfg.get("const_axes", {}),
+        typedefs=cfg.get("typedefs", []), dtypes=cfg.get("dtypes", {}),
     )
 
 
@@ -1581,11 +1703,12 @@ def _gen_ma_harness_h(info: MultiAxisInfo) -> str:
     in_args = [f"void *{name}" for name in info.inputs]
     axis_args = [f"int64_t {a}" for a in info.abi]
     args = ", ".join(in_args + axis_args + ["void *res_out"])
+    typedef_block = ("\n" + "\n".join(info.typedefs) + "\n") if info.typedefs else ""
     return f"""\
 // Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
 #pragma once
 #include <stdint.h>
-
+{typedef_block}
 struct {lid}_data {{
 {chr(10).join(struct_lines)}
 }};
@@ -1648,13 +1771,14 @@ def _write_multi_axis(info: MultiAxisInfo) -> None:
             path.write_text(content)
             print(f"  wrote {path.relative_to(REPO)}")
 
-    # 2. Definition
+    # 2. Definition. `dtypes` overrides the component dtype for fields whose C type
+    #    isn't a plain scalar (e.g. complex `cfloat32_t` → "float32").
     inputs = {}
     for name, ax in info.inputs.items():
-        dtype = _array_dtype_map_local.get(info.field(name).c_type, "int32")
+        dtype = info.dtypes.get(name) or _array_dtype_map_local.get(info.field(name).c_type, "int32")
         inputs[name] = {"shape": ax, "dtype": dtype}
     out_name, out_ax = info.output
-    out_dtype = _array_dtype_map_local.get(info.field(out_name).c_type, "int32")
+    out_dtype = info.dtypes.get(out_name) or _array_dtype_map_local.get(info.field(out_name).c_type, "int32")
     axes_spec = {a: {"type": "var", "description": f"axis {a}"} for a in info.axes}
     for a, val in info.const_axes.items():
         axes_spec[a] = {"type": "const", "value": int(val), "description": f"const {a}"}
