@@ -9,14 +9,14 @@ loss. See `CLAUDE.md` "Adding a new simd-loop problem" and
 
 ## Current state (resume here)
 
-- **Integrated this effort (14):** 105, 101, 114, 106 (Cap A); 223, 216, 217, 218,
-  219, 220, 221, 038, 130, 135 (Cap E). Total harness loops: **37 — 223/223 workloads passing.**
+- **Integrated this effort (18):** 105, 101, 114, 106 (Cap A); 223, 216, 217, 218,
+  219, 220, 221, 038, 130, 135 (Cap E); 005, 006, 034, 103 (Cap B). Total harness loops: **41 — 247/247 passing.**
 - **Cap A DONE** except 111 (two outputs — needs evaluator multi-output support).
 - **Cap E DONE** except 4 documented defers (025 no-scalar-impl, 136 int4/LUT,
   137 bf16, 222 scratch+asm).
-- **Next, in order:** Cap B (strings — see `## Cap B handoff` at bottom) →
-  Cap C (histograms) → Cap D (complex). Each: build the shared capability, then
-  fan the batch out to subagents.
+- **Cap B DONE** except 031 (deferred: no size field). New: `bytes` workload
+  input type (raw/cstrings) + sentinel begin/end ABI in the generator.
+- **Next, in order:** Cap C (histograms 102/104) → Cap D (complex).
 - **Subagent fan-out lesson:** worktree isolation branches from `origin/main`,
   NOT the branch tip — tell each subagent to fast-forward/reset to
   `feat/simd-loop-sort-123-124` (so it has the latest infra) before starting,
@@ -77,11 +77,11 @@ bottom of this file.
 
 | Loop | Description | Status |
 |------|-------------|--------|
-| 031 | chunked memcpy (two buffers, fixed `count[]` table, output = 10× copies) | ⬜ |
-| 005 | strlen short strings (p/lmt sentinel; out=checksum=Σ lengths) | ⬜ |
-| 006 | strlen long strings (same ABI as 005) | ⬜ |
-| 034 | short string compares (a/b/lmt; out=checksum) | ⬜ |
-| 103 | whitespace word-count (p/end; skip_whitespace/skip_word; out=count) | ⬜ |
+| 031 | chunked memcpy | ⬜ defer: no size field + fixed baked `count[]` size → degenerate single-size workload, low ROI |
+| 005 | strlen short strings (p/lmt sentinel; out=checksum) | ✅ |
+| 006 | strlen long strings | ✅ |
+| 034 | short string compares (a/b/lmt; out=checksum) | ✅ |
+| 103 | whitespace word-count (p/end; skip_whitespace/skip_word) | ✅ |
 | 022 | tcp checksum | ⛔ HAVE_AUTOVEC = ABORT (no scalar impl) |
 | 026 | utf-16 → ascii | ⛔ HAVE_AUTOVEC = ABORT (no scalar impl) |
 
@@ -222,3 +222,4 @@ and sentinel ABI exist.
 005, 006, 034, 103, 031 each passing via bench.cli + smoke-test; 022/026 marked ⛔;
 tracker + change log updated; everything committed.
 - 2026-06-18 — Two baseline authors per loop: `reference` (scalar, -fno-vectorize) + `autovec` (-O3 -march=native), same source. Replaces single `reference-scalar` author. Both pass 223/223 across 37 loops (bench.cli + smoke). Aligns with partner's HF trace authors.
+- 2026-06-25 — Cap B: integrated 005/006 (strlen), 034 (strcmp), 103 (whitespace word-count). Added `bytes` workload input type (raw + cstrings layouts) in workload.py/inputs.py and a `_SENTINEL` generator path (begin/end ptr ABI; harness derives end=buf+n so the adapter is unchanged). 022/026 excluded (ABORT). 031 deferred. 247/247 across 41 loops (reference + autovec) via bench.cli + smoke.

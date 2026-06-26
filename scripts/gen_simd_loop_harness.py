@@ -1678,6 +1678,227 @@ def _description_ma(info: MultiAxisInfo) -> str:
     return info.loop_id
 
 
+# ── Sentinel loops (begin/end pointer ABI, byte buffers, scalar output) ───────
+# Structs use (begin ptr[s], end/lmt ptr, scalar result) instead of (ptr, int n).
+# ABI: armbench_entry_loop_NNN(void* buf0, [void* buf1,] int64_t n, void* res_out)
+# — the harness derives `<sentinel> = buf0 + n`, so the adapter's normal
+# scalar-output path (input ptrs + n + res_out) works unchanged. Buffers are fed
+# by the `bytes` workload input type (raw or null-terminated cstrings).
+
+_SENTINEL: dict[str, dict] = {
+    "loop_103": {  # whitespace word-count
+        "buffers": ["p"], "sentinel": "end", "result": "checksum", "layout": "raw",
+        "reference": (
+            "import numpy as np\n\n"
+            "_WS = {32, 10, 13, 9}\n\n"
+            "def run(p):\n"
+            "    b = p; n = len(b); i = 0\n"
+            "    while i < n and int(b[i]) in _WS: i += 1\n"
+            "    count = 0\n"
+            "    while i < n:\n"
+            "        count += 1\n"
+            "        while i < n and int(b[i]) not in _WS: i += 1\n"
+            "        while i < n and int(b[i]) in _WS: i += 1\n"
+            "    return np.int32(count)\n"
+        ),
+        "scalar": (
+            '#include "loop_103.h"\n#include <stdint.h>\n\n'
+            'static uint8_t *skip_ws(uint8_t *p, uint8_t *end) {\n'
+            "    while (p != end && (*p == ' ' || *p == '\\n' || *p == '\\r' || *p == '\\t')) p++;\n"
+            '    return p;\n}\n'
+            'static uint8_t *skip_wd(uint8_t *p, uint8_t *end) {\n'
+            "    while (p != end && *p != ' ' && *p != '\\n' && *p != '\\r' && *p != '\\t') p++;\n"
+            '    return p;\n}\n'
+            'extern "C" void inner_loop_103(struct loop_103_data *data) {\n'
+            '    uint8_t *p = data->p; uint8_t *end = data->end;\n'
+            '    int count = 0;\n'
+            '    p = skip_ws(p, end);\n'
+            '    while (p != end) { count++; p = skip_wd(p, end); p = skip_ws(p, end); }\n'
+            '    data->checksum = count;\n}\n'
+        ),
+        "sizes": {"edge": [1, 3, 64, 1999, 2001], "perf": [20000]},
+    },
+    "loop_005": {  # strlen of short null-terminated strings
+        "buffers": ["p"], "sentinel": "lmt", "result": "checksum", "layout": "cstrings",
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(p):\n"
+            "    b = p; n = len(b); i = 0; res = 0\n"
+            "    while i < n:\n"
+            "        j = i\n"
+            "        while j < n and int(b[j]) != 0: j += 1\n"
+            "        length = j - i; i = j + 1\n"
+            "        res = (res + 1) & 0xffffffff\n"
+            "        res ^= ((length % 0xffff) << 16) & 0xffffffff\n"
+            "        res &= 0xffffffff\n"
+            "    return np.uint32(res)\n"
+        ),
+        "scalar": (
+            '#include "loop_005.h"\n#include <cstring>\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_005(struct loop_005_data *data) {\n'
+            '    uint8_t *p = data->p; uint8_t *lmt = data->lmt;\n'
+            '    uint32_t res = 0;\n'
+            '    while (p < lmt) {\n'
+            '        uint32_t len = (uint32_t)strlen((const char *)p);\n'
+            '        p += len + 1; res += 1; res ^= (len % 0xffff) << 16;\n'
+            '    }\n'
+            '    data->checksum = res;\n}\n'
+        ),
+        "sizes": {"edge": [1, 10, 100, 3999, 4001], "perf": [20000]},
+    },
+    "loop_006": {  # strlen of long null-terminated strings (same logic as 005)
+        "buffers": ["p"], "sentinel": "lmt", "result": "checksum", "layout": "cstrings",
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(p):\n"
+            "    b = p; n = len(b); i = 0; res = 0\n"
+            "    while i < n:\n"
+            "        j = i\n"
+            "        while j < n and int(b[j]) != 0: j += 1\n"
+            "        length = j - i; i = j + 1\n"
+            "        res = (res + 1) & 0xffffffff\n"
+            "        res ^= ((length % 0xffff) << 16) & 0xffffffff\n"
+            "        res &= 0xffffffff\n"
+            "    return np.uint32(res)\n"
+        ),
+        "scalar": (
+            '#include "loop_006.h"\n#include <cstring>\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_006(struct loop_006_data *data) {\n'
+            '    uint8_t *p = data->p; uint8_t *lmt = data->lmt;\n'
+            '    uint32_t res = 0;\n'
+            '    while (p < lmt) {\n'
+            '        uint32_t len = (uint32_t)strlen((const char *)p);\n'
+            '        p += len + 1; res += 1; res ^= (len % 0xffff) << 16;\n'
+            '    }\n'
+            '    data->checksum = res;\n}\n'
+        ),
+        "sizes": {"edge": [1, 10, 100, 9999, 10001], "perf": [40000]},
+    },
+    "loop_034": {  # strided strcmp of two cstring buffers
+        "buffers": ["a", "b"], "sentinel": "lmt", "result": "checksum", "layout": "cstrings",
+        "reference": (
+            "import numpy as np\n\n"
+            "def run(a, b):\n"
+            "    n = len(a); res = 0; cnt = 0; length = 13; off = 0\n"
+            "    while off < n:\n"
+            "        k = off\n"
+            "        while k < n and a[k] == b[k] and int(a[k]) != 0: k += 1\n"
+            "        av = int(a[k]) if k < n else 0\n"
+            "        bv = int(b[k]) if k < n else 0\n"
+            "        r = av - bv\n"
+            "        cmp = 2 if r > 0 else (3 if r < 0 else 1)\n"
+            "        res = (res + cnt * cmp) & 0xffffffff\n"
+            "        off += length; cnt += 1; length = 3 + (length + 11) % 43\n"
+            "    return np.uint32(res)\n"
+        ),
+        "scalar": (
+            '#include "loop_034.h"\n#include <cstring>\n#include <stdint.h>\n\n'
+            'extern "C" void inner_loop_034(struct loop_034_data *data) {\n'
+            '    uint8_t *p1 = data->a; uint8_t *p2 = data->b; uint8_t *lmt = data->lmt;\n'
+            '    uint32_t res = 0, cnt = 0; int length = 13;\n'
+            '    while (p1 < lmt) {\n'
+            '        int64_t r = strcmp((const char *)p1, (const char *)p2);\n'
+            '        uint32_t cmp = 1; if (r > 0) cmp = 2; if (r < 0) cmp = 3;\n'
+            '        res += cnt * cmp; p1 += length; p2 += length; cnt++;\n'
+            '        length = 3 + (length + 11) % 43;\n'
+            '    }\n'
+            '    data->checksum = res;\n}\n'
+        ),
+        "sizes": {"edge": [1, 5, 64, 5999, 6001], "perf": [20000]},
+    },
+}
+
+
+def _write_sentinel(loop_id: str) -> None:
+    cfg = _SENTINEL[loop_id]
+    prob_dir = next((d for d in PROBLEMS_DIR.iterdir()
+                     if d.name.startswith(loop_id + "_")), None)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("prob", prob_dir / "problem.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    fields = _parse_struct(getattr(mod, "STRUCT_DEF", ""))
+    fmap = {f.name: f for f in fields}
+
+    buffers, sentinel, result = cfg["buffers"], cfg["sentinel"], cfg["result"]
+    elem_ct = fmap[buffers[0]].c_type
+    elem_dtype = _array_dtype_map_local.get(elem_ct, "uint8")
+    r_ct = fmap[result].c_type
+    r_dtype = _array_dtype_map_local.get(r_ct, "int32")
+
+    struct_lines = [(f"    {f.c_type} *{f.name};" if f.is_ptr
+                     else f"    {f.c_type} {f.name};") for f in fields]
+    in_args = ", ".join([f"void *{b}" for b in buffers] + ["int64_t n", "void *res_out"])
+
+    h = (f"// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.\n"
+         f"#pragma once\n#include <stdint.h>\n\n"
+         f"struct {loop_id}_data {{\n{chr(10).join(struct_lines)}\n}};\n\n"
+         f"#ifdef __cplusplus\nextern \"C\" {{\n#endif\n"
+         f"int armbench_entry_{loop_id}({in_args});\n"
+         f"#ifdef __cplusplus\n}}\n#endif\n")
+
+    assigns = [f"    _kd.{b} = static_cast<{elem_ct} *>({b});" for b in buffers]
+    assigns.append(f"    _kd.{sentinel} = static_cast<{elem_ct} *>({buffers[0]}) + n;")
+    assigns.append(f"    _kd.{result} = 0;")
+    cpp = (f"// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.\n"
+           f'#include "{loop_id}.h"\n#include <stdint.h>\n\n'
+           f'extern "C" void inner_{loop_id}(struct {loop_id}_data *data);\n\n'
+           f'extern "C" int armbench_entry_{loop_id}({in_args}) {{\n'
+           f"    struct {loop_id}_data _kd;\n{chr(10).join(assigns)}\n"
+           f"    inner_{loop_id}(&_kd);\n"
+           f"    *static_cast<{r_ct} *>(res_out) = _kd.{result};\n"
+           f"    return 0;\n}}\n")
+
+    # on-disk harness copies
+    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    for path, content in ((HARNESS_DIR / f"{loop_id}.h", h),
+                          (HARNESS_DIR / f"{loop_id}.cpp", cpp)):
+        if not path.exists() or path.read_text() != content:
+            path.write_text(content); print(f"  wrote {path.relative_to(REPO)}")
+
+    # definition
+    definition = {
+        "name": loop_id, "op_type": loop_id,
+        "description": _description(_FakeInfo(loop_id)),
+        "tags": ["simd-loop"],
+        "axes": {"N": {"type": "var", "description": "Buffer length (bytes)"}},
+        "inputs": {b: {"shape": ["N"], "dtype": elem_dtype} for b in buffers},
+        "outputs": {result: {"shape": None, "dtype": r_dtype, "description": "Scalar checksum"}},
+        "reference": cfg["reference"],
+        "simd_loop_meta": {"output_inplace": False, "array_pad": 0, "scratch": [], "axes_order": []},
+    }
+    def_dir = BENCH_TRACE / "definitions" / "simd-loop"; def_dir.mkdir(parents=True, exist_ok=True)
+    def_path = def_dir / f"{loop_id}.json"
+    content = json.dumps(definition, indent=2) + "\n"
+    if not def_path.exists() or def_path.read_text() != content:
+        def_path.write_text(content); print(f"  wrote {def_path.relative_to(REPO)}")
+
+    # workloads (bytes inputs)
+    wl_inputs = {b: {"type": "bytes", "layout": cfg["layout"]} for b in buffers}
+    lines = []
+    for source in ("edge", "perf"):
+        for nval in cfg["sizes"].get(source, []):
+            uid = _stable_uuid(loop_id, nval, source)
+            lines.append(json.dumps({"axes": {"N": nval}, "inputs": wl_inputs,
+                                     "uuid": uid, "tags": {"source": source}}))
+    wl_dir = BENCH_TRACE / "workloads" / "simd-loop"; wl_dir.mkdir(parents=True, exist_ok=True)
+    wl_path = wl_dir / f"{loop_id}.jsonl"
+    content = "\n".join(lines) + "\n"
+    if not wl_path.exists() or wl_path.read_text() != content:
+        wl_path.write_text(content); print(f"  wrote {wl_path.relative_to(REPO)}")
+
+    # solutions (reference + autovec)
+    sources = [{"path": f"{loop_id}.h", "content": h},
+               {"path": f"{loop_id}.cpp", "content": cpp},
+               {"path": "kernel.cpp", "content": cfg["scalar"]}]
+    _write_solution_pair(loop_id, sources)
+
+
+class _FakeInfo:
+    """Minimal shim so _description() (expects .loop_id) works for sentinel loops."""
+    def __init__(self, loop_id: str): self.loop_id = loop_id
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 # Loops to process. Add more here as they are validated.
@@ -1771,10 +1992,20 @@ def main() -> None:
             _write_multi_axis(ma)
         ma_count += 1
 
-    total = len(all_infos) + ma_count
+    # ── Sentinel loops (begin/end pointer ABI) ────────────────────────────────
+    sn_count = 0
+    for loop_id in _SENTINEL:
+        cfg = _SENTINEL[loop_id]
+        print(f"[gen]  {loop_id} (sentinel {cfg['layout']}): {cfg['buffers']} + n -> "
+              f"{cfg['result']}")
+        if not dry_run:
+            _write_sentinel(loop_id)
+        sn_count += 1
+
+    total = len(all_infos) + ma_count + sn_count
     if not dry_run and total:
         print(f"\nDone. Generated {len(all_infos)} single/array/inplace + "
-              f"{ma_count} multi-axis loops.")
+              f"{ma_count} multi-axis + {sn_count} sentinel loops.")
     elif dry_run:
         print(f"\nDry run: would generate {total} loops.")
 
