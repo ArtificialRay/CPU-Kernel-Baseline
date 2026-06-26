@@ -1,224 +1,197 @@
 #!/usr/bin/env python3
-"""Local agentic loop: LLM iterates on a SIMD loop problem using the bench harness.
+"""Local agentic loop: an LLM iterates on a SIMD-loop kernel, scored by the
+**same** evaluation path as the rest of the benchmark.
 
-Unlike the SSH eval (eval/run_benchmark.py), this runs entirely in-process:
-the LLM generates a kernel, bench compiles and runs it locally (or on the
-current machine if deployed to Graviton), and any compile/correctness failures
-go straight back to the LLM as feedback.
+Unlike the SSH eval (eval/run_benchmark.py), this runs entirely in-process: the
+LLM generates a kernel, and bench compiles + scores it. Crucially, scoring goes
+through `bench.runner.run_solution_on_workloads` → `DefaultEvaluator` — the exact
+pipeline behind `bench.cli bench` and the `reference`/`autovec` baselines. So the
+agent measures correctness (hybrid abs+rel tolerance, `bench/runtime/correctness`)
+and timing (CPU-pinned, perf counters, `bench/runtime/timing`) identically to
+everything else; it does not reimplement any of it.
 
-Usage (run ON the target machine — Graviton4 for SVE2 timing):
+Because the evaluator is dataset-driven, the agent now works for *every* loop
+shape (scalar-output, array-output, in-place sort) — any loop_id that has a
+`reference` + `autovec` solution in the warehouse.
+
+Usage (run ON the target machine — Graviton4 for real SVE2 timing):
     OPENROUTER_API_KEY=sk-or-... python3 scripts/bench_loop_agent.py --loop loop_001
-    python3 scripts/bench_loop_agent.py --loop loop_001 --max-turns 6 --model openrouter/anthropic/claude-opus-4-6
-
-The 'perf' displayed is min_ns on whatever machine this runs on.
+    python3 scripts/bench_loop_agent.py --loops loop_001,loop_028 --max-turns 6
+    python3 scripts/bench_loop_agent.py --all-loops --self-test   # no LLM/key needed
 """
 from __future__ import annotations
 
 import argparse
-import ctypes
-import json
 import os
 import platform
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from bench.compile.builders.simd_loop import SimdLoopBuilder
-from bench.data.definition import Definition
-from bench.data.solution import Solution, SolutionSpec, SourceFile, SupportedDatasets
+from bench.config import BenchmarkConfig, EvalConfig
+from bench.data.solution import Solution, SourceFile, SupportedDatasets
+from bench.data.trace import EvaluationStatus
 from bench.data.trace_set import TraceSet
-from bench.data.workload import Workload
-from bench.datasets.simd_loop import sig_from_definition, SimdLoopDataset
-from bench.runtime.inputs import gen_inputs_for_workload
-from bench.runtime.timing import time_callable
+from bench.runner import run_solution_on_workloads
 
 BENCH_TRACE = ROOT / "bench-trace"
 
-# ── Compiler detection ────────────────────────────────────────────────────────
 
-def _find_compiler() -> str:
-    for name in ("clang++-18", "clang++-17", "clang++"):
-        if shutil.which(name):
-            return name
-    raise RuntimeError("No clang++ found on PATH")
+# ── Warehouse helpers ─────────────────────────────────────────────────────────
 
-
-def _patch_compiler(compiler: str) -> None:
-    """Monkey-patch subprocess.run so SimdLoopBuilder uses the right compiler."""
-    import bench.compile.builders.simd_loop as _mod
-    orig_build = _mod.SimdLoopBuilder.build
-
-    def _patched_build(self, definition, solution):
-        # Temporarily replace "clang++" with the detected compiler.
-        import bench.compile.builder as b
-        orig_run = subprocess.run
-        def _run(cmd, **kw):
-            if cmd and cmd[0] == "clang++":
-                cmd = [compiler] + cmd[1:]
-            return orig_run(cmd, **kw)
-        subprocess.run = _run
-        try:
-            return orig_build(self, definition, solution)
-        finally:
-            subprocess.run = orig_run
-
-    _mod.SimdLoopBuilder.build = _patched_build
+def _solution_by_author(ts: TraceSet, loop_id: str, author: str) -> Optional[Solution]:
+    for s in ts.solutions.get(loop_id, []):
+        if s.author == author:
+            return s
+    return None
 
 
-# ── Problem table ─────────────────────────────────────────────────────────────
+def _available_loops(ts: TraceSet) -> List[str]:
+    """Loop ids that have both a `reference` (for the prompt) and an `autovec`
+    (build template) solution — i.e. everything the agent can target."""
+    out = []
+    for loop_id in sorted(ts.definitions):
+        if _solution_by_author(ts, loop_id, "reference") and _solution_by_author(ts, loop_id, "autovec"):
+            out.append(loop_id)
+    return out
 
-PROBLEMS = {
-    "loop_001": {
-        "name": "FP32 inner product", "purpose": "Use fp32 FMA instruction",
-        "struct_def": "struct loop_001_data { float *a; float *b; int n; float res; };",
-        "scalar_code": (
-            'extern "C" void inner_loop_001(struct loop_001_data *data) {\n'
-            '  float res = 0.0f;\n'
-            '  for (int i = 0; i < data->n; i++) res += data->a[i] * data->b[i];\n'
-            '  data->res = res;\n}'
-        ),
-        "header": "loop_001.h", "func": "inner_loop_001",
-    },
-    "loop_002": {
-        "name": "UINT32 inner product", "purpose": "Use u32 MLA instruction",
-        "struct_def": "struct loop_002_data { uint32_t *a; uint32_t *b; int n; uint32_t res; };",
-        "scalar_code": (
-            'extern "C" void inner_loop_002(struct loop_002_data *data) {\n'
-            '  uint32_t res = 0;\n'
-            '  for (int i = 0; i < data->n; i++) res += data->a[i] * data->b[i];\n'
-            '  data->res = res;\n}'
-        ),
-        "header": "loop_002.h", "func": "inner_loop_002",
-    },
-    "loop_003": {
-        "name": "FP64 inner product", "purpose": "Use fp64 FMA instruction",
-        "struct_def": "struct loop_003_data { double *a; double *b; int n; double res; };",
-        "scalar_code": (
-            'extern "C" void inner_loop_003(struct loop_003_data *data) {\n'
-            '  double res = 0.0;\n'
-            '  for (int i = 0; i < data->n; i++) res += data->a[i] * data->b[i];\n'
-            '  data->res = res;\n}'
-        ),
-        "header": "loop_003.h", "func": "inner_loop_003",
-    },
-}
 
-# ── Compile + eval ────────────────────────────────────────────────────────────
+def _extract_braced_block(text: str, start_idx: int) -> Optional[str]:
+    """Return text[start_idx:] up to and including the brace-balanced block."""
+    open_brace = text.find("{", start_idx)
+    if open_brace == -1:
+        return None
+    depth = 0
+    for i in range(open_brace, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                if end < len(text) and text[end] == ";":
+                    end += 1
+                return text[start_idx:end]
+    return None
 
-def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
-                 edge_only: bool = True) -> dict:
-    """Compile kernel_code and run edge workloads. Returns result dict."""
-    op = list(prob["header"].replace(".h", "").split("/"))[-1]
-    op_type = op  # e.g. "loop_001"
-    header = prob["header"]
-    func = prob["func"]
 
-    full_src = f'#include "{header}"\n#include <stdint.h>\n#include <arm_neon.h>\n\n{kernel_code}\n'
-    sol = Solution(
-        name=f"{op_type}_agent",
-        definition=op_type,
+def _loop_context(ts: TraceSet, loop_id: str) -> Optional[dict]:
+    """Prompt material for `loop_id`, extracted from its `reference` solution:
+    the struct (from `loop_NNN.h`) and the scalar baseline (from `kernel.cpp`)."""
+    ref = _solution_by_author(ts, loop_id, "reference")
+    if ref is None:
+        return None
+    srcs = {s.path: s.content for s in ref.sources}
+    hdr = srcs.get(f"{loop_id}.h", "")
+    kern = srcs.get("kernel.cpp", "")
+
+    si = hdr.find(f"struct {loop_id}_data")
+    struct_def = _extract_braced_block(hdr, si) if si != -1 else None
+
+    func = f"inner_{loop_id}"
+    # Use the FULL scalar kernel.cpp (it carries its own includes — e.g.
+    # <algorithm> for sort loops, <cstring> for string loops), so it compiles
+    # as-is and shows the agent exactly what to beat.
+    scalar_code = kern.strip()
+    if not struct_def or not scalar_code or func not in kern:
+        return None
+
+    d = ts.definitions.get(loop_id)
+    return {
+        "name": (d.name if d else loop_id),
+        "purpose": (d.description if d and d.description else "Vectorize the scalar loop below."),
+        "struct_def": struct_def.strip(),
+        "scalar_code": scalar_code,
+        "func": func,
+    }
+
+
+def _build_agent_solution(ts: TraceSet, loop_id: str, kernel_code: str) -> Solution:
+    """Build a self-contained candidate Solution: the `autovec` baseline's harness
+    + spec (same -O3 -march=native build), with `kernel.cpp` swapped for the LLM's
+    kernel. Building on the autovec template means the agent competes on identical
+    compile footing with the baseline it's trying to beat."""
+    template = _solution_by_author(ts, loop_id, "autovec")
+    assert template is not None, f"no autovec template for {loop_id}"
+    # Generous, always-safe include prelude so candidate kernels for any loop
+    # shape compile without the LLM having to remember headers: SIMD intrinsics,
+    # plus <algorithm>/<cstring> for sort/string loops. (kernel_code may repeat
+    # any of these — header guards make that harmless.)
+    wrapped = (
+        f'#include "{loop_id}.h"\n'
+        f"#include <stdint.h>\n#include <cstdint>\n#include <cstring>\n#include <algorithm>\n"
+        f"#include <arm_neon.h>\n"
+        f"#if defined(__ARM_FEATURE_SVE)\n#include <arm_sve.h>\n#endif\n\n"
+        f"{kernel_code}\n"
+    )
+    sources = [
+        SourceFile(path=s.path, content=(wrapped if s.path == "kernel.cpp" else s.content))
+        for s in template.sources
+    ]
+    return Solution(
+        name=f"{loop_id}_agent",
+        definition=loop_id,
         dataset=SupportedDatasets.SIMD_LOOP,
         author="agent",
-        spec=SolutionSpec(
-            target_hardware=["aarch64"],
-            entry_point=f"kernel.cpp::{func}",
-            compile_flags=["-O3", "-march=armv9-a+sve2", "-std=c++14"],
-        ),
-        sources=[SourceFile(path="kernel.cpp", content=full_src)],
+        spec=template.spec,
+        sources=sources,
     )
 
-    d = ts.definitions.get(op_type)
+
+# ── Evaluation (delegated entirely to the benchmark runner) ───────────────────
+
+def _eval_solution(ts: TraceSet, loop_id: str, kernel_code: str, cfg: EvalConfig,
+                   *, perf: bool = True) -> dict:
+    """Compile + score a candidate kernel through the standard runner/evaluator.
+
+    Returns {"status": passed|incorrect|compile_error|error, "results": [...],
+    "message": str}. `results` carry per-workload N, source tag, status, min_ns.
+    """
+    d = ts.definitions.get(loop_id)
     if d is None:
-        return {"status": "error", "message": f"Definition {op_type!r} not in bench-trace"}
+        return {"status": "error", "message": f"no definition {loop_id}", "results": []}
+    wls = list(ts.workloads.get(loop_id, []))
+    if not perf:
+        wls = [w for w in wls if w.tags.get("source") == "edge"]
 
-    builder = SimdLoopBuilder()
+    sol = _build_agent_solution(ts, loop_id, kernel_code)
     try:
-        compiled = builder.build(d, sol)
-    except Exception as e:
-        return {"status": "compile_error", "message": str(e)}
+        traces = run_solution_on_workloads(d, sol, wls, cfg=cfg, trace_set=ts)
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "message": f"runner raised: {e}", "results": []}
 
-    try:
-        lib = ctypes.CDLL(str(compiled.so_path))
-        sym = getattr(lib, f"armbench_entry_{op_type}")
-        sym.restype = ctypes.c_int
-        sym.argtypes = sig_from_definition(d)
-        sym._lib = lib
+    if traces and all(t.evaluation.status == EvaluationStatus.COMPILE_ERROR for t in traces):
+        return {"status": "compile_error", "message": traces[0].evaluation.log, "results": []}
 
-        ds = SimdLoopDataset()
-        import numpy as np
-        workloads = [w for w in ts.workloads.get(op_type, [])
-                     if (edge_only and w.tags.get("source") == "edge") or not edge_only]
-
-        results = []
-        all_passed = True
-        for wl in workloads:
-            np_inputs = gen_inputs_for_workload(d, wl)
-            ctx = ds.wrap_inputs(np_inputs, {"N": wl.axes["N"]}, op_type, lib, definition=d)
-            rc = sym(*ctx.entry_args)
-            if rc != 0:
-                results.append({"N": wl.axes["N"], "status": "runtime_error", "rc": rc})
-                all_passed = False
-                ds.release(ctx)
-                continue
-
-            out = ds.unwrap_output(ctx)
-            ref_run_ns: dict = {}
-            # Compute reference
-            exec_ns: dict = {}
-            exec(d.reference, exec_ns)
-            ref_val = exec_ns["run"](**{k: v for k, v in np_inputs.items()})
-            import numpy as np
-            ref_arr = np.asarray([ref_val]) if isinstance(ref_val, np.generic) else ref_val
-            if hasattr(ref_arr, "detach"):
-                ref_arr = ref_arr.detach().numpy()
-
-            diff = abs(float(out[0]) - float(ref_arr.flat[0]))
-            tol = 1e-2 if d.inputs["a"].dtype.value in ("float32", "float64") else 1
-            ok = diff <= tol
-
-            # Time it (only if correct)
-            min_ns = None
-            if ok:
-                try:
-                    timing = time_callable(lambda: sym(*ctx.entry_args), warmup=5, repeat=20)
-                    min_ns = timing.min_ns
-                except Exception:
-                    pass
-
-            results.append({
-                "N": wl.axes["N"],
-                "status": "passed" if ok else "incorrect",
-                "diff": diff,
-                "min_ns": min_ns,
-            })
-            if not ok:
-                all_passed = False
-            ds.release(ctx)
-
-        return {
-            "status": "passed" if all_passed else "incorrect",
-            "results": results,
+    results, overall_ok = [], True
+    for t in sorted(traces, key=lambda t: t.workload.axes.get("N", 0)):
+        ev = t.evaluation
+        st = ev.status
+        row = {
+            "N": t.workload.axes.get("N"),
+            "source": t.workload.tags.get("source"),
+            "status": "passed" if st == EvaluationStatus.PASSED else st.value,
+            "min_ns": ev.performance.min_ns if (st == EvaluationStatus.PASSED and ev.performance) else None,
+            "log": "" if st == EvaluationStatus.PASSED else (ev.log or "")[:200],
         }
-    finally:
-        shutil.rmtree(compiled.build_dir, ignore_errors=True)
+        if st != EvaluationStatus.PASSED:
+            overall_ok = False
+        results.append(row)
+
+    return {"status": "passed" if overall_ok else "incorrect", "results": results, "message": ""}
 
 
-# ── LLM helpers ──────────────────────────────────────────────────────────────
+# ── LLM helpers ───────────────────────────────────────────────────────────────
 
 def _call_llm(messages: list, model: str, api_key: str) -> str:
     import litellm
     response = litellm.completion(
-        model=model,
-        messages=messages,
-        api_key=api_key,
-        temperature=0.2,
-        max_tokens=2048,
+        model=model, messages=messages, api_key=api_key,
+        temperature=0.2, max_tokens=2048,
     )
     return response.choices[0].message.content.strip()
 
@@ -234,28 +207,30 @@ def _is_arm() -> bool:
 
 # ── Main agentic loop ─────────────────────────────────────────────────────────
 
-def run_agent(loop_id: str, model: str, api_key: str, max_turns: int, compiler: str) -> None:
-    prob = PROBLEMS[loop_id]
+def run_agent(loop_id: str, model: str, api_key: str, max_turns: int,
+              ts: TraceSet, cfg: EvalConfig) -> None:
+    ctx = _loop_context(ts, loop_id)
+    if ctx is None:
+        print(f"  SKIP {loop_id}: no reference/autovec solution to build from")
+        return
     isa_desc = "Arm Neoverse V2 (Graviton4, SVE2 128-bit)" if _is_arm() else "Apple Silicon (ARM NEON)"
     isa_upper = "SVE2" if _is_arm() else "NEON"
-
-    ts = TraceSet.from_path(str(BENCH_TRACE))
 
     system_msg = {
         "role": "system",
         "content": (
             f"You are an expert AArch64 SIMD programmer targeting {isa_desc}. "
             f"Write an optimized C++ kernel for the given loop problem. "
-            f"Rules: use extern \"C\" (not static). Include <arm_neon.h> or "
-            f"<arm_sve.h> as needed. The `res` field must match the scalar output. "
-            f"Output ONLY the C++ function — no markdown, no explanation."
+            f'Rules: define `extern "C" void {ctx["func"]}(struct {loop_id}_data *data)` '
+            f"(not static). The struct header and <arm_neon.h>/<arm_sve.h> are already "
+            f"included — do not redefine the struct. Your output must match the scalar "
+            f"baseline's result exactly. Output ONLY the C++ function — no markdown."
         ),
     }
-
     first_user = (
-        f"Problem: {prob['name']}\nPurpose: {prob['purpose']}\nTarget: {isa_upper} on {isa_desc}\n\n"
-        f"Struct (already available via the header — do not redefine):\n```c\n{prob['struct_def']}\n```\n\n"
-        f"Scalar baseline to beat:\n```c\n{prob['scalar_code']}\n```\n\n"
+        f"Problem: {ctx['name']}\nPurpose: {ctx['purpose']}\nTarget: {isa_upper} on {isa_desc}\n\n"
+        f"Struct (available via the header — do not redefine):\n```c\n{ctx['struct_def']}\n```\n\n"
+        f"Scalar baseline to beat:\n```c\n{ctx['scalar_code']}\n```\n\n"
         f"Write an optimized {isa_upper} implementation. extern \"C\", no static."
     )
 
@@ -264,7 +239,7 @@ def run_agent(loop_id: str, model: str, api_key: str, max_turns: int, compiler: 
     best_kernel: Optional[str] = None
 
     print(f"\n{'='*60}")
-    print(f"Agent: {loop_id} — {prob['name']} on {isa_desc}")
+    print(f"Agent: {loop_id} — {ctx['name']} on {isa_desc}")
     print(f"Model: {model}  max_turns: {max_turns}")
     print(f"{'='*60}\n")
 
@@ -275,54 +250,55 @@ def run_agent(loop_id: str, model: str, api_key: str, max_turns: int, compiler: 
         messages.append({"role": "assistant", "content": raw})
 
         print(f"Kernel preview: {kernel[:120].replace(chr(10), ' ')}...")
-        result = _eval_kernel(kernel, prob, ts)
+        result = _eval_solution(ts, loop_id, kernel, cfg)
         status = result["status"]
 
         if status == "compile_error":
             msg = result["message"][:800]
             feedback = f"Compile error:\n{msg}\n\nFix the compilation error and rewrite the function."
             print(f"  COMPILE ERROR: {msg[:120]}")
-
+        elif status == "error":
+            feedback = f"Error: {result['message']}\n\nRewrite the function."
+            print(f"  ERROR: {result['message'][:120]}")
         elif status == "incorrect":
-            bad = [r for r in result["results"] if r["status"] == "incorrect"]
-            lines = "\n".join(f"  N={r['N']}: diff={r['diff']:.3e}" for r in bad[:3])
-            feedback = f"Correctness failed:\n{lines}\n\nThe result `res` does not match the scalar reference. Fix and rewrite."
+            bad = [r for r in result["results"] if r["status"] != "passed"]
+            lines = "\n".join(f"  N={r['N']} ({r['source']}): {r['status']} {r.get('log','')}" for r in bad[:3])
+            feedback = (f"Result does not match the scalar reference:\n{lines}\n\n"
+                        f"Fix correctness and rewrite.")
             print(f"  INCORRECT on {len(bad)} workload(s)")
             for r in result["results"]:
-                print(f"    N={r['N']:6d}: {r['status']}  diff={r.get('diff', '?'):.2e}")
-
+                print(f"    N={r['N']:>9}: {r['status']}")
         elif status == "passed":
-            ns_list = [r["min_ns"] for r in result["results"] if r.get("min_ns")]
-            min_ns = min(ns_list) if ns_list else None
+            # Optimize on PERF latency: the largest-N timed workload (not the tiny
+            # edge case, which is ~call overhead).
+            timed = [r for r in result["results"] if r.get("min_ns")]
+            perf_r = max(timed, key=lambda r: r["N"]) if timed else None
+            perf_ns = perf_r["min_ns"] if perf_r else None
+            n_perf = perf_r["N"] if perf_r else 0
             print(f"  PASSED — timing:")
             for r in result["results"]:
                 ns_str = f"{r['min_ns']} ns" if r.get("min_ns") else "n/a"
-                print(f"    N={r['N']:6d}: {r['status']}  {ns_str}")
+                print(f"    N={r['N']:>9}: {r['status']}  {ns_str} [{r.get('source')}]")
 
-            if min_ns is not None and (best_ns is None or min_ns < best_ns):
-                best_ns = min_ns
-                best_kernel = kernel
-                print(f"  → New best: {best_ns} ns")
+            if perf_ns is not None and (best_ns is None or perf_ns < best_ns):
+                best_ns, best_kernel = perf_ns, kernel
+                print(f"  → New best (perf N={n_perf}): {best_ns} ns")
 
             if turn < max_turns:
-                n_perf = next((r["N"] for r in result["results"] if r.get("min_ns")), 0)
-                ns_perf = next((r["min_ns"] for r in result["results"] if r.get("min_ns")), None)
                 feedback = (
-                    f"Correct! Best timing so far: {ns_perf} ns at N={n_perf}.\n"
-                    f"Can you optimize further? Try unrolling more, using wider accumulators, "
-                    f"or better instruction scheduling. Rewrite for maximum throughput."
+                    f"Correct! Best timing so far: {perf_ns} ns at N={n_perf}.\n"
+                    f"Optimize further — wider accumulators, more unrolling, better "
+                    f"scheduling. Rewrite for maximum throughput."
                 )
             else:
                 break
         else:
-            feedback = f"Error: {result.get('message', status)}"
-            print(f"  ERROR: {feedback}")
+            feedback = f"Unexpected status {status}."
 
         if turn < max_turns:
             messages.append({"role": "user", "content": feedback})
 
-    print(f"\n{'='*60}")
-    print(f"Final result: {loop_id}")
+    print(f"\n{'='*60}\nFinal result: {loop_id}")
     if best_kernel:
         print(f"Best timing: {best_ns} ns")
         print(f"Best kernel:\n{best_kernel[:500]}")
@@ -332,26 +308,63 @@ def run_agent(loop_id: str, model: str, api_key: str, max_turns: int, compiler: 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+def _run_self_test(loops: List[str], ts: TraceSet, cfg: EvalConfig) -> int:
+    """Score each loop's own scalar baseline through the runner (no LLM/key). If
+    the standard pipeline can build+run+score a loop, the agent can too. Uses edge
+    workloads only for speed. Returns the number of loops that failed."""
+    failed = 0
+    for loop_id in loops:
+        ctx = _loop_context(ts, loop_id)
+        if ctx is None:
+            print(f"  {loop_id:10s} SKIP  (no reference/autovec)")
+            failed += 1
+            continue
+        result = _eval_solution(ts, loop_id, ctx["scalar_code"], cfg, perf=False)
+        ok = result["status"] == "passed"
+        print(f"  {loop_id:10s} {'OK ' if ok else 'FAIL'}  {result['status']}"
+              + ("" if ok else f"  {result.get('message','')[:80]}"))
+        if not ok:
+            failed += 1
+    print(f"\nself-test: {len(loops) - failed}/{len(loops)} loops wired correctly")
+    return failed
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--loop", default="loop_001", choices=list(PROBLEMS))
+    ap.add_argument("--loop", default="loop_001")
     ap.add_argument("--all-loops", action="store_true")
+    ap.add_argument("--loops", default="", help="comma-separated loop ids")
     ap.add_argument("--max-turns", type=int, default=5)
-    ap.add_argument("--model", default="openrouter/anthropic/claude-opus-4-6")
+    ap.add_argument("--model", default="openrouter/anthropic/claude-sonnet-4-6")
     ap.add_argument("--key", default=os.environ.get("OPENROUTER_API_KEY", ""))
+    ap.add_argument("--self-test", action="store_true",
+                    help="validate loop wiring via the scalar baseline (no LLM/key)")
     args = ap.parse_args()
+
+    ts = TraceSet.from_path(str(BENCH_TRACE))
+    cfg = BenchmarkConfig().resolve_eval_config()
+
+    if args.loops:
+        loops = [l.strip() for l in args.loops.split(",") if l.strip()]
+    elif args.all_loops:
+        loops = _available_loops(ts)
+    else:
+        loops = [args.loop]
+
+    unknown = [l for l in loops if l not in ts.definitions]
+    if unknown:
+        print(f"ERROR: unknown loop(s): {unknown}")
+        sys.exit(1)
+
+    if args.self_test:
+        sys.exit(1 if _run_self_test(loops, ts, cfg) else 0)
 
     if not args.key:
         print("ERROR: set OPENROUTER_API_KEY or pass --key")
         sys.exit(1)
 
-    compiler = _find_compiler()
-    print(f"Using compiler: {compiler}")
-    _patch_compiler(compiler)
-
-    loops = list(PROBLEMS) if args.all_loops else [args.loop]
     for loop_id in loops:
-        run_agent(loop_id, args.model, args.key, args.max_turns, compiler)
+        run_agent(loop_id, args.model, args.key, args.max_turns, ts, cfg)
 
 
 if __name__ == "__main__":
