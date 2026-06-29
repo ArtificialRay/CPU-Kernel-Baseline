@@ -20,6 +20,8 @@ INT8 Kernels available:
 | GEMM | Memory Bound/Compute Bound | ncnn,llama.cpp |
 | MoE | Fused | llama.cpp |
 
+Kernel definitions are extracted from real model architecture: qwen1.5-moe-a2.7b, olmoe-1b-7b, resnet50, mobilenetv3-large, deepspeech2
+
 ## Sync local codebase with remote instance
 
 **Add new files:**
