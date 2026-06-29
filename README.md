@@ -1,7 +1,7 @@
 # CPU-Kernel-Baseline
 A CPU kernel auto-optimizating workplace for agent. Support kernel benchmarking and auto-evaluation from two codebase: `ncnn` and `llama.cpp`, and expose tool interface for agent to work in this workplace.
 
-Kernels available:
+FP32 Kernels available:
 | Kernel Name | Type | Source |
 |---|---|---|
 | RMSNorm | Memory Bound | llama.cpp, ncnn |
@@ -12,8 +12,13 @@ Kernels available:
 | GEMM (M≥32, prefill) | Compute Bound | llama.cpp, ncnn |
 | MHA | Fused | llama.cpp, ncnn |
 | LSTM | Fused | llama.cpp, ncnn |
-| MoE | Fused | llama.cpp |
 
+INT8 Kernels available:
+| Kernel Name | Type | Source |
+|---|---|---|
+| Conv2D | Compute Bound | ncnn |
+| GEMM | Memory Bound/Compute Bound | ncnn,llama.cpp |
+| MoE | Fused | llama.cpp |
 
 ## Sync local codebase with remote instance
 
