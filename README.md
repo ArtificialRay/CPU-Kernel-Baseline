@@ -1,5 +1,19 @@
 # CPU-Kernel-Baseline
-CPU Kernels/Operators for vision model / LLM extracted from 5 codebases, serving as baseline for the project
+A CPU kernel auto-optimizating workplace for agent. Support kernel benchmarking and auto-evaluation from two codebase: `ncnn` and `llama.cpp`, and expose tool interface for agent to work in this workplace.
+
+Kernels available:
+| Kernel Name | Type | Source |
+|---|---|---|
+| RMSNorm | Memory Bound | llama.cpp, ncnn |
+| Conv2D Depthwise | Memory Bound | ncnn |
+| Pooling (Reduction) | Memory Bound | ncnn |
+| GEMM (M=1, decode) | Memory Bound | llama.cpp, ncnn |
+| Conv2D | Compute Bound | ncnn |
+| GEMM (M≥32, prefill) | Compute Bound | llama.cpp, ncnn |
+| MHA | Fused | llama.cpp, ncnn |
+| LSTM | Fused | llama.cpp, ncnn |
+| MoE | Fused | llama.cpp |
+
 
 ## Sync local codebase with remote instance
 
