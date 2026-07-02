@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Generate simd-loop harness + bench-trace artifacts for all supported loops.
+"""Generate simd-loop bench-trace artifacts for all supported loops.
 
 Run from repo root:
     python scripts/gen_simd_loop_harness.py
 
+The harness shim (loop_NNN.{h,cpp}) is fused directly into each solution's
+`sources` — like the ncnn baseline ships its own binding.cpp — so solutions are
+self-contained and nothing is written to the builder tree.
+
 Outputs (all idempotent — safe to re-run):
-  bench/compile/builders/simd_loop_harness/loop_NNN.{h,cpp}
   bench-trace/definitions/simd-loop/loop_NNN.json
   bench-trace/workloads/simd-loop/loop_NNN.jsonl
   bench-trace/solutions/simd-loop/{reference,autovec}/loop_NNN/{reference,autovec}_loop_NNN.json
@@ -37,7 +40,6 @@ from typing import List, Optional
 
 REPO          = Path(__file__).resolve().parent.parent
 PROBLEMS_DIR  = REPO / "dataset" / "problems"
-HARNESS_DIR   = REPO / "bench" / "compile" / "builders" / "simd_loop_harness"
 BENCH_TRACE   = REPO / "bench-trace"
 SIMD_LOOP_PY  = REPO / "bench" / "datasets" / "simd_loop.py"
 LOOPS_DIR     = REPO / "loops"
@@ -685,24 +687,6 @@ def _extract_scalar_kernel(loop_id: str) -> str:
 
 def _stable_uuid(loop_id: str, n: int, source: str) -> str:
     return _uuid.uuid5(_uuid.NAMESPACE_DNS, f"{loop_id}_N{n}_{source}").hex
-
-
-def _write_harness(info: LoopInfo) -> None:
-    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
-    h_path   = HARNESS_DIR / f"{info.loop_id}.h"
-    cpp_path = HARNESS_DIR / f"{info.loop_id}.cpp"
-
-    h_content   = _gen_harness_h(info)
-    cpp_content = _gen_harness_cpp(info)
-
-    # Only write if content changed (avoid spurious git diffs)
-    if not h_path.exists() or h_path.read_text() != h_content:
-        h_path.write_text(h_content)
-        print(f"  wrote {h_path.relative_to(REPO)}")
-
-    if not cpp_path.exists() or cpp_path.read_text() != cpp_content:
-        cpp_path.write_text(cpp_content)
-        print(f"  wrote {cpp_path.relative_to(REPO)}")
 
 
 def _write_definition(info: LoopInfo) -> None:
@@ -1763,15 +1747,7 @@ def _write_multi_axis(info: MultiAxisInfo) -> None:
     h_content   = _gen_ma_harness_h(info)
     cpp_content = _gen_ma_harness_cpp(info)
 
-    # 1. On-disk harness copies (legacy fallback)
-    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
-    for path, content in ((HARNESS_DIR / f"{lid}.h", h_content),
-                          (HARNESS_DIR / f"{lid}.cpp", cpp_content)):
-        if not path.exists() or path.read_text() != content:
-            path.write_text(content)
-            print(f"  wrote {path.relative_to(REPO)}")
-
-    # 2. Definition. `dtypes` overrides the component dtype for fields whose C type
+    # 1. Definition. `dtypes` overrides the component dtype for fields whose C type
     #    isn't a plain scalar (e.g. complex `cfloat32_t` → "float32").
     inputs = {}
     for name, ax in info.inputs.items():
@@ -1807,7 +1783,7 @@ def _write_multi_axis(info: MultiAxisInfo) -> None:
         def_path.write_text(content)
         print(f"  wrote {def_path.relative_to(REPO)}")
 
-    # 3. Workloads. `sizes` lists base (abi) axis values; derived axes are
+    # 2. Workloads. `sizes` lists base (abi) axis values; derived axes are
     #    computed from them via their formula so the output can be declared/sized.
     wl_inputs = {name: {"type": "random"} for name in info.inputs}
     lines = []
@@ -1828,7 +1804,7 @@ def _write_multi_axis(info: MultiAxisInfo) -> None:
         wl_path.write_text(content)
         print(f"  wrote {wl_path.relative_to(REPO)}")
 
-    # 4. Baseline solutions (reference + autovec). Prefer the explicit scalar
+    # 3. Baseline solutions (reference + autovec). Prefer the explicit scalar
     #    kernel from the config; fall back to extracting from loops/loop_NNN.c.
     if info.scalar:
         scalar_src = info.scalar
@@ -2030,13 +2006,6 @@ def _write_sentinel(loop_id: str) -> None:
            f"    *static_cast<{r_ct} *>(res_out) = _kd.{result};\n"
            f"    return 0;\n}}\n")
 
-    # on-disk harness copies
-    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
-    for path, content in ((HARNESS_DIR / f"{loop_id}.h", h),
-                          (HARNESS_DIR / f"{loop_id}.cpp", cpp)):
-        if not path.exists() or path.read_text() != content:
-            path.write_text(content); print(f"  wrote {path.relative_to(REPO)}")
-
     # definition
     definition = {
         "name": loop_id, "op_type": loop_id,
@@ -2152,7 +2121,6 @@ def main() -> None:
                   f"{info.n_field.name} -> {info.res_field.name} ({info.res_field.c_type})")
 
         if not dry_run:
-            _write_harness(info)
             _write_definition(info)
             _write_workloads(info)
             _write_reference_solution(info)
