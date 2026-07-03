@@ -42,7 +42,7 @@ Every definition JSON follows this structure exactly. Study the existing files i
   "name":        "<name>",
   "op_type":     "<op_type>",
   "description": "<human-readable description>",
-  "tags":        ["status:active"],
+  "tags":        ["status:active", "baseline-solution:<ncnn|llama.cpp>"],
 
   "axes": {
     "<axis_name>": { "type": "var" },
@@ -119,6 +119,101 @@ Every definition JSON follows this structure exactly. Study the existing files i
 
 ## Workflow
 
+### Step 0: Determine shape source
+
+When the op comes from a real model, extract shapes using one of three methods before
+designing the definition. Record the source as a `model:` tag.
+
+**Method A — HuggingFace config.json** (LLM/MoE/transformer models)
+```python
+from huggingface_hub import hf_hub_download
+import json, pathlib
+cfg = json.loads(pathlib.Path(hf_hub_download("org/model", "config.json")).read_text())
+# hidden_size, num_attention_heads, num_key_value_heads,
+# moe_intermediate_size / intermediate_size, num_experts, num_experts_per_tok
+```
+Downloads config only — no weights. See `scripts/gen-definition/model_shapes.py::extract_hf_shapes`.
+
+**Method B — torchvision forward hooks** (CV models)
+```python
+import torch, torch.nn as nn, torchvision
+model = torchvision.models.resnet50(weights=None).eval()
+# register_forward_hook on nn.Linear / nn.AdaptiveAvgPool2d
+# run dummy forward, collect shapes
+```
+No weights downloaded. See `scripts/gen-definition/model_shapes.py::extract_torchvision_shapes`.
+
+**Method C — Hardcoded** (fixed published architectures, e.g., DeepSpeech2)
+Read a reference implementation and hardcode the known dimensions.
+See `scripts/gen-definition/model_shapes.py::deepspeech2_shapes`.
+
+---
+
+### Convention: `model:xx` tag
+
+Every definition derived from a real model carries one `model:` tag:
+- `"model:qwen1.5-moe-a2.7b"` — lowercase, hyphens, matches HF repo name suffix
+- `"model:olmoe-1b-7b"`, `"model:resnet50"`, `"model:mobilenetv3-large"`, `"model:deepspeech2"`
+
+Manually authored definitions not tied to a model: omit the `model:` tag (just `"status:active"`).
+
+---
+
+### Convention: `baseline-solution:<framework>` tag
+
+Every definition except `simd-loop` carries exactly one `baseline-solution:` tag,
+naming which reference framework's kernel it should be benchmarked against for
+speedup — independent of the `model:` tag, which only records shape provenance.
+
+**Always ask the user which framework applies — do not infer it silently from the
+`model:` tag or dtype.** Those correlate with the choice in today's definitions but
+are not a reliable rule for a brand-new op_type or model the user hasn't described
+yet. Use them only as a hint to make the question concrete, e.g.: "This looks like a
+CV op captured from resnet50 — should the baseline be `ncnn`, or something else?"
+
+For `simd-loop` definitions, skip the question — omit the tag entirely (they're
+compared against `reference`/`autovec` solutions, not an external framework).
+
+This tag currently records *intent* — as of this writing, `bench-trace/solutions/`
+has no actual baseline solution for any op_type except a stale/dangling
+`conv1d`/`deconv2d`/`deconv2d_depthwise` (ncnn), and there is no `ggml`/`llama.cpp`
+`Builder` wired into `bench/compile/builders/` yet. Don't assume the tag implies a
+solution already exists — check `bench-trace/solutions/` directly.
+
+---
+
+### Convention: dtype variants and INT8 naming
+
+Definitions sharing the same op_type and const axes but different dtypes are
+**separate definitions** with the quantization scheme encoded in the name:
+
+| name pattern | dtype in inputs | scheme | output dtype |
+|---|---|---|---|
+| `gemm_fp32_n{N}_k{K}` | float32 | — | float32 |
+| `gemm_q8_0_n{N}_k{K}` | int8 + float16 scales | Q8_0 (llama.cpp) | float32 |
+| `gemm_w8a8ch_n{N}_k{K}` | int8 | ncnn per-channel | int8 |
+
+**Q8_0 scheme** (llama.cpp, block size = 32):
+- `A [M, K]` int8 + `A_scales [M, K_blk]` float16, where `K_blk = K // 32` (const axis)
+- `B [N, K]` int8 + `B_scales [N, K_blk]` float16
+- Output `C [M, N]` float32 (dequantized after accumulation, matching llama.cpp)
+- K must be divisible by 32
+
+**w8a8ch scheme** (ncnn per-channel):
+- `A [M, K]` int8 + `input_scale` scalar float32 (per-tensor activation)
+- `B [N, K]` int8 + `weight_scales [N]` float32 (per-channel weights)
+- Output `C [M, N]` int8 with requantization
+
+**MoE INT8 uses Q8_0** (llama.cpp is the MoE baseline; ncnn has no MoE):
+- routing `router_weight [n_expert, n_embd]` stays float32 always
+- expert weights and hidden_states quantized with Q8_0
+- Scale shapes: `hs_scales [n_tokens, n_embd_blk]`, `gate_scales [n_expert, n_ff, n_embd_blk]`, etc.
+
+For MHA: use canonical `[M, n_heads, head_dim]` layout. Baseline wrappers handle
+framework-specific transposes — do not encode layout in the definition schema.
+
+---
+
 ### Step 1: Survey existing definitions for context
 
 ```bash
@@ -142,6 +237,9 @@ Ask the user to clarify any of these until they are all unambiguous:
 5. Output tensor name, shape, dtype.
 6. How output shape axes relate to input + const axes (constraints).
 7. Any scalar inputs (shape: null) and their typical values.
+8. Which framework the `baseline-solution:` tag should name (e.g. `ncnn`,
+   `llama.cpp`, or something else) — unless this is a `simd-loop` definition, in
+   which case skip this and omit the tag.
 
 ---
 
@@ -153,6 +251,7 @@ plus the output path. For example:
 ```
 New definition: rms_norm_d768
   Output: bench-trace/definitions/rms_norm/rms_norm_d768.json
+  Tags: status:active, baseline-solution:llama.cpp
 
   Axes:
     N (var)   — batch / token count
@@ -182,6 +281,8 @@ Before writing, double-check:
 - Every axis in any `shape` list appears in `"axes"`.
 - Every axis referenced in `"constraints"` appears in `"axes"`.
 - `const` axes have integer `value` fields.
+- Exactly one `baseline-solution:<ncnn|llama.cpp>` tag is present, unless this is a
+  `simd-loop` definition (omit it there).
 - `var` axes that are derived have a constraint, and `"parent"` if grouped.
 - The `reference` string is a valid Python function — mentally trace it for a simple
   input to confirm it returns the right shape and dtype.
@@ -224,3 +325,4 @@ Add workloads next:
 | `reference` raises `NameError` at eval time | Axis name used symbolically inside the Python string instead of its integer literal | Inline the const values as integer literals in the function body |
 | Output shape mismatch at correctness check | Constraint wrong — off-by-one in floor-division or wrong formula | Re-derive the output size formula by hand; test with a small example |
 | `parent` axis not a `var` | `parent` must reference another `var` axis, not a `const` one | Remove or fix the `parent` field |
+| Tempted to guess `baseline-solution:` from the `model:` tag or dtype | Past definitions correlate CV/w8a8ch with ncnn and LLM/q8_0 with llama.cpp, but that's not a rule | Ask the user directly instead of inferring — the correlation is only a hint for framing the question |

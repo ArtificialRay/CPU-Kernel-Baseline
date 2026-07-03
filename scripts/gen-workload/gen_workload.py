@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # ── Repo layout ───────────────────────────────────────────────────────────────
 
-REPO     = Path(__file__).resolve().parent.parent
+REPO     = Path(__file__).resolve().parent.parent.parent
 DEFS_DIR = REPO / "bench-trace" / "definitions"
 WLS_DIR  = REPO / "bench-trace" / "workloads"
 
@@ -145,6 +145,65 @@ def _parse_axes(axes_str: str) -> Dict[str, int]:
     return result
 
 
+def _filter_workloads(
+    candidates: List[Dict[str, int]],
+    batch_key: str,
+    max_count: int,
+    max_dups: int = 2,
+) -> List[Dict[str, int]]:
+    """Two-layer workload filtering: dedup + greedy farthest-point diversity.
+
+    Layer 1: same axes combo kept at most max_dups times.
+    Layer 2: normalized Euclidean greedy farthest-point selection.
+      Phase 1 — one seed per distinct batch_key value (ensures coverage across batch sizes).
+      Phase 2 — greedy fill to reach max_count.
+    """
+    from collections import defaultdict
+
+    seen_count: Dict[str, int] = defaultdict(int)
+    pool: List[Dict[str, int]] = []
+    for ax in candidates:
+        key = json.dumps(ax, sort_keys=True)
+        if seen_count[key] < max_dups:
+            pool.append(ax)
+            seen_count[key] += 1
+
+    if len(pool) <= max_count:
+        return pool
+
+    all_keys = list(candidates[0].keys())
+
+    def _norm_dist(a: Dict[str, int], b: Dict[str, int]) -> float:
+        return sum(
+            ((a[k] - b[k]) / max(abs(a[k]), abs(b[k]), 1.0)) ** 2
+            for k in all_keys
+        ) ** 0.5
+
+    def _min_dist(entry: Dict[str, int], sel: List[Dict[str, int]]) -> float:
+        return min(_norm_dist(entry, s) for s in sel)
+
+    by_batch: Dict[int, List[Dict[str, int]]] = defaultdict(list)
+    for ax in pool:
+        by_batch[ax[batch_key]].append(ax)
+
+    selected: List[Dict[str, int]] = []
+    for bs in sorted(by_batch):
+        grp = by_batch[bs]
+        pick = grp[0] if not selected else max(grp, key=lambda e: _min_dist(e, selected))
+        selected.append(pick)
+        if len(selected) >= max_count:
+            break
+
+    sel_ids = {id(e) for e in selected}
+    remaining = [ax for ax in pool if id(ax) not in sel_ids]
+    while len(selected) < max_count and remaining:
+        best = max(remaining, key=lambda e: _min_dist(e, selected))
+        selected.append(best)
+        remaining.remove(best)
+
+    return selected
+
+
 # ── Core operation ────────────────────────────────────────────────────────────
 
 def process_definition(
@@ -155,6 +214,9 @@ def process_definition(
     migrate: bool,
     dry_run: bool,
     extra_scalars: Dict[str, Any],
+    max_count: int = 0,
+    batch_key: str = "",
+    max_dups: int = 2,
 ) -> None:
     def_path = _find_definition(def_name)
     if def_path is None:
@@ -175,6 +237,10 @@ def process_definition(
     )
 
     seen = {_axes_key(w["axes"]) for w in migrated}
+
+    if max_count > 0 and extra_axes_list:
+        bk = batch_key or next(iter(extra_axes_list[0]))
+        extra_axes_list = _filter_workloads(extra_axes_list, bk, max_count, max_dups)
 
     new_wls: List[Dict] = []
     for n, h, w in extra_nhw:
@@ -255,6 +321,18 @@ def main() -> None:
         action="store_true",
         help="Print what would be written without touching any files.",
     )
+    parser.add_argument(
+        "--max-count", type=int, default=0,
+        help="Max workloads to select via two-layer dedup+diversity (0=disabled).",
+    )
+    parser.add_argument(
+        "--batch-key", default="",
+        help="Axis name used for Phase 1 seeding in diversity selection (default: first axis).",
+    )
+    parser.add_argument(
+        "--max-dups", type=int, default=2,
+        help="Layer 1: max copies per identical axes combo (default: 2).",
+    )
     args = parser.parse_args()
 
     if not args.migrate_all and not args.definition:
@@ -298,6 +376,9 @@ def main() -> None:
             migrate=args.migrate,
             dry_run=args.dry_run,
             extra_scalars=extra_scalars,
+            max_count=args.max_count,
+            batch_key=args.batch_key,
+            max_dups=args.max_dups,
         )
 
     print("Done.")

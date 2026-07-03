@@ -28,6 +28,7 @@ variable "instance_type" {
   default     = "c7g.large"
 }
 
+
 variable "skip_initial_build" {
   description = "Skip the initial make build step (eval harness builds on demand)"
   default     = true
@@ -149,7 +150,7 @@ resource "aws_instance" "c8g" {
   }
 
   ami                    = "ami-012798e88aebdba5c" # Ubuntu 22.04 LTS arm64 us-west-2
-  instance_type          = "c8g.large"
+  instance_type          = var.instance_type
   key_name               = aws_key_pair.kernel_testing.key_name
   vpc_security_group_ids = [aws_security_group.kernel_testing.id]
   user_data              = base64encode(file("${path.module}/setup.sh"))

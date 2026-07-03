@@ -1,42 +1,209 @@
 ---
 name: gen-workload
-description: Add new workloads for a definition family; research real inference operating points first, present the plan to the user, then generate with gen_workload.py
+description: Add new workloads for a definition family; choose the right collection path, run it, then verify
 ---
 
 ## gen_workload
 
-Add workloads to definitions in a given family (op type). Before generating anything,
-research real inference scenarios for the target op family and present the planned sizes
-and their origins to the user for approval.
-
-Script: `scripts/gen_workload.py`
+Add workloads to definitions in a given family (op type). The primary path is always
+automated collection via a collect script; manual `gen_workload.py --add` calls are
+for targeted gap-fills only.
 
 ---
 
-## What to extract from the user's message
+## Workflow
 
-Skills have no formal parameters — extract context from the user's natural language request:
+### Step 1 — Identify op family and collection path
 
-- **Op family** — which operator type to expand (e.g. `conv2d`, `conv1d`, `deconv2d`,
-  `conv2d_depthwise`). If not mentioned, ask before proceeding.
-- **Scope** — specific definition names to target, or all definitions in the family (default).
+Ask the user which op_type + definition to target if not stated. Both collector
+scripts take `--op-type <op_type> --definition <name>` (both required) and route
+by model kernel category:
 
-Valid invocations look like:
+| Model kernel category | Collection script | Source |
+|-----------|------------------|--------|
+| CV model kernel | `scripts/gen-workload/collect_workloads_conv.py --op-type <op_type> --definition <name>` | torchvision ResNet50 + MobileNetV3 hooks |
+| LLM model kernel | `scripts/gen-workload/collect_workloads_llm.py --model <gguf> --op-type <op_type> --definition <name>` | llama.cpp on remote Graviton + ShareGPT |
+| Neither (no torchvision/ggml hook exists for this op_type) | manual `scripts/gen-workload/gen_workload.py --add` (Step 4) | — |
+
+Each script only knows how to capture shapes for a small set of registered op_types.
+Run `python scripts/gen-workload/collect_workloads_conv.py --list-op-types` /
+`python scripts/gen-workload/collect_workloads_llm.py --list-op-types` to see what's currently supported instead of relying on a hardcoded
+list here — passing an unregistered `--op-type` errors out immediately with that same
+list. A brand-new op_type under an *already-supported* category (e.g. another `gemm`
+or `conv2d` definition) needs no script changes — only a genuinely new capture
+mechanism (a new nn.Module type, a new ggml op) requires adding a registry entry.
+
+If the user asks about a single specific definition rather than a whole family, go
+directly to Step 4 (manual targeted addition).
+
+---
+
+### Step 2a — Automated collection: CV model kernels (conv2d, conv2d_depthwise, gemm, pooling)
+
+```bash
+# Dry-run preview first
+python scripts/gen-workload/collect_workloads_conv.py --op-type conv2d \
+    --definition conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0 --dry-run
+
+# Write workloads
+python scripts/gen-workload/collect_workloads_conv.py --op-type conv2d \
+    --definition conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0
 ```
-Add more workloads to conv2d
-Add real inference sizes for all deconv2d definitions
-Add YOLOv5 workloads to conv2d_kh3_kw3_sh1_sw1_dh1_dw1_c64_c128
+
+The script runs ResNet50 and MobileNetV3-Large across 11 standard CV input resolutions
+(96→1024, plus non-square 360×640 and 480×640) and hooks whichever `nn.Module` type the
+requested `--op-type` is registered against (`nn.Conv2d` for conv2d/conv2d_depthwise,
+`nn.Linear` for gemm, `nn.AdaptiveAvgPool2d`/`nn.MaxPool2d` for pooling). Captured shapes
+are matched to the one requested definition by its own const axes (read straight from
+the definition JSON — Kh/Kw/Sh/Sw/Dh/Dw/pad_top for conv-shaped ops, K/N for gemm, none
+for global-avg pooling), then routed to `gen_workload.py` with `--max-count 20
+--batch-key <axis>` (batch-key is chosen automatically per op_type: `C_in` for conv2d,
+`C` for conv2d_depthwise/pooling, `M` for gemm). The two-layer filter inside
+gen_workload.py (see Step 3) selects diverse operating points automatically.
+
+If a definition's exact const-axis combination doesn't occur in either reference model
+(e.g. an odd pooling kernel/stride that ResNet50/MobileNetV3 never use), the script
+prints `[skip] ... no matching captures` — fall back to Step 4 manual addition for that
+one definition.
+
+`w8a8ch` definitions (any op_type) automatically receive a random-but-bounded
+`input_scale` scalar — see the note at the end of Step 2c.
+
+---
+
+### Step 2b — (superseded)
+
+CV gemm (`nn.Linear`) and pooling (`nn.AdaptiveAvgPool2d`/`nn.MaxPool2d`) hooks are now
+built into `collect_workloads_conv.py`'s registry — just pass `--op-type gemm` or
+`--op-type pooling` as in Step 2a. No manual script editing needed.
+
+---
+
+### Step 2c — Automated collection: LLM model kernels via llama.cpp
+
+```bash
+# Requires: Graviton4 instance in eval_config.json + GGUF model on the remote
+python scripts/gen-workload/collect_workloads_llm.py \
+    --model '~/models/OLMoE-1B-7B-0924-Instruct-Q8_0.gguf' \
+    --op-type gemm --definition gemm_fp32_n2048_k2048 \
+    --num-prompts 200
+```
+
+The script provisions (or reuses) the c8g instance, rsyncs llama.cpp from local
+`../llama.cpp/`, builds `collect-ggml-shapes` on the remote, runs it against the GGUF
+model with 200 ShareGPT prompts, downloads the shapes JSON, then calls gen_workload.py
+for the one requested `--op-type`/`--definition` (registered kinds: `gemm`, `rms_norm`,
+`mha`, `moe`). The `--max-count 20 --batch-key M` (or `n_tokens` for moe) filter is
+applied automatically.
+
+Notes:
+- `n_tokens` for moe = total token batch entering the MoE layer (same range as prompt
+  lengths, 1–512); per-expert routing is internal to the kernel.
+- `w8a8ch` definitions (any op_type, both scripts) automatically receive a
+  `--scalar input_scale=<value>` where `<value>` is drawn from a bounded range
+  (`uniform(0.005, 0.05)`) seeded off the definition name — reproducible across
+  reruns, not a shared magic constant. `q8_0` definitions need no scalar at all
+  (their dequant scales are per-block tensor inputs, not workload-level scalars).
+
+---
+
+### Step 3 — Two-layer workload filter (inside gen_workload.py)
+
+All automated collection calls gen_workload.py with `--max-count N --batch-key <axis>`,
+triggering the built-in two-layer filter:
+
+**Layer 1 — dedup** (`--max-dups`, default 2):
+Keep at most 2 copies of any identical axes combo, removing the long tail of repeated
+shapes that appear across many resolutions.
+
+**Layer 2 — greedy farthest-point diversity** (`--max-count`):
+Phase 1: seed one representative per distinct `batch-key` value (ensures every channel
+width or M range is covered). Phase 2: greedy fill remaining slots by maximising
+normalised Euclidean distance to already-selected points.
+
+When doing manual `--add` calls for small targeted additions (Step 4), **omit
+`--max-count`** so all specified axes are written as-is. Use `--max-count` only when
+handing a large candidate pool (hundreds of captured shapes) to the script.
+
+---
+
+### Step 4 — Manual targeted additions (for gaps)
+
+Use this path when the automated collector doesn't cover the op family (conv1d,
+simd-loop) or a specific operating point is missing.
+
+Present a table of planned workloads and their source/rationale, then wait for explicit
+user confirmation before writing.
+
+**Conv2d / depthwise:**
+```bash
+python scripts/gen-workload/gen_workload.py <def_name> \
+    --add N=1,C_in=64,H=80,W=80 \
+    --add N=1,C_in=11,H=56,W=56 \
+    --dry-run    # preview; remove --dry-run to write
+```
+
+Coverage to check before adding:
+- At least one `C_in` (or `C`) not a multiple of common SIMD widths (3, 11, etc.)
+- 15–20% of total workloads should have an odd spatial dimension (H=57, W=113, etc.)
+
+**LLM gemm / rms_norm:**
+```bash
+python scripts/gen-workload/gen_workload.py gemm_fp32_n2048_k2048 \
+    --add M=1 --add M=64 --add M=256 --add M=512
+```
+
+**LLM mha** — always include the decode point M=1, S=max_ctx:
+```bash
+python scripts/gen-workload/gen_workload.py mha_fp32_h16_d128_kvh16 \
+    --add M=1,S=1 --add M=64,S=64 --add M=256,S=256 --add M=1,S=4096
+```
+
+**LLM moe:**
+```bash
+python scripts/gen-workload/gen_workload.py moe_fp32_e64_k8_d2048_ff1024 \
+    --add n_tokens=1 --add n_tokens=64 --add n_tokens=256
+```
+
+**w8a8ch gemm** — needs scalar not present in existing workloads (0.01 here is just an
+illustrative manual value — the automated path in Step 2a/2c draws a bounded random
+value instead, see there):
+```bash
+python scripts/gen-workload/gen_workload.py gemm_w8a8ch_n2048_k2048 \
+    --add M=1 --add M=64 --add M=256 \
+    --scalar input_scale=0.01
+```
+
+**conv1d** — no N axis:
+```bash
+python scripts/gen-workload/gen_workload.py conv1d_kw3_sh1_dh1_p1_c64_c128 \
+    --add C_in=64,W=512 --add C_in=64,W=128
 ```
 
 ---
 
-## What a workload JSONL looks like
+### Step 5 — Verify
 
-Every definition has a JSONL file at:
+```bash
+wc -l bench-trace/workloads/<op_family>/*.jsonl
 ```
-bench-trace/workloads/<op_family>/<def_name>.jsonl
+
+Or via Python:
+```bash
+python -c "
+from bench.data import TraceSet
+ts = TraceSet.from_path('bench-trace')
+for name in ['<def_name_1>', '<def_name_2>']:
+    wls = ts.get_workloads(name)
+    print(len(wls), 'workloads OK:', name)
+"
 ```
-One JSON object per line, one workload per line.
+
+---
+
+## Supplementary reference
+
+### Workload JSONL format
 
 ```json
 {
@@ -50,147 +217,36 @@ One JSON object per line, one workload per line.
 }
 ```
 
-Key constraints:
-- `axes` covers only the **var** dimensions of the definition. For ncnn op types:
-  - conv2d, deconv2d → `N, C_in, H, W`
-  - conv1d → `C_in, W` (no N)
-  - conv2d_depthwise, deconv2d_depthwise → `N, C, H, W`
-  - simd-loop → `N` only
-  - Const dimensions (C_out, Kh, Kw, Sh, Sw, Dh, Dw, pad_top, pad_left, pad, activation_type)
-    live in the definition JSON — do **NOT** add them to workload `axes` or `inputs`.
-- `inputs` must contain **every key** declared in `definition.inputs`:
-  - `shape != null` → `{"type": "random"}` — tensor generated at runtime from resolved axes
-  - `shape == null` → `{"type": "scalar", "value": v}` — scalar constant passed directly
-  - For current ncnn definitions, all inputs are tensors (random). Pad and activation_type
-    are const axes — they do not appear in workload inputs at all.
-- `uuid` is stable: `uuid5(NAMESPACE_DNS, json.dumps({"def": name, "axes": axes}, sort_keys=True)).hex`
-- ncnn adapter only supports **N=1**. Never add N>1 workloads for ncnn-backed definitions.
+`axes` covers only the **var** dimensions from the definition. Const axes (Kh, Kw, K,
+N, etc.) live in the definition JSON — do not repeat them here.
 
----
+Input types: `shape != null` → `{"type": "random"}`; `shape == null` → `{"type":
+"scalar", "value": v}`. UUID: `uuid5(NAMESPACE_DNS, json.dumps({"def": name, "axes":
+axes}, sort_keys=True)).hex`.
 
-## Workflow
+### Var axes by op family
 
-### Step 1: List existing definitions and their current workloads
+| Op family | Var axes | Notes |
+|-----------|----------|-------|
+| `conv2d` | `N, C_in, H, W` | N=1 only (ncnn adapter) |
+| `conv2d_depthwise` | `N, C, H, W` | C_in = C_out = C; N=1 only |
+| `conv1d` | `C_in, W` | no N axis |
+| `pooling` | `N, C, H, W` | all four vary with input resolution |
+| `simd-loop` | `N` | element count |
+| `gemm` | `M` | K, N are const (encoded in def name) |
+| `rms_norm` | `M` | D const |
+| `mha` | `M, S` | M = query len, S = KV len |
+| `moe` | `n_tokens` | total tokens entering MoE layer |
 
-```bash
-ls bench-trace/definitions/<op_family>/
-cat bench-trace/workloads/<op_family>/<def_name>.jsonl
-```
-
-Identify which definitions exist and how many workloads each already has.
-
----
-
-### Step 2: Research real inference operating points
-
-For each definition (or group of definitions with the same kernel config), identify
-2–3 spatial sizes drawn from real models. Size sources must be concrete, not toy values:
-
-- For conv2d: input feature map `(H, W)` at the layer's position in a named model
-  (e.g. ResNet-50 stage2 → H=56, W=56; YOLOv5-s P3 neck → H=80, W=80)
-- For conv1d: sequence length `L` from audio/NLP inference (e.g. speech frame = 512,
-  phoneme chunk = 128)
-- For deconv2d / depthwise: upsampling resolution from segmentation or super-resolution
-  models (e.g. DeepLab decoder → H=128, W=128)
-- For simd-loop: element count `N` at realistic data sizes (e.g. 4096 = one attention
-  head row, 32768 = audio frame)
-
-Skip sizes already covered by existing workloads.
-
-**Required coverage rules — apply across the full set of new workloads:**
-
-1. **Non-divisible channel width** — include at least one workload per definition family
-   where `C_in` (or `C`) is not a multiple of common SIMD widths (e.g. `C_in=11` or
-   `C_in=3`). These exercise the scalar "remain" tail in hand-written SIMD kernels and
-   catch off-by-one bugs in channel-loop cleanup code.
-   - Good values: 3 (ResNet/MobileNet first layer), 11 (arbitrary non-power-of-2)
-   - The kh7/sh2 definition intentionally uses `C_in=3` (first-layer specialisation path)
-
-2. **Odd spatial sizes — 15–20% of total workloads** — across the full op family,
-   15–20% of workload entries must have at least one odd spatial dimension. These stress
-   stride=2 boundary logic and deconv output-size edge cases. Good values:
-   - H=113, W=113 (prime-ish, common in benchmarks)
-   - H=57, W=57 (stride=2 → 29 output, non-power-of-2)
-   - H=29, W=29 (deconv boundary)
-   Count existing odd-spatial workloads before planning to hit the target without overcounting.
-
----
-
-### Step 3: Present the plan to the user
-
-Before writing any files, output a table showing what will be generated and why.
-Include a coverage summary at the bottom showing non-divisible channel and odd-spatial counts:
-
-```
-Planned new workloads for conv2d:
-
-Definition                                        New axes                  Source
-conv2d_kh3_kw3_sh1_sw1_dh1_dw1_cout128          N=1, C_in=64,  H=80, W=80   YOLOv5-s P3 neck (640/8)
-conv2d_kh3_kw3_sh1_sw1_dh1_dw1_cout128          N=1, C_in=11,  H=56, W=56   non-divisible channel (remain branch)
-conv2d_kh3_kw3_sh1_sw1_dh1_dw1_cout128          N=1, C_in=64,  H=113, W=113  odd spatial (stride-2 boundary)
-conv2d_kh7_kw7_sh2_sw2_dh1_dw1_cout64           N=1, C_in=3,   H=224, W=224  ResNet first layer (C_in=3 special path)
-conv2d_kh7_kw7_sh2_sw2_dh1_dw1_cout64           N=1, C_in=64,  H=57,  W=57   odd spatial (stride-2 boundary)
-...
-
-Coverage summary:
-  Total new workloads:          12
-  Non-divisible C_in (e.g. 11, 3):  2 / 12  (17%)
-  Odd spatial (H or W odd):         3 / 12  (25%)  ← target 15–20%
-
-Proceed? (review sizes, sources, and coverage above before confirming)
-```
-
-Wait for explicit user confirmation before running the script.
-
----
-
-### Step 4: Generate
-
-```bash
-# Dry-run to confirm output matches the plan
-python scripts/gen_workload.py <def_name> \
-    --add N=1,C_in=64,H=80,W=80 \
-    --add N=1,C_in=11,H=56,W=56 \
-    --add N=1,C_in=64,H=113,W=113 \
-    --dry-run
-
-# Write for real
-python scripts/gen_workload.py <def_name> \
-    --add N=1,C_in=64,H=80,W=80 \
-    --add N=1,C_in=11,H=56,W=56 \
-    --add N=1,C_in=64,H=113,W=113
-```
-
-Notes:
-- Always include `C_in` (or `C` for depthwise) in every `--add` axis set.
-- For conv1d, omit `N` and put `C_in` first: `--add C_in=64,W=512`
-- `--scalar` is no longer needed for pad or activation_type — these are const axes
-  defined at the definition level, not workload inputs.
-
-Repeat for each definition in the family.
-
----
-
-### Step 5: Verify
-
-```bash
-python -c "
-from bench.data import TraceSet
-ts = TraceSet.from_path('bench-trace')
-for name in ['<def_name_1>', '<def_name_2>']:
-    wls = ts.get_workloads(name)
-    print(len(wls), 'workloads OK:', name)
-"
-```
-
----
-
-## Common bugs
+### Common bugs
 
 | Symptom | Root cause | Fix |
 |---------|------------|-----|
-| `ValueError: Workload missing required input var axes: ['C_in']` | `C_in` not included in `--add` axes | Always pass `C_in=...` (or `C=...` for depthwise) in every `--add` |
-| `Definition not found: <name>` | Name typo or definition not yet generated | Check `bench-trace/definitions/` — run `gen_definitions.py` if missing |
-| `[skip] axes=... already present` | Axes collision with existing workload | Choose different `C_in`/`H`/`W` values |
-| `NotImplementedError: ncnn binding supports N=1 only` at eval time | Workload has N>1 for an ncnn-backed definition | Replace with N=1 + different C_in/H/W |
-| `KeyError: scalar input 'pad_top' required` | Running `gen_workload.py` against old definitions that had pad as scalar inputs | Regenerate definitions with `gen_definitions.py` — pad is now a const axis |
+| `ValueError: Workload missing required input var axes: ['C_in']` | `C_in` omitted from `--add` | Always pass `C_in=...` (or `C=...` for depthwise) |
+| `Definition not found: <name>` | Name typo or def not generated yet | Check `bench-trace/definitions/` |
+| `[skip] axes=... already present` | Duplicate axes | Choose different values |
+| `NotImplementedError: ncnn binding supports N=1 only` | Workload has N>1 for ncnn-backed def | Use N=1 |
+| `KeyError: scalar input 'input_scale' required` | `*_w8a8ch_*` has no existing workload to inherit scalar | Add `--scalar input_scale=<value>` (both collector scripts do this automatically) |
+| `WARNING: no exps records found` in collect_workloads_llm.py | OLMoE expert ops use `GGML_OP_MUL_MAT_ID` | Expected — not a bug |
+| `error: --op-type and --definition are required` | Both collector scripts now require explicit `--op-type`/`--definition` (no more "run everything") | Pass both, or `--list-op-types` to see what's registered |
+| `error: Unsupported op_type '<x>' for this collector` | `<x>` has no capture-spec/axes-builder registered in this script | Try the other script (CV vs LLM), or fall back to manual `gen_workload.py --add` (Step 4) |

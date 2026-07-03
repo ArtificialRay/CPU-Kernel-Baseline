@@ -82,6 +82,17 @@ class InstanceHandle:
         cmd += [str(local_dir) + "/", f"{self.user}@{self.host}:{remote_dir}/"]
         subprocess.run(cmd, check=True, capture_output=True)
 
+    def rsync_from(self, remote_path: str, local_dir: str, excludes: list[str] | None = None):
+        key = os.path.expanduser(self.key_file)
+        cmd = [
+            "rsync", "-avz",
+            "-e", f"ssh -i {key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+        ]
+        for exc in (excludes or []):
+            cmd += ["--exclude", exc]
+        cmd += [f"{self.user}@{self.host}:{remote_path}", str(local_dir) + "/"]
+        subprocess.run(cmd, check=True)
+
 
 def _tf(*args, capture: bool = False) -> subprocess.CompletedProcess:
     cmd = ["terraform"] + list(args)
@@ -150,7 +161,7 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
     rsyncs source, installs deps, and runs dataset-specific build steps.
 
     Args:
-        instance_type: EC2 instance type string (e.g. "c7g.large", "c8g.large")
+        instance_type: EC2 instance type string (e.g. "c7g.large", "c8g.large", "c8g.xlarge")
         initial_build: make target for initial build, e.g. "c-scalar". Empty = skip.
         dataset: Dataset name (e.g. "ncnn") — triggers build steps from dataset_builds.json.
     """
@@ -158,8 +169,9 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
     print(f"[provision] Provisioning {instance_type} via Terraform...")
 
     if is_c8g:
-        # c8g has its own fixed resource block — target it directly
+        # c8g has its own fixed resource block — pass instance type as a variable.
         result = _tf("apply", "-auto-approve",
+                     f"-var=instance_type={instance_type}",
                      "-target=aws_instance.c8g",
                      "-target=null_resource.deploy_c8g")
     else:
@@ -212,85 +224,6 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
     return handle
 
 
-def provision_codebase(instance_type: str = "c7g.large", initial_build: str = "", codebase: str = "") -> InstanceHandle:
-    """
-    Sync the codebase to the remote instance for cpu kernel codebase evaluation.
-
-    The codebase source is expected at CPU-Kernel-Baseline/{codebase}/ relative to arm-bench's
-    parent directory. It is rsynced to ~/{codebase}/ on the remote instance, which is
-    the path that NCNNTools expects.
-
-    Args:
-        handle: An InstanceHandle already connected to the remote instance.
-    """
-    is_c8g = "c8g" in instance_type
-    print(f"[provision] Provisioning {instance_type} via Terraform...")
-
-    if is_c8g:
-        # c8g has its own fixed resource block — target it directly
-        result = _tf("apply", "-auto-approve",
-                     "-target=aws_instance.c8g",
-                     "-target=null_resource.deploy_c8g")
-    else:
-        skip_build = initial_build == ""
-        vars = [
-            f"-var=instance_type={instance_type}",
-            f"-var=skip_initial_build={'true' if skip_build else 'false'}",
-        ]
-        if not skip_build:
-            vars.append(f"-var=build_target={initial_build}")
-        result = _tf("apply", "-auto-approve",
-             "-target=aws_instance.kernel_testing",
-             "-target=null_resource.deploy",
-             *vars)
-
-
-    if result.returncode != 0:
-        raise RuntimeError("terraform apply failed")
-
-    outputs = _tf_output()
-    if is_c8g:
-        host = outputs["c8g_public_ip"]["value"]
-        instance_id = outputs.get("c8g_instance_id", {}).get("value")
-    else:
-        host = outputs["instance_public_ip"]["value"]
-        instance_id = outputs.get("instance_id", {}).get("value")
-    key_file = outputs.get("ssh_key_path", {}).get("value", "~/.ssh/id_rsa")
-
-    handle = InstanceHandle(
-        host=host,
-        user="ubuntu",
-        key_file=key_file,
-        instance_type=instance_type,
-        instance_id=instance_id,
-    )
-
-    print(f"[provision] Instance ready at {host}, waiting for SSH...")
-    _wait_for_ssh(handle)
-
-    # Look for ncnn/ in the CPU-Kernel-Baseline repo next to arm-bench
-    codebase_dir = REPO_ROOT.parent / "CPU-Kernel-Baseline" / codebase
-    if not codebase_dir.exists():
-        # Fallback: look for ncnn/ directly next to arm-bench
-        codebase_dir = REPO_ROOT.parent / codebase
-        if not codebase_dir.exists():
-            raise FileNotFoundError(
-                f"ncnn codebase not found. Looked at:\n"
-                f"  {REPO_ROOT.parent / 'CPU-Kernel-Baseline' / codebase}\n"
-                f"  {REPO_ROOT.parent / codebase}\n"
-                f"Make sure CPU-Kernel-Baseline/{codebase} exists relative to arm-bench."
-            )
-
-    print(f"[provision_codebase] Rsyncing {codebase_dir} → {handle.host}:~/{codebase}/ ...")
-    handle.rsync_to(
-        str(codebase_dir),
-        f"~/{codebase}",
-        excludes=["build", ".git", "__pycache__", "*.o", "*.d", "*.pyc"],
-    )
-    _save_config(handle)
-    print(f"[provision_codebase] {codebase} codebase synced.")
-    return handle
-
 def teardown():
     """Run terraform destroy to terminate the instance."""
     print("[teardown] Running terraform destroy...")
@@ -327,15 +260,19 @@ def get_running_instance(isa: str) -> InstanceHandle | None:
     )
 
 
-def get_or_provision(isa: str) -> InstanceHandle:
+def get_or_provision(isa: str, instance_type: str | None = None) -> InstanceHandle:
     """
     Return an existing running instance or provision a new one.
+
+    Args:
+        isa: ISA target (neon/sve/sve2/sme2).
+        instance_type: Override the default instance type (e.g. "c8g.xlarge").
     """
     handle = get_running_instance(isa)
     if handle and _is_reachable(handle):
         print(f"[provision] Reusing existing instance at {handle.host}")
         return handle
-    instance_type = ISA_INSTANCE_MAP.get(isa, "c7g.large")
+    instance_type = instance_type or ISA_INSTANCE_MAP.get(isa, "c7g.large")
     return provision(instance_type)
 
 
@@ -392,25 +329,21 @@ def status():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Provision/teardown Arm EC2 instances")
-    parser.add_argument("--instance", default="c7g.large",
-                        help="EC2 instance type (default: c7g.large)")
-    parser.add_argument("--isa", help="ISA target (neon/sve/sve2/sme2); overrides --instance")
+    parser.add_argument("--instance", default=None,
+                        help="EC2 instance type override (e.g. c8g.xlarge). "
+                             "Defaults to ISA_INSTANCE_MAP value when --isa is set.")
+    parser.add_argument("--isa", help="ISA target (neon/sve/sve2/sme2)")
     parser.add_argument("--teardown", action="store_true", help="Destroy the instance")
     parser.add_argument("--status", action="store_true", help="Show instance status")
     parser.add_argument("--initial-build", default="",
                         help="Run make <target> after provision (default: skip)")
-    parser.add_argument("--codebase",default="ncnn",help="CPU kernel baseline codebase selection")
     args = parser.parse_args()
 
     if args.status:
         status()
     elif args.teardown:
         teardown()
-    elif args.codebase:
-        instance_type = ISA_INSTANCE_MAP.get(args.isa, args.instance) if args.isa else args.instance
-        handle = provision_codebase(instance_type, args.initial_build, args.codebase)
-        print(f"\nInstance handle: {handle}")
     else:
-        instance_type = ISA_INSTANCE_MAP.get(args.isa, args.instance) if args.isa else args.instance
+        instance_type = args.instance or (ISA_INSTANCE_MAP.get(args.isa, "c7g.large") if args.isa else "c7g.large")
         handle = provision(instance_type, args.initial_build)
         print(f"\nInstance handle: {handle}")
