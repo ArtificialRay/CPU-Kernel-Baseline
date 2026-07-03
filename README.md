@@ -1,5 +1,26 @@
 # CPU-Kernel-Baseline
-CPU Kernels/Operators for vision model / LLM extracted from 5 codebases, serving as baseline for the project
+A CPU kernel auto-optimizating workplace for agent. Support kernel benchmarking and auto-evaluation from two codebase: `ncnn` and `llama.cpp`, and expose tool interface for agent to work in this workplace.
+
+FP32 Kernels available:
+| Kernel Name | Type | Source |
+|---|---|---|
+| RMSNorm | Memory Bound | llama.cpp, ncnn |
+| Conv2D Depthwise | Memory Bound | ncnn |
+| Pooling (Reduction) | Memory Bound | ncnn |
+| GEMM (M=1, decode) | Memory Bound | llama.cpp, ncnn |
+| Conv2D | Compute Bound | ncnn |
+| GEMM (M≥32, prefill) | Compute Bound | llama.cpp, ncnn |
+| MHA | Fused | llama.cpp, ncnn |
+| LSTM | Fused | llama.cpp, ncnn |
+
+INT8 Kernels available:
+| Kernel Name | Type | Source |
+|---|---|---|
+| Conv2D | Compute Bound | ncnn |
+| GEMM | Memory Bound/Compute Bound | ncnn,llama.cpp |
+| MoE | Fused | llama.cpp |
+
+Kernel definitions are extracted from real model architecture: qwen1.5-moe-a2.7b, olmoe-1b-7b, resnet50, mobilenetv3-large, deepspeech2
 
 ## Sync local codebase with remote instance
 
