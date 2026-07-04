@@ -50,6 +50,7 @@ load_dotenv(REPO_ROOT / ".env")
 _DATASET_BASELINE_AUTHOR: dict[str, str] = {
     "ncnn": "baseline-ncnn-arm",
     "simd-loop": "reference-scalar",
+    "llama.cpp": "baseline-llamacpp-arm",
 }
 
 
