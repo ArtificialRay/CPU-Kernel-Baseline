@@ -683,6 +683,73 @@ def _extract_scalar_kernel(loop_id: str) -> str:
     return code
 
 
+# Minimal prelude bundled with each baseline-sve kernel so the extracted ARM SVE
+# function is self-contained (no dependency on common/loops.h). These are the
+# exact macros the HAVE_SVE_INTRINSICS blocks use, copied from common/loops.h.
+# On a non-SME SVE2 target (Graviton4) SC_SVE_ATTR is empty.
+_SVE_PRELUDE = """#include <stdint.h>
+#include <arm_sve.h>
+#define restrict __restrict
+#define SC_SVE_ATTR
+#define FOR_COND(P, S, I, N) svptest_first(svptrue_b##S(), P = svwhilelt_b##S(I, N))
+#define FOR_LOOP(T, I, M, N, P, S, W) for (T I = M; FOR_COND(P, S, I, N); I += svcnt##W())
+#define FOR_LOOP_8(T, I, M, N, P)  FOR_LOOP(T, I, M, N, P, 8, b)
+#define FOR_LOOP_16(T, I, M, N, P) FOR_LOOP(T, I, M, N, P, 16, h)
+#define FOR_LOOP_32(T, I, M, N, P) FOR_LOOP(T, I, M, N, P, 32, w)
+#define FOR_LOOP_64(T, I, M, N, P) FOR_LOOP(T, I, M, N, P, 64, d)
+static inline uint32_t get_sve_vl(void) {
+  uint64_t vl = 0; asm volatile("incb %[vl], all, mul #8" : [vl] "+r"(vl) : :);
+  return (uint32_t)vl;
+}
+static inline uint32_t get_vl(void) { return get_sve_vl(); }
+"""
+
+
+def _extract_sve_kernel(loop_id: str) -> str:
+    """Extract the Arm-authored HAVE_SVE_INTRINSICS function from loops/loop_NNN.c.
+
+    Returns the kernel as a self-contained extern "C" function (intrinsics only),
+    or "" if the loop has no SVE-intrinsics block. The SVE code is Arm's, verbatim;
+    we only strip `static`/`restrict`/`LOOP_ATTR` and add the extern "C" linkage.
+    """
+    c_file = LOOPS_DIR / f"{loop_id}.c"
+    if not c_file.exists():
+        return ""
+    lines = c_file.read_text().splitlines()
+    # Find the `#elif ... HAVE_SVE_INTRINSICS ...` branch, then collect its body
+    # tracking preprocessor depth so a NESTED #if/#endif inside the block doesn't
+    # prematurely terminate it (multi-axis loops nest on vector length).
+    start = next((i for i, ln in enumerate(lines)
+                  if ln.lstrip().startswith("#elif") and "HAVE_SVE_INTRINSICS" in ln), None)
+    if start is None:
+        return ""
+    body, depth = [], 0
+    for ln in lines[start + 1:]:
+        s = ln.lstrip()
+        if depth == 0 and (s.startswith("#elif") or s.startswith("#else") or s.startswith("#endif")):
+            break
+        if s.startswith(("#if", "#ifdef", "#ifndef")):
+            depth += 1
+        elif s.startswith("#endif"):
+            depth -= 1
+        body.append(ln)
+    code = "\n".join(body).strip()
+    code = re.sub(r'\bstatic\b\s*', '', code)
+    code = re.sub(r'\b__restrict__\b', '', code)
+    code = re.sub(r'\brestrict\b', '', code)
+    code = re.sub(r'\bLOOP_ATTR\b', '', code)        # SVE target attr (empty on non-SME)
+    code = re.sub(r'^void\s+inner_loop', 'extern "C" void inner_loop', code, flags=re.MULTILINE)
+    return code
+
+
+def _sve_kernel_src(lid: str) -> str:
+    """kernel.cpp for the baseline-sve author, or "" if no SVE block exists."""
+    extracted = _extract_sve_kernel(lid)
+    if not extracted:
+        return ""
+    return f'#include "{lid}.h"\n' + _SVE_PRELUDE + "\n" + extracted + "\n"
+
+
 # ── Writers ───────────────────────────────────────────────────────────────────
 
 def _stable_uuid(loop_id: str, n: int, source: str) -> str:
@@ -849,6 +916,62 @@ def _write_solution_pair(lid: str, sources: list) -> None:
             print(f"  wrote {out_path.relative_to(REPO)}")
 
 
+# Loops whose extracted SVE-intrinsics kernel does not yet compile + pass the
+# standard correctness bar on Graviton4 (verified 2026-06-26). Excluded so we
+# never emit a broken baseline. Grouped by reason — each is a follow-up:
+_SVE_SKIP = {
+    # multi-axis (m/n/k): the SVE kernel reads >1 axis; needs the multi-axis ABI.
+    "loop_130", "loop_135", "loop_216", "loop_217", "loop_218", "loop_219",
+    "loop_220", "loop_221", "loop_223",
+    # float reduction: hand-SVE tree-sum exceeds rel_tol=1e-3 vs numpy at N=16M.
+    "loop_032", "loop_114",
+    # per-loop extraction/runtime issues (fp16 type, sort, complex, histogram).
+    "loop_038", "loop_102", "loop_103", "loop_104", "loop_105", "loop_106",
+    "loop_109", "loop_120", "loop_121", "loop_123", "loop_124", "loop_126",
+    "loop_127", "loop_128",
+}
+
+
+def _write_sve_solution(lid: str, base_sources: list) -> None:
+    """Emit the `baseline-sve` author: same harness as the reference/autovec pair,
+    with kernel.cpp replaced by the Arm-authored HAVE_SVE_INTRINSICS kernel. The
+    expert hand-SVE ceiling. No-op for loops without a (clean) SVE-intrinsics block."""
+    if lid in _SVE_SKIP:
+        return
+    kernel = _sve_kernel_src(lid)
+    if not kernel:
+        return
+    sources = [
+        s if s["path"] != "kernel.cpp" else {"path": "kernel.cpp", "content": kernel}
+        for s in base_sources
+    ]
+    author = "baseline-sve"
+    out_dir = BENCH_TRACE / "solutions" / "simd-loop" / author / lid
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{author}_{lid}.json"
+    solution = {
+        "name": f"{author}_{lid}",
+        "definition": lid,
+        "dataset": "simd-loop",
+        "author": author,
+        "spec": {
+            "language": "cpp",
+            "target_hardware": ["aarch64"],
+            "entry_point": f"kernel.cpp::inner_{lid}",
+            "dependencies": [],
+            "isa_features": ["sve2"],
+            "compile_flags": ["-O3", "-std=c++14", "-march=native"],
+            "link_flags": [],
+        },
+        "sources": sources,
+        "description": f"Arm hand-written SVE intrinsics for {lid} (expert ceiling).",
+    }
+    content = json.dumps(solution, indent=2) + "\n"
+    if not out_path.exists() or out_path.read_text() != content:
+        out_path.write_text(content)
+        print(f"  wrote {out_path.relative_to(REPO)}")
+
+
 def _scalar_kernel_src(lid: str) -> str:
     """Build the scalar kernel source for a single-axis loop (custom → extracted → stub)."""
     if lid in _CUSTOM_SCALAR_KERNELS:
@@ -873,6 +996,7 @@ def _write_reference_solution(info: LoopInfo) -> None:
         {"path": "kernel.cpp", "content": _scalar_kernel_src(lid)},
     ]
     _write_solution_pair(lid, sources)
+    _write_sve_solution(lid, sources)
 
 
 # ── Per-loop meta overrides ────────────────────────────────────────────────────
@@ -1820,6 +1944,7 @@ def _write_multi_axis(info: MultiAxisInfo) -> None:
         {"path": "kernel.cpp", "content": scalar_src},
     ]
     _write_solution_pair(lid, sources)
+    _write_sve_solution(lid, sources)
 
 
 def _description_ma(info: MultiAxisInfo) -> str:
@@ -2042,6 +2167,7 @@ def _write_sentinel(loop_id: str) -> None:
                {"path": f"{loop_id}.cpp", "content": cpp},
                {"path": "kernel.cpp", "content": cfg["scalar"]}]
     _write_solution_pair(loop_id, sources)
+    _write_sve_solution(loop_id, sources)
 
 
 class _FakeInfo:
