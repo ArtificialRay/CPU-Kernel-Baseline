@@ -123,13 +123,44 @@ def test_can_evaluate_tag_gating(tag):
     assert LowBitEvaluator.can_evaluate(_definition(tags=[tag]))
 
 
-def test_can_evaluate_rejects_untagged():
-    # An int8 output alone must NOT route to LowBitEvaluator (no silent reroute).
+def test_can_evaluate_rejects_pure_integer():
+    # int8 in → int8 out with no float input (e.g. simd-loop byte kernels) is
+    # exact integer math, not quantisation — stays on DefaultEvaluator.
     assert not LowBitEvaluator.can_evaluate(_definition(dtype=DType.INT8))
+
+
+def _requant_definition(*, out_dtype: DType = DType.INT8) -> Definition:
+    """w8a8ch-style signature: int8 data + float scales → 8-bit output."""
+    return Definition(
+        name="gemm_w8a8ch_n8_k8",
+        op_type="gemm",
+        axes={"M": AxisVar()},
+        inputs={
+            "A": TensorSpec(shape=["M"], dtype=DType.INT8),
+            "input_scale": TensorSpec(shape=None, dtype=DType.FLOAT32),
+        },
+        outputs={"C": TensorSpec(shape=["M"], dtype=out_dtype)},
+        reference=REF_SRC,
+        tags=["status:active", "baseline-solution:ncnn"],
+    )
+
+
+def test_can_evaluate_matches_requant_signature():
+    # 8-bit int output + float scale input = quantised requant → low-bit path,
+    # even without an explicit low-bit tag (matches the w8a8ch definitions).
+    assert LowBitEvaluator.can_evaluate(_requant_definition())
+    assert LowBitEvaluator.can_evaluate(_requant_definition(out_dtype=DType.UINT8))
+
+
+def test_can_evaluate_rejects_float_in_wide_int_out():
+    # float input → int32 output is an exact count (e.g. loop_010), not a
+    # quantised value; must stay on the strict DefaultEvaluator path.
+    assert not LowBitEvaluator.can_evaluate(_requant_definition(out_dtype=DType.INT32))
 
 
 def test_resolve_evaluator_routes_low_bit():
     assert resolve_evaluator(_definition(tags=["low-bit"])) is LowBitEvaluator
+    assert resolve_evaluator(_requant_definition()) is LowBitEvaluator
     assert resolve_evaluator(_definition()) is DefaultEvaluator
 
 

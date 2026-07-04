@@ -15,11 +15,20 @@ Only ``check_correctness`` changes: it uses
 ``DefaultEvaluator`` unchanged (input generation and timing are dtype-agnostic),
 mirroring flashinfer-bench's evaluator layering.
 
-Dispatch is **tag-driven**: ``can_evaluate`` matches a Definition only when it
-carries a low-bit tag (see ``LOW_BIT_TAGS``). This keeps the evaluator mutually
-exclusive with any future specialized evaluator and leaves every existing
-Definition on the ``DefaultEvaluator`` path until it explicitly opts in — no
-per-loop hardcodes, consistent with the registry's first-match contract.
+Dispatch: ``can_evaluate`` matches a Definition that either
+
+- carries an explicit low-bit tag (see ``LOW_BIT_TAGS``), or
+- is a **quantised-requant kernel by signature**: an 8-bit integer output
+  produced from at least one floating-point input. The float inputs are the
+  dequant scales (e.g. the w8a8ch gemm/conv definitions: int8 A/B +
+  fp32 input_scale/weight_scales → int8 C), so the int8 output is the result
+  of float rounding and a ±1-LSB tolerance is the right contract. Pure-integer
+  kernels (e.g. simd-loop reductions, sorts, histograms — integer in, integer
+  out) never match: their outputs are exact and stay on ``DefaultEvaluator``'s
+  strict path, as do float-in/wide-int-out counting kernels (int32/int64
+  outputs are exact counts, not quantised values).
+
+No per-loop hardcodes, consistent with the registry's first-match contract.
 """
 
 from __future__ import annotations
@@ -27,7 +36,7 @@ from __future__ import annotations
 from typing import Any, Optional, Tuple
 
 from bench.config import EvalConfig
-from bench.data.definition import Definition
+from bench.data.definition import Definition, DType
 from bench.data.trace import (
     Correctness,
     Environment,
@@ -42,13 +51,27 @@ from .evaluator import BoundKernel, RefBaseline, _error
 # Tags that opt a Definition into low-bit evaluation (case-insensitive).
 LOW_BIT_TAGS = frozenset({"low-bit", "low_bit", "lowbit", "quantized", "quantised"})
 
+# Output dtypes considered "low-bit": the value itself is a quantised code.
+_LOW_BIT_INT_DTYPES = frozenset({DType.INT8, DType.UINT8})
+_FLOAT_DTYPES = frozenset({DType.FLOAT64, DType.FLOAT32, DType.FLOAT16, DType.BFLOAT16})
+
 
 class LowBitEvaluator(DefaultEvaluator):
     """Quantisation-aware correctness evaluator for low-bit outputs."""
 
     @classmethod
     def can_evaluate(cls, definition: Definition) -> bool:
-        return any(t.lower() in LOW_BIT_TAGS for t in definition.tags)
+        if any(t.lower() in LOW_BIT_TAGS for t in definition.tags):
+            return True
+        # Quantised-requant signature: 8-bit integer output computed from at
+        # least one float input (the dequant scales) → rounding is inherent.
+        has_low_bit_out = any(
+            spec.dtype in _LOW_BIT_INT_DTYPES for spec in definition.outputs.values()
+        )
+        has_float_in = any(
+            spec.dtype in _FLOAT_DTYPES for spec in definition.inputs.values()
+        )
+        return has_low_bit_out and has_float_in
 
     @classmethod
     def check_correctness(
