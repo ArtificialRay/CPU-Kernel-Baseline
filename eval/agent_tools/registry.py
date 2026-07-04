@@ -8,12 +8,14 @@ from __future__ import annotations
 from typing import Type
 
 from .base import AgentTools
+from .llama_cpp import LlamaCppAgentTools
 from .ncnn import NCNNAgentTools
 from .simd_loop import SIMDLoopAgentTools
 
 _TOOLS: dict[str, Type[AgentTools]] = {
     "ncnn": NCNNAgentTools,
     "simd-loop": SIMDLoopAgentTools,
+    "llama.cpp": LlamaCppAgentTools,
 }
 
 

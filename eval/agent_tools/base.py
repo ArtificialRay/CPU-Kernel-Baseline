@@ -35,6 +35,130 @@ from .trajectory import TrajectoryWriter
 ASM_TRUNCATE_LINES: int = 300
 
 
+# Map EC2 instance type → (march flag, isa_features, target_hardware labels).
+# Shared by the dataset AgentTools so candidate ISA flags always match the real
+# hardware the kernel is timed on.
+INSTANCE_ISA: dict[str, tuple[str, list[str], list[str]]] = {
+    "c7g.large":  ("-march=armv8.2-a+sve",  ["sve"],  ["graviton3", "aarch64-sve"]),
+    "c8g.large":  ("-march=armv9-a+sve2",   ["sve2"], ["graviton4", "aarch64-sve2"]),
+    "c7g.xlarge": ("-march=armv8.2-a+sve",  ["sve"],  ["graviton3", "aarch64-sve"]),
+    "c8g.xlarge": ("-march=armv9-a+sve2",   ["sve2"], ["graviton4", "aarch64-sve2"]),
+}
+_FALLBACK_ISA = ("-march=armv8-a", [], ["aarch64"])
+
+
+def derive_isa(instance_type: str) -> tuple[str, list[str], list[str]]:
+    """(march flag, isa_features, target_hardware labels) for an EC2 instance type."""
+    return INSTANCE_ISA.get(instance_type, _FALLBACK_ISA)
+
+
+def standard_tool_schemas(*, code_description: str, disasm_hint: str) -> list[dict]:
+    """The five standard agent tool schemas, shared across datasets.
+
+    `code_description` is the help text for compile()'s `code` argument (states which
+    function the agent must implement); `disasm_hint` names the symbol disassemble()
+    defaults to (the agent's kernel function).
+    """
+    return [
+        {
+            "name": "compile",
+            "description": (
+                "Compile your kernel.cpp on the remote ARM instance. The harness/binding "
+                "files are provided automatically — you only write the kernel. Returns "
+                "{\"status\": \"OK\", \"version\": N} on success, or "
+                "{\"status\": \"COMPILE_ERROR\", \"error\": \"...\"} on failure."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"code": {"type": "string", "description": code_description}},
+                "required": ["code"],
+            },
+        },
+        {
+            "name": "evaluate",
+            "description": (
+                "Run the last compiled kernel against all workloads on the remote. "
+                "Checks correctness first (fail-fast on the first failing workload). "
+                "If `measure=true` (default) also collects wall-time and cycle counts. "
+                "Returns {\"status\": \"PASSED\", \"performance\": {...}} or "
+                "{\"status\": \"<error>\", \"failed_workload\": \"...\", \"log\": \"...\"}."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "measure": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether to measure timing and cycle counts (true, default) "
+                            "or only run correctness checks (false, faster)."
+                        ),
+                    }
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "disassemble",
+            "description": (
+                "Disassemble the last compiled .so on the remote (up to 300 lines of "
+                f"AArch64 assembly). Defaults to `{disasm_hint}` (your kernel). Pass `fn` "
+                "to inspect a different symbol."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fn": {
+                        "type": "string",
+                        "description": f"Symbol to disassemble. Omit to use `{disasm_hint}`.",
+                    }
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "read_code",
+            "description": (
+                "Read a source file or disassembly saved during this session. "
+                "Compiled versions are saved as v1.cpp, v2.cpp, ... (N from compile() result). "
+                "Disassembled versions are saved as v1.s, v2.s, ... (written by disassemble()). "
+                "On error, returns the list of available files so you can pick the right one."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "File to read, e.g. 'v2.cpp' or 'v1.s'.",
+                    }
+                },
+                "required": ["filename"],
+            },
+        },
+        {
+            "name": "submit",
+            "description": (
+                "Score and persist the best-performing version from this session. "
+                "Automatically selects the version with the highest cycle speedup "
+                "seen in evaluate() calls. Call this when you have finished optimizing. "
+                "Returns {\"status\": \"PASSED\", \"time_speedup\": X, \"cycle_speedup\": Y}."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "explanation": {
+                        "type": "string",
+                        "description": (
+                            "Brief description of the optimization approach and key perf "
+                            "observations."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    ]
+
+
 class AgentTools(ABC):
     """Per-dataset tool surface for the agent optimization loop.
 
@@ -487,4 +611,4 @@ class AgentTools(ABC):
             pass
 
 
-__all__ = ["AgentTools"]
+__all__ = ["AgentTools", "derive_isa", "standard_tool_schemas", "INSTANCE_ISA"]

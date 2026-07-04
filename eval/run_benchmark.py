@@ -49,7 +49,8 @@ load_dotenv(REPO_ROOT / ".env")
 # eval/agent_tools/base.py is "reference-scalar"), so speedup computation works.
 _DATASET_BASELINE_AUTHOR: dict[str, str] = {
     "ncnn": "baseline-ncnn-arm",
-    "simd-loop": "reference-scalar",
+    "simd-loop": "reference",
+    "llama.cpp": "baseline-llamacpp-arm",
 }
 
 
@@ -151,7 +152,7 @@ def main():
 
     # Dataset selection
     parser.add_argument(
-        "--dataset", default="ncnn", choices=["ncnn", "simd-loop"],
+        "--dataset", default="ncnn", choices=["ncnn", "simd-loop", "llama.cpp"],
         help="Dataset to benchmark (default: ncnn)",
     )
 

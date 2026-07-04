@@ -25,12 +25,13 @@ from bench.data.definition import Definition
 from bench.data.solution import Solution
 
 from .builder import BuildError, Builder, CompileResult
-from .builders import CandidateBuilder, NcnnBuilder, SimdLoopBuilder
+from .builders import CandidateBuilder, LlamaCppBuilder, NcnnBuilder, SimdLoopBuilder
 
 _BUILDER_PRIORITY: List[Type[Builder]] = [
     CandidateBuilder,
     NcnnBuilder,
     SimdLoopBuilder,
+    LlamaCppBuilder,
 ]
 """Builder types in priority order for automatic selection."""
 

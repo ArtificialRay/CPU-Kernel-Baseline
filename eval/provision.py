@@ -182,7 +182,12 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
         ]
         if not skip_build:
             vars.append(f"-var=build_target={initial_build}")
-        result = _tf("apply", "-auto-approve", *vars)
+        # Scope to the c7g instance + its deploy resource only. Without -target this
+        # runs a full-config apply that recreates the c8g instance (shared state) —
+        # so provisioning a c7g while a c8g is up would destroy the c8g mid-run.
+        result = _tf("apply", "-auto-approve", *vars,
+                     "-target=aws_instance.kernel_testing",
+                     "-target=null_resource.deploy")
 
     if result.returncode != 0:
         raise RuntimeError("terraform apply failed")

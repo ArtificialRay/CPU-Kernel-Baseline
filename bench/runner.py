@@ -132,6 +132,8 @@ def _bind_kernel(
     lib = ctypes.CDLL(str(compiled.so_path))
     if solution.dataset.value == "simd-loop":
         adapter_name = "simd-loop"
+    elif solution.dataset.value == "llama.cpp":
+        adapter_name = "llama.cpp"
     elif not is_baseline:
         adapter_name = "raw"
     else:

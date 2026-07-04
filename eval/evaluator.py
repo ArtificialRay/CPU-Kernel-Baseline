@@ -231,16 +231,21 @@ def run_agentic_eval(
     tools = ToolsCls(handle, definition, trace_set, author, bench_cfg=bench_cfg)
     schemas = [{"type": "function", "function": s} for s in ToolsCls.tool_schemas()]
 
-    ref_solution = trace_set.get_baseline_solution(definition.name, "reference-scalar")
+    baseline_author = bench_cfg.baseline_author if bench_cfg else "reference-scalar"
+
+    # Starter code shown to the agent = the baseline solution for this dataset
+    # (author varies: reference-scalar/reference/baseline-llamacpp-arm).
+    ref_solution = trace_set.get_baseline_solution(definition.name, baseline_author)
 
     family = handle.instance_type.split(".")[0] if handle.instance_type else ""
     isa_desc = _AGENT_ISA_LABELS.get(family, handle.instance_type or "AArch64")
     isa_name = _AGENT_ISA_NAMES.get(family, "SVE2")
 
-    baseline_author = bench_cfg.baseline_author if bench_cfg else "reference-scalar"
     _BASELINE_LABELS = {
-        "baseline-ncnn-arm": "hand-optimized ncnn ARM baseline",
-        "reference-scalar":  "reference scalar implementation",
+        "baseline-ncnn-arm":     "hand-optimized ncnn ARM baseline",
+        "reference-scalar":      "reference scalar implementation",
+        "reference":             "reference scalar implementation",
+        "baseline-llamacpp-arm": "llama.cpp (ggml) baseline",
     }
     baseline_label = _BASELINE_LABELS.get(baseline_author, baseline_author)
 
