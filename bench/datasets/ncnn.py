@@ -8,7 +8,10 @@ dlopening the solution.so, the runner resolves both:
   - armbench_ncnn_mat_*       (from _mat_factory.cpp)
 …and ctypes-binds them. Every ncnn baseline ships a self-contained
 armbench_entry_<op_type> that bakes its scalar params as constexpr, so the entry
-takes only the 6 Mat/Option pointers — the runner declares that signature inline.
+takes only Mat/Option pointers — the runner declares that signature inline. The
+pointer count is N-ary, driven entirely by however many non-scalar tensors
+`definition.inputs` declares (plus the output and Option pointer) — there is no
+fixed slot count assumed anywhere in this module.
 """
 
 from __future__ import annotations
@@ -18,10 +21,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from bench.data.definition import Definition
-
-# Slots the ncnn conv-family entry always expects even when absent from the
-# definition (passed as empty 1D Mats). Ordered to match the harness ABI.
-_NCNN_EXTRA_SLOTS = ("bias", "activation_params")
 
 import numpy as np
 
@@ -88,19 +87,22 @@ class _MatFactoryFns:
 
 # ── Per-tensor packing logic ─────────────────────────────────────────────────
 
-def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray) -> ctypes.c_void_p:
-    """Construct an ncnn::Mat from a numpy array, choose 1D/2D/3D by tensor name+shape.
+def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray, *, is_primary: bool) -> ctypes.c_void_p:
+    """Construct an ncnn::Mat from a numpy array.
 
-    Naming convention used by inputs.py:
-      - 'input' / 'bottom_blob'  → 3D (collapse leading N into c if N=1)
-      - 'weight' / 'weight_data' → flat 1D
-      - 'bias' / 'bias_data'     → flat 1D
-      - 'activation_params'      → flat 1D (or empty Mat if size 0)
+    Dispatch is by *position*, not tensor name: the primary tensor (the first
+    non-scalar input in `definition.inputs` order — the actual feature map/
+    activation ncnn's layer consumes, e.g. conv2d's `input`, gemm's `A`,
+    lstm's `x`) is shaped by its own rank (3D/2D). Every other tensor (weight,
+    bias, gemm's `B`, lstm's `h0`/`c0`/`W_ih`/`W_hh`/`b`, ...) is passed flat
+    1D, matching how ncnn layers store `weight_data`/`bias_data` internally —
+    this holds even when that tensor is itself 2D in numpy (e.g. gemm's `B`),
+    since ncnn's layer reshapes the flat buffer internally.
     """
     arr = np.ascontiguousarray(arr, dtype=np.float32)
     flat_ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-    if name in ("input", "bottom_blob"):
+    if is_primary:
         if arr.ndim == 4:
             # (N, C, H, W) → require N=1 for now; multi-batch needs Phase 3
             n, c, h, w = arr.shape
@@ -115,10 +117,12 @@ def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray) -> ctypes.c_void
         elif arr.ndim == 2:
             h, w = arr.shape
             return ctypes.c_void_p(fns.create_2d(w, h, flat_ptr))
+        elif arr.ndim == 1:
+            return ctypes.c_void_p(fns.create_1d(int(arr.size), flat_ptr))
         else:
-            raise ValueError(f"Input '{name}' has unsupported rank {arr.ndim}")
+            raise ValueError(f"Primary input '{name}' has unsupported rank {arr.ndim}")
     else:
-        # weight / bias / activation_params → flat 1D
+        # weight / bias / any other secondary tensor → flat 1D
         return ctypes.c_void_p(fns.create_1d(int(arr.size), flat_ptr))
 
 
@@ -192,33 +196,31 @@ class NcnnDataset:
         """Build the ctypes argument list for `armbench_entry_<op_type>`.
 
         Every ncnn baseline ships a self-contained entry that bakes its scalar
-        params as constexpr, so the call passes only the Mat/Option pointers.
-        Tensor order: definition.inputs (non-scalars) + any _NCNN_EXTRA_SLOTS
-        not already present. out_shape is unused (ncnn allocates internally).
+        params as constexpr, so the call passes only Mat/Option pointers.
+        Tensor order is exactly `definition.inputs` (non-scalars only, in
+        declaration order) — no padding, no fixed slot count; however many
+        real tensors a definition declares is exactly how many get passed.
+        out_shape is unused (ncnn allocates internally).
         """
         fns = self.bind_lib(lib)
 
-        # Non-scalar inputs from definition, then append any extra slots
-        # expected by the ncnn conv ABI that aren't in the definition.
         tensor_names: List[str] = [
             n for n, s in definition.inputs.items() if s.shape is not None
         ]
-        for slot in _NCNN_EXTRA_SLOTS:
-            if slot not in tensor_names:
-                tensor_names.append(slot)
 
         created: List[ctypes.c_void_p] = []
 
-        # Pack input tensors (bottom, weight, bias, act_params)
+        # Pack input tensors: tensor_names[0] is the primary (feature map/
+        # activation) tensor, shaped by its own rank; the rest are flat 1D.
         tensor_ptrs: List[ctypes.c_void_p] = []
-        for tname in tensor_names:
+        for i, tname in enumerate(tensor_names):
             arr = np_inputs.get(tname)
             if arr is None:
-                # Allow missing tensors (e.g. no-bias case) → empty 1D Mat
+                # Allow a missing optional tensor (e.g. no-bias case) → empty 1D Mat
                 # NB: ncnn treats an empty Mat as "no bias" via bias_data.empty()
                 ptr = ctypes.c_void_p(fns.create_1d(0, ctypes.POINTER(ctypes.c_float)()))
             else:
-                ptr = _np_to_mat(fns, tname, arr)
+                ptr = _np_to_mat(fns, tname, arr, is_primary=(i == 0))
             tensor_ptrs.append(ptr)
             created.append(ptr)
 
@@ -229,19 +231,9 @@ class NcnnDataset:
         # Default Option
         opt_ptr = ctypes.c_void_p(fns.option_default())
 
-        # Assemble entry args. Order must match the C signature of
-        # armbench_entry_<op_type> (6 Mat/Option pointers).
-        base = (
-            tensor_ptrs[0],  # bottom
-            output_ptr,      # top (output, empty — harness allocates)
-            tensor_ptrs[1],  # weight
-            tensor_ptrs[2],  # bias
-            tensor_ptrs[3],  # activation_params
-            opt_ptr,
-        )
-        # Self-contained entry: scalars are baked constexpr in the solution's
-        # binding, so we pass only the 6 Mat/Option pointers.
-        entry_args = base
+        # Assemble entry args to match armbench_entry_<op_type>'s C signature:
+        # (primary, top, *rest, opt) — however many tensors the definition has.
+        entry_args = (tensor_ptrs[0], output_ptr) + tuple(tensor_ptrs[1:]) + (opt_ptr,)
 
         return NcnnContext(
             fns=fns,

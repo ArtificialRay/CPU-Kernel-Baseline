@@ -112,20 +112,63 @@ def _tf_output() -> dict:
 
 
 
-def _run_dataset_build(handle: InstanceHandle, dataset: str) -> None:
-    """Run dataset-specific build steps on the remote, as defined in dataset_builds.json."""
+def _dataset_config(dataset: str) -> dict | None:
+    """Load the dataset_builds.json entry for `dataset`, or None if it has no build steps."""
     if not DATASET_BUILDS_PATH.exists():
-        return
-    steps = json.load(DATASET_BUILDS_PATH.open()).get(dataset, [])
+        return None
+    return json.load(DATASET_BUILDS_PATH.open()).get(dataset)
+
+
+def _dataset_ready(handle: InstanceHandle, config: dict) -> bool:
+    """True if `config`'s ready_check command exits 0 on the remote."""
+    ready_check = config.get("ready_check")
+    if not ready_check:
+        return False
+    rc, _, _ = handle.run(ready_check, timeout=15)
+    return rc == 0
+
+
+def _run_dataset_build(handle: InstanceHandle, dataset: str, config: dict) -> bool:
+    """Run dataset build steps on the remote. Returns True iff every step succeeded."""
+    steps = config.get("steps", [])
     if not steps:
-        return
-    print(f"[provision] Building dataset '{dataset}' ({len(steps)} step(s))...")
+        return True
+    print(f"[provision] Building dataset {dataset!r} ({len(steps)} step(s))...")
+    ok = True
     for step in steps:
         label = step["label"]
         print(f"[provision]   {label}...")
         rc, _, err = handle.run(step["cmd"], timeout=step.get("timeout", 300))
         if rc != 0:
             print(f"[provision]   WARNING: {label} failed: {err[:200]}")
+            ok = False
+    return ok
+
+
+def ensure_dataset_ready(handle: InstanceHandle, dataset: str) -> None:
+    """Make sure `dataset`'s build artifacts are present on `handle`, building if needed.
+
+    Safe to call on an instance that was provisioned without this dataset (or without
+    any dataset at all) — it self-heals by building on demand. Raises RuntimeError if
+    the build steps fail (or the ready_check still fails afterward), so callers don't
+    silently proceed to run an agent against an instance missing what it needs.
+    """
+    if not dataset:
+        return
+    config = _dataset_config(dataset)
+    if not config:
+        return  # no build steps registered for this dataset (e.g. simd-loop)
+    if _dataset_ready(handle, config):
+        print(f"[provision] Dataset {dataset!r} already built on {handle.host}.")
+        return
+    print(f"[provision] Dataset {dataset!r} not ready on {handle.host}; building...")
+    built = _run_dataset_build(handle, dataset, config)
+    if not built or not _dataset_ready(handle, config):
+        raise RuntimeError(
+            f"Dataset {dataset!r} failed to build on {handle.host}. "
+            f"SSH in and check manually before running an eval."
+        )
+    print(f"[provision] Dataset {dataset!r} ready on {handle.host}.")
 
 
 def _install_deps(handle: InstanceHandle) -> None:
@@ -222,7 +265,7 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
 
     _install_deps(handle)
     if dataset:
-        _run_dataset_build(handle, dataset)
+        ensure_dataset_ready(handle, dataset)
 
     _save_config(handle)
     print(f"[provision] Done. SSH: ssh -i {key_file} ubuntu@{host}")
@@ -342,6 +385,9 @@ if __name__ == "__main__":
     parser.add_argument("--status", action="store_true", help="Show instance status")
     parser.add_argument("--initial-build", default="",
                         help="Run make <target> after provision (default: skip)")
+    parser.add_argument("--dataset", default="",
+                        help="Dataset to build after provisioning (e.g. ncnn). "
+                             "Default: skip — instance will lack that dataset's build artifacts.")
     args = parser.parse_args()
 
     if args.status:
@@ -350,5 +396,5 @@ if __name__ == "__main__":
         teardown()
     else:
         instance_type = args.instance or (ISA_INSTANCE_MAP.get(args.isa, "c7g.large") if args.isa else "c7g.large")
-        handle = provision(instance_type, args.initial_build)
+        handle = provision(instance_type, args.initial_build, dataset=args.dataset)
         print(f"\nInstance handle: {handle}")

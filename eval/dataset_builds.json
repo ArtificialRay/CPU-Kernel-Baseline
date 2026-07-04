@@ -1,36 +1,42 @@
 {
-  "ncnn": [
-    {
-      "label": "clone ncnn",
-      "cmd": "cd ~ && git clone https://github.com/Tencent/ncnn.git",
-      "timeout": 120
-    },
-    {
-      "label": "cmake configure ncnn",
-      "cmd": "cd ~/ncnn && CC=clang-18 CXX=clang++-18 cmake -B build -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF",
-      "timeout": 120
-    },
-    {
-      "label": "cmake build ncnn",
-      "cmd": "cd ~/ncnn && cmake --build build -j$(nproc) --target ncnn",
-      "timeout": 600
-    }
-  ],
-  "llama.cpp": [
-    {
-      "label": "clone llama.cpp",
-      "cmd": "cd ~ && rm -rf llama.cpp && git clone --depth=1 https://github.com/ggml-org/llama.cpp llama.cpp",
-      "timeout": 180
-    },
-    {
-      "label": "cmake configure llama.cpp (ggml, cpu-only)",
-      "cmd": "cd ~/llama.cpp && CC=clang-18 CXX=clang++-18 cmake -B build -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_ACCELERATE=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF",
-      "timeout": 240
-    },
-    {
-      "label": "cmake build ggml static libs",
-      "cmd": "cd ~/llama.cpp && cmake --build build -j$(nproc) --target ggml ggml-base ggml-cpu",
-      "timeout": 900
-    }
-  ]
+  "ncnn": {
+    "ready_check": "test -f ~/ncnn/build/src/libncnn.a",
+    "steps": [
+      {
+        "label": "clone ncnn",
+        "cmd": "cd ~ && git clone https://github.com/Tencent/ncnn.git",
+        "timeout": 120
+      },
+      {
+        "label": "cmake configure ncnn",
+        "cmd": "cd ~/ncnn && CC=clang-18 CXX=clang++-18 cmake -B build -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF",
+        "timeout": 120
+      },
+      {
+        "label": "cmake build ncnn",
+        "cmd": "cd ~/ncnn && cmake --build build -j$(nproc) --target ncnn",
+        "timeout": 600
+      }
+    ]
+  },
+  "llama.cpp": {
+    "ready_check": "test -f ~/llama.cpp/build/ggml/src/libggml.a",
+    "steps": [
+      {
+        "label": "clone llama.cpp",
+        "cmd": "cd ~ && rm -rf llama.cpp && git clone --depth=1 https://github.com/ggml-org/llama.cpp llama.cpp",
+        "timeout": 180
+      },
+      {
+        "label": "cmake configure llama.cpp (ggml, cpu-only)",
+        "cmd": "cd ~/llama.cpp && CC=clang-18 CXX=clang++-18 cmake -B build -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_ACCELERATE=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF",
+        "timeout": 240
+      },
+      {
+        "label": "cmake build ggml static libs",
+        "cmd": "cd ~/llama.cpp && cmake --build build -j$(nproc) --target ggml ggml-base ggml-cpu",
+        "timeout": 900
+      }
+    ]
+  }
 }

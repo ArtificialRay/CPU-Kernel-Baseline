@@ -36,6 +36,7 @@ from eval.provision import (
     get_running_instance,
     teardown,
     provision,
+    ensure_dataset_ready,
     ISA_INSTANCE_MAP,
     InstanceHandle,
 )
@@ -197,13 +198,23 @@ def main():
     isa = args.isa or "sve2"
     instance_type = ISA_INSTANCE_MAP.get(isa, "c8g.large")
 
-    if args.provision:
-        handle = provision(instance_type, dataset=args.dataset)
-    else:
-        handle = get_running_instance(isa)
-        if handle is None:
-            print(f"No running {instance_type} instance ({isa}). Provisioning...")
+    try:
+        if args.provision:
             handle = provision(instance_type, dataset=args.dataset)
+        else:
+            handle = get_running_instance(isa)
+            if handle is None:
+                print(f"No running {instance_type} instance ({isa}). Provisioning...")
+                handle = provision(instance_type, dataset=args.dataset)
+            else:
+                # Instance may have been provisioned standalone (e.g. via
+                # `python eval/provision.py` without --dataset) — don't silently
+                # launch the agent against an instance missing this dataset's
+                # build artifacts.
+                ensure_dataset_ready(handle, args.dataset)
+    except RuntimeError as e:
+        print(f"[ERROR] {e}")
+        return
 
     # ── Load TraceSet + filter definitions ────────────────────────────────
     ts = TraceSet.from_path(BENCH_TRACE)
@@ -211,7 +222,7 @@ def main():
     if args.problem:
         # Match by op_type within the selected dataset
         dataset_defs = _defs_for_dataset(ts, args.dataset)
-        problem_defs = [d for d in dataset_defs if d.op_type == args.problem]
+        problem_defs = [d for d in dataset_defs if d.op_type == args.problem or d.name.startswith(args.problem)]
         if not problem_defs:
             available = sorted({d.op_type for d in dataset_defs})
             print(f"No definitions matching {args.problem!r} in dataset {args.dataset!r}.")

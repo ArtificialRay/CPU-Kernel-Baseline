@@ -102,14 +102,17 @@ class RawDataset:
                 return ctypes.cast(None, _C_FLOAT_P)
             return a.ctypes.data_as(_C_FLOAT_P)
 
-        # Var dims come from the primary input's shape template
-        primary_arr = arrays[0]
-        primary_tmpl = tensor_specs[0][1].shape
-        var_dim_args = [
-            ctypes.c_int(primary_arr.shape[i])
-            for i, ax in enumerate(primary_tmpl)
-            if definition.axes[ax].type == "var"
-        ]
+        # Var dims: scan every tensor's shape template (not just primary), dedup
+        # by axis name so an axis seen in an earlier tensor isn't repeated.
+        seen_axes: set = set()
+        var_dim_args = []
+        for arr, (_, spec) in zip(arrays, tensor_specs):
+            if arr is None:
+                continue
+            for i, ax in enumerate(spec.shape):
+                if definition.axes[ax].type == "var" and ax not in seen_axes:
+                    seen_axes.add(ax)
+                    var_dim_args.append(ctypes.c_int(arr.shape[i]))
 
         entry_args: Tuple[Any, ...] = (
             _fptr(arrays[0]),
