@@ -152,7 +152,7 @@ def main():
 
     # Dataset selection
     parser.add_argument(
-        "--dataset", default="ncnn", choices=["ncnn", "simd-loop"],
+        "--dataset", default="ncnn", choices=["ncnn", "simd-loop", "llama.cpp"],
         help="Dataset to benchmark (default: ncnn)",
     )
 
