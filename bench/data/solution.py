@@ -35,6 +35,9 @@ class SupportedDatasets(str, Enum):
     """Calls the kernel with bare `float*` tensors; for non-framework solutions."""
     SIMD_LOOP = "simd-loop"
     """The loop_* SIMD baseline dataset. Uses SimdLoopBuilder + SimdLoopDataset."""
+    LLAMA_CPP = "llama.cpp"
+    """Calls the kernel via ggml tensors/graphs linked against llama.cpp's static
+    libs. Uses LlamaCppBuilder + LlamaCppDataset."""
     # Future: XNNPACK, EIGEN, ...
 
 

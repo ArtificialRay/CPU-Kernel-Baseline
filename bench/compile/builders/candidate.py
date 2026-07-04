@@ -24,8 +24,12 @@ class CandidateBuilder(Builder):
 
     def can_build(self, solution: Solution, is_baseline: bool) -> bool:
         from bench.data.solution import SupportedDatasets
-        # simd-loop solutions use SimdLoopBuilder regardless of is_baseline.
-        return not is_baseline and solution.dataset != SupportedDatasets.SIMD_LOOP
+        # simd-loop / llama.cpp solutions use their dataset builders regardless
+        # of is_baseline.
+        return not is_baseline and solution.dataset not in (
+            SupportedDatasets.SIMD_LOOP,
+            SupportedDatasets.LLAMA_CPP,
+        )
 
     def build(self, definition: Definition, solution: Solution) -> CompileResult:
         build_dir, sources_dir = self._make_build_dir(solution)
