@@ -8,7 +8,10 @@ dlopening the solution.so, the runner resolves both:
   - armbench_ncnn_mat_*       (from _mat_factory.cpp)
 …and ctypes-binds them. Every ncnn baseline ships a self-contained
 armbench_entry_<op_type> that bakes its scalar params as constexpr, so the entry
-takes only the 6 Mat/Option pointers — the runner declares that signature inline.
+takes only Mat/Option pointers — the runner declares that signature inline. The
+pointer count is N-ary, driven entirely by however many non-scalar tensors
+`definition.inputs` declares (plus the output and Option pointer) — there is no
+fixed slot count assumed anywhere in this module.
 """
 
 from __future__ import annotations
@@ -18,10 +21,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from bench.data.definition import Definition
-
-# Slots the ncnn conv-family entry always expects even when absent from the
-# definition (passed as empty 1D Mats). Ordered to match the harness ABI.
-_NCNN_EXTRA_SLOTS = ("bias", "activation_params")
 
 import numpy as np
 
@@ -35,16 +34,20 @@ class _MatFactoryFns:
     create_3d: Any
     create_2d: Any
     create_1d: Any
+    create_3d_i8: Any
+    create_1d_i8: Any
     create_empty: Any
     destroy: Any
     read_3d: Any
     read_2d: Any
     read_1d: Any
+    read_3d_i8: Any
     dims: Any
     w: Any
     h: Any
     c: Any
     empty: Any
+    elemsize: Any
     option_default: Any
     option_destroy: Any
 
@@ -59,6 +62,7 @@ class _MatFactoryFns:
             return f
 
         c_float_p = ctypes.POINTER(ctypes.c_float)
+        c_int8_p = ctypes.POINTER(ctypes.c_int8)
         return cls(
             create_3d=_bind("armbench_ncnn_mat_create_3d", ctypes.c_void_p,
                             [ctypes.c_int, ctypes.c_int, ctypes.c_int, c_float_p]),
@@ -66,6 +70,10 @@ class _MatFactoryFns:
                             [ctypes.c_int, ctypes.c_int, c_float_p]),
             create_1d=_bind("armbench_ncnn_mat_create_1d", ctypes.c_void_p,
                             [ctypes.c_int, c_float_p]),
+            create_3d_i8=_bind("armbench_ncnn_mat_create_3d_i8", ctypes.c_void_p,
+                               [ctypes.c_int, ctypes.c_int, ctypes.c_int, c_int8_p]),
+            create_1d_i8=_bind("armbench_ncnn_mat_create_1d_i8", ctypes.c_void_p,
+                               [ctypes.c_int, c_int8_p]),
             create_empty=_bind("armbench_ncnn_mat_create_empty", ctypes.c_void_p, []),
             destroy=_bind("armbench_ncnn_mat_destroy", None, [ctypes.c_void_p]),
             read_3d=_bind("armbench_ncnn_mat_read_3d", ctypes.c_int,
@@ -74,11 +82,14 @@ class _MatFactoryFns:
                           [ctypes.c_void_p, c_float_p]),
             read_1d=_bind("armbench_ncnn_mat_read_1d", ctypes.c_int,
                           [ctypes.c_void_p, c_float_p]),
+            read_3d_i8=_bind("armbench_ncnn_mat_read_3d_i8", ctypes.c_int,
+                             [ctypes.c_void_p, c_int8_p]),
             dims=_bind("armbench_ncnn_mat_dims", ctypes.c_int, [ctypes.c_void_p]),
             w=_bind("armbench_ncnn_mat_w", ctypes.c_int, [ctypes.c_void_p]),
             h=_bind("armbench_ncnn_mat_h", ctypes.c_int, [ctypes.c_void_p]),
             c=_bind("armbench_ncnn_mat_c", ctypes.c_int, [ctypes.c_void_p]),
             empty=_bind("armbench_ncnn_mat_empty", ctypes.c_int, [ctypes.c_void_p]),
+            elemsize=_bind("armbench_ncnn_mat_elemsize", ctypes.c_int, [ctypes.c_void_p]),
             option_default=_bind("armbench_ncnn_option_create_default",
                                  ctypes.c_void_p, []),
             option_destroy=_bind("armbench_ncnn_option_destroy", None,
@@ -88,19 +99,27 @@ class _MatFactoryFns:
 
 # ── Per-tensor packing logic ─────────────────────────────────────────────────
 
-def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray) -> ctypes.c_void_p:
-    """Construct an ncnn::Mat from a numpy array, choose 1D/2D/3D by tensor name+shape.
+def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray, *, is_primary: bool) -> ctypes.c_void_p:
+    """Construct an ncnn::Mat from a numpy array.
 
-    Naming convention used by inputs.py:
-      - 'input' / 'bottom_blob'  → 3D (collapse leading N into c if N=1)
-      - 'weight' / 'weight_data' → flat 1D
-      - 'bias' / 'bias_data'     → flat 1D
-      - 'activation_params'      → flat 1D (or empty Mat if size 0)
+    Rank dispatch is by *position*, not tensor name: the primary tensor (the
+    first non-scalar input in `definition.inputs` order — the actual feature
+    map/activation ncnn's layer consumes, e.g. conv2d's `input`, gemm's `A`,
+    lstm's `x`) is shaped by its own rank (3D/2D). Every other tensor (weight,
+    bias, gemm's `B`, lstm's `h0`/`c0`/`W_ih`/`W_hh`/`b`, ...) is passed flat
+    1D, matching how ncnn layers store `weight_data`/`bias_data` internally —
+    this holds even when that tensor is itself 2D in numpy (e.g. gemm's `B`),
+    since ncnn's layer reshapes the flat buffer internally.
+
+    Dtype dispatch is independent of rank dispatch: an int8 tensor (w8a8ch
+    quantized `input`/`weight`) gets the int8 Mat factories at elemsize=1u;
+    everything else (float32) gets the original float32 factories. Only int8
+    and float32 exist today — no other dtype is expected to reach this bridge.
     """
-    arr = np.ascontiguousarray(arr, dtype=np.float32)
-    flat_ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+    is_int8 = arr.dtype == np.int8
+    arr = np.ascontiguousarray(arr, dtype=(np.int8 if is_int8 else np.float32))
 
-    if name in ("input", "bottom_blob"):
+    if is_primary:
         if arr.ndim == 4:
             # (N, C, H, W) → require N=1 for now; multi-batch needs Phase 3
             n, c, h, w = arr.shape
@@ -108,33 +127,67 @@ def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray) -> ctypes.c_void
                 raise NotImplementedError(
                     f"Phase 1 ncnn binding supports N=1 only; got input shape {arr.shape}"
                 )
-            return ctypes.c_void_p(fns.create_3d(w, h, c, flat_ptr))
+            if is_int8:
+                ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
+                return ctypes.c_void_p(fns.create_3d_i8(w, h, c, ptr))
+            ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            return ctypes.c_void_p(fns.create_3d(w, h, c, ptr))
         elif arr.ndim == 3:
             c, h, w = arr.shape
-            return ctypes.c_void_p(fns.create_3d(w, h, c, flat_ptr))
+            if is_int8:
+                ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
+                return ctypes.c_void_p(fns.create_3d_i8(w, h, c, ptr))
+            ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            return ctypes.c_void_p(fns.create_3d(w, h, c, ptr))
         elif arr.ndim == 2:
+            if is_int8:
+                raise NotImplementedError("2D int8 primary tensors aren't needed by any current op")
             h, w = arr.shape
-            return ctypes.c_void_p(fns.create_2d(w, h, flat_ptr))
+            ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            return ctypes.c_void_p(fns.create_2d(w, h, ptr))
+        elif arr.ndim == 1:
+            if is_int8:
+                ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
+                return ctypes.c_void_p(fns.create_1d_i8(int(arr.size), ptr))
+            ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            return ctypes.c_void_p(fns.create_1d(int(arr.size), ptr))
         else:
-            raise ValueError(f"Input '{name}' has unsupported rank {arr.ndim}")
+            raise ValueError(f"Primary input '{name}' has unsupported rank {arr.ndim}")
     else:
-        # weight / bias / activation_params → flat 1D
-        return ctypes.c_void_p(fns.create_1d(int(arr.size), flat_ptr))
+        # weight / bias / any other secondary tensor → flat 1D
+        if is_int8:
+            ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
+            return ctypes.c_void_p(fns.create_1d_i8(int(arr.size), ptr))
+        ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        return ctypes.c_void_p(fns.create_1d(int(arr.size), ptr))
 
 
 def _mat_to_np(fns: _MatFactoryFns, mat_ptr: ctypes.c_void_p) -> np.ndarray:
-    """Read an ncnn::Mat back into a numpy array, choosing rank from Mat.dims."""
+    """Read an ncnn::Mat back into a numpy array, choosing rank from Mat.dims
+    and dtype from the Mat's actual elemsize (1 -> int8, 4 -> float32) — this
+    is what lets w8a8ch's int8 output be read back without the caller having
+    to know the definition's declared output dtype ahead of time.
+    """
     dims = fns.dims(mat_ptr)
     w = fns.w(mat_ptr)
     h = fns.h(mat_ptr)
     c = fns.c(mat_ptr)
+    is_int8 = fns.elemsize(mat_ptr) == 1
     if dims == 3:
-        out = np.empty((c, h, w), dtype=np.float32)
-        rc = fns.read_3d(mat_ptr, out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+        if is_int8:
+            out = np.empty((c, h, w), dtype=np.int8)
+            rc = fns.read_3d_i8(mat_ptr, out.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)))
+        else:
+            out = np.empty((c, h, w), dtype=np.float32)
+            rc = fns.read_3d(mat_ptr, out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
     elif dims == 2:
+        if is_int8:
+            raise NotImplementedError("2D int8 output isn't needed by any current op")
         out = np.empty((h, w), dtype=np.float32)
         rc = fns.read_2d(mat_ptr, out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
     elif dims == 1:
+        if is_int8:
+            raise NotImplementedError("1D int8 output isn't needed by any current op")
         out = np.empty((w,), dtype=np.float32)
         rc = fns.read_1d(mat_ptr, out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
     else:
@@ -192,33 +245,31 @@ class NcnnDataset:
         """Build the ctypes argument list for `armbench_entry_<op_type>`.
 
         Every ncnn baseline ships a self-contained entry that bakes its scalar
-        params as constexpr, so the call passes only the Mat/Option pointers.
-        Tensor order: definition.inputs (non-scalars) + any _NCNN_EXTRA_SLOTS
-        not already present. out_shape is unused (ncnn allocates internally).
+        params as constexpr, so the call passes only Mat/Option pointers.
+        Tensor order is exactly `definition.inputs` (non-scalars only, in
+        declaration order) — no padding, no fixed slot count; however many
+        real tensors a definition declares is exactly how many get passed.
+        out_shape is unused (ncnn allocates internally).
         """
         fns = self.bind_lib(lib)
 
-        # Non-scalar inputs from definition, then append any extra slots
-        # expected by the ncnn conv ABI that aren't in the definition.
         tensor_names: List[str] = [
             n for n, s in definition.inputs.items() if s.shape is not None
         ]
-        for slot in _NCNN_EXTRA_SLOTS:
-            if slot not in tensor_names:
-                tensor_names.append(slot)
 
         created: List[ctypes.c_void_p] = []
 
-        # Pack input tensors (bottom, weight, bias, act_params)
+        # Pack input tensors: tensor_names[0] is the primary (feature map/
+        # activation) tensor, shaped by its own rank; the rest are flat 1D.
         tensor_ptrs: List[ctypes.c_void_p] = []
-        for tname in tensor_names:
+        for i, tname in enumerate(tensor_names):
             arr = np_inputs.get(tname)
             if arr is None:
-                # Allow missing tensors (e.g. no-bias case) → empty 1D Mat
+                # Allow a missing optional tensor (e.g. no-bias case) → empty 1D Mat
                 # NB: ncnn treats an empty Mat as "no bias" via bias_data.empty()
                 ptr = ctypes.c_void_p(fns.create_1d(0, ctypes.POINTER(ctypes.c_float)()))
             else:
-                ptr = _np_to_mat(fns, tname, arr)
+                ptr = _np_to_mat(fns, tname, arr, is_primary=(i == 0))
             tensor_ptrs.append(ptr)
             created.append(ptr)
 
@@ -229,19 +280,9 @@ class NcnnDataset:
         # Default Option
         opt_ptr = ctypes.c_void_p(fns.option_default())
 
-        # Assemble entry args. Order must match the C signature of
-        # armbench_entry_<op_type> (6 Mat/Option pointers).
-        base = (
-            tensor_ptrs[0],  # bottom
-            output_ptr,      # top (output, empty — harness allocates)
-            tensor_ptrs[1],  # weight
-            tensor_ptrs[2],  # bias
-            tensor_ptrs[3],  # activation_params
-            opt_ptr,
-        )
-        # Self-contained entry: scalars are baked constexpr in the solution's
-        # binding, so we pass only the 6 Mat/Option pointers.
-        entry_args = base
+        # Assemble entry args to match armbench_entry_<op_type>'s C signature:
+        # (primary, top, *rest, opt) — however many tensors the definition has.
+        entry_args = (tensor_ptrs[0], output_ptr) + tuple(tensor_ptrs[1:]) + (opt_ptr,)
 
         return NcnnContext(
             fns=fns,
