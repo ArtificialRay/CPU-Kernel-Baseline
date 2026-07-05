@@ -361,10 +361,12 @@ def run_agentic_eval(
                         cs = perf.get("cycle_speedup_geomean")
                         mae = correctness.get("max_absolute_error")
                         mre = correctness.get("max_relative_error")
-                        perf_str = (
-                            f", time_speedup={ts:.3f}, cycle_speedup={cs:.3f}"
-                            if ts is not None else ""
-                        )
+                        _p = []
+                        if ts is not None:
+                            _p.append(f"time_speedup={ts:.3f}")
+                        if cs is not None:
+                            _p.append(f"cycle_speedup={cs:.3f}")
+                        perf_str = (", " + ", ".join(_p)) if _p else ""
                         correct_str = (
                             f", max_absolute_error={mae:.2e}, max_relative_error={mre:.2e}"
                             if mae is not None else ""

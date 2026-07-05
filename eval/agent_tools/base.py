@@ -302,10 +302,17 @@ class AgentTools(ABC):
                 "cache_misses_mean": perf.get("cache_misses_mean"),
             })
             cs = perf.get("cycle_speedup_geomean")
-            if cs is not None and self._last_compile is not None:
+            # Rank by cycle speedup when available (perf counters), else fall back
+            # to wall-time speedup — e.g. c7g cycle counters can be unavailable, so
+            # ranking only on cycle would never record a best and auto-submit would
+            # ship the last (not best) version.
+            rank = cs if cs is not None else perf.get("time_speedup_geomean")
+            if rank is not None and self._last_compile is not None:
                 if (self._best_compile is None
-                        or cs > (self._best_compile.get("cycle_speedup") or 0.0)):
-                    self._best_compile = {**self._last_compile, "cycle_speedup": cs}
+                        or rank > (self._best_compile.get("rank") or 0.0)):
+                    self._best_compile = {
+                        **self._last_compile, "cycle_speedup": cs, "rank": rank,
+                    }
         elif status == "PASSED":
             correctness = result.get("correctness", {})
             metrics.update({
