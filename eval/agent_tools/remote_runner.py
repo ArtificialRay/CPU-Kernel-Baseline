@@ -108,10 +108,19 @@ def cmd_evaluate(args: dict) -> dict:
 
     cfg = bench_cfg.resolve_eval_config(definition)
 
+    # Candidate ABI adapter is dataset-specific (mirrors runner._bind_kernel for the
+    # non-baseline case): simd-loop/llama.cpp have their own calling conventions;
+    # everything else (ncnn candidates) uses the raw float* ABI.
+    dataset = args.get("dataset", "raw")
+    adapter_name = {
+        "simd-loop": "simd-loop",
+        "llama.cpp": "llama.cpp",
+    }.get(dataset, "raw")
+
     try:
         lib = ctypes.CDLL(so_path)
         entry = _bind_entry(lib, definition.op_type)
-        adapter = get_dataset_adapter("raw")()
+        adapter = get_dataset_adapter(adapter_name)()
         kernel = BoundKernel(entry=entry, adapter=adapter, op_type=definition.op_type)
         ref_run = _compile_reference(definition)
     except Exception as e:

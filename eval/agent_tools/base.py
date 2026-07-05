@@ -286,6 +286,7 @@ class AgentTools(ABC):
             "so_path": lc["so_path"],
             "definition": self._definition.name,
             "solution_name": lc["solution"].name,
+            "dataset": self.dataset,
             "benchmark_config": dataclasses.asdict(bench_cfg),
         }, timeout=300)
 
@@ -415,6 +416,7 @@ class AgentTools(ABC):
             "so_path": so_path,
             "definition": self._definition.name,
             "solution_name": solution.name,
+            "dataset": self.dataset,
             "benchmark_config": dataclasses.asdict(bench_cfg),
         }, timeout=300)
 

@@ -439,12 +439,13 @@ def run_agentic_eval(
                 print(f"\n[Auto-submit] {reason} — submitting "
                       f"v{best_version['version']} (time_speedup={ts})...")
             try:
+                # submit() auto-selects its internally-tracked best (highest
+                # cycle_speedup) PASSED version — no source_version needed.
                 result = tools.submit(
                     explanation=(
                         f"[auto-submitted: v{best_version['version']} had best "
                         f"time_speedup={best_version.get('time_speedup', '?')}]"
                     ),
-                    source_version=best_version["version"],
                 )
                 if result.get("status") == "PASSED":
                     final_result = {
