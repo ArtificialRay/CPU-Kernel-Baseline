@@ -41,6 +41,7 @@ class EvalOverride:
     abs_tol: Optional[float] = None
     rel_tol: Optional[float] = None
     required_matched_ratio: Optional[float] = None
+    max_rel_outlier: Optional[float] = None
 
 
 # Large fp32 reductions (matmul / attention / MoE) legitimately diverge from a
@@ -49,10 +50,13 @@ class EvalOverride:
 # absolute. These op-type overrides make such baselines pass on correctness while
 # staying tight enough to catch a real bug. Keyed by Definition.op_type, so they
 # only apply to these ops (conv2d / loop_* / rms_norm keep the strict default).
+# max_rel_outlier=0.5 caps the loosened matched_ratio: the few elements allowed to
+# miss still can't be >50% off (catches overflow/garbage that the 0.98 ratio would
+# otherwise pass — e.g. numerically-degenerate q8_0 kernels).
 DEFAULT_OP_TYPE_CONFIG: Dict[str, "EvalOverride"] = {
-    "gemm": EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
-    "moe":  EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
-    "mha":  EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
+    "gemm": EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98, max_rel_outlier=0.5),
+    "moe":  EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98, max_rel_outlier=0.5),
+    "mha":  EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98, max_rel_outlier=0.5),
 }
 
 
@@ -70,6 +74,7 @@ class BenchmarkConfig:
     abs_tol: float = DEFAULT_CORRECTNESS_ABS_TOL
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
     required_matched_ratio: float = DEFAULT_REQUIRED_MATCHED_RATIO
+    max_rel_outlier: Optional[float] = None
     op_type_config: Dict[str, EvalOverride] = field(
         default_factory=lambda: dict(DEFAULT_OP_TYPE_CONFIG)
     )
@@ -88,6 +93,7 @@ class BenchmarkConfig:
         atol = self.abs_tol
         rtol = self.rel_tol
         ratio = self.required_matched_ratio
+        outlier = self.max_rel_outlier
         if definition is not None and self.op_type_config:
             op = self.op_type_config.get(definition.op_type)
             if op is not None:
@@ -97,10 +103,13 @@ class BenchmarkConfig:
                     rtol = op.rel_tol
                 if op.required_matched_ratio is not None:
                     ratio = op.required_matched_ratio
+                if op.max_rel_outlier is not None:
+                    outlier = op.max_rel_outlier
         return EvalConfig(
             abs_tol=atol,
             rel_tol=rtol,
             required_matched_ratio=ratio,
+            max_rel_outlier=outlier,
             warmup=self.warmup,
             repeat=self.repeat,
             inner_iters=self.inner_iters,
@@ -123,6 +132,7 @@ class EvalConfig:
     abs_tol: float = DEFAULT_CORRECTNESS_ABS_TOL
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
     required_matched_ratio: float = DEFAULT_REQUIRED_MATCHED_RATIO
+    max_rel_outlier: Optional[float] = None
     # timing
     warmup: int = DEFAULT_WARMUP
     repeat: int = DEFAULT_REPEAT

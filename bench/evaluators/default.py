@@ -93,6 +93,7 @@ class DefaultEvaluator(Evaluator):
             candidate_np, baseline.ref_np,
             abs_tol=cfg.abs_tol, rel_tol=cfg.rel_tol,
             required_matched_ratio=cfg.required_matched_ratio,
+            max_rel_outlier=cfg.max_rel_outlier,
         )
         if not c.passed:
             status = (
