@@ -34,16 +34,20 @@ class _MatFactoryFns:
     create_3d: Any
     create_2d: Any
     create_1d: Any
+    create_3d_i8: Any
+    create_1d_i8: Any
     create_empty: Any
     destroy: Any
     read_3d: Any
     read_2d: Any
     read_1d: Any
+    read_3d_i8: Any
     dims: Any
     w: Any
     h: Any
     c: Any
     empty: Any
+    elemsize: Any
     option_default: Any
     option_destroy: Any
 
@@ -58,6 +62,7 @@ class _MatFactoryFns:
             return f
 
         c_float_p = ctypes.POINTER(ctypes.c_float)
+        c_int8_p = ctypes.POINTER(ctypes.c_int8)
         return cls(
             create_3d=_bind("armbench_ncnn_mat_create_3d", ctypes.c_void_p,
                             [ctypes.c_int, ctypes.c_int, ctypes.c_int, c_float_p]),
@@ -65,6 +70,10 @@ class _MatFactoryFns:
                             [ctypes.c_int, ctypes.c_int, c_float_p]),
             create_1d=_bind("armbench_ncnn_mat_create_1d", ctypes.c_void_p,
                             [ctypes.c_int, c_float_p]),
+            create_3d_i8=_bind("armbench_ncnn_mat_create_3d_i8", ctypes.c_void_p,
+                               [ctypes.c_int, ctypes.c_int, ctypes.c_int, c_int8_p]),
+            create_1d_i8=_bind("armbench_ncnn_mat_create_1d_i8", ctypes.c_void_p,
+                               [ctypes.c_int, c_int8_p]),
             create_empty=_bind("armbench_ncnn_mat_create_empty", ctypes.c_void_p, []),
             destroy=_bind("armbench_ncnn_mat_destroy", None, [ctypes.c_void_p]),
             read_3d=_bind("armbench_ncnn_mat_read_3d", ctypes.c_int,
@@ -73,11 +82,14 @@ class _MatFactoryFns:
                           [ctypes.c_void_p, c_float_p]),
             read_1d=_bind("armbench_ncnn_mat_read_1d", ctypes.c_int,
                           [ctypes.c_void_p, c_float_p]),
+            read_3d_i8=_bind("armbench_ncnn_mat_read_3d_i8", ctypes.c_int,
+                             [ctypes.c_void_p, c_int8_p]),
             dims=_bind("armbench_ncnn_mat_dims", ctypes.c_int, [ctypes.c_void_p]),
             w=_bind("armbench_ncnn_mat_w", ctypes.c_int, [ctypes.c_void_p]),
             h=_bind("armbench_ncnn_mat_h", ctypes.c_int, [ctypes.c_void_p]),
             c=_bind("armbench_ncnn_mat_c", ctypes.c_int, [ctypes.c_void_p]),
             empty=_bind("armbench_ncnn_mat_empty", ctypes.c_int, [ctypes.c_void_p]),
+            elemsize=_bind("armbench_ncnn_mat_elemsize", ctypes.c_int, [ctypes.c_void_p]),
             option_default=_bind("armbench_ncnn_option_create_default",
                                  ctypes.c_void_p, []),
             option_destroy=_bind("armbench_ncnn_option_destroy", None,
@@ -90,17 +102,22 @@ class _MatFactoryFns:
 def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray, *, is_primary: bool) -> ctypes.c_void_p:
     """Construct an ncnn::Mat from a numpy array.
 
-    Dispatch is by *position*, not tensor name: the primary tensor (the first
-    non-scalar input in `definition.inputs` order — the actual feature map/
-    activation ncnn's layer consumes, e.g. conv2d's `input`, gemm's `A`,
+    Rank dispatch is by *position*, not tensor name: the primary tensor (the
+    first non-scalar input in `definition.inputs` order — the actual feature
+    map/activation ncnn's layer consumes, e.g. conv2d's `input`, gemm's `A`,
     lstm's `x`) is shaped by its own rank (3D/2D). Every other tensor (weight,
     bias, gemm's `B`, lstm's `h0`/`c0`/`W_ih`/`W_hh`/`b`, ...) is passed flat
     1D, matching how ncnn layers store `weight_data`/`bias_data` internally —
     this holds even when that tensor is itself 2D in numpy (e.g. gemm's `B`),
     since ncnn's layer reshapes the flat buffer internally.
+
+    Dtype dispatch is independent of rank dispatch: an int8 tensor (w8a8ch
+    quantized `input`/`weight`) gets the int8 Mat factories at elemsize=1u;
+    everything else (float32) gets the original float32 factories. Only int8
+    and float32 exist today — no other dtype is expected to reach this bridge.
     """
-    arr = np.ascontiguousarray(arr, dtype=np.float32)
-    flat_ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+    is_int8 = arr.dtype == np.int8
+    arr = np.ascontiguousarray(arr, dtype=(np.int8 if is_int8 else np.float32))
 
     if is_primary:
         if arr.ndim == 4:
@@ -110,35 +127,67 @@ def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray, *, is_primary: b
                 raise NotImplementedError(
                     f"Phase 1 ncnn binding supports N=1 only; got input shape {arr.shape}"
                 )
-            return ctypes.c_void_p(fns.create_3d(w, h, c, flat_ptr))
+            if is_int8:
+                ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
+                return ctypes.c_void_p(fns.create_3d_i8(w, h, c, ptr))
+            ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            return ctypes.c_void_p(fns.create_3d(w, h, c, ptr))
         elif arr.ndim == 3:
             c, h, w = arr.shape
-            return ctypes.c_void_p(fns.create_3d(w, h, c, flat_ptr))
+            if is_int8:
+                ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
+                return ctypes.c_void_p(fns.create_3d_i8(w, h, c, ptr))
+            ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            return ctypes.c_void_p(fns.create_3d(w, h, c, ptr))
         elif arr.ndim == 2:
+            if is_int8:
+                raise NotImplementedError("2D int8 primary tensors aren't needed by any current op")
             h, w = arr.shape
-            return ctypes.c_void_p(fns.create_2d(w, h, flat_ptr))
+            ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            return ctypes.c_void_p(fns.create_2d(w, h, ptr))
         elif arr.ndim == 1:
-            return ctypes.c_void_p(fns.create_1d(int(arr.size), flat_ptr))
+            if is_int8:
+                ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
+                return ctypes.c_void_p(fns.create_1d_i8(int(arr.size), ptr))
+            ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            return ctypes.c_void_p(fns.create_1d(int(arr.size), ptr))
         else:
             raise ValueError(f"Primary input '{name}' has unsupported rank {arr.ndim}")
     else:
         # weight / bias / any other secondary tensor → flat 1D
-        return ctypes.c_void_p(fns.create_1d(int(arr.size), flat_ptr))
+        if is_int8:
+            ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
+            return ctypes.c_void_p(fns.create_1d_i8(int(arr.size), ptr))
+        ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        return ctypes.c_void_p(fns.create_1d(int(arr.size), ptr))
 
 
 def _mat_to_np(fns: _MatFactoryFns, mat_ptr: ctypes.c_void_p) -> np.ndarray:
-    """Read an ncnn::Mat back into a numpy array, choosing rank from Mat.dims."""
+    """Read an ncnn::Mat back into a numpy array, choosing rank from Mat.dims
+    and dtype from the Mat's actual elemsize (1 -> int8, 4 -> float32) — this
+    is what lets w8a8ch's int8 output be read back without the caller having
+    to know the definition's declared output dtype ahead of time.
+    """
     dims = fns.dims(mat_ptr)
     w = fns.w(mat_ptr)
     h = fns.h(mat_ptr)
     c = fns.c(mat_ptr)
+    is_int8 = fns.elemsize(mat_ptr) == 1
     if dims == 3:
-        out = np.empty((c, h, w), dtype=np.float32)
-        rc = fns.read_3d(mat_ptr, out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+        if is_int8:
+            out = np.empty((c, h, w), dtype=np.int8)
+            rc = fns.read_3d_i8(mat_ptr, out.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)))
+        else:
+            out = np.empty((c, h, w), dtype=np.float32)
+            rc = fns.read_3d(mat_ptr, out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
     elif dims == 2:
+        if is_int8:
+            raise NotImplementedError("2D int8 output isn't needed by any current op")
         out = np.empty((h, w), dtype=np.float32)
         rc = fns.read_2d(mat_ptr, out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
     elif dims == 1:
+        if is_int8:
+            raise NotImplementedError("1D int8 output isn't needed by any current op")
         out = np.empty((w,), dtype=np.float32)
         rc = fns.read_1d(mat_ptr, out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
     else:

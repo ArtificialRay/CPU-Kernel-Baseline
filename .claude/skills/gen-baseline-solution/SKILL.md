@@ -44,6 +44,7 @@ Valid invocations look like:
 Generate baseline-ncnn-arm solutions for conv2d, conv2d_depthwise, gemm, pooling, lstm
 Regenerate conv2d baselines after the definitions were updated
 Add baseline solutions for the new gemm op type
+Add w8a8ch (int8) baseline solutions for conv2d
 ```
 
 ---
@@ -117,7 +118,9 @@ then calls the op's contract function (declared in `{op_type}.h`, implemented in
 
 ## Workflow: regenerate existing op type
 
-If the op type is already registered in `op_config.json` and templates already exist:
+No config file to register anything in — everything is derived straight from the
+definition (see "How ctx is built" below) and matched against whatever `.tmpl` files
+exist under `--template-dir`. If templates for this op_type already exist:
 
 ```bash
 # All --tag-matching definitions for one op type (default --tag is baseline-solution:ncnn)
@@ -131,11 +134,17 @@ for op in conv2d conv2d_depthwise gemm pooling lstm; do
     python -m scripts.gen_baseline_solution --op-type $op
 done
 
-# A different backend supplies its own identity explicitly (no script/table change):
+# A quantized variant (needs {op_type}_<suffix>.*.tmpl to exist — e.g. w8a8ch for ncnn):
+python -m scripts.gen_baseline_solution --op-type conv2d --variant-quant-suffix w8a8ch
+
+# A different backend supplies its own identity explicitly — this is the one script for
+# every backend, not a table or a parallel script (llama.cpp's own templates don't exist
+# in this repo yet, so this exact invocation isn't runnable today, but this is the shape
+# it'll take once they do):
 python -m scripts.gen_baseline_solution --op-type gemm \
-    --tag baseline-solution:llama.cpp --author baseline-llama-cpp-arm \
-    --template-dir scripts/llama_cpp_binding_templates --dataset llama_cpp \
-    --compile-flags -O3 -std=c++17 --link-flags -lggml
+    --tag baseline-solution:llama.cpp --author baseline-llamacpp-arm \
+    --template-dir scripts/llamacpp_binding_templates --dataset llama.cpp \
+    --variant-quant-suffix q8_0 --compile-flags -O3 -std=c++17 --link-flags
 
 # Sync to Graviton (bench-trace/ is gitignored — must rsync manually)
 rsync -az --delete \
@@ -146,27 +155,50 @@ rsync -az --delete \
 ssh ubuntu@<host> "cd arm-bench && python3 -m bench.cli collect-baselines --baseline-author baseline-ncnn-arm 2>&1"
 ```
 
-A definition is silently **skipped** (not an error) if it doesn't carry `--tag`, if any input
-dtype isn't `float32` (quantized baselines aren't supported yet), or if it's missing an axis
-this op_type's `const_axes` expects (e.g. global-average-pooling defs have no `Kh`/`Kw` at
-all — they need a different kernel shape, not this op_type's template).
+**How ctx (the `{{placeholder}}` values) is built** — no config, always the same two rules:
+- every `"type": "const"` axis in the definition, keyed by its own axis name (a `"var"` axis,
+  e.g. `C_out` for conv2d, `M` for gemm, `T` for lstm, must never be baked — derive it at
+  runtime in binding.cpp from a Mat's shape instead, see the ABI section below);
+- every scalar (`"shape": null`) **input** (e.g. a quantization scale like `input_scale`),
+  read from `bench-trace/workloads/<op_type>/<def_name>.jsonl` — every workload for that
+  definition must agree on the value, since it's baked as a constexpr; if it doesn't, the
+  definition is skipped with a clear error rather than baking the wrong value.
+
+**Which template gets used** (no config; `--op-type`/`--variant-*-suffix` only):
+- all-float32 definition → `{op_type}_{--variant-fp32-suffix}.*.tmpl` (default suffix
+  `fp32`), **falling back to the unsuffixed `{op_type}.*.tmpl`** if that specific file
+  doesn't exist (today's conv2d/conv2d_depthwise/gemm/pooling/lstm templates are all
+  unsuffixed — no rename needed);
+- any non-float32 input → `{op_type}_{--variant-quant-suffix}.*.tmpl`; **omit
+  `--variant-quant-suffix` and the definition is just skipped**, same as before
+  quantization support existed;
+- a definition whose *axes* don't match its op_type's usual shape at all (not a dtype
+  question — e.g. pooling's global-average-pooling definition has no `Kh`/`Kw`/stride/pad
+  whatsoever) needs neither of the above: pass `--template-prefix <exact-prefix>` together
+  with `--definition <def_name>` to bypass variant detection entirely and pick a specific
+  template set by name, e.g.:
+  ```bash
+  python -m scripts.gen_baseline_solution --op-type pooling \
+      --definition pooling_fp32_global_avg --template-prefix pooling_global_avg
+  ```
+  ctx-building (const axes + scalar inputs) is unaffected by this override — it always
+  just reflects whatever the definition actually has.
+
+A rendered template with any `{{...}}` left unsubstituted is treated as **the wrong
+template for this definition** and the definition is skipped with an error naming the
+leftover placeholders — this is what catches "used the plain-pooling template on the
+global-avg definition" (or similar) instead of silently shipping uncompilable C++.
 
 ---
 
 ## Workflow: add a new op type
 
-### Step 1: Register const_axes in op_config.json
+### Step 1: There is no registration step
 
-Add an entry to `scripts/candidate_binding_templates/op_config.json`:
-```json
-"pooling": {
-  "const_axes": { "Kh": "Kh", "Kw": "Kw", "Sh": "Sh", "Sw": "Sw", "pad_top": "pad_top", "pad_left": "pad_left" },
-  "defs_family": "pooling"
-}
-```
-Only include axes that are actually `"type": "const"` in the definition — a `"var"` axis
-(e.g. `C_out` for conv2d, `M` for gemm, `T` for lstm) must never be baked; derive it at
-runtime in binding.cpp from a Mat's shape instead (see the ABI section above).
+Just write the 3 template files (Step 3 below) named for the op_type — nothing to add to
+a config file. The generator discovers definitions by globbing
+`bench-trace/definitions/<op_type>/*.json` directly (no indirection — the directory name
+*is* `<op_type>`) and derives every `{{placeholder}}` from the definition itself.
 
 ---
 
@@ -195,19 +227,44 @@ Common settings across all of these:
 - `create_pipeline(opt)` before `forward(...)` — required for every layer even when it looks
   like a no-op (e.g. `Pooling_arm`'s is a no-op for non-adaptive pooling, but still call it)
 
+**int8 (`w8a8ch`) quantized variants** — set `weight`/`input` as genuine int8 Mats
+(`elemsize=1u`, via `bench/datasets/ncnn.py`'s dtype-aware dispatch — no manual quantize
+step needed, `forward_int8_arm` skips its own when `bottom_blob.elembits()==8` already) and
+`int8_scale_term` nonzero. ncnn's scale fields are the reciprocal of what these bench
+definitions store (`weight_scales`/`input_scale` are *dequant* multipliers, `real =
+int8*scale`; ncnn's `weight_data_int8_scales`/`bottom_blob_int8_scales` are *quant*
+multipliers, `int8 = round(float*scale)`) — invert them or the output is silently wrong,
+not a crash. Whether the layer gives you a genuine int8 output for free differs by class:
+- `Convolution_arm`/`ConvolutionDepthWise_arm`: yes — `int8_scale_term > 100` requantizes
+  the int32 accumulator straight to int8 internally (`Requantize`, clamped `[-127,127]`).
+  `ConvolutionDepthWise_arm` is stricter about the exact value: only `{1,101}` loads a
+  **per-channel** weight scale (what per-output-channel `weight_scales` needs); `{2,102}`
+  loads a single scalar broadcast to every channel instead — get this wrong and it's a
+  silent wrong-answer, not a crash.
+- `InnerProduct_arm` (gemm): **no** — its int8 path only quantizes the *input*; it always
+  dequantizes the accumulator back to float32, never calls `Requantize`. You must
+  round+clip+cast to int8 by hand in kernel.cpp after `forward()` returns. (`Gemm_arm` was
+  checked too, as a possibly-better fit for two-dynamic-tensor int8 matmul — it has the
+  same gap, worse: it doesn't even accept externally-supplied quantization scales for
+  non-constant operands, always recomputing its own via internal absmax. Don't switch to it.)
+
 ---
 
 ### Step 3: Write the 3 template files
 
-Location: `scripts/baseline_binding_templates/<op_type>.{ncnn_contract.h,binding.cpp,ncnn_kernel.cpp}.tmpl`.
-Use `scripts/baseline_binding_templates/gemm.*.tmpl` or `pooling.*.tmpl` as the reference
+Location: `scripts/baseline_binding_templates/<prefix>.{ncnn_contract.h,binding.cpp,ncnn_kernel.cpp}.tmpl`,
+where `<prefix>` is `<op_type>` (fp32, unsuffixed — today's convention) or
+`<op_type>_<suffix>` for a named variant (e.g. `conv2d_w8a8ch`, `pooling_global_avg`) — see
+the variant-selection rules in "Workflow: regenerate existing op type" above. Use
+`scripts/baseline_binding_templates/gemm.*.tmpl` or `pooling.*.tmpl` as the reference
 pattern (both self-contained, void*-Mat-ABI, runtime-derived var dims) rather than any
 older `inner_<op_type>(float* ...)`-style code — that raw-pointer style predates the current
 Mat-ABI bridge and no longer matches what `bench/datasets/ncnn.py` actually sends.
 
-`{{placeholder}}` substitution works the same as the harness templates:
-`gen_baseline_solution.py` fills each `{{key}}` from `op_config.json`'s `const_axes` (or
-`name_extract_axes`, if the definition encodes a param only in its name).
+`{{placeholder}}` substitution works the same as the harness templates: `gen_baseline_solution.py`
+fills each `{{key}}` automatically from the definition's own const axes and scalar inputs
+(see above) — no config file involved. A placeholder left unresolved after rendering means
+this definition doesn't actually match the template being used.
 
 **`ncnn::Mat` copying rules** (defensive, matches `bench/datasets/_ncnn_lib/_mat_factory.cpp`):
 - Never bulk-`memcpy` a whole multi-row/channel Mat in one call — rows/channels can have
@@ -247,14 +304,22 @@ ssh ubuntu@<host> "cd arm-bench && python3 -m bench.cli collect-baselines --base
 
 | File type                              | Directory                                | Script that reads it            |
 |-----------------------------------------|-------------------------------------------|----------------------------------|
-| `op_config.json`                        | `scripts/candidate_binding_templates/`    | both gen scripts                 |
 | `<op_type>.{h,cpp,kernel.cpp}.tmpl`     | `scripts/candidate_binding_templates/`    | gen_candidate_solution only      |
-| `<op_type>.ncnn_contract.h.tmpl`        | `--template-dir` (default `scripts/baseline_binding_templates/`) | gen_baseline_solution only |
-| `<op_type>.binding.cpp.tmpl`            | `--template-dir`                          | gen_baseline_solution only      |
-| `<op_type>.ncnn_kernel.cpp.tmpl`        | `--template-dir`                          | gen_baseline_solution only      |
+| `<prefix>.ncnn_contract.h.tmpl`         | `--template-dir` (default `scripts/baseline_binding_templates/`) | gen_baseline_solution |
+| `<prefix>.binding.cpp.tmpl`             | `--template-dir`                          | gen_baseline_solution           |
+| `<prefix>.ncnn_kernel.cpp.tmpl`         | `--template-dir`                          | gen_baseline_solution           |
 
-A different backend points `--template-dir` at its own directory with the same 3-file naming
-convention — it doesn't share `scripts/baseline_binding_templates/` with ncnn.
+(`<prefix>` = `<op_type>` or `<op_type>_<variant-suffix>` — see variant-selection rules
+above.) A different backend points `--template-dir` at its own directory with the same
+3-file naming convention — it doesn't share `scripts/baseline_binding_templates/` with
+ncnn. There is exactly one generator script (`scripts/gen_baseline_solution.py`) for every
+backend — no `gen_llamacpp_baseline_solution.py` or similar; backend identity is always a
+CLI parameter, never a second script.
+
+Note: `scripts/*_binding_templates/` directories are gitignored (`*_binding_templates/` in
+`.gitignore`) — template files you write here won't show up in `git status`/`git add` and
+aren't part of the repo's git history. That's intentional (mirrors `bench-trace/` also
+being gitignored), not a bug — don't try to force-add them.
 
 ---
 
@@ -270,6 +335,8 @@ convention — it doesn't share `scripts/baseline_binding_templates/` with ncnn.
 | Output tensor mismatched (wrong values) | Bulk-`memcpy`ing a whole Mat instead of row/channel-by-row/channel | Always iterate rows (`.row(i)`) or channels (`.channel(c)`) to skip `cstep` alignment padding |
 | lstm output numerically wrong but same shape | PyTorch `I,F,G,O` gate order used as-is instead of permuting to ncnn's `I,F,O,G` | Swap chunks 2 and 3 when building `weight_xc_data`/`weight_hc_data`/`bias_c_data` |
 | `create_pipeline` returns non-zero | Wrong layer params (e.g. kernel_w > W+2*pad), or an unset field read as garbage | Print the error; check every field was explicitly set (see Step 2) and pad/stride/kernel against the workload shape |
-| `FileNotFoundError: Baseline kernel template not found` | Missing one of the 3 `.tmpl` files | Write it to `--template-dir` (default `scripts/baseline_binding_templates/`) |
+| `FileNotFoundError: Baseline template not found` | Missing one of the 3 `.tmpl` files for the resolved prefix | Write it to `--template-dir` (default `scripts/baseline_binding_templates/`) |
 | `_SkipDefinition` for every definition in a dir | Wrong `--tag`, or the dir mixes multiple backends' definitions (e.g. `gemm/` has both `ncnn`- and `llama.cpp`-tagged defs) | Check the definition's `tags` list; pass the matching `--tag` |
+| `_SkipDefinition: has non-float32 input(s) and no --variant-quant-suffix given` | Definition is a quantized variant (e.g. `w8a8ch`) but no quant templates/flag were given | Pass `--variant-quant-suffix <suffix>` once `{op_type}_<suffix>.*.tmpl` exist, or leave it skipped if not ready yet |
+| `_SkipDefinition: ... has unresolved placeholder(s) [...]` | The resolved template prefix doesn't actually match this definition's axes (e.g. plain `pooling`'s template used on a global-avg-pool definition with no `Kh`/`Kw`) | Use `--template-prefix <exact-prefix> --definition <def_name>` to point this one definition at the right template set |
 | `author='baseline-ncnn-arm'` but file under `reference-scalar/` | Path/content drift — TraceSet raises `ValueError` at load time | Ensure `--author`/`--dataset` match the output dir the script actually wrote to |

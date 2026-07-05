@@ -10,7 +10,7 @@ PYTHON=/home/rthu/miniconda3/bin/python
 DATASET=ncnn
 ISA=sve
 MODEL=openrouter/anthropic/claude-sonnet-4-6
-PROBLEMS=(gemm_fp32_n29_k800 gemm_fp32_n1000_k1280 gemm_fp32_n1000_k2048 gemm_fp32_n1280_k960 pooling)
+PROBLEMS=(pooling_fp32_global_avg)
 
 for problem in "${PROBLEMS[@]}"; do
     echo "=== ${problem} ==="

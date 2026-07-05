@@ -4,12 +4,15 @@
 // the solution.so build, so Python (via ctypes) and the armbench_entry_*
 // shim (C++) operate on the same ncnn::Mat ABI — no cross-.so vtable risk.
 //
-// Layout convention: 3D Mat is (c, h, w). 1D Mat is (w,). All float32.
-// Data is copied IN from numpy at create time and copied OUT at read time;
-// ctypes never has to know about ncnn::Mat's internal cstep/padding layout.
+// Layout convention: 3D Mat is (c, h, w). 1D Mat is (w,). Float32 by default;
+// the _i8 variants below are the same layouts at elemsize=1u (int8), used for
+// quantized (w8a8ch) baselines. Data is copied IN from numpy at create time
+// and copied OUT at read time; ctypes never has to know about ncnn::Mat's
+// internal cstep/padding layout.
 
 #include "mat.h"
 #include "option.h"
+#include <cstdint>
 #include <cstring>
 #include <cstdlib>
 
@@ -61,6 +64,36 @@ void* armbench_ncnn_mat_create_1d(int w, const float* data)
     return m;
 }
 
+// ── int8 (quantized) Mat construction ────────────────────────────────────
+// Same layouts as the float32 factories above, at elemsize=1u.
+
+// Create a 3D int8 Mat (c, h, w) and copy `data` (c*h*w int8, C-major) into it.
+void* armbench_ncnn_mat_create_3d_i8(int w, int h, int c, const int8_t* data)
+{
+    auto* m = new ncnn::Mat();
+    m->create(w, h, c, (size_t)1u, (ncnn::Allocator*)0);
+    if (m->empty()) { delete m; return nullptr; }
+    for (int cc = 0; cc < c; ++cc) {
+        for (int hh = 0; hh < h; ++hh) {
+            signed char* dst = (signed char*)m->channel(cc).row(hh);
+            const int8_t* src = data + cc * h * w + hh * w;
+            std::memcpy(dst, src, w * sizeof(int8_t));
+        }
+    }
+    return m;
+}
+
+// Create a flat 1D int8 Mat (w,) — used for int8 weights.
+void* armbench_ncnn_mat_create_1d_i8(int w, const int8_t* data)
+{
+    auto* m = new ncnn::Mat();
+    if (w <= 0) return m;
+    m->create(w, (size_t)1u, (ncnn::Allocator*)0);
+    if (m->empty()) { delete m; return nullptr; }
+    std::memcpy((signed char*)m->data, data, w * sizeof(int8_t));
+    return m;
+}
+
 // Create an empty Mat (no allocation). Used for output blob — the harness's
 // armbench_entry_conv2d calls .create() on it once output dims are known.
 void* armbench_ncnn_mat_create_empty()
@@ -89,6 +122,11 @@ int armbench_ncnn_mat_c(void* m_v)
 
 int armbench_ncnn_mat_empty(void* m_v)
 { return reinterpret_cast<ncnn::Mat*>(m_v)->empty() ? 1 : 0; }
+
+// Element size in bytes (1 = int8, 4 = float32) — read back to tell which
+// read_* variant to call, instead of assuming float32.
+int armbench_ncnn_mat_elemsize(void* m_v)
+{ return (int)reinterpret_cast<ncnn::Mat*>(m_v)->elemsize; }
 
 // Read a 3D Mat (c, h, w) into a flat C-major float32 buffer (caller-allocated,
 // size c*h*w). Returns 0 on success, -1 on shape mismatch.
@@ -120,6 +158,21 @@ int armbench_ncnn_mat_read_1d(void* m_v, float* out)
     const auto& m = *reinterpret_cast<ncnn::Mat*>(m_v);
     if (m.empty() || m.dims != 1) return -1;
     std::memcpy(out, (const float*)m.data, m.w * sizeof(float));
+    return 0;
+}
+
+// Read a 3D int8 Mat (c, h, w) into a flat C-major int8 buffer. Returns 0 on
+// success, -1 on shape mismatch.
+int armbench_ncnn_mat_read_3d_i8(void* m_v, int8_t* out)
+{
+    const auto& m = *reinterpret_cast<ncnn::Mat*>(m_v);
+    if (m.empty() || m.dims != 3) return -1;
+    for (int cc = 0; cc < m.c; ++cc) {
+        for (int hh = 0; hh < m.h; ++hh) {
+            const signed char* src = (const signed char*)m.channel(cc).row(hh);
+            std::memcpy(out + cc * m.h * m.w + hh * m.w, src, m.w * sizeof(int8_t));
+        }
+    }
     return 0;
 }
 
