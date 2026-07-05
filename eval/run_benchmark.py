@@ -190,6 +190,10 @@ def main():
                         help="Save full version_history to traces/ alongside results")
     parser.add_argument("--skip-baselines", action="store_true",
                         help="Skip lazy baseline collection (use if baselines are already present)")
+    parser.add_argument("--baseline-author", default=None,
+                        help="Override the baseline solution author to compare speedup against "
+                             "(default: per-dataset, e.g. baseline-llamacpp-arm for llama.cpp; "
+                             "pass reference-scalar to benchmark against the naive scalar baseline)")
 
     args = parser.parse_args()
 
@@ -225,7 +229,7 @@ def main():
           f"(dataset: {args.dataset}, model: {args.model}, instance: {instance_type})")
 
     # ── Lazy baseline collection ──────────────────────────────────────────
-    baseline_author = _DATASET_BASELINE_AUTHOR.get(args.dataset, "reference-scalar")
+    baseline_author = args.baseline_author or _DATASET_BASELINE_AUTHOR.get(args.dataset, "reference-scalar")
     if not args.skip_baselines:
         _ensure_baselines(handle, problem_defs, baseline_author, verbose=not args.quiet)
 
