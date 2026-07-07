@@ -232,10 +232,10 @@ def run_agentic_eval(
     schemas = [{"type": "function", "function": s} for s in ToolsCls.tool_schemas()]
 
     baseline_author = bench_cfg.baseline_author if bench_cfg else "reference-scalar"
-
+    ref_author = "reference-scalar" if dataset == "ncnn" or "llama.cpp" else baseline_author # TODO: use reference-scalar solution for all other dataset, simd-loop has no reference-scalar currently
     # Starter code shown to the agent = the baseline solution for this dataset
     # (author varies: reference-scalar/reference/baseline-llamacpp-arm).
-    ref_solution = trace_set.get_baseline_solution(definition.name, baseline_author)
+    ref_solution = trace_set.get_baseline_solution(definition.name, ref_author)
 
     family = handle.instance_type.split(".")[0] if handle.instance_type else ""
     isa_desc = _AGENT_ISA_LABELS.get(family, handle.instance_type or "AArch64")

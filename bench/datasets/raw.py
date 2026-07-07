@@ -15,9 +15,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from bench.data.definition import Definition
+from bench.data.definition import DType, Definition
 
 _C_FLOAT_P = ctypes.POINTER(ctypes.c_float)
+_C_INT8_P = ctypes.POINTER(ctypes.c_int8)
+
+# Per-tensor (numpy dtype, ctypes pointer type) for each DType this ABI supports.
+# Output is always float32 (every current Definition declares float32 outputs).
+_DTYPE_TO_NP_AND_PTR: Dict[DType, Tuple[Any, Any]] = {
+    DType.FLOAT32: (np.float32, _C_FLOAT_P),
+    DType.INT8: (np.int8, _C_INT8_P),
+}
 
 
 @dataclass
@@ -89,18 +97,26 @@ class RawDataset:
         # Tensor inputs in definition order; scalars (shape is None) are skipped
         tensor_specs = [(n, s) for n, s in definition.inputs.items() if s.shape is not None]
 
-        arrays: List[Optional[np.ndarray]] = [
-            np.ascontiguousarray(np_inputs[n], dtype=np.float32)
-            if np_inputs.get(n) is not None else None
-            for n, _ in tensor_specs
-        ]
+        arrays: List[Optional[np.ndarray]] = []
+        ptr_types: List[Any] = []
+        for n, spec in tensor_specs:
+            if spec.dtype not in _DTYPE_TO_NP_AND_PTR:
+                raise NotImplementedError(
+                    f"RawDataset: tensor '{n}' has dtype {spec.dtype!r}, which the raw "
+                    f"candidate ABI doesn't support yet (supported: "
+                    f"{[d.value for d in _DTYPE_TO_NP_AND_PTR]})"
+                )
+            np_dtype, ptr_type = _DTYPE_TO_NP_AND_PTR[spec.dtype]
+            val = np_inputs.get(n)
+            arrays.append(np.ascontiguousarray(val, dtype=np_dtype) if val is not None else None)
+            ptr_types.append(ptr_type)
 
         output = np.zeros(out_shape, dtype=np.float32)
 
-        def _fptr(a: Optional[np.ndarray]) -> Any:
+        def _fptr(a: Optional[np.ndarray], ptr_type: Any) -> Any:
             if a is None:
-                return ctypes.cast(None, _C_FLOAT_P)
-            return a.ctypes.data_as(_C_FLOAT_P)
+                return ctypes.cast(None, ptr_type)
+            return a.ctypes.data_as(ptr_type)
 
         # Var dims: scan every tensor's shape template (not just primary), dedup
         # by axis name so an axis seen in an earlier tensor isn't repeated.
@@ -115,9 +131,9 @@ class RawDataset:
                     var_dim_args.append(ctypes.c_int(arr.shape[i]))
 
         entry_args: Tuple[Any, ...] = (
-            _fptr(arrays[0]),
+            _fptr(arrays[0], ptr_types[0]),
             output.ctypes.data_as(_C_FLOAT_P),
-            *(_fptr(a) for a in arrays[1:]),
+            *(_fptr(a, pt) for a, pt in zip(arrays[1:], ptr_types[1:])),
             *var_dim_args,
         )
 

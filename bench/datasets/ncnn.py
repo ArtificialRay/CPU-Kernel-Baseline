@@ -35,6 +35,7 @@ class _MatFactoryFns:
     create_2d: Any
     create_1d: Any
     create_3d_i8: Any
+    create_2d_i8: Any
     create_1d_i8: Any
     create_empty: Any
     destroy: Any
@@ -72,6 +73,8 @@ class _MatFactoryFns:
                             [ctypes.c_int, c_float_p]),
             create_3d_i8=_bind("armbench_ncnn_mat_create_3d_i8", ctypes.c_void_p,
                                [ctypes.c_int, ctypes.c_int, ctypes.c_int, c_int8_p]),
+            create_2d_i8=_bind("armbench_ncnn_mat_create_2d_i8", ctypes.c_void_p,
+                               [ctypes.c_int, ctypes.c_int, c_int8_p]),
             create_1d_i8=_bind("armbench_ncnn_mat_create_1d_i8", ctypes.c_void_p,
                                [ctypes.c_int, c_int8_p]),
             create_empty=_bind("armbench_ncnn_mat_create_empty", ctypes.c_void_p, []),
@@ -140,9 +143,10 @@ def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray, *, is_primary: b
             ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
             return ctypes.c_void_p(fns.create_3d(w, h, c, ptr))
         elif arr.ndim == 2:
-            if is_int8:
-                raise NotImplementedError("2D int8 primary tensors aren't needed by any current op")
             h, w = arr.shape
+            if is_int8:
+                ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
+                return ctypes.c_void_p(fns.create_2d_i8(w, h, ptr))
             ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
             return ctypes.c_void_p(fns.create_2d(w, h, ptr))
         elif arr.ndim == 1:
