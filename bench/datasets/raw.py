@@ -13,18 +13,27 @@ import ctypes
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+import ml_dtypes
 import numpy as np
 
 from bench.data.definition import DType, Definition
 
 _C_FLOAT_P = ctypes.POINTER(ctypes.c_float)
 _C_INT8_P = ctypes.POINTER(ctypes.c_int8)
+_C_UINT8_P = ctypes.POINTER(ctypes.c_uint8)
+_C_UINT16_P = ctypes.POINTER(ctypes.c_uint16)
 
 # Per-tensor (numpy dtype, ctypes pointer type) for each DType this ABI supports.
 # Output is always float32 (every current Definition declares float32 outputs).
+# bfloat16/float16 have no ctypes equivalent — passed as raw 16-bit-pattern
+# pointers; the compiled kernel reinterprets the bits itself (see
+# candidate_binding_templates).
 _DTYPE_TO_NP_AND_PTR: Dict[DType, Tuple[Any, Any]] = {
     DType.FLOAT32: (np.float32, _C_FLOAT_P),
+    DType.FLOAT16: (np.float16, _C_UINT16_P),
     DType.INT8: (np.int8, _C_INT8_P),
+    DType.UINT8: (np.uint8, _C_UINT8_P),
+    DType.BFLOAT16: (ml_dtypes.bfloat16, _C_UINT16_P),
 }
 
 

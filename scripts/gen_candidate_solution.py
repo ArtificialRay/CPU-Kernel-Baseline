@@ -175,7 +175,7 @@ def _build_ctx(op_type: str, def_name: str, defn: Dict[str, Any]) -> Dict[str, A
 
 
 def _build_solution(def_name: str, op_type: str, ctx: Dict[str, Any],
-                    tmpls: Dict[str, str]) -> Dict[str, Any]:
+                    tmpls: Dict[str, str], dataset: str) -> Dict[str, Any]:
     sources = [
         {"path": f"{op_type}.h",   "content": _render(tmpls[f"{op_type}.h"],   ctx, def_name=def_name, out_name=f"{op_type}.h")},
         {"path": f"{op_type}.cpp", "content": _render(tmpls[f"{op_type}.cpp"], ctx, def_name=def_name, out_name=f"{op_type}.cpp")},
@@ -184,7 +184,7 @@ def _build_solution(def_name: str, op_type: str, ctx: Dict[str, Any],
     return {
         "name":        f"reference-scalar_{def_name}",
         "definition":  def_name,
-        "dataset":     "ncnn",
+        "dataset":     dataset,
         "author":      "reference-scalar",
         "description": (
             f"Scalar raw-pointer {op_type} for {def_name}. "
@@ -212,7 +212,7 @@ def _is_tagged(def_path: Path, tag: str) -> bool:
 def _process(
     def_path: Path, op_type: str, out_dir: Path, dry_run: bool,
     *, fp32_suffix: str, quant_suffix: Optional[str],
-    template_prefix_override: Optional[str],
+    template_prefix_override: Optional[str], dataset: str,
 ) -> None:
     def_name = def_path.stem
     defn = json.loads(def_path.read_text())
@@ -221,7 +221,7 @@ def _process(
     )
     tmpls = _load_templates(op_type, prefix)
     ctx = _build_ctx(op_type, def_name, defn)
-    sol = _build_solution(def_name, op_type, ctx, tmpls)
+    sol = _build_solution(def_name, op_type, ctx, tmpls, dataset)
     total_chars = sum(len(s["content"]) for s in sol["sources"])
     out_path = out_dir / f"{def_name}.json"
     if dry_run:
@@ -237,9 +237,15 @@ def main() -> int:
     ap.add_argument("--op-type", required=True, help="Op type to generate")
     ap.add_argument("--definition", help="Process only this definition (default: all)")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--tag", default="baseline-solution:ncnn",
+    ap.add_argument("--dataset", default="ncnn",
+                     help="Dataset these candidates belong to (default: ncnn). Controls "
+                          "the output folder (solutions/<dataset>/reference-scalar/<op_type>/) "
+                          "and the 'dataset' field written into each solution JSON — must "
+                          "match, per TraceSet's path-vs-content validation. Also sets the "
+                          "default --tag to baseline-solution:<dataset> when not given.")
+    ap.add_argument("--tag",
                      help="Only process definitions carrying this tag (default: "
-                          "baseline-solution:ncnn — a definition may instead be tagged "
+                          "baseline-solution:<dataset> — a definition may instead be tagged "
                           "e.g. baseline-solution:llama.cpp, meaning it belongs to a "
                           "different backend and shouldn't get an ncnn-routed candidate "
                           "here). Ignored when --definition is given.")
@@ -256,8 +262,9 @@ def main() -> int:
     args = ap.parse_args()
 
     op_type = args.op_type
+    tag = args.tag or f"baseline-solution:{args.dataset}"
     defs_dir = _TRACE_ROOT / "definitions" / op_type
-    out_dir  = _TRACE_ROOT / "solutions" / "ncnn" / "reference-scalar" / op_type
+    out_dir  = _TRACE_ROOT / "solutions" / args.dataset / "reference-scalar" / op_type
 
     if not defs_dir.exists():
         print(f"ERROR: definitions dir not found: {defs_dir}", file=sys.stderr)
@@ -269,9 +276,9 @@ def main() -> int:
             print(f"ERROR: definition not found: {def_paths[0]}", file=sys.stderr)
             return 2
     else:
-        def_paths = [p for p in sorted(defs_dir.glob("*.json")) if _is_tagged(p, args.tag)]
+        def_paths = [p for p in sorted(defs_dir.glob("*.json")) if _is_tagged(p, tag)]
         if not def_paths:
-            print(f"ERROR: no {args.tag!r}-tagged definitions in {defs_dir}", file=sys.stderr)
+            print(f"ERROR: no {tag!r}-tagged definitions in {defs_dir}", file=sys.stderr)
             return 2
 
     label = "(dry-run)" if args.dry_run else ""
@@ -284,7 +291,7 @@ def main() -> int:
             _process(
                 p, op_type, out_dir, args.dry_run,
                 fp32_suffix=args.variant_fp32_suffix, quant_suffix=args.variant_quant_suffix,
-                template_prefix_override=args.template_prefix,
+                template_prefix_override=args.template_prefix, dataset=args.dataset,
             )
             ok += 1
         except _SkipDefinition as e:

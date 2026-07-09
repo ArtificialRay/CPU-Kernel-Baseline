@@ -2,8 +2,9 @@
 
 Agent writes `kernel.cpp` implementing `armbench_llamacpp_<op_type>(...)` (the
 contract declared in `<op_type>.h`). The contract header + `binding.cpp` (which
-bakes the Definition's const axes and exposes `armbench_entry_<op_type>` over the
-generic void* ABI) are lifted from the baseline llama.cpp solution, so the agent
+bakes the Definition's const axes and exposes `armbench_entry_<op_type>` over
+the slim raw-pointer ABI `RawDataset` expects — the same convention every other
+candidate uses) are lifted from the `reference-scalar` solution, so the agent
 only writes the kernel body.
 
 The candidate is compiled by LlamaCppBuilder against the remote llama.cpp
@@ -35,27 +36,28 @@ class LlamaCppAgentTools(AgentTools):
         return dataset == "llama.cpp"
 
     def make_solution(self, code: str) -> Solution:
-        """Wrap agent-written kernel.cpp into a Solution alongside the baseline's
-        contract header + binding.cpp.
+        """Wrap agent-written kernel.cpp into a Solution alongside the harness.
 
-        The harness (everything but kernel.cpp) is lifted from the baseline
-        llama.cpp solution; compile_flags/isa_features/target_hardware are derived
-        from the remote instance type (-O3 + SVE/SVE2 march), inheriting the
-        baseline's language standard (-std=c++17).
+        The harness (everything but kernel.cpp) is lifted from the
+        'reference-scalar' solution — the slim raw-pointer ABI RawDataset
+        expects (mirrors NCNNAgentTools.make_solution()) — not from the real
+        ggml baseline (whose wrapped void**-pointer ABI is only compatible
+        with LlamaCppDataset/local baseline evaluation). compile_flags/
+        isa_features/target_hardware are derived from the remote instance type
+        (-O3 + SVE/SVE2 march), inheriting reference-scalar's language standard.
         """
-        ref_author = self._bench_cfg.baseline_author  # "baseline-llamacpp-arm"
-        ref = self._trace_set.get_baseline_solution(self._definition.name, ref_author)
+        ref = self._trace_set.get_baseline_solution(self._definition.name, "reference-scalar")
         if ref is None:
             raise ValueError(
-                f"No '{ref_author}' baseline solution for definition "
+                f"No 'reference-scalar' solution for definition "
                 f"{self._definition.name!r} in TraceSet — cannot build llama.cpp "
-                "candidate harness. Run scripts/gen_llamacpp_baseline_solution.py."
+                "candidate harness. Run scripts/gen_candidate_solution.py."
             )
 
         harness = [s for s in ref.sources if s.path != "kernel.cpp"]
         if not harness:
             raise ValueError(
-                f"'{ref_author}' solution for {self._definition.name!r} has no harness "
+                f"'reference-scalar' solution for {self._definition.name!r} has no harness "
                 "files besides kernel.cpp — unexpected layout"
             )
 

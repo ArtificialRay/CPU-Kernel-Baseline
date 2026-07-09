@@ -125,19 +125,24 @@ def _bind_kernel(
 ) -> BoundKernel:
     """Dlopen the compiled .so and wrap it as a BoundKernel.
 
-    Adapter + ctypes signatures are chosen by solution.dataset first, then
-    is_baseline for ncnn vs raw dispatch. simd-loop always routes to
-    SimdLoopDataset with signature derived from Definition.simd_loop_meta.
+    simd-loop always routes to SimdLoopDataset (signature derived from
+    Definition.simd_loop_meta), regardless of is_baseline. Every non-baseline
+    solution (reference-scalar, agent-submitted candidates) routes to
+    RawDataset — the slim raw-pointer ABI every candidate builder targets,
+    regardless of its declared dataset. Only a true baseline picks its
+    framework-specific adapter by dataset.
     """
     lib = ctypes.CDLL(str(compiled.so_path))
     if solution.dataset.value == "simd-loop":
         adapter_name = "simd-loop"
-    elif solution.dataset.value == "llama.cpp":
-        adapter_name = "llama.cpp"
     elif not is_baseline:
         adapter_name = "raw"
-    else:
+    elif solution.dataset.value == "llama.cpp":
+        adapter_name = "llama.cpp"
+    elif solution.dataset.value == "ncnn":
         adapter_name = "ncnn"
+    else:
+        raise ValueError(f"No baseline adapter for dataset {solution.dataset.value!r}")
     entry = _bind_entry(lib, definition.op_type)
     adapter = get_dataset_adapter(adapter_name)()
     return BoundKernel(entry=entry, adapter=adapter, op_type=definition.op_type)

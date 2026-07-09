@@ -11,6 +11,7 @@ kept for standalone testing but are no longer called by the harness.
 import hashlib
 from typing import Dict, Iterable, Tuple
 
+import ml_dtypes
 import numpy as np
 
 from bench.data.definition import AxisConst, Definition, DType
@@ -50,14 +51,23 @@ def _uuid_to_seed(uuid_str: str) -> int:
         return int(hashlib.md5(uuid_str.encode()).hexdigest(), 16) % (2**32)
 
 
-def _gen_random_tensor(shape: tuple, dtype, rng: np.random.Generator) -> np.ndarray:
+def _gen_random_tensor(
+    shape: tuple, dtype, rng: np.random.Generator, *, non_negative: bool = False
+) -> np.ndarray:
     """Generate a bounded random tensor suitable for kernel benchmarking.
 
     Float tensors use uniform(-1, 1) to avoid catastrophic cancellation in
-    long reductions; integer tensors use integers in [1, 100].
+    long reductions; integer tensors use integers in [1, 100]. `non_negative`
+    generates uniform(0.01, 1) instead — for block-quantization scale/min
+    tensors (e.g. Q4_K's `*_scales`/`*_mins`), which are always non-negative
+    magnitudes in real quantization. This matters beyond realism: some
+    encode paths (e.g. LlamaCppDataset._repack_q4_k, which re-derives 6-bit
+    scale/min factors the way real GGML does) clamp negative inputs to 0,
+    silently discarding data if this constraint isn't honored.
     """
-    if np.issubdtype(dtype, np.floating):
-        return rng.uniform(-1.0, 1.0, shape).astype(dtype)
+    if dtype == ml_dtypes.bfloat16 or np.issubdtype(dtype, np.floating):
+        lo = 0.01 if non_negative else -1.0
+        return rng.uniform(lo, 1.0, shape).astype(dtype)
     elif np.issubdtype(dtype, np.integer):
         return rng.integers(1, 101, shape).astype(dtype)
     else:  # bool
@@ -127,7 +137,7 @@ _DTYPE_TO_NP = {
     DType.FLOAT64: np.float64,
     DType.FLOAT32: np.float32,
     DType.FLOAT16: np.float16,
-    DType.BFLOAT16: None,  # numpy lacks native bfloat16
+    DType.BFLOAT16: ml_dtypes.bfloat16,
     DType.INT64: np.int64,
     DType.INT32: np.int32,
     DType.INT16: np.int16,
@@ -182,7 +192,10 @@ def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
             out[tname] = _gen_byte_buffer(shape, wi.layout, rng)
             continue
         # type == "random"
-        out[tname] = _gen_random_tensor(shape, _dtype_to_np(tspec.dtype), rng)
+        non_negative = tname.endswith(("_scales", "_mins"))
+        out[tname] = _gen_random_tensor(
+            shape, _dtype_to_np(tspec.dtype), rng, non_negative=non_negative
+        )
 
     return out
 
