@@ -37,7 +37,8 @@ SSH_OPTS="ssh -i $KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/nul
 echo "[sync] arm-bench/  -> $USER_NAME@$HOST:arm-bench/"
 rsync -avz "${EXTRA[@]}" -e "$SSH_OPTS" \
   --exclude=build --exclude=.git --exclude=terraform \
-  --exclude=generations --exclude=results --exclude=__pycache__ --exclude='*.pyc' \
+  --exclude=generations --exclude=results --exclude=notebooks --exclude=agent-runs \
+  --exclude=__pycache__ --exclude='*.pyc' \
   "$REPO_ROOT/" "$USER_NAME@$HOST:arm-bench/"
 
 if [[ -d "$NCNN_ROOT" ]]; then

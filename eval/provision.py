@@ -260,7 +260,7 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
         str(REPO_ROOT),
         "~/arm-bench",
         excludes=["build", ".git", "terraform", "generations", "results",
-                  "__pycache__", "*.pyc"],
+                  "notebooks", "agent-runs", "__pycache__", "*.pyc"],
     )
 
     _install_deps(handle)
