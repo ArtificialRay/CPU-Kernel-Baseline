@@ -70,6 +70,10 @@ class BenchmarkConfig:
     abs_tol: float = DEFAULT_CORRECTNESS_ABS_TOL
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
     required_matched_ratio: float = DEFAULT_REQUIRED_MATCHED_RATIO
+    min_sqnr_db: float = 20.0
+    """SQNR pass threshold (dB) for definitions tagged `correctness:sqnr` (e.g. q8_0
+    MoE, whose real quantized arithmetic can't match a full-precision reference on
+    an elementwise tolerance). ggml scores ~44 dB; garbage/overflow ~0 dB."""
     op_type_config: Dict[str, EvalOverride] = field(
         default_factory=lambda: dict(DEFAULT_OP_TYPE_CONFIG)
     )
@@ -101,6 +105,7 @@ class BenchmarkConfig:
             abs_tol=atol,
             rel_tol=rtol,
             required_matched_ratio=ratio,
+            min_sqnr_db=self.min_sqnr_db,
             warmup=self.warmup,
             repeat=self.repeat,
             inner_iters=self.inner_iters,
@@ -123,6 +128,7 @@ class EvalConfig:
     abs_tol: float = DEFAULT_CORRECTNESS_ABS_TOL
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
     required_matched_ratio: float = DEFAULT_REQUIRED_MATCHED_RATIO
+    min_sqnr_db: float = 20.0
     # timing
     warmup: int = DEFAULT_WARMUP
     repeat: int = DEFAULT_REPEAT
