@@ -17,8 +17,10 @@ from bench.data.definition import Definition
 
 from .default import DefaultEvaluator
 from .evaluator import Evaluator
+from .sqnr import SqnrEvaluator
 
 _EVALUATORS: List[Type[Evaluator]] = [
+    SqnrEvaluator,  # `correctness:sqnr`-tagged defs (e.g. q8_0 MoE)
     # SamplingEvaluator, LowBitEvaluator, ...  ← add specialized evaluators here
 ]
 
