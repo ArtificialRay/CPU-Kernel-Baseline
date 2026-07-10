@@ -172,6 +172,20 @@ def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
     rng = np.random.default_rng(_uuid_to_seed(w.uuid))
     out: Dict[str, object] = {}
 
+    # q8_0 block quantization (int8 data + fp16 `*_scales`): generate the way real
+    # quantization does — signed/zero-centered int8 with small scales (~max|x|/127).
+    # All-positive int8 * O(1) scales has no cancellation and explodes through wide
+    # matmuls (MoE chains two, reaching ~1e16 → meaningless), whereas signed data +
+    # small scales keeps dequantize→matmul in range. Scoped to q8_0 definitions;
+    # leaves loop_* integer inputs, Q4_K (uint8 data), and w8a8ch (fp32 scales) as-is.
+    _q8 = (
+        any(s.dtype == DType.INT8 for s in d.inputs.values())
+        and any(
+            n.endswith("_scales") and s.dtype == DType.FLOAT16
+            for n, s in d.inputs.items()
+        )
+    )
+
     for tname, tspec in d.inputs.items():
         wi = w.inputs.get(tname)
         if wi is None:
@@ -192,10 +206,17 @@ def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
             out[tname] = _gen_byte_buffer(shape, wi.layout, rng)
             continue
         # type == "random"
-        non_negative = tname.endswith(("_scales", "_mins"))
-        out[tname] = _gen_random_tensor(
-            shape, _dtype_to_np(tspec.dtype), rng, non_negative=non_negative
-        )
+        if _q8 and tspec.dtype == DType.INT8:
+            # signed/zero-centered int8 quants, like real q8_0
+            out[tname] = rng.integers(-127, 128, shape).astype(np.int8)
+        elif _q8 and tspec.dtype == DType.FLOAT16 and tname.endswith("_scales"):
+            # realistic per-block scales ~ max|x|/127 (keeps dequant values O(1))
+            out[tname] = rng.uniform(1.0 / 255.0, 1.0 / 64.0, shape).astype(np.float16)
+        else:
+            non_negative = tname.endswith(("_scales", "_mins"))
+            out[tname] = _gen_random_tensor(
+                shape, _dtype_to_np(tspec.dtype), rng, non_negative=non_negative
+            )
 
     return out
 
