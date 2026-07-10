@@ -9,7 +9,6 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NCNN_ROOT="$REPO_ROOT/../ncnn"
 CONFIG="$REPO_ROOT/eval/eval_config.json"
 KEY="${KEY:-$HOME/.ssh/id_rsa}"
 USER_NAME="${USER_NAME:-ubuntu}"
@@ -40,16 +39,6 @@ rsync -avz "${EXTRA[@]}" -e "$SSH_OPTS" \
   --exclude=generations --exclude=results --exclude=notebooks --exclude=agent-runs \
   --exclude=__pycache__ --exclude='*.pyc' \
   "$REPO_ROOT/" "$USER_NAME@$HOST:arm-bench/"
-
-if [[ -d "$NCNN_ROOT" ]]; then
-    echo "[sync] ncnn/      -> $USER_NAME@$HOST:ncnn/"
-    rsync -avz "${EXTRA[@]}" -e "$SSH_OPTS" \
-      --exclude=build --exclude=.git --exclude=__pycache__ \
-      --exclude='*.o' --exclude='*.d' --exclude='*.pyc' \
-      "$NCNN_ROOT/" "$USER_NAME@$HOST:ncnn/"
-else
-    echo "[sync] skipped ncnn (not found at $NCNN_ROOT)"
-fi
 
 # Root-level requirements.txt lives at CPU-Kernel-Baseline/requirements.txt
 # (not under arm-bench/). Push it to the remote home so `pip3 install -r

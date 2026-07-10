@@ -62,12 +62,15 @@ def _ref_gemm_q8_0(N: int, K: int) -> str:
 
 
 def _ref_gemm_w8a8ch(N: int) -> str:
+    # Full-precision reference: dequantize A/B to float32 first (real = int8 * scale),
+    # then a plain float32 matmul — matches gemm_q4_k_m's dequant-first style rather
+    # than exact-integer accumulation + a single closing rescale.
     return textwrap.dedent(f"""\
         import numpy as np
         def run(A, B, input_scale, weight_scales):
-            acc = A.astype(np.int32) @ B.T.astype(np.int32)
-            dequant = acc * (input_scale * weight_scales)[np.newaxis, :]
-            return np.clip(np.round(dequant), -128, 127).astype(np.int8)
+            A_f = A.astype(np.float32) * np.float32(input_scale)
+            B_f = B.astype(np.float32) * weight_scales.astype(np.float32)[:, np.newaxis]
+            return (A_f @ B_f.T).astype(np.float32)
         """)
 
 
@@ -202,9 +205,10 @@ def _ref_conv2d_fp32(sh: int, sw: int, dh: int, dw: int, pad_top: int, pad_left:
 
 def _ref_conv2d_w8a8ch(kh: int, kw: int, sh: int, sw: int, dh: int, dw: int,
                         pad_top: int, pad_left: int) -> str:
-    # Faithful to ncnn's real int8 conv2d path (src/layer/convolution.cpp): int32
-    # accumulation, per-output-channel weight scale, per-tensor activation scale,
-    # float32 bias added after dequantization, round-to-nearest clip to [-127, 127].
+    # Full-precision reference: dequantize input/weight to float32 first (real =
+    # int8 * scale), then accumulate the convolution in plain float32 — matches
+    # gemm_q4_k_m's dequant-first style rather than exact-integer accumulation +
+    # a single closing rescale.
     return textwrap.dedent(f"""\
         import numpy as np
 
@@ -217,18 +221,17 @@ def _ref_conv2d_w8a8ch(kh: int, kw: int, sh: int, sw: int, dh: int, dw: int,
             Ph, Pw = {pad_top}, {pad_left}
             Hout = (H + 2 * Ph - Dh * (Kh - 1) - 1) // Sh + 1
             Wout = (W + 2 * Pw - Dw * (Kw - 1) - 1) // Sw + 1
-            xp = np.pad(input.astype(np.int64), ((0, 0), (0, 0), (Ph, Ph), (Pw, Pw)))
-            w64 = weight.astype(np.int64)
-            acc = np.zeros((N, Cout, Hout, Wout), dtype=np.int64)
+            input_f = input.astype(np.float32) * np.float32(input_scale)
+            weight_f = weight.astype(np.float32) * weight_scales.astype(np.float32)[:, np.newaxis, np.newaxis, np.newaxis]
+            xp = np.pad(input_f, ((0, 0), (0, 0), (Ph, Ph), (Pw, Pw)))
+            acc = np.zeros((N, Cout, Hout, Wout), dtype=np.float32)
             for kh in range(Kh):
                 for kw in range(Kw):
                     patch = xp[:, :, kh * Dh: kh * Dh + Sh * Hout: Sh,
                                      kw * Dw: kw * Dw + Sw * Wout: Sw]
-                    acc += np.einsum('ncHW,oc->noHW', patch, w64[:, :, kh, kw])
-            scale = input_scale * weight_scales.astype(np.float64)
-            sumfp = acc.astype(np.float64) * scale[np.newaxis, :, np.newaxis, np.newaxis]
-            sumfp += bias.astype(np.float64)[np.newaxis, :, np.newaxis, np.newaxis]
-            return np.clip(np.round(sumfp), -127, 127).astype(np.int8)
+                    acc += np.einsum('ncHW,oc->noHW', patch, weight_f[:, :, kh, kw])
+            acc += bias.astype(np.float32)[np.newaxis, :, np.newaxis, np.newaxis]
+            return acc.astype(np.float32)
         """)
 
 
@@ -249,8 +252,10 @@ def _ref_conv2d_depthwise_fp32(sh: int, sw: int, dh: int, dw: int,
 
 def _ref_conv2d_depthwise_w8a8ch(kh: int, kw: int, sh: int, sw: int, dh: int, dw: int,
                                   pad_top: int, pad_left: int) -> str:
-    # Faithful to ncnn's real int8 depthwise conv path (src/layer/convolutiondepthwise.cpp):
-    # unlike regular conv2d, BOTH weight scale and activation scale are per-channel.
+    # Full-precision reference: dequantize input/weight to float32 first (real =
+    # int8 * scale, both per-channel here), then accumulate in plain float32 — matches
+    # gemm_q4_k_m's dequant-first style rather than exact-integer accumulation + a
+    # single closing rescale.
     return textwrap.dedent(f"""\
         import numpy as np
 
@@ -262,18 +267,17 @@ def _ref_conv2d_depthwise_w8a8ch(kh: int, kw: int, sh: int, sw: int, dh: int, dw
             Ph, Pw = {pad_top}, {pad_left}
             Hout = (H + 2 * Ph - Dh * (Kh - 1) - 1) // Sh + 1
             Wout = (W + 2 * Pw - Dw * (Kw - 1) - 1) // Sw + 1
-            xp = np.pad(input.astype(np.int64), ((0, 0), (0, 0), (Ph, Ph), (Pw, Pw)))
-            w64 = weight.astype(np.int64)[:, 0, :, :]
-            acc = np.zeros((N, C, Hout, Wout), dtype=np.int64)
+            input_f = input.astype(np.float32) * input_scales.astype(np.float32)[np.newaxis, :, np.newaxis, np.newaxis]
+            weight_f = weight.astype(np.float32)[:, 0, :, :] * weight_scales.astype(np.float32)[:, np.newaxis, np.newaxis]
+            xp = np.pad(input_f, ((0, 0), (0, 0), (Ph, Ph), (Pw, Pw)))
+            acc = np.zeros((N, C, Hout, Wout), dtype=np.float32)
             for kh in range(Kh):
                 for kw in range(Kw):
                     patch = xp[:, :, kh * Dh: kh * Dh + Sh * Hout: Sh,
                                      kw * Dw: kw * Dw + Sw * Wout: Sw]
-                    acc += patch * w64[:, kh, kw][np.newaxis, :, np.newaxis, np.newaxis]
-            scale = input_scales.astype(np.float64) * weight_scales.astype(np.float64)
-            sumfp = acc.astype(np.float64) * scale[np.newaxis, :, np.newaxis, np.newaxis]
-            sumfp += bias.astype(np.float64)[np.newaxis, :, np.newaxis, np.newaxis]
-            return np.clip(np.round(sumfp), -127, 127).astype(np.int8)
+                    acc += patch * weight_f[:, kh, kw][np.newaxis, :, np.newaxis, np.newaxis]
+            acc += bias.astype(np.float32)[np.newaxis, :, np.newaxis, np.newaxis]
+            return acc.astype(np.float32)
         """)
 
 
