@@ -39,6 +39,7 @@ eval/eval_config.json
 
 # Large binary/analysis files
 *.pdf
+*.tar.gz
 
 # Terraform — state contains live AWS resource info, providers are large binaries
 terraform/.terraform/
