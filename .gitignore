@@ -54,7 +54,7 @@ terraform/.terraform.lock.hcl
 bench-trace/
 __pycache__/
 *_binding_templates/
-agent-runs/
+agent-runs*/
 uv.lock
 notebooks/
 

@@ -3,8 +3,7 @@
 Registers compile/evaluate/disassemble/submit as MCP tools (no `read_code` —
 retired, see mcp_app/agent_tools/base.py) and the session's trajectory files
 as MCP Resources (mcp_app/resources.py), backed by mcp_app/agent_tools's
-in-process KernelSession (no SSH, no subprocess round-trip — this process
-runs directly on the target instance).
+in-process KernelSession (this process runs directly on the target instance).
 
 Built on the low-level `mcp.server.lowlevel.Server` rather than FastMCP:
 tool_schemas() already produces ready-made JSON Schema (no need to re-derive

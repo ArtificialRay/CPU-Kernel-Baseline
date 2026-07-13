@@ -3,12 +3,12 @@
 Drives list_tools() (assert no read_code) -> call_tool("compile", ...) ->
 call_tool("evaluate", {"measure": true}) -> call_tool("disassemble", {}) ->
 list_resources()/read_resource() -> call_tool("submit", ...). Exposes both a
-callable API (used by mcp_app/driver.py and mcp_app/scripts/smoke_test.py)
-and a standalone CLI for manual runs.
+callable API (used by mcp_app/smoke_test_driver.py) and a standalone CLI for
+manual runs.
 
     # stdio mode: spawn the exact command a real MCP client (nanobot, or
-    # mcp_app/launch_session.prepare_session(..., transport="stdio")'s output)
-    # would use.
+    # skills/nanobot/nanobot-kernel-session/scripts/launch_session.py's
+    # prepare_session(..., transport="stdio")'s output) would use.
     python -m mcp_app.scripts.test_mcp_client --transport stdio \\
         --command ssh --spawn-args ubuntu@host "cd ~/arm-bench && python3 -m mcp_app.server ..."
 """

@@ -17,6 +17,8 @@ mcp_app/README.md's "Scope boundary" section.
 from __future__ import annotations
 
 import argparse
+import base64
+import json
 import socket
 import subprocess
 import sys
@@ -30,6 +32,9 @@ DEFAULT_RSYNC_EXCLUDES = [
     "build", ".git", "terraform", "generations", "results", "notebooks",
     "agent-runs", "agent-runs-mcp", "agent-runs-nanobot", "__pycache__", "*.pyc",
 ]
+
+# Directory to this skill's own copy of eval/dataset_builds.json's content
+DATASET_BUILDS: dict = json.loads((Path(__file__).parent / "dataset_builds.json").read_text())
 
 
 def _spawn_command(
@@ -54,6 +59,106 @@ def _free_local_port() -> int:
         return s.getsockname()[1]
 
 
+# ── Pre-flight: make sure the instance actually has what a session needs
+#    before nanobot ever connects. mcp_app/smoke_test_driver.py (mcp_app's
+#    non-nanobot smoke-test tool) has its own independent copy of this same
+#    logic — see mcp_app/README.md's Scope boundary on why this isn't shared.
+
+def ensure_dataset_ready(target: RemoteTarget, dataset: str, *, verbose: bool = True) -> None:
+    """Make sure `dataset`'s native-library build artifacts (ncnn/llama.cpp)
+    exist on the instance, building them if needed. No-op for datasets with
+    no entry in DATASET_BUILDS (e.g. simd-loop). Raises RuntimeError if the
+    build steps fail (or the ready_check still fails afterward).
+    """
+    config = DATASET_BUILDS.get(dataset)
+    if not config:
+        return
+
+    def _ready() -> bool:
+        rc, _, _ = target.run(config["ready_check"], timeout=15)
+        return rc == 0
+
+    if _ready():
+        if verbose:
+            print(f"[dataset] {dataset!r} already built on {target.host}.")
+        return
+
+    if verbose:
+        print(f"[dataset] {dataset!r} not ready on {target.host}; building "
+              f"({len(config['steps'])} step(s), this can take several minutes)...")
+    for step in config["steps"]:
+        if verbose:
+            print(f"[dataset]   {step['label']}...")
+        rc, _, err = target.run(step["cmd"], timeout=step.get("timeout", 300))
+        if rc != 0 and verbose:
+            print(f"[dataset]   WARNING: {step['label']} failed: {err[:200]}")
+
+    if not _ready():
+        raise RuntimeError(
+            f"Dataset {dataset!r} failed to build on {target.host}. "
+            f"SSH in and check manually before starting a session (ready_check: {config['ready_check']!r})."
+        )
+    if verbose:
+        print(f"[dataset] {dataset!r} ready on {target.host}.")
+
+
+def ensure_baseline_collected(
+    target: RemoteTarget, remote_root: str, definition_name: str, baseline_author: str,
+    *, verbose: bool = True,
+) -> None:
+    """Make sure `definition_name` has a PASSED baseline trace for
+    `baseline_author`, running `bench.cli collect-baselines` for just this
+    one definition if not — without this, evaluate()/submit() silently
+    return time_speedup=None/cycle_speedup=None (correctness still works,
+    only the speedup numbers are missing). Scoped to one definition (not a
+    batch like smoke_test_driver.py's version) since this is a
+    single-session helper.
+    """
+    check_code = (
+        "import json; from pathlib import Path\n"
+        f"bench = Path({remote_root!r}).expanduser() / 'bench-trace'\n"
+        f"auth = {baseline_author!r}\n"
+        f"name = {definition_name!r}\n"
+        "found = False\n"
+        "td = bench / 'traces'\n"
+        "if td.exists():\n"
+        "    for f in sorted(td.rglob(name + '.jsonl')):\n"
+        "        try:\n"
+        "            for line in f.open():\n"
+        "                line = line.strip()\n"
+        "                if not line: continue\n"
+        "                rec = json.loads(line)\n"
+        "                if (rec.get('solution', '').startswith(auth)\n"
+        "                        and (rec.get('evaluation') or {}).get('status') == 'PASSED'):\n"
+        "                    found = True; break\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "        if found: break\n"
+        "print('READY' if found else 'MISSING')\n"
+    )
+    b64 = base64.b64encode(check_code.encode()).decode()
+    _, out, _ = target.run(f"echo {b64!r} | base64 -d | python3", timeout=30)
+    if out.strip() == "READY":
+        if verbose:
+            print(f"[baseline] {definition_name!r} already has a PASSED {baseline_author!r} trace.")
+        return
+
+    if verbose:
+        print(f"[baseline] Collecting {baseline_author!r} baseline for {definition_name!r}...")
+    rc, out, err = target.run(
+        f"cd {remote_root} && python3 -m bench.cli collect-baselines "
+        f"--baseline-author {baseline_author} --definition {definition_name}",
+        timeout=600,
+    )
+    if rc != 0:
+        combined = "\n".join(filter(None, [out.strip(), err.strip()]))
+        raise RuntimeError(
+            f"collect-baselines failed for {definition_name!r} (author={baseline_author!r}): {combined[:500]}"
+        )
+    if verbose:
+        print(f"[baseline] {definition_name!r}: OK")
+
+
 def prepare_session(
     target: RemoteTarget,
     definition_name: str,
@@ -65,12 +170,22 @@ def prepare_session(
     remote_root: str = "~/arm-bench",
     sync_repo: bool = True,
     local_repo_dir: Optional[str | Path] = None,
+    skip_preflight: bool = False,
     transport: str = "stdio",
     local_port: Optional[int] = None,
     remote_port: int = 8765,
     startup_timeout: int = 60,
 ) -> dict:
     """Get an mcp_app session ready to be driven by a real MCP client.
+
+    Also ensures the instance is actually ready for this session before
+    returning (unless skip_preflight=True): the dataset's native library is
+    built (ensure_dataset_ready) and this definition has a real PASSED
+    baseline trace (ensure_baseline_collected) — both idempotent, so calling
+    this repeatedly for the same instance is cheap after the first time.
+    mcp_app/smoke_test_driver.py is smoke-test-only and is never invoked by
+    this skill; a real nanobot session is fully self-sufficient through this
+    one call.
 
     transport="stdio" (default, try first): returns a spawn command dict
     ({"transport": "stdio", "command": "ssh", "args": [...]}) for nanobot's
@@ -85,6 +200,10 @@ def prepare_session(
         if local_repo_dir is None:
             raise ValueError("local_repo_dir is required when sync_repo=True")
         target.rsync_to(local_repo_dir, remote_root, excludes=DEFAULT_RSYNC_EXCLUDES)
+
+    if not skip_preflight:
+        ensure_dataset_ready(target, dataset)
+        ensure_baseline_collected(target, remote_root, definition_name, baseline_author)
 
     if transport == "stdio":
         remote_cmd = _spawn_command(
@@ -164,7 +283,8 @@ def _cli_prepare(args: argparse.Namespace) -> None:
     info = prepare_session(
         target, args.definition, args.dataset, args.author, args.baseline_author, args.isa,
         remote_root=args.remote_root, sync_repo=not args.no_sync,
-        local_repo_dir=args.local_repo_dir, transport=args.transport,
+        local_repo_dir=args.local_repo_dir, skip_preflight=args.skip_preflight,
+        transport=args.transport,
     )
     if info["transport"] == "stdio":
         print("spawn command:")
@@ -205,6 +325,9 @@ def main(argv: list[str] | None = None) -> None:
     prep.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
     prep.add_argument("--local-repo-dir", help="Required unless --no-sync.")
     prep.add_argument("--no-sync", action="store_true")
+    prep.add_argument("--skip-preflight", action="store_true",
+                       help="Skip ensure_dataset_ready + ensure_baseline_collected "
+                            "(use if you already know this instance is ready).")
     prep.set_defaults(func=_cli_prepare)
 
     sync = sub.add_parser("sync-results")

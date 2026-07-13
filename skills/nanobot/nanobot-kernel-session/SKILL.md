@@ -2,11 +2,8 @@
 name: nanobot-kernel-session
 description: >
   Drive a CPU-Kernel-Baseline AArch64 SIMD-kernel optimization session
-  against a provisioned Graviton instance, via compile/evaluate/disassemble/submit
-  MCP tools exposed by mcp_app's server. Use when the user asks to optimize
-  an ncnn/simd-loop/llama.cpp kernel definition, run a CPU-Kernel-Baseline
-  benchmark session, or mentions CPU-Kernel-Baseline / arm-bench / Graviton
-  kernel optimization.
+  against a provisioned Graviton instance. Use when the user asks to optimize
+  an ncnn/simd-loop/llama.cpp kernel definition, or multiple kernel definitions in a type of operator, or all kernel definitions
 metadata:
   nanobot:
     requires:
@@ -41,13 +38,26 @@ python3 launch_session.py prepare-session \
     --local-repo-dir <path to your local CPU-Kernel-Baseline checkout>
 ```
 
-This prints an SSH spawn command. Configure it as your own MCP server (the
-same `command`/`args` shape this repo's own `.mcp.json` uses for its
-`codegraph` server) and connect to it — you'll then see four tools:
-`compile`, `evaluate`, `disassemble`, `submit` (no `read_code` — read
-previously-written files via **MCP Resources** instead, listed by
-`list_resources()`/read via `read_resource()`).
+Here's the flag table for `prepare-session`, must flag all required values:
 
+| flag | required? | default | notes |
+|---|---|---|---|
+| `--host` | yes | — | reachable IP/hostname of the provisioned Graviton instance |
+| `--user` | no | `ubuntu` | |
+| `--key-file` | no | `~/.ssh/id_rsa` | |
+| `--dataset` | yes | — | one of `ncnn`, `simd-loop`, `llama.cpp` — see table below |
+| `--definition` | yes | — | definition name, e.g. `conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0` |
+| `--baseline-author` | yes | — | see table below (must match `--dataset`) |
+| `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` — pick by target hardware (table below) |
+| `--author` | no | `nanobot` | tags every solution/trace this session writes |
+| `--local-repo-dir` | yes, unless `--no-sync` | — | your local checkout of this repo, pushed to the instance before the session |
+| `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
+| `--transport` | no | `stdio` | `stdio` (default, try first) or `sse` (fallback — see §7) |
+| `--no-sync` | flag | off | skip the `rsync_to` step (repo already up to date on the instance) |
+| `--skip-preflight` | flag | off | skip dataset-build + baseline-collection checks (only if you already know this exact instance is ready) |
+
+Once it prints the spawn command, configure it as your own MCP server, you'll then see four tools:
+`compile`, `evaluate`, `disassemble`, `submit` 
 ## 2. Establish the starting-point baseline (do this first)
 
 Before writing any optimized code:
@@ -84,8 +94,7 @@ Metrics from `evaluate({"measure": true})`:
 
 ## 4. Valid `--dataset` / `--baseline-author` / `--isa` values
 
-Hand-maintained (small, rarely changes — kept in sync by hand rather than
-generated, see `mcp_app/README.md`):
+Hand-maintained (small, rarely changes — kept in sync by hand rather than generated, see `mcp_app/README.md`):
 
 | dataset      | baseline_author         | isa (pick by target hardware)          |
 |--------------|--------------------------|-----------------------------------------|

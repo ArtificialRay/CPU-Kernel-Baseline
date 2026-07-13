@@ -1,9 +1,6 @@
 """compile/evaluate/disassemble — adapted from eval/agent_tools/remote_runner.py.
 
-remote_runner.py's cmd_compile/cmd_evaluate/cmd_disassemble were designed to
-run as a fresh subprocess per SSH call (no shared state, so each one reloaded
-`TraceSet.from_path(BENCH_TRACE)` from a hardcoded path). mcp_app's server is
-a long-lived process for the life of one session, so these are adapted to
+mcp_app's server is a long-lived process for the life of one session, so these are adapted to
 take an already-loaded TraceSet/Definition instead of reloading them —
 removes both a hardcoded path-climbing expression and redundant disk I/O per
 tool call. The compile/evaluate/disassemble logic itself is otherwise

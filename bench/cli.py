@@ -102,6 +102,9 @@ def cmd_collect_baselines(args: argparse.Namespace) -> int:
         return 1
     n_pass = sum(1 for t in traces if t.is_successful())
     print(f"\n{len(traces)} traces produced ({n_pass} PASSED, {len(traces) - n_pass} other).")
+    if n_pass == 0:
+        # Producing traces isn't success on its own 
+        return 1
     return 0
 
 

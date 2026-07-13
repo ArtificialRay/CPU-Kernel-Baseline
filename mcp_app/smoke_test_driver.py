@@ -1,18 +1,35 @@
-"""mcp_app.driver — sequential, non-nanobot fallback/testing driver.
+"""mcp_app.smoke_test_driver — sequential, non-nanobot fallback/testing driver.
 
 Loosely mirrors the *shape* of eval/run_benchmark.py's per-definition loop
 (not its code — zero imports from eval/, see mcp_app/README.md) and is
 functionally similar to what skills/nanobot/nanobot-kernel-session/scripts/
 launch_session.py does for a real nanobot session, but independently
 implemented — no import from skills/ either, so mcp_app and skills/ never
-depend on each other.
+depend on each other. Smoke-test-only — never invoked by the skill.
+
+Formerly split across two files (`driver.py` + `scripts/smoke_test.py`);
+merged since `scripts/smoke_test.py` was a strict subset of what this file
+already does (a fixed 2-definition sweep with none of the dataset-readiness/
+baseline-collection preflight below) — same tool, one name, renamed to make
+its smoke-test-only role explicit rather than the more general-sounding
+"driver".
 
 Usage:
-    python -m mcp_app.driver --host 1.2.3.4 --user ubuntu --key-file ~/.ssh/id_rsa \\
+    # General: any dataset/definition(s).
+    python -m mcp_app.smoke_test_driver --host 1.2.3.4 --user ubuntu --key-file ~/.ssh/id_rsa \\
         --dataset ncnn --baseline-author baseline-ncnn-arm --isa sve2 \\
         --problem conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0
 
-    python -m mcp_app.driver --list-datasets
+    # The two definitions used as this repo's standard verification check
+    # (see mcp_app/README.md's Verification section):
+    python -m mcp_app.smoke_test_driver --host <ip> --user ubuntu --key-file ~/.ssh/id_rsa \\
+        --dataset ncnn --baseline-author baseline-ncnn-arm --isa sve2 \\
+        --problem conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0
+    python -m mcp_app.smoke_test_driver --host <ip> --user ubuntu --key-file ~/.ssh/id_rsa \\
+        --dataset llama.cpp --baseline-author baseline-llamacpp-arm --isa sve2 \\
+        --problem gemm_bf16_n1024_k2048
+
+    python -m mcp_app.smoke_test_driver --list-datasets
 """
 
 from __future__ import annotations
@@ -20,6 +37,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import json
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,6 +50,9 @@ from .scripts.test_mcp_client import run_stdio_sequence
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCH_TRACE = REPO_ROOT / "bench-trace"
+
+# Directory to mcp_app's own copy dataset_builds.json's content 
+DATASET_BUILDS: dict = json.loads((Path(__file__).parent / "dataset_builds.json").read_text())
 
 DEFAULT_RSYNC_EXCLUDES = [
     "build", ".git", "terraform", "generations", "results", "notebooks",
@@ -63,12 +84,54 @@ def _defs_for_dataset(ts: TraceSet, dataset: str) -> list:
     return [ts.definitions[n] for n in sorted(matching) if n in ts.definitions]
 
 
-# ── Lazy baseline auto-collection (adapted from eval/run_benchmark.py's
-#    _ensure_baselines — see mcp_app/README.md on why this is a copy, not an
-#    import) — parallelized across missing definitions, safe because
-#    BuilderRegistry's build cache is lock-serialized per (solution.hash(),
-#    is_baseline), so concurrent builds of *different* definitions never
-#    contend (bench/compile/registry.py). ────────────────────────────────────
+# ── Dataset native-library readiness ────────────────────────────────
+
+def ensure_dataset_ready(
+    host: str, user: str, key_file: str, remote_root: str, dataset: str,
+    *, verbose: bool = True,
+) -> None:
+    """Make sure `dataset`'s native-library build artifacts exist on the
+    instance, building them if needed. No-op for datasets with no entry in
+    DATASET_BUILDS (e.g. simd-loop, which needs no native library). Raises
+    RuntimeError if the build steps fail (or the ready_check still fails
+    afterward) — callers should not proceed to baseline collection against
+    an instance missing what it needs.
+    """
+    config = DATASET_BUILDS.get(dataset)
+    if not config:
+        return
+
+    def _ready() -> bool:
+        rc, _, _ = _local_ssh.run_remote(host, user, key_file, config["ready_check"], timeout=15)
+        return rc == 0
+
+    if _ready():
+        if verbose:
+            print(f"[dataset] {dataset!r} already built on {host}.")
+        return
+
+    if verbose:
+        print(f"[dataset] {dataset!r} not ready on {host}; building "
+              f"({len(config['steps'])} step(s), this can take several minutes)...")
+    for step in config["steps"]:
+        if verbose:
+            print(f"[dataset]   {step['label']}...")
+        rc, _, err = _local_ssh.run_remote(
+            host, user, key_file, step["cmd"], timeout=step.get("timeout", 300),
+        )
+        if rc != 0 and verbose:
+            print(f"[dataset]   WARNING: {step['label']} failed: {err[:200]}")
+
+    if not _ready():
+        raise RuntimeError(
+            f"Dataset {dataset!r} failed to build on {host}. "
+            f"SSH in and check manually before running a session (ready_check: {config['ready_check']!r})."
+        )
+    if verbose:
+        print(f"[dataset] {dataset!r} ready on {host}.")
+
+
+# ── Lazy baseline auto-collection ────────────────────────────────────
 
 def _find_missing_baselines(
     host: str, user: str, key_file: str, remote_root: str,
@@ -76,6 +139,10 @@ def _find_missing_baselines(
 ) -> list[str]:
     if not definitions:
         return []
+    # Requires a PASSED trace, not just any trace with a matching solution
+    # prefix — a COMPILE_ERROR/RUNTIME_ERROR baseline trace still "exists"
+    # but doesn't satisfy the requirement (exactly what a missing
+    # native-library build produces — see ensure_dataset_ready above).
     check_code = (
         "import json; from pathlib import Path\n"
         f"bench = Path({remote_root!r}).expanduser() / 'bench-trace'\n"
@@ -89,7 +156,10 @@ def _find_missing_baselines(
         "            try:\n"
         "                for line in f.open():\n"
         "                    line = line.strip()\n"
-        "                    if line and json.loads(line).get('solution', '').startswith(auth):\n"
+        "                    if not line: continue\n"
+        "                    rec = json.loads(line)\n"
+        "                    if (rec.get('solution', '').startswith(auth)\n"
+        "                            and (rec.get('evaluation') or {}).get('status') == 'PASSED'):\n"
         "                        found = True; break\n"
         "            except Exception:\n"
         "                pass\n"
@@ -160,16 +230,14 @@ def run_definition(
     spawn_args = _local_ssh.ssh_spawn_args(host, user, key_file, remote_cmd)
     try:
         result = asyncio.run(run_stdio_sequence("ssh", spawn_args, verbose=True))
-        status = "ok"
     except AssertionError as e:
-        result = {"error": str(e)}
-        status = "failed"
+        result = {"status": "FAILED", "error": str(e)}
     _local_ssh.rsync_from(
         host, user, key_file,
         f"{remote_root}/agent-runs-mcp/{definition_name}",
         REPO_ROOT / "agent-runs-nanobot",
     )
-    return {"definition": definition_name, "status": status, **result}
+    return {"definition": definition_name, **result}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -188,6 +256,8 @@ def main(argv: list[str] | None = None) -> None:
     grp.add_argument("--problem", help="Definition name or op_type prefix.")
     grp.add_argument("--all", action="store_true", help="Run all definitions for the dataset.")
     p.add_argument("--skip-baselines", action="store_true")
+    p.add_argument("--skip-dataset-check", action="store_true",
+                    help="Skip ensure_dataset_ready (ncnn/llama.cpp native-library build check).")
     p.add_argument("--baseline-parallelism", type=int, default=4)
     p.add_argument("--bench-trace-root", default=str(BENCH_TRACE))
     args = p.parse_args(argv)
@@ -219,16 +289,25 @@ def main(argv: list[str] | None = None) -> None:
 
     print(f"Running {len(problem_defs)} definition(s) (dataset={args.dataset}, isa={args.isa})")
 
+    # Sync first — ensure_dataset_ready/ensure_baselines both need bench-trace/
+    # and bench/ to already exist at remote_root (the baseline-presence check
+    # script reads remote_root/bench-trace/traces/; 
+    _local_ssh.rsync_to(
+        args.host, args.user, args.key_file, REPO_ROOT, args.remote_root,
+        excludes=DEFAULT_RSYNC_EXCLUDES,
+    )
+
+    #collect-baselines needs bench/ importable there too). Running this before the sync used to be
+    # a latent ordering bug that just didn't manifest if the instance
+    # happened to already be synced from an earlier run.
+    if not args.skip_dataset_check:
+        ensure_dataset_ready(args.host, args.user, args.key_file, args.remote_root, args.dataset)
+
     if not args.skip_baselines:
         ensure_baselines(
             args.host, args.user, args.key_file, args.remote_root,
             problem_defs, args.baseline_author, parallelism=args.baseline_parallelism,
         )
-
-    _local_ssh.rsync_to(
-        args.host, args.user, args.key_file, REPO_ROOT, args.remote_root,
-        excludes=DEFAULT_RSYNC_EXCLUDES,
-    )
 
     results = []
     for i, defn in enumerate(problem_defs):
@@ -242,7 +321,7 @@ def main(argv: list[str] | None = None) -> None:
         results.append(result)
         print(f"  -> {result['status']} ({result['duration_s']}s)")
 
-    n_ok = sum(1 for r in results if r["status"] == "ok")
+    n_ok = sum(1 for r in results if r["status"] == "PASSED")
     print(f"\n{'=' * 60}\nDone: {n_ok}/{len(results)} succeeded\n{'=' * 60}")
 
 

@@ -1,8 +1,8 @@
 """RemoteTarget — self-contained SSH/rsync helper for this skill's own scripts.
 
 Zero imports from mcp_app or eval/ — this skill lives at the repo root as a
-sibling to mcp_app/, not nested inside it, and mcp_app/driver.py has its own
-independent, separately-duplicated equivalent
+sibling to mcp_app/, not nested inside it, and mcp_app/smoke_test_driver.py
+has its own independent, separately-duplicated equivalent
 (mcp_app/scripts/_local_ssh.py) rather than importing this file. See
 mcp_app/README.md's "Scope boundary" section for why.
 
