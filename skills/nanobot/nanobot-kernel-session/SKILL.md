@@ -3,96 +3,86 @@ name: nanobot-kernel-session
 description: >
   Drive a CPU-Kernel-Baseline AArch64 SIMD-kernel optimization session
   against a provisioned Graviton instance. Use when the user asks to optimize
-  an ncnn/simd-loop/llama.cpp kernel definition, or multiple kernel definitions in a type of operator, or all kernel definitions
+  an ncnn/simd-loop/llama.cpp kernel definition
 metadata:
   nanobot:
     requires:
-      bins: ["ssh", "rsync", "python3"]
+      bins: []
       env: []
-    always: false
+    always: true
 ---
 
 # nanobot-kernel-session
 
-Drives one or more kernel-optimization sessions against
-`mcp_app`'s MCP server (see `mcp_app/README.md` in the target repo for the
-full design). This document is a first draft — validate the `description`
-trigger and the exact CLI/config surface against real nanobot behavior
-before relying on it (see `mcp_app/README.md`'s Open Items).
+Drives one or more kernel-optimization sessions against `mcp_app`'s MCP
+server
+By the time you're reading this as the driving agent, a `compile`/`evaluate`/
+`disassemble`/`submit` MCP server should already be connected and visible to
+you.
 
-## 1. Get a session running
+## Ground rules: one definition at a time
 
-You'll be given (or need to ask the user for): a reachable SSH host/user/key
-for an already-provisioned Graviton instance, which `isa` it has
-(`sve` = Graviton3, `sve2` = Graviton4), and which definition + dataset to
-optimize. Instance provisioning is **not** this skill's job — assume the
-instance already exists.
+- Never target two definitions in the same turn. `evaluate`/`disassemble`/
+  `submit` take no `definition` arg — they act on whoever you last `compile()`'d.
+- Interleaving compiles across definitions silently drops the earlier one's
+  evaluation, and gains nothing — these calls run sequentially regardless.
+- Finish one definition's full chain (`compile` → `evaluate` → `disassemble`
+  if needed → `submit`) before moving to the next.
+- Revisiting an earlier definition later is fine — its version counter and
+  `best_compile` pick up where you left off (state is never evicted).
 
-Run, from this skill's `scripts/` directory:
+## 1. Establish the starting-point baseline (do this first, per definition)
 
-```bash
-python3 launch_session.py prepare-session \
-    --host <ip> --user ubuntu --key-file ~/.ssh/id_rsa \
-    --dataset <ncnn|simd-loop|llama.cpp> --definition <definition-name> \
-    --baseline-author <see table below> --isa <sve|sve2> \
-    --local-repo-dir <path to your local CPU-Kernel-Baseline checkout>
-```
+Before writing any optimized code for a given definition:
 
-Here's the flag table for `prepare-session`, must flag all required values:
-
-| flag | required? | default | notes |
-|---|---|---|---|
-| `--host` | yes | — | reachable IP/hostname of the provisioned Graviton instance |
-| `--user` | no | `ubuntu` | |
-| `--key-file` | no | `~/.ssh/id_rsa` | |
-| `--dataset` | yes | — | one of `ncnn`, `simd-loop`, `llama.cpp` — see table below |
-| `--definition` | yes | — | definition name, e.g. `conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0` |
-| `--baseline-author` | yes | — | see table below (must match `--dataset`) |
-| `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` — pick by target hardware (table below) |
-| `--author` | no | `nanobot` | tags every solution/trace this session writes |
-| `--local-repo-dir` | yes, unless `--no-sync` | — | your local checkout of this repo, pushed to the instance before the session |
-| `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
-| `--transport` | no | `stdio` | `stdio` (default, try first) or `sse` (fallback — see §7) |
-| `--no-sync` | flag | off | skip the `rsync_to` step (repo already up to date on the instance) |
-| `--skip-preflight` | flag | off | skip dataset-build + baseline-collection checks (only if you already know this exact instance is ready) |
-
-Once it prints the spawn command, configure it as your own MCP server, you'll then see four tools:
-`compile`, `evaluate`, `disassemble`, `submit` 
-## 2. Establish the starting-point baseline (do this first)
-
-Before writing any optimized code:
-
-1. `list_resources()` — you'll see a `reference-scalar-kernel.cpp` resource
-   present from the start (the unoptimized scalar kernel).
+1. `list_resources()` — you'll see a `<definition>/reference-scalar-kernel.cpp`
+   resource for **every** definition in this dataset, present from the
+   start (the unoptimized scalar kernel for each). Pick the definition
+   you're working on and find its entry.
 2. `read_resource()` it.
-3. `compile({"code": <that content>})` — this becomes version `v1`.
-4. `evaluate({"measure": true})`.
+3. `compile({"definition": "<that definition's name>", "code": <that content>})`
+   — this becomes version `v1` for that definition.
+4. `evaluate({})` — one call, always returns both correctness and
+   performance together (see §2's Metrics list; there's no separate
+   "measure" flag or faster correctness-only mode — the underlying evaluator
+   always runs the full timed pass once correctness passes, so there's
+   nothing cheaper to opt into).
 
 Record `v1`'s `time_speedup_geomean`/`cycle_speedup_geomean` — you'll need
-them at the end (step 5) to report how much you improved over the naive
+them at the end (§4) to report how much you improved over the naive
 starting point, not just over the competitive baseline.
 
-## 3. Optimize
+## 2. Optimize
 
-Standard loop:
+Standard loop, for the definition you're currently working on (see Ground
+rules above — one definition, react to each result before the next call):
 
-1. `compile({"code": ...})` your optimized attempt.
-2. `evaluate({"measure": false})` — fast correctness check only.
-3. `evaluate({"measure": true})` — collect timing + cycle speedup.
-4. `disassemble({})` when IPC is low or speedup is unexpectedly poor
+1. `compile({"definition": "<same definition>", "code": ...})` your optimized attempt.
+2. `evaluate({})` — correctness + timing + cycle speedup in one call.
+3. `disassemble({})` when IPC is low or speedup is unexpectedly poor
    (defaults to your kernel's own symbol).
-5. Iterate: compile → evaluate → improve. Use `list_resources()`/
+4. Iterate: compile → evaluate → improve. Use `list_resources()`/
    `read_resource()` to re-read any of your own earlier versions
-   (`v2.cpp`, `v3.cpp`, ...) if you need to compare against them.
+   (`<definition>/v2.cpp`, `<definition>/v3.cpp`, ...) if you need to compare
+   against them.
 
-Metrics from `evaluate({"measure": true})`:
+Calling `compile()` with a *different* `definition` value switches to that
+definition (and keeps its own separate compile/evaluate history — see Ground
+rules above); calling `compile()` again later with a definition you've already worked on
+resumes it correctly (version numbers continue, `best_compile` tracking for
+`submit()` is untouched by whatever you did in between).
+
+Metrics from `evaluate({})` (on `"status": "PASSED"`):
+- `max_absolute_error`/`max_relative_error` — correctness, always present.
 - `time_speedup_geomean` — wall-time speedup vs. the competitive baseline
   (geomean across workloads; >1.0 = faster).
 - `cycle_speedup_geomean` — cycle-count speedup vs. the same baseline.
 - `ipc_mean` — mean instructions-per-cycle.
 - `cache_misses_mean` — mean LLC misses.
+On a non-`PASSED` status, `failed_workload`/`log` say which workload failed
+and why (correctness or a runtime/timeout error).
 
-## 4. Valid `--dataset` / `--baseline-author` / `--isa` values
+## 3. Valid `--dataset` / `--baseline-author` / `--isa` values
 
 Hand-maintained (small, rarely changes — kept in sync by hand rather than generated, see `mcp_app/README.md`):
 
@@ -102,36 +92,17 @@ Hand-maintained (small, rarely changes — kept in sync by hand rather than gene
 | `simd-loop`  | `reference`              | `sve` (Graviton3) / `sve2` (Graviton4) |
 | `llama.cpp`  | `baseline-llamacpp-arm`  | `sve` (Graviton3) / `sve2` (Graviton4) |
 
-## 5. Finish and report
+`baseline_author` is only needed here if you want to override the server's
+auto-derived default — you no longer have to pass it explicitly.
 
-Before calling `submit`, compare your best version's
-`time_speedup_geomean`/`cycle_speedup_geomean` against `v1`'s numbers from
-step 2. Call `submit({"explanation": ...})` with **both** numbers in the
-explanation — e.g. "vs baseline-ncnn-arm: 1.85x; vs unoptimized
-reference-scalar starting point (v1): 5.9x". Both end up recorded in
-`trajectory.jsonl`'s final `submit` turn.
+## 4. Finish and report
 
-After `submit` returns `PASSED` (or you decide to stop), sync results back:
+Before calling `submit` for a definition, compare its best version's
+`time_speedup_geomean`/`cycle_speedup_geomean` against that definition's
+`v1` numbers from §1. Call `submit({"explanation": ...})` with **both**
+numbers in the explanation — e.g. "vs baseline-ncnn-arm: 1.85x; vs
+unoptimized reference-scalar starting point (v1): 5.9x". Both end up
+recorded in that definition's `trajectory.jsonl`'s final `submit` turn.
 
-```bash
-python3 launch_session.py sync-results \
-    --host <ip> --user ubuntu --key-file ~/.ssh/id_rsa \
-    --definition <definition-name> \
-    --local-results-dir <path to your local checkout>/agent-runs-nanobot
-```
-
-## 6. Optimizing many definitions in parallel
-
-Given a list of target definitions (and, for true multi-instance
-parallelism, one reachable instance per definition): spawn one subagent per
-definition. Each subagent independently repeats steps 1–5 above for its own
-`(host, definition)` pair — `launch_session.py` has no shared state between
-invocations, so this requires no coordination between subagents beyond the
-list of (instance, definition) assignments you hand out up front.
-
-## 7. If `prepare-session`'s stdio spawn command doesn't work
-
-If your MCP client config can only take a URL (not a spawn command), fall
-back to `--transport sse` on `prepare-session` — it starts an SSH tunnel and
-prints an `http://127.0.0.1:<port>/sse` endpoint instead. This path is less
-tested (see `mcp_app/README.md`'s Open Items) — try stdio first.
+Once you've `submit`'d every definition you were assigned (or you decide to
+stop), results get synced back by whoever is orchestrating this session.

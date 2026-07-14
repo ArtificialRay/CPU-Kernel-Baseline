@@ -4,36 +4,6 @@ Exposes `compile`/`evaluate`/`disassemble`/`submit` (the same tool surface
 `eval/agent_tools/` gives the SSH-based agent loop) as a proper MCP server,so an external agent harness (e.g. nanobot, claude code) can drive kernel-optimization
 sessions.
 
-## Scope boundary — read this before touching `eval/`
-
-**`mcp_app/` has zero coupling to anything under `eval/`.** Not just
-`eval/agent_tools/` (which is slated for retirement) — `eval/provision.py`,
-`eval/run_benchmark.py`, `eval/evaluator.py` too. `mcp_app/` depends only on
-`bench/`, the actual compile/evaluate/build engine both `eval/` and
-`mcp_app/` sit on top of as siblings.
-
-Two consequences that look like missing features but are deliberate:
-
-- **`mcp_app` never provisions an EC2 instance.** Picking an instance type
-  for a given ISA, running Terraform, tearing an instance down — none of
-  that is `mcp_app`'s job. Every entry point here assumes the caller already
-  has a reachable SSH host and already knows its ISA (however they got
-  it — quite possibly still `eval/provision.py`, just not imported from here).
-- **`skills/nanobot/nanobot-kernel-session/scripts/` is a separate,
-  independent package**, not a subdirectory of `mcp_app`. `launch_session.py`
-  (the thing that SSHes out, brings up a session, and syncs results back) is
-  invoked either by a human or by whatever the nanobot skill instructs — it's
-  a *consumer* of `mcp_app`'s tools, not part of implementing them.
-  `mcp_app/smoke_test_driver.py` (the non-nanobot testing/fallback driver) needs the
-  same kind of SSH/rsync logic, but gets its own small, independently
-  duplicated version (`mcp_app/scripts/_local_ssh.py`) rather than importing
-  the skill's — `mcp_app` and `skills/` never depend on each other, in either
-  direction.
-
-If a change would add an import from `eval/` or from `skills/` into anything
-under `mcp_app/`, stop — that's the one invariant this whole package is built
-around.
-
 ## Layout
 
 ```
@@ -46,7 +16,10 @@ mcp_app/
         ops.py          # compile_kernel/evaluate_kernel/disassemble_so — adapted from
                          #   eval/agent_tools/remote_runner.py's cmd_* functions
         trajectory.py    # TrajectoryWriter — copied verbatim (pure file I/O)
-        base.py          # KernelSession ABC — compile/evaluate/disassemble/submit
+        base.py          # KernelSession ABC — compile/evaluate/disassemble/submit,
+                         #   multi-definition (self._definitions keyed by definition name)
+        baseline_readiness.py  # per-definition baseline check-then-collect, called
+                                #   lazily from KernelSession.compile() on first touch
         ncnn.py, simd_loop.py, llama_cpp.py   # per-dataset KernelSession subclasses
         registry.py       # resolve_tools(dataset) -> Type[KernelSession]
     session.py         # SessionConfig + build_tools() — server-side bootstrap
@@ -61,7 +34,8 @@ mcp_app/
         test_mcp_client.py    # plain MCP client, used by smoke_test_driver.py and standalone
 
 skills/nanobot/nanobot-kernel-session/    # sibling to mcp_app/, not nested inside it
-    SKILL.md
+    SKILL.md            # agent-facing optimization workflow only
+    README.md            # operator-facing: launching a session, syncing results back
     scripts/
         remote.py            # RemoteTarget — the skill's own SSH/rsync (independent of _local_ssh.py)
         dataset_builds.json   # own independent copy, same content as mcp_app/dataset_builds.json
@@ -70,11 +44,21 @@ skills/nanobot/nanobot-kernel-session/    # sibling to mcp_app/, not nested insi
 
 ## Session model
 
-One fresh `mcp_app.server` process per (instance, definition) — mirrors
-`eval/agent_tools`'s one-`AgentTools`-instance-per-session pattern. Not a
-long-lived multi-session server. This is what lets a future parallel
-dispatcher (nanobot spawning N subagents across N instances) fan sessions
-out without any shared-state coordination inside `mcp_app`.
+One fresh `mcp_app.server` process per (instance, dataset) — **not** per
+definition. `dataset` still picks the process's `KernelSession` subclass
+(different harness-lifting logic and toolchain deps per dataset: ncnn needs
+`libncnn.a`, llama.cpp needs `libggml.a`), but `compile()` takes `definition`
+as a per-call argument, so one process can compile/evaluate/submit every
+definition in that dataset across the life of one connection, with no
+restart in between. `KernelSession` tracks per-definition state (trajectory
+writer, turn counter, last/best compile) keyed by definition name — nothing
+is evicted, so switching definitions and coming back later still works
+correctly (see `agent_tools/base.py`).
+
+This is still what lets a parallel dispatcher (nanobot spawning N subagents
+across N instances) fan sessions out without any shared-state coordination
+inside `mcp_app` — one subagent per (instance, dataset) pair, each free to
+walk as many or as few definitions of that dataset as it's assigned.
 
 ## Transport
 
@@ -118,40 +102,66 @@ server, but Resources are the protocol-correct read path.
 
 ## Establishing a "naive starting point" baseline
 
-`session.py::build_tools()` writes the `reference-scalar` baseline
-solution's `kernel.cpp` to `run_dir/reference-scalar-kernel.cpp` before the
-server starts accepting tool calls, so it's visible as a resource from the
-very first `list_resources()` call. The nanobot skill's workflow (see
+`session.py::_write_reference_scalar_kernels()` writes **every** definition
+in this dataset's `reference-scalar` baseline solution `kernel.cpp` to
+`run_dir/<definition_name>/reference-scalar-kernel.cpp` up front, before the
+server starts accepting tool calls — this has to stay eager (unlike baseline
+*collection*, see below) because the agent needs to read a definition's
+reference kernel via `list_resources()`/`read_resource()` and `compile()` it
+as that definition's `v1` *before* its own first real `compile()` call for
+that definition; by the time `compile()` returns for a new definition, it's
+too late to still be the naive starting point. Cheap even across every
+definition in the dataset — pure text-file I/O, no compile/evaluate. The
+nanobot skill's workflow (see
 `skills/nanobot/nanobot-kernel-session/SKILL.md`) tells the agent to
-`compile()` + `evaluate()` this as its own first tool call — it becomes `v1`
-in the trajectory naturally, giving a measured "how slow was the unoptimized
-starting point" data point for free, with no new tool needed. This also
-directly benefits the existing `.claude/skills/case-study` skill, which
-previously only had the reference-scalar source as text.
+`compile()` + `evaluate()` this as its own first tool call for each
+definition it works on — it becomes `v1` in that definition's trajectory
+naturally, giving a measured "how slow was the unoptimized starting point"
+data point for free, with no new tool needed. This also directly benefits
+the existing `.claude/skills/case-study` skill, which previously only had
+the reference-scalar source as text.
 
 ## Dataset readiness & baseline collection
 
-ncnn/llama.cpp baselines link against a native library (`libncnn.a` /
-`libggml.a`) that isn't part of the synced repo — it has to be separately
-cloned + cmake-built on the target instance (`~/ncnn`, `~/llama.cpp`).
+Two separate checks, at two different times, since one is dataset-level and
+one is definition-level:
+
+- **Dataset-level (native library build)**: ncnn/llama.cpp baselines link
+  against a native library (`libncnn.a` / `libggml.a`) that isn't part of
+  the synced repo — it has to be separately cloned + cmake-built on the
+  target instance (`~/ncnn`, `~/llama.cpp`). This still runs upfront, before
+  the server starts (it's needed regardless of which definitions get
+  touched): `ensure_dataset_ready()`, two independent copies, neither
+  importing from the other or from `eval/`:
+  - **`mcp_app/smoke_test_driver.py::ensure_dataset_ready()`** — runs before
+    its batch baseline collection, for smoke-testing.
+  - **`skills/nanobot/nanobot-kernel-session/scripts/launch_session.py::ensure_dataset_ready()`**
+    — runs automatically inside `prepare_session()` (skip with
+    `--skip-preflight`). A real nanobot session never touches
+    `smoke_test_driver.py`, which is smoke-test-only.
+- **Definition-level (does this definition have a PASSED baseline trace)**:
+  moved in-process into `mcp_app` itself —
+  **`mcp_app/agent_tools/baseline_readiness.py::ensure_baseline_collected()`**
+  — called lazily from `KernelSession.compile()` the first time a given
+  definition is touched (not upfront, since the server no longer knows its
+  definition set in advance). Runs `bench.benchmark.Benchmark` directly
+  against the server's own already-loaded `TraceSet` rather than shelling
+  out to `bench.cli collect-baselines`, so the new trace is reflected
+  immediately with no reload needed. This is a **third**, independent copy
+  of the check-then-collect logic (alongside the two `ensure_dataset_ready()`
+  copies above — matches the existing duplication convention). Because this
+  can take a while on first touch, the MCP server config entry for this
+  connection should set a generous `tool_timeout` (e.g. 300–600s) — see
+  `skills/nanobot/nanobot-kernel-session/SKILL.md`.
+
 Skipping this doesn't fail loudly on its own: the baseline solution just
 fails to compile, `evaluate()`/`submit()` still return `PASSED` for the
 *agent's own kernel* (which never depends on that library — see below), but
 `time_speedup`/`cycle_speedup` come back silently `None` since there's no
 valid baseline to compare against.
 
-Two independent, self-contained copies of this readiness logic exist,
-neither importing from the other or from `eval/`:
-
-- **`mcp_app/smoke_test_driver.py::ensure_dataset_ready()`** — runs before
-  its batch baseline collection, for smoke-testing.
-- **`skills/nanobot/nanobot-kernel-session/scripts/launch_session.py::ensure_dataset_ready()`
-  + `ensure_baseline_collected()`** — run automatically inside
-  `prepare_session()` (skip with `--skip-preflight`), scoped to the one
-  definition being optimized. A real nanobot session never touches
-  `smoke_test_driver.py`, which is smoke-test-only.
-
-Both read their own literal copy of `eval/dataset_builds.json`'s content —
+Both `ensure_dataset_ready()` copies read their own literal copy of
+`eval/dataset_builds.json`'s content —
 **`mcp_app/dataset_builds.json`** and
 **`skills/nanobot/nanobot-kernel-session/scripts/dataset_builds.json`** — file
 copies, not runtime reads of anything under `eval/`. This is a real
@@ -163,11 +173,14 @@ these are several multi-flag cmake invocations, more likely to drift): if
 ## Running it
 
 ```bash
-# On the target instance, once the repo is synced there:
-python -m mcp_app.server --dataset ncnn --definition <name> --author test \
-    --baseline-author baseline-ncnn-arm --isa sve2 \
-    --run-dir ~/arm-bench/agent-runs-mcp/<name> --transport stdio
-``` 
+# On the target instance, once the repo is synced there. --baseline-author
+# is optional — auto-derived from --dataset if omitted (see
+# agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR). One process
+# now serves every definition in the dataset — compile() takes `definition`
+# as a per-call argument, not a startup flag.
+python -m mcp_app.server --dataset ncnn --author test --isa sve2 \
+    --run-dir ~/arm-bench/agent-runs-mcp/test --transport stdio
+```
 
 ## Smoke test
 
@@ -244,3 +257,14 @@ actual Graviton instance.
    `skills/nanobot/nanobot-kernel-session/scripts/dataset_builds.json` are
    both manually-synced copies of `eval/dataset_builds.json` — no automated
    drift check exists. If you edit one, check all three.
+7. `mcp_app/smoke_test_driver.py::run_definition()` still spawns one fresh
+   server process per definition (compatibility-only update when `compile()`
+   gained its `definition` argument — see git history). Collapsing it to one
+   server process per dataset run, reusing a single MCP session across all
+   of `problem_defs`, is a real efficiency win but is a separate refactor of
+   this file's control flow, not done yet.
+8. No `list_definitions` discovery tool/resource exists yet — an agent still
+   has to be told externally which definition names to `compile()` for a
+   given dataset (e.g. by whoever drives nanobot), rather than being able to
+   enumerate them itself from the live session. Additive, independent of
+   everything else here; a likely fast-follow.

@@ -26,20 +26,31 @@ _PATTERNS = ["trajectory.jsonl", "reference-scalar-kernel.cpp", "v*.cpp", "v*.s"
 
 
 def list_run_dir_resources(run_dir: Path) -> list[types.Resource]:
-    """Rescan run_dir on every call — new vN.cpp/vN.s appear mid-session."""
+    """Rescan run_dir on every call — new vN.cpp/vN.s appear mid-session.
+
+    run_dir is a session root with one subdirectory per definition
+    (run_dir/<definition_name>/{trajectory.jsonl, vN.cpp, ...}) — glob one
+    level deeper than the pattern itself, and dedupe/name resources by their
+    path relative to run_dir (not the bare filename) since e.g. `v1.cpp`
+    exists once per definition and bare-name dedup would silently drop all
+    but one definition's copy.
+    """
     if not run_dir.exists():
         return []
     seen: set[str] = set()
     resources: list[types.Resource] = []
     for pattern in _PATTERNS:
-        for path in sorted(run_dir.glob(pattern)):
-            if path.name in seen or not path.is_file():
+        for path in sorted(run_dir.glob(f"*/{pattern}")):
+            if not path.is_file():
                 continue
-            seen.add(path.name)
+            rel = str(path.relative_to(run_dir))
+            if rel in seen:
+                continue
+            seen.add(rel)
             resources.append(
                 types.Resource(
                     uri=f"file://{path.resolve()}",
-                    name=path.name,
+                    name=rel,
                     mimeType=_MIME_TYPES.get(path.suffix, "text/plain"),
                 )
             )

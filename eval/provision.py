@@ -175,6 +175,21 @@ def _install_deps(handle: InstanceHandle) -> None:
     """Install system and Python dependencies on the remote instance."""
     steps = [
         (
+            "disable unattended-upgrades",
+            # Ubuntu's apt-daily-upgrade.timer fires once a day at a randomized
+            # time and, when it happens to include openssh-server, restarts
+            # ssh.service — which kills every established SSH session (and
+            # whatever long-running eval/mcp_app.server process is using it)
+            # with no clean FIN the client can detect, so it hangs forever
+            # instead of erroring out. agent benchmarking sessions can run for
+            # many minutes, squarely in the blast radius of a daily timer, so
+            # disable it up front rather than discover it mid-run.
+            "sudo systemctl disable --now unattended-upgrades.service "
+            "apt-daily.timer apt-daily-upgrade.timer "
+            "apt-daily.service apt-daily-upgrade.service 2>/dev/null; true",
+            30,
+        ),
+        (
             "apt packages",
             "sudo apt-get update -qq && "
             "sudo apt-get install -y -qq python3-pip clang-18 cmake libomp-18-dev",

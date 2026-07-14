@@ -24,6 +24,18 @@ def _ssh_base_args(key_file: str) -> list[str]:
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=10",
+        # The long-lived MCP session (ssh_spawn_args) can sit with zero
+        # protocol traffic for many minutes at a time while evaluate()/
+        # submit() crunch on the remote side — with no keepalive, a
+        # connection silently dropped by some idle-TCP-timeout in the
+        # network path (home router/NAT, not the AWS instance — sshd
+        # restarts/OOM were ruled out separately) goes undetected for a
+        # very long time (client just hangs) or forever. These two options
+        # send an active probe every 15s and give up after 3 misses (45s),
+        # both keeping the connection alive and detecting a truly dead one
+        # quickly instead of hanging or waiting on OS-level TCP timeouts.
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=3",
     ]
 
 

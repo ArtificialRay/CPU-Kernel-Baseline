@@ -1,9 +1,12 @@
-"""mcp_app.server — the MCP server process: one per (instance, definition) session.
+"""mcp_app.server — the MCP server process: one per (instance, dataset) session.
 
 Registers compile/evaluate/disassemble/submit as MCP tools (no `read_code` —
 retired, see mcp_app/agent_tools/base.py) and the session's trajectory files
 as MCP Resources (mcp_app/resources.py), backed by mcp_app/agent_tools's
 in-process KernelSession (this process runs directly on the target instance).
+`compile` takes `definition` as a per-call argument — one server process can
+compile/evaluate/submit many definitions across the same dataset without
+restarting; see agent_tools/base.py's KernelSession.
 
 Built on the low-level `mcp.server.lowlevel.Server` rather than FastMCP:
 tool_schemas() already produces ready-made JSON Schema (no need to re-derive
@@ -13,9 +16,8 @@ versions — a data-driven list_tools/call_tool/list_resources/read_resource
 handler set maps onto both needs directly.
 
 Usage:
-    python -m mcp_app.server --dataset ncnn --definition <name> --author test \\
-        --baseline-author baseline-ncnn-arm --isa sve2 --run-dir <path> \\
-        --transport stdio
+    python -m mcp_app.server --dataset ncnn --author test --isa sve2 \\
+        --run-dir <path> --transport stdio
 """
 
 from __future__ import annotations
@@ -98,16 +100,17 @@ async def _run_sse(server: Server, bind_host: str, port: int) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", required=True, choices=["ncnn", "simd-loop", "llama.cpp"])
-    p.add_argument("--definition", required=True, dest="definition_name")
     p.add_argument("--author", required=True)
-    p.add_argument("--baseline-author", required=True,
-                    help="No internal dataset->author mapping — caller must know this.")
+    p.add_argument("--baseline-author", default=None,
+                    help="Override only — auto-derived from --dataset by default "
+                         "(see agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR).")
     p.add_argument("--isa", required=True, choices=sorted(isa_mod.SUPPORTED_ISAS),
                     help="Explicit, never auto-detected — drives compile flags deterministically.")
     p.add_argument("--bench-trace-root", default="bench-trace",
                     help="Relative to cwd by default (server is launched from the repo root).")
     p.add_argument("--run-dir", required=True,
-                    help="Where trajectory files land, e.g. <remote_root>/agent-runs-mcp/<definition>.")
+                    help="Session root, e.g. <remote_root>/agent-runs-mcp/<author> — each "
+                         "definition compile()'d gets its own <run-dir>/<definition>/ subdir.")
     p.add_argument("--instance-label", default=None,
                     help="Cosmetic only (e.g. 'c8g.large') — never used for compile-flag decisions.")
     p.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
@@ -119,7 +122,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     cfg = SessionConfig(
-        definition_name=args.definition_name,
         dataset=args.dataset,
         author=args.author,
         baseline_author=args.baseline_author,

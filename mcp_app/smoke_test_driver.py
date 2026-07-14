@@ -220,21 +220,51 @@ def ensure_baselines(
 def run_definition(
     host: str, user: str, key_file: str, remote_root: str,
     definition_name: str, dataset: str, author: str, baseline_author: str, isa: str,
+    *, session_timeout_s: float = 1800,
 ) -> dict:
+    # Still one fresh server process per definition here (compatibility-only
+    # update, not the one-server-per-dataset efficiency refactor — see
+    # mcp_app/README.md's Open Items). run_dir is author-scoped to match the
+    # server's new contract; since each of these spawns only ever touches one
+    # definition, its agent-runs-mcp/<author>/<definition_name>/ subdirectory
+    # never collides with another spawn's.
     remote_cmd = (
         f"cd {remote_root} && python3 -m mcp_app.server --dataset {dataset} "
-        f"--definition {definition_name} --author {author} "
-        f"--baseline-author {baseline_author} --isa {isa} "
-        f"--run-dir {remote_root}/agent-runs-mcp/{definition_name} --transport stdio"
+        f"--author {author} --baseline-author {baseline_author} --isa {isa} "
+        f"--run-dir {remote_root}/agent-runs-mcp/{author} --transport stdio"
     )
     spawn_args = _local_ssh.ssh_spawn_args(host, user, key_file, remote_cmd)
     try:
-        result = asyncio.run(run_stdio_sequence("ssh", spawn_args, verbose=True))
-    except AssertionError as e:
+        result = asyncio.run(asyncio.wait_for(
+            run_stdio_sequence("ssh", spawn_args, definition_name, verbose=True),
+            timeout=session_timeout_s,
+        ))
+    except asyncio.TimeoutError:
+        # The remote mcp_app.server process can die mid-session
+        # without the local ssh child ever seeing a clean disconnect, in
+        # which case run_stdio_sequence awaits a response that never comes.
+        # Without this, run_definition (and the whole batch loop) hangs
+        # forever instead of reporting a failure and moving on.
+        result = {
+            "status": "TIMEOUT",
+            "error": f"no response from remote session within {session_timeout_s}s "
+                     "(remote mcp_app.server likely died mid-session)",
+        }
+    except Exception as e:
+        # Covers both explicit correctness-check AssertionErrors from
+        # run_tool_sequence and connection-death errors — e.g.
+        # mcp.shared.exceptions.McpError (wrapped in an anyio
+        # ExceptionGroup) when the ssh session dies mid-call, observed in
+        # practice when an unattended-upgrades-triggered sshd restart (or
+        # the remote mcp_app.server process exiting unexpectedly) drops the
+        # connection. Previously only `except AssertionError` was caught
+        # here, so McpError crashed the whole batch loop with an unhandled
+        # traceback instead of recording this one definition as failed and
+        # continuing to the next.
         result = {"status": "FAILED", "error": str(e)}
     _local_ssh.rsync_from(
         host, user, key_file,
-        f"{remote_root}/agent-runs-mcp/{definition_name}",
+        f"{remote_root}/agent-runs-mcp/{author}/{definition_name}",
         REPO_ROOT / "agent-runs-nanobot",
     )
     return {"definition": definition_name, **result}
@@ -259,6 +289,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--skip-dataset-check", action="store_true",
                     help="Skip ensure_dataset_ready (ncnn/llama.cpp native-library build check).")
     p.add_argument("--baseline-parallelism", type=int, default=4)
+    p.add_argument("--session-timeout-s", type=float, default=1800,
+                    help="Give up on a single definition's MCP session (compile/evaluate/"
+                         "disassemble/submit) after this many seconds with no response, "
+                         "reporting status=TIMEOUT instead of hanging forever.")
     p.add_argument("--bench-trace-root", default=str(BENCH_TRACE))
     args = p.parse_args(argv)
 
@@ -316,6 +350,7 @@ def main(argv: list[str] | None = None) -> None:
         result = run_definition(
             args.host, args.user, args.key_file, args.remote_root,
             defn.name, args.dataset, args.author, args.baseline_author, args.isa,
+            session_timeout_s=args.session_timeout_s,
         )
         result["duration_s"] = round(time.monotonic() - start, 1)
         results.append(result)
