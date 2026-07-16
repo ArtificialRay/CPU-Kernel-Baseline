@@ -45,6 +45,7 @@ from pathlib import Path
 
 from bench.data.trace_set import TraceSet
 
+from .agent_tools.isa import SUPPORTED_ISAS
 from .scripts import _local_ssh
 from .scripts.test_mcp_client import run_stdio_sequence
 
@@ -279,7 +280,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--remote-root", default="~/arm-bench")
     p.add_argument("--dataset", choices=list(DATASET_REFERENCE))
     p.add_argument("--baseline-author")
-    p.add_argument("--isa", choices=["neon", "sve", "sve2", "sme2"])
+    p.add_argument("--isa", choices=list(SUPPORTED_ISAS))
     p.add_argument("--author", default="driver-test")
     grp = p.add_mutually_exclusive_group()
     grp.add_argument("--problem", help="Definition name or op_type prefix.")
