@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -46,9 +47,28 @@ INSTANCE_ISA: dict[str, tuple[str, list[str], list[str]]] = {
 }
 _FALLBACK_ISA = ("-march=armv8-a", [], ["aarch64"])
 
+# Per-run ISA override (env ARMBENCH_ISA_MODE) for the ISA-ablation experiments:
+# force a tier's compile flags regardless of the instance's native ISA, so
+# portable/SVE/SVE2 can be compared on one Graviton4 box (backward-compatible,
+# runs all three). "portable" = baseline armv8-a; the "no hand-written SIMD"
+# constraint is applied via the agent prompt (evaluator._ISA_MODE_PROMPT), since
+# armv8-a still permits compiler auto-vectorization.
+_ISA_MODES: dict[str, tuple[str, list[str], list[str]]] = {
+    "portable": ("-march=armv8-a",        [],       ["aarch64"]),
+    "sve":      ("-march=armv8.2-a+sve",  ["sve"],  ["aarch64-sve"]),
+    "sve2":     ("-march=armv9-a+sve2",   ["sve2"], ["aarch64-sve2"]),
+}
+
 
 def derive_isa(instance_type: str) -> tuple[str, list[str], list[str]]:
-    """(march flag, isa_features, target_hardware labels) for an EC2 instance type."""
+    """(march flag, isa_features, target_hardware labels).
+
+    Honors the ARMBENCH_ISA_MODE override (portable/sve/sve2) when set — for the
+    ISA-ablation experiments — otherwise derives from the EC2 instance type.
+    """
+    mode = os.environ.get("ARMBENCH_ISA_MODE", "").strip().lower()
+    if mode in _ISA_MODES:
+        return _ISA_MODES[mode]
     return INSTANCE_ISA.get(instance_type, _FALLBACK_ISA)
 
 

@@ -9,6 +9,7 @@ Compatible with any LiteLLM-supported model.
 
 import copy
 import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -240,6 +241,21 @@ def run_agentic_eval(
     family = handle.instance_type.split(".")[0] if handle.instance_type else ""
     isa_desc = _AGENT_ISA_LABELS.get(family, handle.instance_type or "AArch64")
     isa_name = _AGENT_ISA_NAMES.get(family, "SVE2")
+
+    # ISA-ablation override (env ARMBENCH_ISA_MODE): must match agent_tools.base's
+    # _ISA_MODES so the prompt's allowed-ISA matches the actual compile flags.
+    # "portable" = no hand-written SIMD (compiler auto-vec still allowed).
+    _ISA_MODE_PROMPT = {
+        "portable": ("AArch64 (portable C++ only — do NOT use NEON or SVE "
+                     "intrinsics; rely on clean, compiler-vectorizable C++)",
+                     "portable C++ (no SIMD intrinsics)"),
+        "sve":      ("Graviton3 with SVE (SVE1, 128-bit) — use SVE intrinsics "
+                     "only, NOT SVE2", "SVE"),
+        "sve2":     ("Graviton4 with SVE2 (128-bit)", "SVE2"),
+    }
+    _mode = os.environ.get("ARMBENCH_ISA_MODE", "").strip().lower()
+    if _mode in _ISA_MODE_PROMPT:
+        isa_desc, isa_name = _ISA_MODE_PROMPT[_mode]
 
     _BASELINE_LABELS = {
         "baseline-ncnn-arm":     "hand-optimized ncnn ARM baseline",
