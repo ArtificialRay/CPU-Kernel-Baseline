@@ -31,6 +31,11 @@ class RemoteTarget:
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=10",
+            # The long-lived MCP session (ssh_spawn_args) can sit with zero
+            # protocol traffic for many minutes at a time while evaluate()/
+            # submit() crunch on the remote side
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=3"
         ]
 
     def ssh_cmd(self, remote_cmd: str) -> list[str]:

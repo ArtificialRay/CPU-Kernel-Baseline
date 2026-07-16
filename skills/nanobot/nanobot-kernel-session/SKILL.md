@@ -54,8 +54,7 @@ starting point, not just over the competitive baseline.
 
 ## 2. Optimize
 
-Standard loop, for the definition you're currently working on (see Ground
-rules above — one definition, react to each result before the next call):
+Standard loop for the definition you're currently working on:
 
 1. `compile({"definition": "<same definition>", "code": ...})` your optimized attempt.
 2. `evaluate({})` — correctness + timing + cycle speedup in one call.
@@ -66,13 +65,7 @@ rules above — one definition, react to each result before the next call):
    (`<definition>/v2.cpp`, `<definition>/v3.cpp`, ...) if you need to compare
    against them.
 
-Calling `compile()` with a *different* `definition` value switches to that
-definition (and keeps its own separate compile/evaluate history — see Ground
-rules above); calling `compile()` again later with a definition you've already worked on
-resumes it correctly (version numbers continue, `best_compile` tracking for
-`submit()` is untouched by whatever you did in between).
-
-Metrics from `evaluate({})` (on `"status": "PASSED"`):
+### Metrics from evaluate({}) (on `"status": "PASSED"`)
 - `max_absolute_error`/`max_relative_error` — correctness, always present.
 - `time_speedup_geomean` — wall-time speedup vs. the competitive baseline
   (geomean across workloads; >1.0 = faster).
@@ -81,6 +74,12 @@ Metrics from `evaluate({})` (on `"status": "PASSED"`):
 - `cache_misses_mean` — mean LLC misses.
 On a non-`PASSED` status, `failed_workload`/`log` say which workload failed
 and why (correctness or a runtime/timeout error).
+
+### Useful guidelines
+- feel free to call builtin `write` tool to write anything you find it is interesting in the optimize process, e.g. `disassemble` output, `evaluate` logs, or your own notes.
+- feel free to call builtin `read` tool to read any resource you wrote in the optimize process
+- disassemble is a good friend to inpsect if SIMD really helps improving performance, or if you are not sure why your optimization is not working as expected. It can help you understand the generated assembly code and identify potential bottlenecks or inefficiencies.
+
 
 ## 3. Valid `--dataset` / `--baseline-author` / `--isa` values
 

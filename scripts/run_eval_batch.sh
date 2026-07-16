@@ -12,7 +12,7 @@ ISA=sve
 MODEL=openrouter/anthropic/claude-sonnet-4-6
 PROBLEMS=(
     # pooling_fp32_global_avg
-    # conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0
+    conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0
     conv2d_w8a8ch_kh1_kw1_sh2_sw2_dh1_dw1_p0
     conv2d_w8a8ch_kh3_kw3_sh1_sw1_dh1_dw1_p1
     conv2d_w8a8ch_kh3_kw3_sh2_sw2_dh1_dw1_p1

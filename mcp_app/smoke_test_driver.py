@@ -199,7 +199,7 @@ def ensure_baselines(
             host, user, key_file,
             f"cd {remote_root} && python3 -m bench.cli collect-baselines "
             f"--baseline-author {baseline_author} --definition {d.name}",
-            timeout=600,
+            timeout=900,
         )
         return d.name, rc, out, err
 
@@ -246,7 +246,6 @@ def run_definition(
         # Without this, run_definition (and the whole batch loop) hangs
         # forever instead of reporting a failure and moving on.
         result = {
-            "status": "TIMEOUT",
             "error": f"no response from remote session within {session_timeout_s}s "
                      "(remote mcp_app.server likely died mid-session)",
         }

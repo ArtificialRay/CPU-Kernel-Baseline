@@ -26,11 +26,35 @@ KEY_FILE=${KEY_FILE:-~/.ssh/id_rsa}
 
 NCNN_PROBLEMS=(
     conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0
+    conv2d_fp32_kh1_kw1_sh2_sw2_dh1_dw1_p0
+    conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1
+    conv2d_fp32_kh3_kw3_sh2_sw2_dh1_dw1_p1
+    conv2d_fp32_kh7_kw7_sh2_sw2_dh1_dw1_p3
+    conv2d_depthwise_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1
+    conv2d_depthwise_fp32_kh3_kw3_sh2_sw2_dh1_dw1_p1
+    conv2d_depthwise_fp32_kh5_kw5_sh1_sw1_dh1_dw1_p2
+    conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2
+    gemm_fp32_n1000_k1280
+    gemm_fp32_n1000_k2048
+    gemm_fp32_n1280_k960
+    gemm_fp32_n29_k800
+    #lstm_fp32_i322_h800
+    pooling_fp32_global_avg
+    pooling_fp32_max_kh2_kw2_sh2_sw2_p0
+    pooling_fp32_max_kh3_kw3_sh1_sw1_p1
+    pooling_fp32_max_kh3_kw3_sh2_sw2_p0
+    pooling_fp32_max_kh3_kw3_sh2_sw2_p1
 )
 LLAMACPP_PROBLEMS=(
-    gemm_bf16_n1024_k2048
-    moe_q4_k_m_e60_k4_d2048_ff1536
-    moe_q8_0_e60_k4_d2048_ff1408
+    # gemm_bf16_n1024_k2048
+    # gemm_bf16_n1408_k2048
+    # gemm_bf16_n2048_k1024
+    # gemm_bf16_n2048_k1408
+    # gemm_bf16_n2048_k2048
+    # mha_bf16_h16_d128_kvh16
+    moe_bf16_e60_k4_d2048_ff1408
+    moe_bf16_e64_k8_d2048_ff1024
+    rms_norm_fp32_d2048
 )
 
 # ISA -> eval_config.json instance tier
