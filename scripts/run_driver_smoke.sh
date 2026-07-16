@@ -17,7 +17,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-PYTHON=/home/rthu/miniconda3/bin/python
+PYTHON=${PYTHON:-python3}
 ISA=${ISA:-sve}
 AUTHOR=${AUTHOR:-driver-smoke-test}
 REMOTE_ROOT=${REMOTE_ROOT:-'~/arm-bench'}
