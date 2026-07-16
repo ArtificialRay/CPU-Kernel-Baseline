@@ -310,6 +310,9 @@ def run_agentic_eval(
                 "messages": compressed,
                 "tools": schemas,
                 "tool_choice": "required",
+                # litellm defaults to 600s; large reasoning responses over
+                # OpenRouter can exceed that, so give more headroom.
+                "timeout": 1200,
             }
             if "opus-4-7" not in model and "opus-4-8" not in model:
                 completion_kwargs["temperature"] = 0.2
@@ -324,7 +327,7 @@ def run_agentic_eval(
                         print(f"  [rate limit] sleeping {wait}s: {e}")
                     time.sleep(wait)
                 except (litellm.InternalServerError, litellm.APIConnectionError,
-                        litellm.ServiceUnavailableError) as e:
+                        litellm.ServiceUnavailableError, litellm.Timeout) as e:
                     wait = 30 * (2 ** _retry)
                     if verbose:
                         print(f"  [server error] sleeping {wait}s: {type(e).__name__}: {e}")
