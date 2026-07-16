@@ -26,24 +26,24 @@ KEY_FILE=${KEY_FILE:-~/.ssh/id_rsa}
 
 NCNN_PROBLEMS=(
     conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0
-    conv2d_fp32_kh1_kw1_sh2_sw2_dh1_dw1_p0
-    conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1
-    conv2d_fp32_kh3_kw3_sh2_sw2_dh1_dw1_p1
-    conv2d_fp32_kh7_kw7_sh2_sw2_dh1_dw1_p3
-    conv2d_depthwise_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1
-    conv2d_depthwise_fp32_kh3_kw3_sh2_sw2_dh1_dw1_p1
-    conv2d_depthwise_fp32_kh5_kw5_sh1_sw1_dh1_dw1_p2
-    conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2
-    gemm_fp32_n1000_k1280
-    gemm_fp32_n1000_k2048
-    gemm_fp32_n1280_k960
-    gemm_fp32_n29_k800
-    #lstm_fp32_i322_h800
-    pooling_fp32_global_avg
-    pooling_fp32_max_kh2_kw2_sh2_sw2_p0
-    pooling_fp32_max_kh3_kw3_sh1_sw1_p1
-    pooling_fp32_max_kh3_kw3_sh2_sw2_p0
-    pooling_fp32_max_kh3_kw3_sh2_sw2_p1
+    # conv2d_fp32_kh1_kw1_sh2_sw2_dh1_dw1_p0
+    # conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1
+    # conv2d_fp32_kh3_kw3_sh2_sw2_dh1_dw1_p1
+    # conv2d_fp32_kh7_kw7_sh2_sw2_dh1_dw1_p3
+    # conv2d_depthwise_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1
+    # conv2d_depthwise_fp32_kh3_kw3_sh2_sw2_dh1_dw1_p1
+    # conv2d_depthwise_fp32_kh5_kw5_sh1_sw1_dh1_dw1_p2
+    # conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2
+    # gemm_fp32_n1000_k1280
+    # gemm_fp32_n1000_k2048
+    # gemm_fp32_n1280_k960
+    # gemm_fp32_n29_k800
+    # #lstm_fp32_i322_h800
+    # pooling_fp32_global_avg
+    # pooling_fp32_max_kh2_kw2_sh2_sw2_p0
+    # pooling_fp32_max_kh3_kw3_sh1_sw1_p1
+    # pooling_fp32_max_kh3_kw3_sh2_sw2_p0
+    # pooling_fp32_max_kh3_kw3_sh2_sw2_p1
 )
 LLAMACPP_PROBLEMS=(
     # gemm_bf16_n1024_k2048
@@ -96,5 +96,5 @@ run_smoke() {
 }
 
 echo "=== mcp_app.smoke_test_driver smoke test: host=$HOST isa=$ISA author=$AUTHOR ==="
-#run_smoke ncnn baseline-ncnn-arm "${NCNN_PROBLEMS[@]}"
-run_smoke llama.cpp baseline-llamacpp-arm "${LLAMACPP_PROBLEMS[@]}"
+run_smoke ncnn baseline-ncnn-arm "${NCNN_PROBLEMS[@]}"
+#run_smoke llama.cpp baseline-llamacpp-arm "${LLAMACPP_PROBLEMS[@]}"

@@ -27,7 +27,7 @@ from bench.data.solution import Solution
 from bench.data.trace import Trace
 from bench.data.trace_set import TraceSet
 from bench.data.json_utils import save_json_file
-from eval.provision import InstanceHandle
+from eval.remote import InstanceHandle
 
 from .trajectory import TrajectoryWriter
 

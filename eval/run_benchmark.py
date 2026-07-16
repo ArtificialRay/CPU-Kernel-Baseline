@@ -22,6 +22,8 @@ Usage:
 import argparse
 import base64
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -31,19 +33,65 @@ from bench.config import BenchmarkConfig
 from bench.data.trace_set import TraceSet
 from eval.config import REPO_ROOT
 from eval.evaluator import run_agentic_eval
-from eval.provision import (
-    get_or_provision,
-    get_running_instance,
-    teardown,
-    provision,
-    ensure_dataset_ready,
-    ISA_INSTANCE_MAP,
-    InstanceHandle,
-)
+from eval.remote import InstanceHandle
 
 BENCH_TRACE = REPO_ROOT / "bench-trace"
 RESULTS_DIR = REPO_ROOT / "results"
+EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
+PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
 load_dotenv(REPO_ROOT / ".env")
+
+# Own copy of eval/provision.py's ISA_INSTANCE_MAP — small (4 rows), rarely
+# changes, kept in sync by hand. eval/provision.py is a standalone script;
+# nothing here imports from it — see its module docstring.
+ISA_INSTANCE_MAP = {
+    "neon": "c7g.large",
+    "sve": "c7g.large",
+    "sve2": "c8g.large",
+    "sme2": "c8g.large",
+}
+
+
+def _tier_for_isa(isa: str) -> str:
+    return "c8g" if isa in ("sve2", "sme2") else "c7g"
+
+
+def _read_config_instance(isa: str) -> InstanceHandle | None:
+    """Read eval/eval_config.json directly for a running instance of `isa`'s tier."""
+    if not EVAL_CONFIG_PATH.exists():
+        return None
+    config = json.loads(EVAL_CONFIG_PATH.read_text())
+    tier = _tier_for_isa(isa)
+    inst = config.get("instances", {}).get(tier, {})
+    host = inst.get("host", "")
+    if not host:
+        return None
+    return InstanceHandle(
+        host=host,
+        user=inst.get("user", "ubuntu"),
+        key_file=inst.get("key_file", "~/.ssh/id_rsa"),
+        instance_type=ISA_INSTANCE_MAP.get(isa, "c7g.large"),
+    )
+
+
+def _provision(isa: str, dataset: str) -> InstanceHandle:
+    """Subprocess-invoke the standalone eval/provision.py, then read the
+    eval_config.json it wrote. Reuses a reachable instance for this ISA
+    tier if one's already up; otherwise provisions a fresh one."""
+    subprocess.run(
+        [sys.executable, str(PROVISION_SCRIPT), "--isa", isa, "--dataset", dataset],
+        check=True,
+    )
+    handle = _read_config_instance(isa)
+    if handle is None:
+        raise RuntimeError(
+            f"eval/provision.py exited successfully but wrote no instance for isa={isa!r}"
+        )
+    return handle
+
+
+def _teardown() -> None:
+    subprocess.run([sys.executable, str(PROVISION_SCRIPT), "--teardown"], check=True)
 
 # Dataset → bench.cli collect-baselines --baseline-author value.
 # Must match the baseline_author used by AgentTools (BenchmarkConfig default in
@@ -200,19 +248,10 @@ def main():
 
     try:
         if args.provision:
-            handle = provision(instance_type, dataset=args.dataset)
-        else:
-            handle = get_running_instance(isa)
-            if handle is None:
-                print(f"No running {instance_type} instance ({isa}). Provisioning...")
-                handle = provision(instance_type, dataset=args.dataset)
-            else:
-                # Instance may have been provisioned standalone (e.g. via
-                # `python eval/provision.py` without --dataset) — don't silently
-                # launch the agent against an instance missing this dataset's
-                # build artifacts.
-                ensure_dataset_ready(handle, args.dataset)
-    except RuntimeError as e:
+            # Force a genuinely new instance: teardown, then provision.
+            _teardown()
+        handle = _provision(isa, args.dataset)
+    except (subprocess.CalledProcessError, RuntimeError) as e:
         print(f"[ERROR] {e}")
         return
 
@@ -310,14 +349,14 @@ def main():
     # ── Teardown ──────────────────────────────────────────────────────────
     if args.teardown:
         print("\n[teardown] Destroying instance...")
-        teardown()
+        _teardown()
     else:
-        handle = get_running_instance(instance_type)
+        handle = _read_config_instance(isa)
         if handle and handle.host:
             print(
                 f"\n[WARNING] Instance at {handle.host} is still running and accruing cost. "
                 f"Run with --teardown to destroy it after evaluation, "
-                f"or: python -m eval.provision --teardown"
+                f"or: python eval/provision.py --teardown"
             )
 
 

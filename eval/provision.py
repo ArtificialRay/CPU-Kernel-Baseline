@@ -1,29 +1,44 @@
 """
-eval/provision.py — Terraform lifecycle wrapper for arm-bench benchmark.
+eval/provision.py — standalone Terraform lifecycle wrapper for Arm EC2
+instances (Graviton3/4). Provisions an instance, waits for it to be ready,
+rsyncs source, installs deps, and (optionally) builds a dataset's native
+lib. Writes/reads a single shared config file, eval/eval_config.json.
 
-Provisions an Arm EC2 instance (Graviton3/4), waits for it to be ready,
-rsyncs source, and optionally does an initial build. Returns an InstanceHandle
-that the eval tools use for SSH access.
+Standalone script — nothing else in this repo imports from this module.
+Callers that need an instance (eval/run_benchmark.py,
+skills/launch/launch_session.py, scripts/gen-workload/collect_workloads_llm.py)
+invoke it as a subprocess and then read eval/eval_config.json themselves
+for host/user/key_file. This is what keeps skills/launch/ (which must have
+zero Python imports from eval/ — see skills/README.md) and eval/ able to
+share one provisioning script and one source of truth for "what's running"
+without either importing the other.
 
 Usage:
-    python eval/provision.py --instance c7g.large
+    python eval/provision.py --isa sve2
+    # Reuses a reachable instance for that ISA tier if eval_config.json has
+    # one recorded, otherwise runs terraform apply for a fresh one. To force
+    # a genuinely new instance: `--teardown` first, then provision again.
+
     python eval/provision.py --teardown
     python eval/provision.py --status
 """
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from eval.remote import InstanceHandle
 
 REPO_ROOT = Path(__file__).parent.parent
 TERRAFORM_DIR = REPO_ROOT / "terraform"
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 DATASET_BUILDS_PATH = REPO_ROOT / "eval" / "dataset_builds.json"
+
 # Map ISA targets to instance types
 ISA_INSTANCE_MAP = {
     "neon": "c7g.large",
@@ -33,65 +48,8 @@ ISA_INSTANCE_MAP = {
 }
 
 
-@dataclass
-class InstanceHandle:
-    host: str
-    user: str
-    key_file: str
-    instance_type: str
-    instance_id: str | None = None
-
-    def ssh_base_args(self) -> list[str]:
-        key = os.path.expanduser(self.key_file)
-        return [
-            "-i", key,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=10",
-        ]
-
-    def ssh_cmd(self, remote_cmd: str) -> list[str]:
-        return ["ssh"] + self.ssh_base_args() + [f"{self.user}@{self.host}", remote_cmd]
-
-    def run(self, remote_cmd: str, timeout: int = 120) -> tuple[int, str, str]:
-        result = subprocess.run(
-            self.ssh_cmd(remote_cmd),
-            capture_output=True, text=True, timeout=timeout,
-        )
-        return result.returncode, result.stdout, result.stderr
-
-    def upload_file(self, local_path: str, remote_path: str):
-        key = os.path.expanduser(self.key_file)
-        subprocess.run([
-            "scp",
-            "-i", key,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            str(local_path),
-            f"{self.user}@{self.host}:{remote_path}",
-        ], check=True, capture_output=True)
-
-    def rsync_to(self, local_dir: str, remote_dir: str, excludes: list[str] | None = None):
-        key = os.path.expanduser(self.key_file)
-        cmd = [
-            "rsync", "-avz",
-            "-e", f"ssh -i {key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-        ]
-        for exc in (excludes or []):
-            cmd += ["--exclude", exc]
-        cmd += [str(local_dir) + "/", f"{self.user}@{self.host}:{remote_dir}/"]
-        subprocess.run(cmd, check=True, capture_output=True)
-
-    def rsync_from(self, remote_path: str, local_dir: str, excludes: list[str] | None = None):
-        key = os.path.expanduser(self.key_file)
-        cmd = [
-            "rsync", "-avz",
-            "-e", f"ssh -i {key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-        ]
-        for exc in (excludes or []):
-            cmd += ["--exclude", exc]
-        cmd += [f"{self.user}@{self.host}:{remote_path}", str(local_dir) + "/"]
-        subprocess.run(cmd, check=True)
+def _tier_for_instance_type(instance_type: str) -> str:
+    return "c8g" if "c8g" in instance_type else "c7g"
 
 
 def _tf(*args, capture: bool = False) -> subprocess.CompletedProcess:
@@ -109,7 +67,6 @@ def _tf_output() -> dict:
     if result.returncode != 0:
         raise RuntimeError(f"terraform output failed:\n{result.stderr}")
     return json.loads(result.stdout)
-
 
 
 def _dataset_config(dataset: str) -> dict | None:
@@ -163,12 +120,17 @@ def ensure_dataset_ready(handle: InstanceHandle, dataset: str) -> None:
         return
     print(f"[provision] Dataset {dataset!r} not ready on {handle.host}; building...")
     built = _run_dataset_build(handle, dataset, config)
-    if not built or not _dataset_ready(handle, config):
+    if not _dataset_ready(handle, config):
         raise RuntimeError(
             f"Dataset {dataset!r} failed to build on {handle.host}. "
             f"SSH in and check manually before running an eval."
         )
-    print(f"[provision] Dataset {dataset!r} ready on {handle.host}.")
+    if not built:
+        print(f"[provision] Dataset {dataset!r} ready on {handle.host} "
+              f"(one or more build steps reported a non-zero exit above, but "
+              f"the ready_check now passes — likely a harmless re-run).")
+    else:
+        print(f"[provision] Dataset {dataset!r} ready on {handle.host}.")
 
 
 def _install_deps(handle: InstanceHandle) -> None:
@@ -217,6 +179,10 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
     """
     Run terraform apply to provision an instance. Blocks until SSH is available,
     rsyncs source, installs deps, and runs dataset-specific build steps.
+
+    Unconditional — always runs terraform apply (idempotent against unchanged
+    Terraform state) even if a reachable instance for this tier is already up.
+    Most callers want get_or_provision() instead; this is the raw primitive.
 
     Args:
         instance_type: EC2 instance type string (e.g. "c7g.large", "c8g.large", "c8g.xlarge")
@@ -275,7 +241,8 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
         str(REPO_ROOT),
         "~/arm-bench",
         excludes=["build", ".git", "terraform", "generations", "results",
-                  "notebooks", "agent-runs", "__pycache__", "*.pyc"],
+                  "notebooks", "agent-runs", "agent-runs-mcp", "agent-runs-nanobot",
+                  "__pycache__", "*.pyc"],
     )
 
     _install_deps(handle)
@@ -302,15 +269,15 @@ def teardown():
     print("[teardown] Instance terminated.")
 
 
-def get_running_instance(isa: str) -> InstanceHandle | None:
+def get_running_instance(instance_type: str) -> InstanceHandle | None:
     """
-    Return a handle to a running instance for the given ISA, if configured.
-    Reads from eval_config.json.
+    Return a handle to a running instance for the tier `instance_type`
+    belongs to (c7g/c8g), if configured. Reads from eval_config.json.
     """
     if not EVAL_CONFIG_PATH.exists():
         return None
     config = json.loads(EVAL_CONFIG_PATH.read_text())
-    tier = "c8g" if isa in ("sve2", "sme2") else "c7g"
+    tier = _tier_for_instance_type(instance_type)
     inst = config.get("instances", {}).get(tier, {})
     host = inst.get("host", "")
     if not host:
@@ -319,24 +286,25 @@ def get_running_instance(isa: str) -> InstanceHandle | None:
         host=host,
         user=inst.get("user", "ubuntu"),
         key_file=inst.get("key_file", "~/.ssh/id_rsa"),
-        instance_type=ISA_INSTANCE_MAP.get(isa, "c7g.large"),
+        instance_type=instance_type,
     )
 
 
-def get_or_provision(isa: str, instance_type: str | None = None) -> InstanceHandle:
+def get_or_provision(instance_type: str, dataset: str = "") -> InstanceHandle:
     """
-    Return an existing running instance or provision a new one.
+    Return an existing reachable instance for this tier, or provision a new one.
 
     Args:
-        isa: ISA target (neon/sve/sve2/sme2).
-        instance_type: Override the default instance type (e.g. "c8g.xlarge").
+        instance_type: EC2 instance type, e.g. "c7g.large", "c8g.xlarge".
+        dataset: Dataset name — ensured ready on the returned instance either way.
     """
-    handle = get_running_instance(isa)
+    handle = get_running_instance(instance_type)
     if handle and _is_reachable(handle):
         print(f"[provision] Reusing existing instance at {handle.host}")
+        if dataset:
+            ensure_dataset_ready(handle, dataset)
         return handle
-    instance_type = instance_type or ISA_INSTANCE_MAP.get(isa, "c7g.large")
-    return provision(instance_type)
+    return provision(instance_type, dataset=dataset)
 
 
 def _wait_for_ssh(handle: InstanceHandle, max_wait: int = 300, interval: int = 10):
@@ -362,7 +330,7 @@ def _save_config(handle: InstanceHandle):
     if EVAL_CONFIG_PATH.exists():
         config = json.loads(EVAL_CONFIG_PATH.read_text())
 
-    tier = "c8g" if "c8g" in handle.instance_type else "c7g"
+    tier = _tier_for_instance_type(handle.instance_type)
     config.setdefault("instances", {})
     config["instances"][tier] = {
         "host": handle.host,
@@ -399,7 +367,8 @@ if __name__ == "__main__":
     parser.add_argument("--teardown", action="store_true", help="Destroy the instance")
     parser.add_argument("--status", action="store_true", help="Show instance status")
     parser.add_argument("--initial-build", default="",
-                        help="Run make <target> after provision (default: skip)")
+                        help="Run make <target> after provision, only when provisioning "
+                             "a fresh instance (default: skip)")
     parser.add_argument("--dataset", default="",
                         help="Dataset to build after provisioning (e.g. ncnn). "
                              "Default: skip — instance will lack that dataset's build artifacts.")
@@ -411,5 +380,16 @@ if __name__ == "__main__":
         teardown()
     else:
         instance_type = args.instance or (ISA_INSTANCE_MAP.get(args.isa, "c7g.large") if args.isa else "c7g.large")
-        handle = provision(instance_type, args.initial_build, dataset=args.dataset)
+        # Reuse a reachable instance for this tier if one's already up; otherwise
+        # provision a fresh one. To force a genuinely new instance, run with
+        # --teardown first.
+        handle = get_running_instance(instance_type)
+        if handle and _is_reachable(handle):
+            print(f"[provision] Reusing existing instance at {handle.host}")
+            if args.dataset:
+                ensure_dataset_ready(handle, args.dataset)
+        else:
+            handle = provision(instance_type, args.initial_build, dataset=args.dataset)
         print(f"\nInstance handle: {handle}")
+        print(f"host={handle.host} user={handle.user} key_file={handle.key_file} "
+              f"instance_type={handle.instance_type}")

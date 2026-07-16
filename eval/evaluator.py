@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import litellm
 
-from eval.provision import InstanceHandle
+from eval.remote import InstanceHandle
 
 
 AGENT_SYSTEM_PROMPT = """\
