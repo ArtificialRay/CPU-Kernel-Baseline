@@ -37,6 +37,11 @@ from eval.remote import InstanceHandle
 REPO_ROOT = Path(__file__).parent.parent
 TERRAFORM_DIR = REPO_ROOT / "terraform"
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
+
+# Repo-root-relative paths mcp_app/bench actually need on the remote side.
+# Allow-list, not a deny-list — see InstanceHandle.rsync_to's docstring.
+# TODO: fold into an env var 
+RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
 DATASET_BUILDS_PATH = REPO_ROOT / "eval" / "dataset_builds.json"
 
 # Map ISA targets to instance types
@@ -240,9 +245,7 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
     handle.rsync_to(
         str(REPO_ROOT),
         "~/arm-bench",
-        excludes=["build", ".git", "terraform", "generations", "results",
-                  "notebooks", "agent-runs", "agent-runs-mcp", "agent-runs-nanobot",
-                  "__pycache__", "*.pyc"],
+        paths=RSYNC_ALLOWLIST,
     )
 
     _install_deps(handle)

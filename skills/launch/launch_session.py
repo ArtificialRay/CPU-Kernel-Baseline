@@ -47,10 +47,11 @@ ISA_INSTANCE_MAP = {
     "sme2": "c8g.large",
 }
 
-DEFAULT_RSYNC_EXCLUDES = [
-    "build", ".git", "terraform", "generations", "results", "notebooks",
-    "agent-runs", "agent-runs-mcp", "agent-runs-nanobot", "__pycache__", "*.pyc",
-]
+# Repo-root-relative paths mcp_app/bench actually need on the remote side.
+# Allow-list, not a deny-list — see RemoteTarget.rsync_to's docstring.
+# TODO: fold into an env var (shared with the separately-duplicated copies in
+# eval/provision.py and mcp_app/smoke_test_driver.py).
+RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
 
 # Directory to this skill's own copy of eval/dataset_builds.json's content
 DATASET_BUILDS: dict = json.loads((Path(__file__).parent / "dataset_builds.json").read_text())
@@ -231,7 +232,7 @@ def prepare_session(
     if sync_repo:
         if local_repo_dir is None:
             raise ValueError("local_repo_dir is required when sync_repo=True")
-        target.rsync_to(local_repo_dir, remote_root, excludes=DEFAULT_RSYNC_EXCLUDES)
+        target.rsync_to(local_repo_dir, remote_root, paths=RSYNC_ALLOWLIST)
 
     if not skip_preflight:
         ensure_dataset_ready(target, dataset)

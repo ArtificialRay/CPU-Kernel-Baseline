@@ -31,6 +31,11 @@ you.
 - Revisiting an earlier definition later is fine — its version counter and
   `best_compile` pick up where you left off (state is never evicted).
 
+## SKILL referenced:
+**KernelWiki** is a useful skill for you to optimize kernel in GPU. Although you are required to optimize kernel in CPU, you can still apply similar optimization techniques if it is applicable. You can use it as a reference, but you are FORBIDDEN to copy the code from it.
+
+# WORKFLOW
+
 ## 1. Establish the starting-point baseline (do this first, per definition)
 
 Before writing any optimized code for a given definition:
@@ -109,3 +114,26 @@ recorded in that definition's `trajectory.jsonl`'s final `submit` turn.
 
 Once you've `submit`'d every definition you were assigned (or you decide to
 stop), results get synced back by whoever is orchestrating this session.
+
+## Recovering from an MCP session reset
+
+If you find the server/the session was reset, please
+**Don't just restart from `reference-scalar-kernel.cpp`.** Every
+`compile()`/`disassemble()` call writes its source/asm straight to disk
+under that definition's run-dir as it happens (`v1.cpp`, `v2.cpp`, ...,
+`trajectory.jsonl`) — this is independent of the in-memory session, so it
+survives a reset even though the live session doesn't:
+
+1. `list_resources()` and find the definition you were working on — its
+   `v1.cpp` … `vN.cpp` entries and `trajectory.jsonl` are still listed.
+2. `read_resource()` its `trajectory.jsonl` and check the last few turns
+   for the best-performing version's number and its recorded
+   `time_speedup_geomean`/`cycle_speedup_geomean` — the highest `vN.cpp`
+   isn't necessarily the best one if a later attempt regressed.
+3. `read_resource()` that best `vN.cpp` and `compile()` it again to resume
+   from there. It becomes a new `v1` in the fresh session, but it's the
+   same code you already had working — you lose the version-history
+   numbering, not the optimization progress.
+4. For the final §4 report, keep using the *original* starting-point
+   numbers from the first `compile`/`evaluate` turns in `trajectory.jsonl`
+   — not the numbers from this recovery compile.

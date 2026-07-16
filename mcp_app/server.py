@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,9 @@ async def _run_stdio(server: Server) -> None:
     import mcp.server.stdio as stdio
 
     async with stdio.stdio_server() as (read_stream, write_stream):
+        # stdout is the JSON-RPC channel for stdio transport — never print there.
+        # stderr is the MCP-conventional channel for server diagnostics/logging.
+        print("[mcp_app.server] MCP server ready (stdio transport).", file=sys.stderr, flush=True)
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
@@ -94,6 +98,8 @@ async def _run_sse(server: Server, bind_host: str, port: int) -> None:
         Mount("/messages/", app=transport.handle_post_message),
     ])
     config = uvicorn.Config(app, host=bind_host, port=port, log_level="warning")
+    print(f"[mcp_app.server] MCP server ready (sse transport) — listening on "
+          f"http://{bind_host}:{port}/sse", file=sys.stderr, flush=True)
     await uvicorn.Server(config).serve()
 
 
@@ -130,7 +136,10 @@ def main(argv: list[str] | None = None) -> None:
         run_dir=Path(args.run_dir),
         instance_label=args.instance_label,
     )
+    print(f"[mcp_app.server] Initializing session (dataset={args.dataset!r}, "
+          f"isa={args.isa!r}, author={args.author!r})...", file=sys.stderr, flush=True)
     tools = build_tools(cfg)
+    print("[mcp_app.server] Session initialized.", file=sys.stderr, flush=True)
     server = build_server(tools)
     try:
         if args.transport == "stdio":

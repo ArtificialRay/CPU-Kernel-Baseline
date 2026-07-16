@@ -55,10 +55,11 @@ BENCH_TRACE = REPO_ROOT / "bench-trace"
 # Directory to mcp_app's own copy dataset_builds.json's content 
 DATASET_BUILDS: dict = json.loads((Path(__file__).parent / "dataset_builds.json").read_text())
 
-DEFAULT_RSYNC_EXCLUDES = [
-    "build", ".git", "terraform", "generations", "results", "notebooks",
-    "agent-runs", "agent-runs-mcp", "agent-runs-nanobot", "__pycache__", "*.pyc",
-]
+# Repo-root-relative paths mcp_app/bench actually need on the remote side.
+# Allow-list, not a deny-list — see _local_ssh.rsync_to's docstring.
+# TODO: fold into an env var (shared with the separately-duplicated copies in
+# eval/provision.py and skills/launch/launch_session.py).
+RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
 
 # Hand-typed, matching skills/nanobot/nanobot-kernel-session/SKILL.md's table
 # (decision 10 — no shared source of truth to import from eval/run_benchmark.py).
@@ -328,7 +329,7 @@ def main(argv: list[str] | None = None) -> None:
     # script reads remote_root/bench-trace/traces/; 
     _local_ssh.rsync_to(
         args.host, args.user, args.key_file, REPO_ROOT, args.remote_root,
-        excludes=DEFAULT_RSYNC_EXCLUDES,
+        paths=RSYNC_ALLOWLIST,
     )
 
     #collect-baselines needs bench/ importable there too). Running this before the sync used to be

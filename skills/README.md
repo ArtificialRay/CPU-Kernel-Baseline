@@ -36,6 +36,8 @@ same shared `eval/eval_config.json` for "what's currently up" — so an
 instance `eval/provision.py` brought up is visible to `launch/`, and vice
 versa; there's exactly one record of what's running, not two.
 
+please not that, **launch** or use **provision+prepare-session** separately, launch a instance with target dataset(codebase) built. As long as you copy the spawn command for mcp server to your agent's config, or execute the spawn command, the server starts.
+
 The one-shot path, run from `skills/launch/`:
 
 ```bash

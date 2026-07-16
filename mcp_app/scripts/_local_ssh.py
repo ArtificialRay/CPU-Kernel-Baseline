@@ -58,16 +58,25 @@ def run_remote(
 
 def rsync_to(
     host: str, user: str, key_file: str, local_dir: str | Path, remote_dir: str,
-    excludes: list[str] | None = None,
+    paths: list[str],
 ) -> None:
-    cmd = [
-        "rsync", "-avz",
-        "-e", f"ssh {' '.join(_ssh_base_args(key_file))}",
-    ]
-    for exc in (excludes or []):
-        cmd += ["--exclude", exc]
-    cmd += [str(local_dir) + "/", f"{user}@{host}:{remote_dir}/"]
-    subprocess.run(cmd, check=True, capture_output=True)
+    """Sync only `paths` (repo-root-relative files/dirs) from local_dir into
+    remote_dir, one rsync per path with --delete. Allow-list, not a deny-list:
+    anything not in `paths` (e.g. results/, agent-runs/, notebooks/ — generated
+    directly on the remote by eval runs) is never touched by this call, so it
+    can't accumulate stale synced copies that a deny-list would leave behind
+    forever once excluded (rsync --exclude never deletes what's already there).
+    """
+    run_remote(host, user, key_file, f"mkdir -p {remote_dir}")
+    ssh_opt = f"ssh {' '.join(_ssh_base_args(key_file))}"
+    for rel in paths:
+        local_path = Path(local_dir) / rel
+        cmd = ["rsync", "-avz", "--delete", "-e", ssh_opt]
+        if local_path.is_dir():
+            cmd += [str(local_path) + "/", f"{user}@{host}:{remote_dir}/{rel}/"]
+        else:
+            cmd += [str(local_path), f"{user}@{host}:{remote_dir}/{rel}"]
+        subprocess.run(cmd, check=True, capture_output=True)
 
 
 def rsync_from(
