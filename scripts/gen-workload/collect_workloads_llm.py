@@ -5,7 +5,7 @@ instance, using ShareGPT prompts as traffic.
 
 Flow
 ----
-1. Provision (or reuse) Graviton4 via eval/provision.py
+1. Provision (or reuse) Graviton4 via a subprocess call to eval/provision.py
 2. Rsync cpu-kernel-baseline/llama.cpp → remote ~/llama.cpp/
 3. Upload scripts/collect_ggml_shapes.cpp and a CMakeLists.txt stub;
    patch remote examples/CMakeLists.txt to include the new target
@@ -332,13 +332,26 @@ def main() -> None:
     # Validates the definition exists before provisioning/building anything remote.
     _load_definition(args.op_type, args.definition)
 
-    # Import provision utilities from cpu-kernel-baseline/eval/.
-    sys.path.insert(0, str(REPO_ROOT))
-    from eval.provision import get_or_provision  # noqa: PLC0415
-
-    # Step 1 — provision.
+    # Step 1 — provision. eval/provision.py is a standalone script (see its
+    # module docstring) — invoke it via subprocess, then read the shared
+    # eval/eval_config.json it wrote, rather than importing its internals.
     print("[llm] Provisioning/reusing Graviton4 instance...")
-    handle = get_or_provision("sve2")
+    subprocess.run(
+        [sys.executable, str(REPO_ROOT / "eval" / "provision.py"), "--isa", "sve2"],
+        check=True,
+    )
+    eval_config = json.loads((REPO_ROOT / "eval" / "eval_config.json").read_text())
+    c8g = eval_config.get("instances", {}).get("c8g", {})
+    if not c8g.get("host"):
+        raise RuntimeError("eval/provision.py exited successfully but wrote no c8g instance")
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from eval.remote import InstanceHandle  # noqa: PLC0415
+
+    handle = InstanceHandle(
+        host=c8g["host"], user=c8g.get("user", "ubuntu"),
+        key_file=c8g.get("key_file", "~/.ssh/id_rsa"), instance_type="c8g.large",
+    )
 
     # Step 2–4 — sync + build.
     bin_path = _setup_remote(handle)

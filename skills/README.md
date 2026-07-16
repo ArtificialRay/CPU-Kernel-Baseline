@@ -27,14 +27,14 @@ this document first, then that harness's own `README.md`.
 ## 2. Start an mcp_app session
 
 `launch/` (`skills/launch/`) is a harness-agnostic, self-contained package —
-zero imports from `eval/` or `mcp_app/` (see `mcp_app/README.md`'s "Scope
-boundary") — that provisions a Graviton instance and starts an `mcp_app`
-session on it. It duplicates rather than imports `eval/provision.py`'s
-Terraform-driving logic (see `launch/provision.py`'s docstring for why); it
-shares the *same* `terraform/` state at the repo root (one set of cloud
-instances, not two), but keeps its own independent record of which instance
-is currently up (`launch/launch_config.json`) — it won't know about an
-instance `eval/provision.py` brought up, or vice versa.
+zero Python imports from `eval/` or `mcp_app/` (see `mcp_app/README.md`'s
+"Scope boundary") — that provisions a Graviton instance and starts an
+`mcp_app` session on it. Provisioning itself (Terraform apply/destroy) is
+done by the standalone `eval/provision.py` script; `launch/launch_session.py`
+invokes it only via subprocess, never imports it. Both sides read/write the
+same shared `eval/eval_config.json` for "what's currently up" — so an
+instance `eval/provision.py` brought up is visible to `launch/`, and vice
+versa; there's exactly one record of what's running, not two.
 
 The one-shot path, run from `skills/launch/`:
 
@@ -56,10 +56,9 @@ session on it and prints an MCP spawn command (stdio) or endpoint (sse).
 | `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` — pick by target hardware; drives the default instance type |
 | `--dataset` | yes | — | one of `ncnn`, `simd-loop`, `llama.cpp` — see the harness skill's own doc for the `baseline_author`/`isa` table |
 | `--instance` | no | derived from `--isa` | EC2 instance type override, e.g. `c8g.xlarge` |
-| `--fresh` | flag | off | force a new instance even if one's already up for this isa tier |
 | `--author` | no | `nanobot` | tags every solution/trace this session writes; also names the session's `run_dir` (`agent-runs-mcp/<author>/`) |
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
-| `--local-repo-dir` | **no** | this checkout's own root (`REPO_ROOT`, computed from where `launch_session.py` itself lives — not your shell's cwd) | your local checkout of this repo, pushed to the instance.  Default is the expected repo directory at local side|
+| `--local-repo-dir` | **no** | this checkout's own root (`REPO_ROOT`, computed from where `launch_session.py` itself lives — not your shell's cwd) | your local checkout of this repo, pushed to the instance by `prepare_session`'s rsync (the provisioning step's own rsync always uses `eval/provision.py`'s own repo checkout, not this) |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
 | `--transport` | no | `stdio` | `stdio` (default, try first) or `sse` (fallback for MCP clients that can only take a URL, not a spawn command) |
 | `--no-sync` | flag | off | skip the rsync step (repo already up to date on the instance) |
@@ -83,8 +82,7 @@ python3 launch_session.py prepare-session \
 |---|---|---|---|
 | `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` — drives the default instance type |
 | `--instance` | no | derived from `--isa` | EC2 instance type override, e.g. `c8g.xlarge` |
-| `--local-repo-dir` | **no** | this checkout's own root (`REPO_ROOT`) | repo checkout to rsync; override only if driving this from a different checkout |
-| `--fresh` | flag | off | force a new instance even if one's already up for this isa tier |
+| `--local-repo-dir` | no | *(no effect here)* | accepted for parity with `launch`, but unused by standalone `provision` — `eval/provision.py` always rsyncs its own repo checkout during provisioning |
 | `--dataset` | no | `""` (skip) | build this dataset's native lib right after provisioning |
 
 ### `prepare-session` flags

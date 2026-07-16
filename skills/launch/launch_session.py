@@ -1,16 +1,22 @@
 """launch_session — bring up one mcp_app session on a remote instance, sync
 results back afterward. Runs on the caller's host, not the target instance.
 
-Provisioning (`provision`/`teardown`/`status`) lives in sibling
-`provision.py` — a duplicate of eval/provision.py, not an import from it.
+Provisioning (`provision`/`teardown`/`status`) is done by the standalone
+`eval/provision.py` script — invoked only via subprocess, never imported.
+This module has zero Python imports from eval/ or mcp_app/ (see remote.py's
+docstring and mcp_app/README.md's "Scope boundary" section); it only reads
+the shared `eval/eval_config.json` that `eval/provision.py` writes, which is
+a file-format contract, not a Python import. This module already assumes
+the full repo checkout (including eval/) is present locally, since it
+rsyncs REPO_ROOT to the remote. Sharing that one config file (instead of
+this skill keeping its own, as it used to) is what lets `eval/provision.py`
+and this module provision/reuse/teardown the same instances without either
+side going stale about what the other has done.
 `launch` composes provisioning + `prepare_session()` in one call.
 `prepare-session`/`sync-results` stay separate: nanobot owns the spawned SSH
 subprocess itself in stdio mode, so this script can't use its own lifecycle
 to know when the session is done — that's for whatever orchestrates the
 harness to decide.
-
-Zero imports from mcp_app or eval/ — see remote.py's docstring and
-mcp_app/README.md's "Scope boundary" section.
 """
 
 from __future__ import annotations
@@ -19,14 +25,27 @@ import argparse
 import json
 import socket
 import subprocess
+import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from remote import RemoteTarget
-from provision import ISA_INSTANCE_MAP, REPO_ROOT
-from provision import get_or_provision, provision as do_provision
-from provision import teardown as do_teardown, status as do_status
+
+REPO_ROOT = Path(__file__).parent.parent.parent
+EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
+PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
+
+# Own copy of eval/provision.py's ISA_INSTANCE_MAP — small (4 rows), rarely
+# changes, kept in sync by hand rather than generated (same tradeoff as the
+# dataset/baseline_author/isa table in SKILL.md).
+ISA_INSTANCE_MAP = {
+    "neon": "c7g.large",
+    "sve": "c7g.large",
+    "sve2": "c8g.large",
+    "sme2": "c8g.large",
+}
 
 DEFAULT_RSYNC_EXCLUDES = [
     "build", ".git", "terraform", "generations", "results", "notebooks",
@@ -35,6 +54,67 @@ DEFAULT_RSYNC_EXCLUDES = [
 
 # Directory to this skill's own copy of eval/dataset_builds.json's content
 DATASET_BUILDS: dict = json.loads((Path(__file__).parent / "dataset_builds.json").read_text())
+
+
+@dataclass(frozen=True)
+class ProvisionedInstance:
+    target: RemoteTarget
+    instance_type: str
+    instance_id: Optional[str] = None
+
+
+def _tier_for_isa(isa: str) -> str:
+    return "c8g" if isa in ("sve2", "sme2") else "c7g"
+
+
+def _read_config_instance(isa: str) -> Optional[ProvisionedInstance]:
+    """Read the shared eval/eval_config.json directly for a running instance
+    of `isa`'s tier. No import from eval/provision.py."""
+    if not EVAL_CONFIG_PATH.exists():
+        return None
+    config = json.loads(EVAL_CONFIG_PATH.read_text())
+    tier = _tier_for_isa(isa)
+    inst = config.get("instances", {}).get(tier, {})
+    host = inst.get("host", "")
+    if not host:
+        return None
+    return ProvisionedInstance(
+        target=RemoteTarget(host=host, user=inst.get("user", "ubuntu"),
+                             key_file=inst.get("key_file", "~/.ssh/id_rsa")),
+        instance_type=inst.get("instance_type", ISA_INSTANCE_MAP.get(isa, "c7g.large")),
+        instance_id=inst.get("instance_id"),
+    )
+
+
+def _provision(isa: str, instance_type: str, dataset: str) -> ProvisionedInstance:
+    """Subprocess-invoke the standalone eval/provision.py, then read the
+    eval_config.json it wrote. Reuses a reachable instance for this ISA
+    tier if one's already up; otherwise provisions a fresh one."""
+    subprocess.run(
+        [sys.executable, str(PROVISION_SCRIPT),
+         "--isa", isa, "--instance", instance_type, "--dataset", dataset],
+        check=True,
+    )
+    instance = _read_config_instance(isa)
+    if instance is None:
+        raise RuntimeError(
+            f"eval/provision.py exited successfully but wrote no instance for isa={isa!r}"
+        )
+    return instance
+
+
+def _teardown() -> None:
+    subprocess.run([sys.executable, str(PROVISION_SCRIPT), "--teardown"], check=True)
+
+
+def _status() -> None:
+    config = json.loads(EVAL_CONFIG_PATH.read_text()) if EVAL_CONFIG_PATH.exists() else {}
+    if not config.get("instances"):
+        print("No eval/eval_config.json instances found. Run `provision` first.")
+        return
+    for tier, inst in config["instances"].items():
+        host = inst.get("host", "")
+        print(f"  {tier}: {host or 'not provisioned'}")
 
 
 def _spawn_command(
@@ -268,13 +348,16 @@ def _cli_sync(args: argparse.Namespace) -> None:
     print(result)
 
 
-def _resolve_instance(args: argparse.Namespace):
+def _resolve_instance(args: argparse.Namespace) -> ProvisionedInstance:
+    """Reuse an already-up-and-reachable instance for --isa if one's up,
+    otherwise provision a fresh one — via eval/provision.py's own
+    reuse-if-reachable default (see its module docstring). Note:
+    eval/provision.py always rsyncs its own repo checkout during
+    provisioning, so `--local-repo-dir` has no effect on that initial sync;
+    `_cli_launch` re-syncs via `prepare_session()` afterward, which does
+    respect it."""
     instance_type = args.instance or ISA_INSTANCE_MAP.get(args.isa, "c7g.large")
-    if args.fresh:
-        return do_provision(instance_type, dataset=args.dataset, local_repo_dir=args.local_repo_dir)
-    return get_or_provision(
-        args.isa, instance_type=instance_type, dataset=args.dataset, local_repo_dir=args.local_repo_dir,
-    )
+    return _provision(args.isa, instance_type, args.dataset)
 
 
 def _cli_provision(args: argparse.Namespace) -> None:
@@ -284,18 +367,18 @@ def _cli_provision(args: argparse.Namespace) -> None:
 
 
 def _cli_teardown(args: argparse.Namespace) -> None:
-    do_teardown()
+    _teardown()
 
 
 def _cli_status(args: argparse.Namespace) -> None:
-    do_status()
+    _status()
 
 
 def _cli_launch(args: argparse.Namespace) -> None:
     """Provision (or reuse) an instance for --isa, then start an mcp_app
-    session on it — `provision`/`get_or_provision` + `prepare_session` in one
-    call. Always re-syncs the repo via prepare_session (cheap, delta-only)
-    so a reused instance can't silently run stale code."""
+    session on it — provisioning + `prepare_session` in one call. Always
+    re-syncs the repo via prepare_session (cheap, delta-only) so a reused
+    instance can't silently run stale code."""
     instance = _resolve_instance(args)
     target = instance.target
     info = prepare_session(
@@ -359,10 +442,10 @@ def main(argv: list[str] | None = None) -> None:
                          help="EC2 instance type override (e.g. c8g.xlarge). "
                               "Defaults to ISA_INSTANCE_MAP[isa].")
         sp.add_argument("--local-repo-dir", default=None,
-                         help="Repo checkout to rsync. Defaults to this repo's own root.")
-        sp.add_argument("--fresh", action="store_true",
-                         help="Force a new instance even if one is already up for this isa tier "
-                              "(per this module's own launch_config.json).")
+                         help="Repo checkout for prepare_session's rsync (the `launch` "
+                              "subcommand only — eval/provision.py always rsyncs its own "
+                              "repo root during provisioning itself). Defaults to this "
+                              "repo's own root.")
 
     prov = sub.add_parser("provision", help="Bring up (or reuse) a Graviton instance for --isa.")
     _add_provision_args(prov)
@@ -373,7 +456,7 @@ def main(argv: list[str] | None = None) -> None:
     teardown_p = sub.add_parser("teardown", help="Terraform-destroy the instance(s).")
     teardown_p.set_defaults(func=_cli_teardown)
 
-    status_p = sub.add_parser("status", help="Show launch_config.json's tracked instances.")
+    status_p = sub.add_parser("status", help="Show eval/eval_config.json's tracked instances.")
     status_p.set_defaults(func=_cli_status)
 
     launch = sub.add_parser(

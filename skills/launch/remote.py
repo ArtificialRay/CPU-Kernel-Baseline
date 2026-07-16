@@ -6,7 +6,7 @@ has its own independent, separately-duplicated equivalent
 (mcp_app/scripts/_local_ssh.py) rather than importing this file. See
 mcp_app/README.md's "Scope boundary" section for why.
 
-Style reference only (never imported): eval/provision.py's InstanceHandle has
+Style reference only (never imported): eval/remote.py's InstanceHandle has
 the same shape of ssh_cmd/rsync_to/rsync_from methods.
 """
 
