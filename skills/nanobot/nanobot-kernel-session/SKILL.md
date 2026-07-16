@@ -94,6 +94,10 @@ Hand-maintained (small, rarely changes — kept in sync by hand rather than gene
 `baseline_author` is only needed here if you want to override the server's
 auto-derived default — you no longer have to pass it explicitly.
 
+`portable` is also a valid `--isa` for any dataset: it forces the baseline
+`-march=armv8-a` and means **write portable C++ only — no NEON/SVE intrinsics**
+(the compiler may still auto-vectorize). Use it for the without-SIMD ablation.
+
 ## 4. Finish and report
 
 Before calling `submit` for a definition, compare its best version's

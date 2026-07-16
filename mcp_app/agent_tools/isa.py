@@ -24,6 +24,9 @@ from typing import NamedTuple
 
 # isa name -> (march flag, isa_features, target_hardware label)
 _ISA_MARCH: dict[str, tuple[str, list[str], list[str]]] = {
+    # portable: same -march as neon (armv8-a mandates NEON); the "no hand-written
+    # SIMD" constraint is a PROMPT concern (nanobot skill), not a compile flag.
+    "portable": ("-march=armv8-a", [], ["aarch64"]),
     "neon": ("-march=armv8-a", [], ["aarch64-neon"]),
     "sve": ("-march=armv8.2-a+sve", ["sve"], ["aarch64-sve"]),
     "sve2": ("-march=armv9-a+sve2", ["sve2"], ["aarch64-sve2"]),
@@ -35,6 +38,7 @@ _ISA_MARCH: dict[str, tuple[str, list[str], list[str]]] = {
 # Graviton4 (sve2) should be confirmed against real hardware; this only affects
 # the precision of the safety check below, never the compiled output.
 _ISA_CPUINFO_TOKENS: dict[str, list[str]] = {
+    "portable": ["asimd"],
     "neon": ["asimd"],
     "sve": ["sve"],
     "sve2": ["sve2"],
