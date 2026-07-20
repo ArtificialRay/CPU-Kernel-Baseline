@@ -65,7 +65,7 @@ RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
 # (decision 10 — no shared source of truth to import from eval/run_benchmark.py).
 DATASET_REFERENCE = {
     "ncnn": {"baseline_author": "baseline-ncnn-arm", "isa_hint": "sve (Graviton3) / sve2 (Graviton4)"},
-    "simd-loop": {"baseline_author": "reference", "isa_hint": "sve (Graviton3) / sve2 (Graviton4)"},
+    "simd-loop": {"baseline_author": "baseline-sve", "isa_hint": "sve (Graviton3) / sve2 (Graviton4)"},
     "llama.cpp": {"baseline_author": "baseline-llamacpp-arm", "isa_hint": "sve (Graviton3) / sve2 (Graviton4)"},
 }
 

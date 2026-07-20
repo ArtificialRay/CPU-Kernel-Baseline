@@ -26,7 +26,9 @@ if TYPE_CHECKING:
 # source of truth to import from eval/ (see mcp_app/README.md's Scope boundary).
 DEFAULT_BASELINE_AUTHOR: dict[str, str] = {
     "ncnn": "baseline-ncnn-arm",
-    "simd-loop": "reference",
+    # Expert = Arm hand-written SVE (baseline-sve); "reference" is the agent's
+    # scalar starting point, not the speedup baseline. Matches eval/run_benchmark.
+    "simd-loop": "baseline-sve",
     "llama.cpp": "baseline-llamacpp-arm",
 }
 
