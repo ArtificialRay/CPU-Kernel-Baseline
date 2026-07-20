@@ -204,12 +204,8 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
                      "-target=aws_instance.c8g",
                      "-target=null_resource.deploy_c8g")
     else:
-        skip_build = initial_build == ""
-        vars = [
-            f"-var=instance_type={instance_type}",
-            f"-var=skip_initial_build={'true' if skip_build else 'false'}",
-        ]
-        if not skip_build:
+        vars = [f"-var=instance_type={instance_type}"]
+        if initial_build:
             vars.append(f"-var=build_target={initial_build}")
         # Scope to the c7g instance + its deploy resource only. Without -target this
         # runs a full-config apply that recreates the c8g instance (shared state) —
@@ -247,6 +243,12 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
         "~/arm-bench",
         paths=RSYNC_ALLOWLIST,
     )
+
+    if initial_build:
+        print(f"[provision] Building initial target {initial_build!r}...")
+        rc, _, err = handle.run(f"cd ~/arm-bench && make {initial_build}", timeout=300)
+        if rc != 0:
+            print(f"[provision]   WARNING: initial build {initial_build!r} failed: {err[:200]}")
 
     _install_deps(handle)
     if dataset:
