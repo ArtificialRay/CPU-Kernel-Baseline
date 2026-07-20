@@ -98,7 +98,11 @@ def _teardown() -> None:
 # eval/agent_tools/base.py is "reference-scalar"), so speedup computation works.
 _DATASET_BASELINE_AUTHOR: dict[str, str] = {
     "ncnn": "baseline-ncnn-arm",
-    "simd-loop": "reference",
+    # Expert baseline = Arm's hand-written SVE intrinsics (extracted from the
+    # upstream simd-loops HAVE_SVE_INTRINSICS blocks). "reference" is the naive
+    # scalar the agent STARTS from, not a speedup target. Coverage is 36/47 defs
+    # (loops with a clean, validated SVE block); the rest are in _SVE_SKIP.
+    "simd-loop": "baseline-sve",
     "llama.cpp": "baseline-llamacpp-arm",
 }
 

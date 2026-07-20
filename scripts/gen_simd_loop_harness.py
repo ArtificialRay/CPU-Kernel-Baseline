@@ -919,16 +919,14 @@ def _write_solution_pair(lid: str, sources: list) -> None:
 # Loops whose extracted SVE-intrinsics kernel does not yet compile + pass the
 # standard correctness bar on Graviton4 (verified 2026-06-26). Excluded so we
 # never emit a broken baseline. Grouped by reason — each is a follow-up:
+# Re-validated on Graviton4 2026-07-16: only these 7 still fail compile/correctness.
+# (The old 2026-06-26 list was stale — float-reduction 032/114, matmul 130/135/219,
+# and 13 of 14 "extraction/runtime" loops now pass and are emitted → 36/47 covered.)
 _SVE_SKIP = {
-    # multi-axis (m/n/k): the SVE kernel reads >1 axis; needs the multi-axis ABI.
-    "loop_130", "loop_135", "loop_216", "loop_217", "loop_218", "loop_219",
-    "loop_220", "loop_221", "loop_223",
-    # float reduction: hand-SVE tree-sum exceeds rel_tol=1e-3 vs numpy at N=16M.
-    "loop_032", "loop_114",
-    # per-loop extraction/runtime issues (fp16 type, sort, complex, histogram).
-    "loop_038", "loop_102", "loop_103", "loop_104", "loop_105", "loop_106",
-    "loop_109", "loop_120", "loop_121", "loop_123", "loop_124", "loop_126",
-    "loop_127", "loop_128",
+    # multi-axis matmul (m/n/k): extracted SVE kernel's ABI still mismatches binding.
+    "loop_216", "loop_217", "loop_218", "loop_220", "loop_221", "loop_223",
+    # extraction/runtime issue not yet resolved.
+    "loop_128",
 }
 
 

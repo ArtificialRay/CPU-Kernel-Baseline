@@ -233,7 +233,12 @@ def run_agentic_eval(
     schemas = [{"type": "function", "function": s} for s in ToolsCls.tool_schemas()]
 
     baseline_author = bench_cfg.baseline_author if bench_cfg else "reference-scalar"
-    ref_author = "reference-scalar" if dataset == "ncnn" or "llama.cpp" else baseline_author # TODO: use reference-scalar solution for all other dataset, simd-loop has no reference-scalar currently
+    # Agent's starting kernel + correctness anchor (NOT the speedup baseline, which
+    # is baseline_author). simd-loop's scalar author is "reference"; ncnn/llama.cpp
+    # use "reference-scalar". (Previously `== "ncnn" or "llama.cpp"` — a truthiness
+    # bug that forced "reference-scalar" for every dataset, including simd-loop.)
+    _REF_AUTHOR = {"ncnn": "reference-scalar", "llama.cpp": "reference-scalar", "simd-loop": "reference"}
+    ref_author = _REF_AUTHOR.get(dataset, "reference-scalar")
     # Starter code shown to the agent = the baseline solution for this dataset
     # (author varies: reference-scalar/reference/baseline-llamacpp-arm).
     ref_solution = trace_set.get_baseline_solution(definition.name, ref_author)
