@@ -24,7 +24,7 @@ mcp_app/
     session.py                # SessionConfig + build_tools() — server-side bootstrap;
                                #   also eagerly writes every definition's
                                #   reference-scalar-kernel.cpp at startup
-    server.py                  # the MCP server process itself (--transport stdio|sse)
+    server.py                  # the MCP server process itself (stdio transport only)
     resources.py                 # MCP Resources over a session's run_dir (read_code's
                                  #   replacement — nested one dir per definition)
     dataset_builds.json            # ncnn/llama.cpp native-lib build steps (own copy)
@@ -39,21 +39,22 @@ mcp_app/
 ```bash
 # On the target instance, once the repo is synced there.
 python -m mcp_app.server --dataset <ncnn|simd-loop|llama.cpp> --author <tag> \
-    --isa <neon|sve|sve2|sme2> --run-dir ~/arm-bench/agent-runs-mcp/<author> \
-    --transport stdio
+    --isa <neon|sve|sve2|sme2> --run-dir ~/arm-bench/agent-runs-mcp/<author>
 ```
 
 One process serves **every** definition in `--dataset` — `compile()` takes
 `definition` as a per-call argument, not a startup flag. `--baseline-author`
-is optional (auto-derived from `--dataset`). `--transport sse` is a fallback
-for MCP clients that can only take a URL, not a spawn command.
+is optional (auto-derived from `--dataset`). stdio is the only supported
+transport: SSE was removed (a local port-forward tunnel to a loopback URL
+is exactly what most SSRF guards — including nanobot's — block by default,
+and stdio-over-ssh covers the same need without that caveat).
 
 ## 3. Starting the server before agent harness
 
 Nothing here spawns `mcp_app.server` on its own — an agent harness spawns it
 as its MCP connection. `skills/launch/launch_session.py` is the
 harness-agnostic script that provisions/reaches an instance and prints the
-spawn command (stdio) or endpoint (sse) for that harness's MCP config:
+spawn command for that harness's MCP config:
 
 ```bash
 python3 skills/launch/launch_session.py launch \

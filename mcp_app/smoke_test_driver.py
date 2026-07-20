@@ -233,7 +233,7 @@ def run_definition(
     remote_cmd = (
         f"cd {remote_root} && python3 -m mcp_app.server --dataset {dataset} "
         f"--author {author} --baseline-author {baseline_author} --isa {isa} "
-        f"--run-dir {remote_root}/agent-runs-mcp/{author} --transport stdio"
+        f"--run-dir {remote_root}/agent-runs-mcp/{author}"
     )
     spawn_args = _local_ssh.ssh_spawn_args(host, user, key_file, remote_cmd)
     try:

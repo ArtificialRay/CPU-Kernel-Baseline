@@ -49,7 +49,7 @@ This reuses an already-up instance for that `isa` tier if `launch/`
 provisioned one earlier and it's still reachable, otherwise provisions a
 fresh one (Terraform apply, wait for SSH, rsync the repo, install build
 deps, build the dataset's native lib if needed) — then starts an `mcp_app`
-session on it and prints an MCP spawn command (stdio) or endpoint (sse).
+session on it and prints an MCP spawn command (stdio).
 
 ### `launch` flags
 
@@ -62,7 +62,6 @@ session on it and prints an MCP spawn command (stdio) or endpoint (sse).
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
 | `--local-repo-dir` | **no** | this checkout's own root (`REPO_ROOT`, computed from where `launch_session.py` itself lives — not your shell's cwd) | your local checkout of this repo, pushed to the instance by `prepare_session`'s rsync (the provisioning step's own rsync always uses `eval/provision.py`'s own repo checkout, not this) |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
-| `--transport` | no | `stdio` | `stdio` (default, try first) or `sse` (fallback for MCP clients that can only take a URL, not a spawn command) |
 | `--no-sync` | flag | off | skip the rsync step (repo already up to date on the instance) |
 | `--skip-preflight` | flag | off | skip the dataset-build check (only if you already know this exact instance's native library is built — this doesn't cover baseline collection, which happens lazily server-side once the agent starts compiling) |
 
@@ -105,11 +104,10 @@ genuinely required unless you pass `--no-sync`.
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
 | `--local-repo-dir` | **yes, unless `--no-sync`** | — | your local checkout of this repo, pushed to the instance |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
-| `--transport` | no | `stdio` | `stdio` (default, try first) or `sse` (fallback) |
 | `--no-sync` | flag | off | skip the rsync step (repo already up to date on the instance) — makes `--local-repo-dir` optional |
 | `--skip-preflight` | flag | off | skip the dataset-build check |
 
-What you do with the printed spawn command/endpoint — where it goes in your
+What you do with the printed spawn command — where it goes in your
 harness's config, what `tool_timeout`/`enabledTools` settings it needs — is
 harness-specific; see that harness's own `README.md` (§1's table).
 

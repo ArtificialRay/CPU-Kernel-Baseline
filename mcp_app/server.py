@@ -17,7 +17,7 @@ handler set maps onto both needs directly.
 
 Usage:
     python -m mcp_app.server --dataset ncnn --author test --isa sve2 \\
-        --run-dir <path> --transport stdio
+        --run-dir <path>
 """
 
 from __future__ import annotations
@@ -76,33 +76,6 @@ async def _run_stdio(server: Server) -> None:
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-async def _run_sse(server: Server, bind_host: str, port: int) -> None:
-    """Fallback transport — see mcp_app/README.md: only build/exercise this if
-    stdio-over-ssh turns out not to work with nanobot's real MCP config format.
-    """
-    import uvicorn
-    from mcp.server.sse import SseServerTransport
-    from starlette.applications import Starlette
-    from starlette.routing import Mount, Route
-
-    transport = SseServerTransport("/messages/")
-
-    async def handle_sse(request):
-        async with transport.connect_sse(
-            request.scope, request.receive, request._send
-        ) as (read_stream, write_stream):
-            await server.run(read_stream, write_stream, server.create_initialization_options())
-
-    app = Starlette(routes=[
-        Route("/sse", endpoint=handle_sse),
-        Mount("/messages/", app=transport.handle_post_message),
-    ])
-    config = uvicorn.Config(app, host=bind_host, port=port, log_level="warning")
-    print(f"[mcp_app.server] MCP server ready (sse transport) — listening on "
-          f"http://{bind_host}:{port}/sse", file=sys.stderr, flush=True)
-    await uvicorn.Server(config).serve()
-
-
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", required=True, choices=["ncnn", "simd-loop", "llama.cpp"])
@@ -119,9 +92,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "definition compile()'d gets its own <run-dir>/<definition>/ subdir.")
     p.add_argument("--instance-label", default=None,
                     help="Cosmetic only (e.g. 'c8g.large') — never used for compile-flag decisions.")
-    p.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
-    p.add_argument("--bind-host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8765)
     return p.parse_args(argv)
 
 
@@ -142,10 +112,7 @@ def main(argv: list[str] | None = None) -> None:
     print("[mcp_app.server] Session initialized.", file=sys.stderr, flush=True)
     server = build_server(tools)
     try:
-        if args.transport == "stdio":
-            asyncio.run(_run_stdio(server))
-        else:
-            asyncio.run(_run_sse(server, args.bind_host, args.port))
+        asyncio.run(_run_stdio(server))
     finally:
         tools.cleanup()
 

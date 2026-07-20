@@ -23,10 +23,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import socket
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -120,25 +118,16 @@ def _status() -> None:
 
 def _spawn_command(
     target: RemoteTarget, remote_root: str, dataset: str,
-    author: str, baseline_author: Optional[str], isa: str, *,
-    transport: str, port: Optional[int] = None,
+    author: str, baseline_author: Optional[str], isa: str,
 ) -> str:
     run_dir = f"{remote_root}/agent-runs-mcp/{author}"
     cmd = (
         f"cd {remote_root} && python3 -m mcp_app.server --dataset {dataset} "
-        f"--author {author} --isa {isa} --run-dir {run_dir} --transport {transport}"
+        f"--author {author} --isa {isa} --run-dir {run_dir}"
     )
     if baseline_author:
         cmd += f" --baseline-author {baseline_author}"
-    if transport == "sse":
-        cmd += f" --bind-host 127.0.0.1 --port {port}"
     return cmd
-
-
-def _free_local_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 # ── Pre-flight: make sure the instance actually has what a session needs
@@ -195,10 +184,6 @@ def prepare_session(
     sync_repo: bool = True,
     local_repo_dir: Optional[str | Path] = None,
     skip_preflight: bool = False,
-    transport: str = "stdio",
-    local_port: Optional[int] = None,
-    remote_port: int = 8765,
-    startup_timeout: int = 60,
 ) -> dict:
     """Get an mcp_app session ready to be driven by a real MCP client.
 
@@ -216,18 +201,13 @@ def prepare_session(
     auto-derives it from `dataset`
     (mcp_app/agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR).
 
-    transport="stdio" (default, try first): returns a spawn command dict
-    ({"transport": "stdio", "command": "ssh", "args": [...]}) for nanobot's
-    own MCP config — no process is spawned by this function in this mode.
-    The MCP server config entry for this connection should set a generous
-    `tool_timeout` (e.g. 300-600s): the first compile() call for any given
-    definition may trigger a synchronous baseline collection that can take
-    a while.
-
-    transport="sse" (fallback, only if stdio doesn't work with nanobot's
-    config format): establishes an SSH local-port-forward + starts the
-    remote server, returns {"transport": "sse", "endpoint": "http://127.0.0.1:<port>",
-    "_tunnel_proc": <Popen>} — call stop_tunnel() on the result when done.
+    Returns a spawn command dict using stdio ({"transport": "stdio", "command": "ssh",
+    "args": [...]}) for nanobot's own MCP config — no process is spawned by
+    this function; nanobot itself spawns the ssh subprocess and speaks
+    stdio-framed MCP over it. The MCP server config entry for this connection
+    should set a generous `tool_timeout` (e.g. 300-600s): the first compile()
+    call for any given definition may trigger a synchronous baseline
+    collection that can take a while.
     """
     if sync_repo:
         if local_repo_dir is None:
@@ -237,60 +217,12 @@ def prepare_session(
     if not skip_preflight:
         ensure_dataset_ready(target, dataset)
 
-    if transport == "stdio":
-        remote_cmd = _spawn_command(
-            target, remote_root, dataset, author, baseline_author, isa,
-            transport="stdio",
-        )
-        return {
-            "transport": "stdio",
-            "command": "ssh",
-            "args": [*target.ssh_base_args(), f"{target.user}@{target.host}", remote_cmd],
-        }
-
-    if transport == "sse":
-        if local_port is None:
-            local_port = _free_local_port()
-        remote_cmd = _spawn_command(
-            target, remote_root, dataset, author, baseline_author, isa,
-            transport="sse", port=remote_port,
-        )
-        ssh_cmd = [
-            "ssh", "-L", f"{local_port}:127.0.0.1:{remote_port}",
-            *target.ssh_base_args(), f"{target.user}@{target.host}", remote_cmd,
-        ]
-        proc = subprocess.Popen(ssh_cmd)
-        endpoint = f"http://127.0.0.1:{local_port}/sse"
-        _wait_for_port(local_port, timeout=startup_timeout, proc=proc)
-        return {"transport": "sse", "endpoint": endpoint, "_tunnel_proc": proc}
-
-    raise ValueError(f"Unknown transport: {transport!r}")
-
-
-def _wait_for_port(port: int, *, timeout: float, proc: subprocess.Popen) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(f"ssh tunnel process exited early (rc={proc.returncode})")
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                return
-        except OSError:
-            time.sleep(0.5)
-    raise TimeoutError(f"Nothing listening on 127.0.0.1:{port} after {timeout}s")
-
-
-def stop_tunnel(prepared: dict) -> None:
-    """Only meaningful for transport="sse" — no-op otherwise."""
-    proc = prepared.get("_tunnel_proc")
-    if proc is None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+    remote_cmd = _spawn_command(target, remote_root, dataset, author, baseline_author, isa)
+    return {
+        "transport": "stdio",
+        "command": "ssh",
+        "args": [*target.ssh_base_args(), f"{target.user}@{target.host}", remote_cmd],
+    }
 
 
 def sync_results(
@@ -325,19 +257,9 @@ def _cli_prepare(args: argparse.Namespace) -> None:
         baseline_author=args.baseline_author,
         remote_root=args.remote_root, sync_repo=not args.no_sync,
         local_repo_dir=args.local_repo_dir, skip_preflight=args.skip_preflight,
-        transport=args.transport,
     )
-    if info["transport"] == "stdio":
-        print("spawn command:")
-        print(f"  {info['command']} {' '.join(info['args'])}")
-    else:
-        print(f"tunnel up: {info['endpoint']}")
-        print("(Ctrl-C to tear down)")
-        try:
-            while True:
-                time.sleep(3600)
-        except KeyboardInterrupt:
-            stop_tunnel(info)
+    print("spawn command:")
+    print(f"  {info['command']} {' '.join(info['args'])}")
 
 
 def _cli_sync(args: argparse.Namespace) -> None:
@@ -388,19 +310,9 @@ def _cli_launch(args: argparse.Namespace) -> None:
         remote_root=args.remote_root, sync_repo=not args.no_sync,
         local_repo_dir=args.local_repo_dir or str(REPO_ROOT),
         skip_preflight=args.skip_preflight,
-        transport=args.transport,
     )
-    if info["transport"] == "stdio":
-        print("spawn command:")
-        print(f"  {info['command']} {' '.join(info['args'])}")
-    else:
-        print(f"tunnel up: {info['endpoint']}")
-        print("(Ctrl-C to tear down)")
-        try:
-            while True:
-                time.sleep(3600)
-        except KeyboardInterrupt:
-            stop_tunnel(info)
+    print("spawn command:")
+    print(f"  {info['command']} {' '.join(info['args'])}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -417,7 +329,6 @@ def main(argv: list[str] | None = None) -> None:
     prep.add_argument("--baseline-author", default=None,
                        help="Override only — the server auto-derives this from --dataset.")
     prep.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
-    prep.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
     prep.add_argument("--local-repo-dir", help="Required unless --no-sync.")
     prep.add_argument("--no-sync", action="store_true")
     prep.add_argument("--skip-preflight", action="store_true",
@@ -470,7 +381,6 @@ def main(argv: list[str] | None = None) -> None:
     launch.add_argument("--baseline-author", default=None,
                          help="Override only — the server auto-derives this from --dataset.")
     launch.add_argument("--remote-root", default="~/arm-bench")
-    launch.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
     launch.add_argument("--no-sync", action="store_true",
                          help="Skip prepare_session's own rsync (provision already synced once).")
     launch.add_argument("--skip-preflight", action="store_true",
