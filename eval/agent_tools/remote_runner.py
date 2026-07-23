@@ -111,7 +111,11 @@ def cmd_evaluate(args: dict) -> dict:
     try:
         lib = ctypes.CDLL(so_path)
         entry = _bind_entry(lib, definition.op_type)
-        adapter = get_dataset_adapter("raw")()
+        # simd-loop candidates use the meta-driven simd-loop ABI (a/b/c ptrs + n),
+        # NOT the flat "raw" ABI — mirror bench.runner's adapter selection or the
+        # entry gets called with the wrong argument layout and segfaults.
+        adapter_name = "simd-loop" if getattr(definition, "simd_loop_meta", None) is not None else "raw"
+        adapter = get_dataset_adapter(adapter_name)()
         kernel = BoundKernel(entry=entry, adapter=adapter, op_type=definition.op_type)
         ref_run = _compile_reference(definition)
     except Exception as e:

@@ -115,6 +115,11 @@ class TraceSet:
         # Solutions — skip _harness/ (it's compile-time data, not a Solution)
         if ts.solutions_path.exists():
             for p in sorted(ts.solutions_path.rglob("*.json")):
+                # Skip transient <def>_current.json checkpoints: a crashed run
+                # leaves one behind sharing the canonical solution name, which
+                # would trip the "Duplicate solution name" check below.
+                if p.name.endswith("_current.json"):
+                    continue
                 # solutions/<dataset>/<author>/<op_type>/<name>.json
                 rel = p.relative_to(ts.solutions_path)
                 if rel.parts[1] == "_harness":
