@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from bench.benchmark import Benchmark, BenchmarkConfig
+from bench.config import DEFAULT_BASELINE_AUTHOR
 from bench.data import TraceSet
 
 
@@ -55,7 +56,7 @@ def _parse_axes_filter(s: Optional[str]) -> Optional[Dict[str, int]]:
 
 def cmd_bench(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
-    bench = Benchmark(ts, BenchmarkConfig())
+    bench = Benchmark(ts, BenchmarkConfig(baseline_author=args.baseline_author))
     try:
         traces = bench.bench(
             definition=args.definition,
@@ -73,10 +74,11 @@ def cmd_bench(args: argparse.Namespace) -> int:
         if ev.status.value == "PASSED":
             perf = ev.performance
             corr = ev.correctness
+            speedup = f"  speedup={perf.time_speedup:.3f}x" if perf.time_speedup is not None else ""
             print(
                 f"  {t.workload.uuid[:8]}  PASSED  "
                 f"min={perf.min_ns / 1000:.2f}us  p5={perf.p5_ns / 1000:.2f}us  "
-                f"max_abs={corr.max_absolute_error:.2e}  max_rel={corr.max_relative_error:.2e}"
+                f"max_abs={corr.max_absolute_error:.2e}  max_rel={corr.max_relative_error:.2e}{speedup}"
             )
         else:
             print(f"  {t.workload.uuid[:8]}  {ev.status.value}  {ev.log[:120]}")
@@ -100,6 +102,9 @@ def cmd_collect_baselines(args: argparse.Namespace) -> int:
         return 1
     n_pass = sum(1 for t in traces if t.is_successful())
     print(f"\n{len(traces)} traces produced ({n_pass} PASSED, {len(traces) - n_pass} other).")
+    if n_pass == 0:
+        # Producing traces isn't success on its own 
+        return 1
     return 0
 
 
@@ -152,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument(
         "--workload-axes", default=None,
         help="Filter workloads, e.g. 'N=1,H=56,W=56'. Only matching workloads are run.",
+    )
+    b.add_argument(
+        "--baseline-author", default=DEFAULT_BASELINE_AUTHOR,
+        help="Author folder under solutions/<dataset>/ to use as the speedup baseline "
+             f"(default: {DEFAULT_BASELINE_AUTHOR!r}; e.g. 'baseline-llamacpp-arm' for llama.cpp).",
     )
     b.set_defaults(func=cmd_bench)
 

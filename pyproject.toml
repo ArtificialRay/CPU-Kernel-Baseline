@@ -9,4 +9,5 @@ dependencies = [
     "pydantic>=2.0",
     "numpy",
     "torch",
+    "mcp",
 ]

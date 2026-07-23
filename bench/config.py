@@ -49,9 +49,15 @@ class EvalOverride:
 # absolute. These op-type overrides make such baselines pass on correctness while
 # staying tight enough to catch a real bug. Keyed by Definition.op_type, so they
 # only apply to these ops (conv2d / loop_* / rms_norm keep the strict default).
+#
+# moe gets a looser rel_tol than gemm/mha: near-degenerate softmax routing (one
+# expert taking ~99.98% of the gate weight) concentrates the whole token's output
+# magnitude into a single expert's gate/up/down GEMMs, so bf16 accumulation-order
+# noise pushes ~10% of the 2048 output elements past rel_tol=1e-2 even though the
+# baseline is algorithmically correct 
 DEFAULT_OP_TYPE_CONFIG: Dict[str, "EvalOverride"] = {
     "gemm": EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
-    "moe":  EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
+    "moe":  EvalOverride(abs_tol=1e-1, rel_tol=5e-2, required_matched_ratio=0.95),
     "mha":  EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
 }
 

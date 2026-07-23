@@ -39,6 +39,7 @@ eval/eval_config.json
 
 # Large binary/analysis files
 *.pdf
+*.tar.gz
 
 # Terraform — state contains live AWS resource info, providers are large binaries
 terraform/.terraform/
@@ -53,9 +54,10 @@ terraform/.terraform.lock.hcl
 bench-trace/
 __pycache__/
 *_binding_templates/
-agent-runs/
+agent-runs*/
 uv.lock
 notebooks/
+*_trajs/*
 
 # Local clone of the HuggingFace arm-bench-trace dataset (not part of the repo)
 arm-bench/

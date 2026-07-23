@@ -5,3 +5,4 @@ numpy
 ml_dtypes
 torch
 dotenv
+mcp

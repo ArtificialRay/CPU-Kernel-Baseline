@@ -29,11 +29,6 @@ variable "instance_type" {
 }
 
 
-variable "skip_initial_build" {
-  description = "Skip the initial make build step (eval harness builds on demand)"
-  default     = true
-}
-
 # ---------------------------------------------------------------------------
 # Security group — SSH only
 # ---------------------------------------------------------------------------
@@ -93,11 +88,13 @@ resource "aws_instance" "kernel_testing" {
 }
 
 # ---------------------------------------------------------------------------
-# Deploy: sync source + build
-# Sequence:
-#   1. Wait for cloud-init (setup.sh) to finish installing the toolchain
-#   2. rsync the arm-bench tree from local → instance (excluding build artefacts)
-#   3. Build the requested make target on the instance
+# Deploy: wait for the instance's own bootstrap to finish.
+# Source sync (allow-listed to RSYNC_ALLOWLIST — bench/, bench-trace/,
+# mcp_app/, requirements.txt) and any initial build happen afterward, from
+# eval/provision.py's own rsync_to()/run() calls once this resource
+# completes — not here, so there's a single place that decides what gets
+# synced instead of this resource's own separate deny-list rsync drifting
+# out of sync with RSYNC_ALLOWLIST.
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "deploy" {
@@ -114,29 +111,9 @@ resource "null_resource" "deploy" {
     timeout     = "15m"
   }
 
-  # 1. Block until user_data (setup.sh) is done
+  # Block until user_data (setup.sh) is done
   provisioner "remote-exec" {
     inline = ["cloud-init status --wait"]
-  }
-
-  # 2. Rsync sources from the local machine to the instance
-  provisioner "local-exec" {
-    command = <<-EOT
-      rsync -avz \
-        --exclude=build \
-        --exclude=.git \
-        --exclude=terraform \
-        -e 'ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' \
-        ${path.module}/../ \
-        ubuntu@${aws_instance.kernel_testing.public_ip}:~/arm-bench/
-    EOT
-  }
-
-  # 3. Build (optional — eval harness builds on demand with HAVE_CANDIDATE)
-  provisioner "remote-exec" {
-    inline = [
-      var.skip_initial_build ? "echo 'Skipping initial build (eval harness builds on demand)'" : "cd ~/arm-bench && make ${var.build_target}",
-    ]
   }
 }
 
@@ -181,22 +158,6 @@ resource "null_resource" "deploy_c8g" {
   provisioner "remote-exec" {
     inline = ["cloud-init status --wait"]
   }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      rsync -avz \
-        --exclude=build \
-        --exclude=.git \
-        --exclude=terraform \
-        -e 'ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' \
-        ${path.module}/../ \
-        ubuntu@${aws_instance.c8g.public_ip}:~/arm-bench/
-    EOT
-  }
-
-  provisioner "remote-exec" {
-    inline = ["echo 'c8g ready'"]
-  }
 }
 
 # ---------------------------------------------------------------------------
@@ -209,10 +170,6 @@ output "instance_public_ip" {
 
 output "ssh_command" {
   value = "ssh -i ~/.ssh/id_rsa ubuntu@${aws_instance.kernel_testing.public_ip}"
-}
-
-output "run_example" {
-  value = "ssh -i ~/.ssh/id_rsa ubuntu@${aws_instance.kernel_testing.public_ip} './arm-bench/build/${var.build_target}/bin/simd_loops -k 1 -n 10'"
 }
 
 output "instance_id" {

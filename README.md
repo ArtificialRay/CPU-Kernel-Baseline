@@ -10,8 +10,8 @@ FP32 Kernels available:
 | GEMM (M=1, decode) | Memory Bound | llama.cpp, ncnn |
 | Conv2D | Compute Bound | ncnn |
 | GEMM (M≥32, prefill) | Compute Bound | llama.cpp, ncnn |
-| MHA | Fused | llama.cpp, ncnn |
-| LSTM | Fused | llama.cpp, ncnn |
+| MHA | Fused | llama.cpp|
+| LSTM | Fused | ncnn |
 
 INT8 Kernels available:
 | Kernel Name | Type | Source |
