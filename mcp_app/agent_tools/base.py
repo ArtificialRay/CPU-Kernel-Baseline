@@ -52,7 +52,10 @@ def standard_tool_schemas(*, code_description: str, disasm_hint: str) -> list[di
                 "files are provided automatically — you only write the kernel. "
                 "You can call this with different `definition` values across the "
                 "session; each definition keeps its own compile/evaluate history. "
-                "Returns {\"status\": \"OK\", \"version\": N} on success, or "
+                "Returns {\"status\": \"OK\", \"definition\": ..., \"version\": N} on "
+                "success — pass both `definition` and `version` back into evaluate()/"
+                "disassemble() to confirm you're acting on this exact compile, not one "
+                "from another definition or a later recompile. Or "
                 "{\"status\": \"COMPILE_ERROR\", \"error\": \"...\"} on failure."
             ),
             "parameters": {
@@ -74,50 +77,86 @@ def standard_tool_schemas(*, code_description: str, disasm_hint: str) -> list[di
         {
             "name": "evaluate",
             "description": (
-                "Run the last compiled kernel (for the most recently compile()'d "
-                "definition) against all workloads: checks correctness (fail-fast "
-                "on the first failing workload) and, if that passes, measures "
-                "wall-time/cycle counts in the same pass — always both, one call. "
+                "Run the compiled kernel identified by (`definition`, `version`) "
+                "against all workloads: checks correctness (fail-fast on the first "
+                "failing workload) and, if that passes, measures wall-time/cycle "
+                "counts in the same pass — always both, one call. Both args are "
+                "required and must match your own last compile() call for that "
+                "definition exactly — errors instead of silently evaluating a "
+                "different definition's compile, or a version that's since been "
+                "superseded by another compile() (e.g. from a concurrent call in "
+                "the same turn). "
+                "Whenever this beats the best cycle speedup seen so far this "
+                "session, it's immediately persisted to bench-trace — that result "
+                "already counts even if you never call submit(). "
                 "Returns {\"status\": \"PASSED\", \"correctness\": {...}, "
                 "\"performance\": {...}} or {\"status\": \"<error>\", "
                 "\"failed_workload\": \"...\", \"log\": \"...\"}."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {},
-                "required": [],
+                "properties": {
+                    "definition": {
+                        "type": "string",
+                        "description": "Must match the `definition` from your last compile() call.",
+                    },
+                    "version": {
+                        "type": "integer",
+                        "description": "Must match the `version` from your last compile() call.",
+                    },
+                },
+                "required": ["definition", "version"],
             },
         },
         {
             "name": "disassemble",
             "description": (
-                "Disassemble the last compiled .so (up to 300 lines of AArch64 "
-                f"assembly). Defaults to `{disasm_hint}` (your kernel). Pass `fn` "
-                "to inspect a different symbol."
-            ),
+                "Disassemble the compiled .so identified by (`definition`, `version`) "
+                "(up to 300 lines of AArch64 assembly). Defaults to `{disasm_hint}` "
+                "(your kernel); pass `fn` to inspect a different symbol. `definition`/"
+                "`version` are required and validated the same way as evaluate()'s — "
+                "see its description."
+            ).format(disasm_hint=disasm_hint),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "definition": {
+                        "type": "string",
+                        "description": "Must match the `definition` from your last compile() call.",
+                    },
+                    "version": {
+                        "type": "integer",
+                        "description": "Must match the `version` from your last compile() call.",
+                    },
                     "fn": {
                         "type": "string",
                         "description": f"Symbol to disassemble. Omit to use `{disasm_hint}`.",
-                    }
+                    },
                 },
-                "required": [],
+                "required": ["definition", "version"],
             },
         },
         {
             "name": "submit",
             "description": (
-                "Score and persist the best-performing version for the most "
-                "recently compile()'d definition. Automatically selects the "
-                "version with the highest cycle speedup seen in evaluate() calls. "
-                "Call this when you have finished optimizing that definition. "
+                "Optional: attach your reasoning to the best-performing version for "
+                "`definition`. The best version itself is already saved the moment "
+                "evaluate() finds it — this doesn't recompile or re-measure anything, "
+                "it only records `explanation` against it, so it's cheap and safe to "
+                "call more than once (e.g. once early with a rough note, again at the "
+                "end with your final summary). `definition` is required and must be "
+                "whichever definition you last compile()'d — no `version` needed here "
+                "(submit always targets the best version found so far, not necessarily "
+                "your last compile()). "
                 "Returns {\"status\": \"PASSED\", \"time_speedup\": X, \"cycle_speedup\": Y}."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "definition": {
+                        "type": "string",
+                        "description": "Must match the `definition` from your last compile() call.",
+                    },
                     "explanation": {
                         "type": "string",
                         "description": (
@@ -128,7 +167,7 @@ def standard_tool_schemas(*, code_description: str, disasm_hint: str) -> list[di
                         ),
                     },
                 },
-                "required": [],
+                "required": ["definition"],
             },
         },
     ]
@@ -231,6 +270,32 @@ class KernelSession(ABC):
             "cycle_speedup": perf.get("cycle_speedup_geomean"),
         }
 
+    def _check_definition_arg(self, definition: str) -> Optional[dict]:
+        """Validate a required `definition` arg against the currently active
+        one. Returns an error dict to short-circuit the caller if it doesn't
+        match (including when nothing is active yet), None if it's fine to
+        proceed.
+
+        Why this exists: nanobot can dispatch multiple tool calls from the
+        same agent turn concurrently (AgentRunSpec.concurrent_tools=True),
+        and mcp_app/server.py's _call_tool runs each dispatch on its own
+        thread — so e.g. two compile() calls for different definitions
+        issued in the same turn can race on self._active_definition with no
+        error either way, and a subsequent evaluate()/disassemble()/submit()
+        would then silently act on whichever one won the race. See
+        SKILL.md's "Ground rules: one definition at a time".
+        """
+        if definition != self._active_definition:
+            return {
+                "status": "DEF_CHECK_FAILED",
+                "error": (
+                    f"requested definition {definition!r}, but the active one is "
+                    f"{self._active_definition!r} — call compile(definition={definition!r}, "
+                    "code=...) again before acting on it."
+                ),
+            }
+        return None
+
     # ── shared tool implementations ───────────────────────────────────────────
 
     def compile(self, definition: str, code: str) -> dict:
@@ -238,13 +303,7 @@ class KernelSession(ABC):
         is_new = definition not in self._definitions
         state = self._get_or_create_definition(definition)
         if is_new:
-            # Baseline collection is lazy (can be slow — see baseline_readiness.py's
-            # module docstring) since evaluate()/submit() degrade gracefully
-            # without it. reference-scalar-kernel.cpp is NOT written here: the
-            # agent needs to read it via list_resources()/read_resource() and
-            # compile() it as v1 *before* this, its own first compile() call —
-            # so it's written eagerly for every definition in this dataset at
-            # server startup instead (session.py::build_tools()).
+            # lazliy collect baseline for new definition
             from . import baseline_readiness
             baseline_readiness.ensure_baseline_collected(
                 self._trace_set, definition, self._bench_cfg.baseline_author,
@@ -291,11 +350,12 @@ class KernelSession(ABC):
         )
         return {
             "status": "OK",
+            "definition": definition,
             "version": version,
             "source_file": str(self._run_dir / definition / source_file),
         }
 
-    def evaluate(self) -> dict:
+    def evaluate(self, definition: str, version: int) -> dict:
         """Run correctness + timing for all workloads, for the active definition.
 
         Always both in one pass, at the same cost — the underlying evaluator
@@ -305,16 +365,31 @@ class KernelSession(ABC):
         warmup/repeat loop runs regardless of whether perf counters are
         collected). self._bench_cfg already has collect_perf_counters=True
         (bench/config.py's default) — nothing to vary per call.
+
+        Greedy submit: if there is a new best version existed, auto-submit it by record the metrics to trajectory,
+        implementation to solution, and evaluation result to evaluation trace
+
+        `definition` must match whoever was actually last compile()'d (see
+        _check_definition_arg's docstring for why), and `version` must match
+        that definition's last compiled version
         """
-        if self._active_definition is None:
-            return {
-                "status": "COMPILE_ERROR",
-                "error": "no definition selected — call compile(definition=..., code=...) first",
-            }
+        mismatch = self._check_definition_arg(definition)
+        if mismatch is not None:
+            return mismatch
         state = self._definitions[self._active_definition]
         state["turn"] += 1
         if state["last_compile"] is None:
             return {"status": "COMPILE_ERROR", "error": "nothing compiled yet"}
+        if state["last_compile"]["version"] != version:
+            return {
+                "status": "COMPILE_ERROR",
+                "error": (
+                    f"requested version {version!r} of {definition!r}, but the last "
+                    f"compiled version is {state['last_compile']['version']!r} — it was "
+                    "recompiled since your compile() call; use that version's number, "
+                    "or compile() your code again."
+                ),
+            }
 
         lc = state["last_compile"]
         result = ops.evaluate_kernel(
@@ -324,6 +399,7 @@ class KernelSession(ABC):
 
         status = result.get("status", "RUNTIME_ERROR")
         metrics: dict = {"status": status}
+        is_new_best = False
 
         if status == "PASSED":
             correctness = result.get("correctness", {})
@@ -340,7 +416,15 @@ class KernelSession(ABC):
             if cs is not None:
                 if (state["best_compile"] is None
                         or cs > (state["best_compile"].get("cycle_speedup") or 0.0)):
-                    state["best_compile"] = {**lc, "cycle_speedup": cs}
+                    state["best_compile"] = {
+                        "solution": lc["solution"],
+                        "version": lc["version"],
+                        "cycle_speedup": cs,
+                        "score": self.score(perf),
+                        "correctness": correctness,
+                        "traces_data": result.get("traces", []),
+                    }
+                    is_new_best = True
         else:
             metrics["failed_workload"] = result.get("failed_workload")
             metrics["log"] = result.get("log", "")
@@ -350,16 +434,34 @@ class KernelSession(ABC):
             tool="evaluate",
             metrics=metrics,
         )
+
+        if is_new_best:
+            self.submit(definition=definition, explanation="Auto submit by evaluate()")
+
         return result
 
-    def disassemble(self, fn: Optional[str] = None) -> dict:
-        """Disassemble the active definition's current .so; write full asm to disk."""
-        if self._active_definition is None:
-            return {"error": "no definition selected — call compile(definition=..., code=...) first"}
+    def disassemble(self, definition: str, version: int, fn: Optional[str] = None) -> dict:
+        """Disassemble the active definition's current .so; write full asm to disk.
+
+        `definition`/`version` are required and validated the same way as
+        evaluate()'s — see its docstring for why.
+        """
+        mismatch = self._check_definition_arg(definition)
+        if mismatch is not None:
+            return mismatch
         state = self._definitions[self._active_definition]
         state["turn"] += 1
         if state["last_compile"] is None:
             return {"error": "nothing compiled yet — call compile() first"}
+        if state["last_compile"]["version"] != version:
+            return {
+                "error": (
+                    f"requested version {version!r} of {definition!r}, but the last "
+                    f"compiled version is {state['last_compile']['version']!r} — it was "
+                    "recompiled since your compile() call; use that version's number, "
+                    "or compile() your code again."
+                ),
+            }
 
         lc = state["last_compile"]
         symbol = fn or lc["solution"].get_entry_symbol()
@@ -387,76 +489,36 @@ class KernelSession(ABC):
             result = {**result, "asm_file": str(self._run_dir / self._active_definition / asm_file)}
         return result
 
-    def submit(self, explanation: str = "") -> dict:
-        """Compile the active definition's best-performing version, run full evaluation sweep, persist.
+    def submit(self, definition: str, explanation: str = "") -> dict:
+        """Persist the best version seen so far this session and record
+        `explanation` against it in the trajectory.
 
-        Always uses the version with the highest cycle_speedup_geomean seen
-        during this session for this definition (falling back to the last
-        compiled version if no measured evaluate() has run yet).
+        `definition` is required and validated the same way as evaluate()'s
+        (see _check_definition_arg's docstring for why) — but there's no
+        `version` here: submit() always targets state["best_compile"], which
+        is only ever replaced by a strictly better result (see evaluate()),
+        so unlike last_compile there's no "silently superseded by a
+        concurrent recompile" race to guard against by pinning a version.
         """
-        if self._active_definition is None:
-            return {
-                "status": "COMPILE_ERROR",
-                "error": "no definition selected — call compile(definition=..., code=...) first",
-            }
+        mismatch = self._check_definition_arg(definition)
+        if mismatch is not None:
+            return mismatch
         state = self._definitions[self._active_definition]
         state["turn"] += 1
 
-        chosen = state["best_compile"] or state["last_compile"]
-        if chosen is None:
+        best = state["best_compile"]
+        if best is None:
             state["trajectory"].write_turn(
                 turn=state["turn"], tool="submit",
                 metrics={"status": "COMPILE_ERROR"},
             )
-            return {"status": "COMPILE_ERROR", "error": "nothing compiled yet — call compile() first"}
+            return {"status": "COMPILE_ERROR", "error": "nothing evaluated yet — call evaluate() first"}
 
-        kernel_src = next(
-            (s for s in chosen["solution"].sources if s.path == "kernel.cpp"), None
-        )
-        if kernel_src is None:
-            state["trajectory"].write_turn(
-                turn=state["turn"], tool="submit",
-                metrics={"status": "COMPILE_ERROR"},
-            )
-            return {"status": "COMPILE_ERROR", "error": "cannot retrieve code from last compiled solution"}
-
-        code = kernel_src.content
-        source_version = chosen["version"]
-
-        solution = self.make_solution(code)
-        compile_result = ops.compile_kernel(state["definition"], solution)
-
-        if compile_result.get("status") != "OK":
-            state["trajectory"].write_turn(
-                turn=state["turn"],
-                tool="submit",
-                metrics={"status": "COMPILE_ERROR"},
-            )
-            return compile_result
-
-        so_path = compile_result["so_path"]
-        source_file = f"v{source_version}.cpp"
-
-        # self._bench_cfg already has collect_perf_counters=True (see evaluate()).
-        eval_result = ops.evaluate_kernel(
-            self._trace_set, state["definition"], so_path, solution.name, self._bench_cfg,
-        )
-
-        if eval_result.get("status") != "PASSED":
-            state["trajectory"].write_turn(
-                turn=state["turn"],
-                tool="submit",
-                source_file=source_file,
-                metrics={"status": eval_result.get("status")},
-            )
-            return eval_result
-
-        perf = eval_result.get("performance", {})
-        score = self.score(perf)
+        solution = best["solution"]
 
         from bench.data.trace import Trace
 
-        traces_data = eval_result.get("traces", [])
+        traces_data = best.get("traces_data", [])
         if traces_data:
             traces = [Trace.model_validate(td) for td in traces_data]
             best_fname = f"{state['definition'].name}.json"
@@ -468,17 +530,20 @@ class KernelSession(ABC):
 
         best_path = self._write_solution_json(solution, suffix="_best")
         self._finalize_solution_files(solution)
-
         sol_ref = best_path.name if best_path else None
+
+        score = best["score"]
+        correctness = best["correctness"]
+
         state["trajectory"].write_turn(
             turn=state["turn"],
             tool="submit",
             reasoning=explanation,
-            source_file=source_file,
+            source_file=f"v{best['version']}.cpp",
             metrics={
                 "status": "PASSED",
                 **score,
-                "correctness": eval_result.get("correctness"),
+                "correctness": correctness,
             },
             solution_ref=sol_ref,
         )
@@ -486,7 +551,7 @@ class KernelSession(ABC):
         return {
             "status": "PASSED",
             **score,
-            "correctness": eval_result.get("correctness"),
+            "correctness": correctness,
             "explanation": explanation,
         }
 
