@@ -26,6 +26,7 @@ import argparse
 import asyncio
 import contextlib
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,17 @@ from .session import SessionConfig, build_tools
 
 # compile()/evaluate() run synchronously and can take minutes, set a tool call ping to notify agent that the tool is still running
 TOOL_CALL_PING_INTERVAL_S = 120
+
+# Debug-log truncation: 
+ARG_LOG_TRUNCATE_CHARS = 300
+RESULT_LOG_TRUNCATE_CHARS = 2000
+
+
+def _truncate_repr(obj: Any, limit: int) -> str:
+    text = repr(obj)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}... ({len(text) - limit} more chars truncated)"
 
 
 def build_server(tools: KernelSession) -> Server:
@@ -60,6 +72,9 @@ def build_server(tools: KernelSession) -> Server:
         # Run the (synchronous, potentially long-running) dispatch off the event
         # loop so pings can still go out while it's in flight — dispatch_tool_call
         # itself stays untouched, it doesn't need to know about sessions/pings.
+        print(f"[mcp_app.server] tool call: {name}({_truncate_repr(arguments, ARG_LOG_TRUNCATE_CHARS)})",
+              file=sys.stderr, flush=True)
+        started = time.monotonic()
         session = server.request_context.session
         task = asyncio.ensure_future(
             asyncio.to_thread(tools.dispatch_tool_call, name, arguments)
@@ -67,9 +82,15 @@ def build_server(tools: KernelSession) -> Server:
         while True:
             done, _ = await asyncio.wait({task}, timeout=TOOL_CALL_PING_INTERVAL_S)
             if task in done:
-                return task.result()
+                break
+            print(f"[mcp_app.server] tool '{name}' still running "
+                  f"({time.monotonic() - started:.0f}s elapsed)...", file=sys.stderr, flush=True)
             with contextlib.suppress(Exception):
                 await session.send_ping()
+        result = task.result()
+        print(f"[mcp_app.server] tool '{name}' done in {time.monotonic() - started:.1f}s: "
+              f"{_truncate_repr(result, RESULT_LOG_TRUNCATE_CHARS)}", file=sys.stderr, flush=True)
+        return result
 
     @server.list_resources()
     async def _list_resources() -> list[types.Resource]:

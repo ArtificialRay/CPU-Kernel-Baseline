@@ -140,12 +140,6 @@ def _spawn_command(
     return cmd
 
 
-def _free_local_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 # ── Pre-flight: make sure the instance actually has what a session needs
 #    before nanobot ever connects. mcp_app/smoke_test_driver.py (mcp_app's
 #    non-nanobot smoke-test tool) has its own independent copy of this same
@@ -222,8 +216,6 @@ def prepare_session(
     if not skip_preflight:
         ensure_dataset_ready(target, dataset)
 
-    if local_port is None:
-        local_port = _free_local_port()
     remote_cmd = _spawn_command(
         target, remote_root, dataset, author, baseline_author, isa,
         port=remote_port,
@@ -238,10 +230,26 @@ def prepare_session(
         _wait_for_port(local_port, timeout=startup_timeout, proc=proc)
     except BaseException:
         # Any exception will kill the listening local port, including ctrl+C
+        print(f"[launch_session] kill sse listening local port...")
         proc.kill()
         proc.wait()
+        _kill_remote_port(target, remote_port)
+        print(f"[launch_session] sse listening local port successfully killed")
         raise
-    return {"transport": "sse", "endpoint": endpoint, "_tunnel_proc": proc}
+    return {
+        "transport": "sse", "endpoint": endpoint, "_tunnel_proc": proc,
+        "_target": target, "_remote_port": remote_port,
+    }
+
+
+def _kill_remote_port(target: RemoteTarget, remote_port: int) -> None:
+    """Explicitly kill whatever's bound to remote_port on target, synchronously.
+    """
+    target.run(
+        f"fuser -k {remote_port}/tcp 2>/dev/null || "
+        f"pkill -f 'mcp_app.server.*--port {remote_port}' 2>/dev/null || true",
+        timeout=15,
+    )
 
 
 def _wait_for_port(port: int, *, timeout: float, proc: subprocess.Popen) -> None:
@@ -267,6 +275,11 @@ def stop_tunnel(prepared: dict) -> None:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+
+    target: Optional[RemoteTarget] = prepared.get("_target")
+    remote_port = prepared.get("_remote_port")
+    if target is not None and remote_port is not None:
+        _kill_remote_port(target, remote_port)
 
 
 def sync_results(
@@ -389,7 +402,7 @@ def main(argv: list[str] | None = None) -> None:
     prep.add_argument("--baseline-author", default=None,
                        help="Override only — the server auto-derives this from --dataset.")
     prep.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
-    prep.add_argument("--local-port", type=int, default=None,
+    prep.add_argument("--local-port", type=int, default=8888,
                        help="Fix the local tunnel port instead of picking a random free "
                             "one each run, so a reused mcp client config (e.g. nanobot's) "
                             "doesn't need editing every relaunch.")
@@ -445,7 +458,7 @@ def main(argv: list[str] | None = None) -> None:
     launch.add_argument("--baseline-author", default=None,
                          help="Override only — the server auto-derives this from --dataset.")
     launch.add_argument("--remote-root", default="~/arm-bench")
-    launch.add_argument("--local-port", type=int, default=None,
+    launch.add_argument("--local-port", type=int, default=8888,
                          help="Fix the local tunnel port instead of picking a random free "
                               "one each run, so a reused mcp client config (e.g. nanobot's) "
                               "doesn't need editing every relaunch.")
