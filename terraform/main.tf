@@ -172,10 +172,6 @@ output "ssh_command" {
   value = "ssh -i ~/.ssh/id_rsa ubuntu@${aws_instance.kernel_testing.public_ip}"
 }
 
-output "run_example" {
-  value = "ssh -i ~/.ssh/id_rsa ubuntu@${aws_instance.kernel_testing.public_ip} './arm-bench/build/${var.build_target}/bin/simd_loops -k 1 -n 10'"
-}
-
 output "instance_id" {
   value = aws_instance.kernel_testing.id
 }

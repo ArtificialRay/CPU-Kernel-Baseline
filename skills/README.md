@@ -48,8 +48,15 @@ python3 launch_session.py launch \
 This reuses an already-up instance for that `isa` tier if `launch/`
 provisioned one earlier and it's still reachable, otherwise provisions a
 fresh one (Terraform apply, wait for SSH, rsync the repo, install build
-deps, build the dataset's native lib if needed) — then starts an `mcp_app`
-session on it and prints an MCP spawn command (stdio).
+deps, build the dataset's native lib if needed) — then starts a persistent
+`mcp_app` server on it over an SSH-tunneled sse connection and prints the
+endpoint. (stdio — one spawn-command-per-connection — isn't offered here:
+under stdio, every single MCP-client message would tear the remote server
+process down along with its connection, re-paying the SSH connect +
+baseline-collection cost each time; mcp_app/server.py itself still supports
+stdio, this script just doesn't expose it. `mcp_app/smoke_test_driver.py`
+uses stdio directly for its own one-shot verification runs, where that
+per-connection cost doesn't matter.)
 
 ### `launch` flags
 
@@ -62,6 +69,7 @@ session on it and prints an MCP spawn command (stdio).
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
 | `--local-repo-dir` | **no** | this checkout's own root (`REPO_ROOT`, computed from where `launch_session.py` itself lives — not your shell's cwd) | your local checkout of this repo, pushed to the instance by `prepare_session`'s rsync (the provisioning step's own rsync always uses `eval/provision.py`'s own repo checkout, not this) |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
+| `--local-port` | no | random free port | pin the local tunnel port across relaunches, so a reused MCP client config doesn't need re-editing every time |
 | `--no-sync` | flag | off | skip the rsync step (repo already up to date on the instance) |
 | `--skip-preflight` | flag | off | skip the dataset-build check (only if you already know this exact instance's native library is built — this doesn't cover baseline collection, which happens lazily server-side once the agent starts compiling) |
 
@@ -104,10 +112,11 @@ genuinely required unless you pass `--no-sync`.
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
 | `--local-repo-dir` | **yes, unless `--no-sync`** | — | your local checkout of this repo, pushed to the instance |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
+| `--local-port` | no | random free port | pin the local tunnel port across relaunches, so a reused MCP client config doesn't need re-editing every time |
 | `--no-sync` | flag | off | skip the rsync step (repo already up to date on the instance) — makes `--local-repo-dir` optional |
 | `--skip-preflight` | flag | off | skip the dataset-build check |
 
-What you do with the printed spawn command — where it goes in your
+What you do with the printed spawn command/endpoint — where it goes in your
 harness's config, what `tool_timeout`/`enabledTools` settings it needs — is
 harness-specific; see that harness's own `README.md` (§1's table).
 

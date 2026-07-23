@@ -6,9 +6,10 @@ list_resources()/read_resource() -> call_tool("submit", ...) for one
 definition. Exposes both a callable API (used by mcp_app/smoke_test_driver.py)
 and a standalone CLI for manual runs.
 
-    # Spawns the exact command a real MCP client (nanobot, or
-    # skills/launch/launch_session.py's prepare_session()'s output) would use.
-    python -m mcp_app.scripts.test_mcp_client --definition <name> \\
+    # stdio mode: spawn the exact command a real MCP client (nanobot, or
+    # skills/nanobot/nanobot-kernel-session/scripts/launch_session.py's
+    # prepare_session(..., transport="stdio")'s output) would use.
+    python -m mcp_app.scripts.test_mcp_client --transport stdio --definition <name> \\
         --command ssh --spawn-args ubuntu@host "cd ~/arm-bench && python3 -m mcp_app.server ..."
 """
 
@@ -117,10 +118,32 @@ async def run_stdio_sequence(
             )
 
 
+async def run_sse_sequence(
+    endpoint: str,
+    definition: str,
+    *,
+    starter_code: Optional[str] = None,
+    submit_explanation: str = "smoke test",
+    verbose: bool = True,
+) -> dict[str, Any]:
+    """Fallback path — see mcp_app/README.md: only needed if stdio-over-ssh
+    turns out not to work with nanobot's real MCP config format."""
+    from mcp.client.sse import sse_client
+
+    async with sse_client(endpoint) as (read, write):
+        async with ClientSession(read, write) as session:
+            return await run_tool_sequence(
+                session, definition, starter_code=starter_code,
+                submit_explanation=submit_explanation, verbose=verbose,
+            )
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--command", default="ssh", help="Spawn command.")
-    p.add_argument("--spawn-args", nargs="*", default=[], help="Spawn command args.")
+    p.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
+    p.add_argument("--command", default="ssh", help="stdio mode: spawn command.")
+    p.add_argument("--spawn-args", nargs="*", default=[], help="stdio mode: spawn command args.")
+    p.add_argument("--endpoint", help="sse mode: e.g. http://127.0.0.1:8765/sse")
     p.add_argument("--definition", required=True,
                     help="Definition name to compile/evaluate/disassemble/submit.")
     p.add_argument("--code-file", help="Path to a kernel.cpp to compile; defaults to "
@@ -129,9 +152,14 @@ def main(argv: list[str] | None = None) -> None:
 
     starter_code = Path(args.code_file).read_text() if args.code_file else None
 
-    result = asyncio.run(run_stdio_sequence(
-        args.command, args.spawn_args, args.definition, starter_code=starter_code,
-    ))
+    if args.transport == "stdio":
+        result = asyncio.run(run_stdio_sequence(
+            args.command, args.spawn_args, args.definition, starter_code=starter_code,
+        ))
+    else:
+        if not args.endpoint:
+            p.error("--endpoint is required for --transport sse")
+        result = asyncio.run(run_sse_sequence(args.endpoint, args.definition, starter_code=starter_code))
 
     print(json.dumps(result, indent=2))
 
