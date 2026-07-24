@@ -348,7 +348,22 @@ def run_agentic_eval(
                 raise RuntimeError("Exceeded retry budget for rate/server errors")
 
             msg = response.choices[0].message
-            messages.append(msg.model_dump())
+            dumped = msg.model_dump()
+            # Sanitize tool-call arguments to valid JSON before storing in history:
+            # cheap/flaky models emit valid-JSON-plus-trailing-junk, and the provider
+            # rejects the whole request next turn ("function.arguments must be valid
+            # JSON"). Salvage the leading object (or {}), so the round-trip is clean.
+            for _tc in (dumped.get("tool_calls") or []):
+                _raw = (_tc.get("function") or {}).get("arguments", "")
+                try:
+                    json.loads(_raw)
+                except (json.JSONDecodeError, TypeError):
+                    try:
+                        _obj, _ = json.JSONDecoder().raw_decode((_raw or "").strip())
+                    except json.JSONDecodeError:
+                        _obj = {}
+                    _tc["function"]["arguments"] = json.dumps(_obj)
+            messages.append(dumped)
 
             if not msg.tool_calls:
                 if verbose:
@@ -360,7 +375,20 @@ def run_agentic_eval(
 
             for tc in msg.tool_calls:
                 fn_name = tc.function.name
-                fn_args = json.loads(tc.function.arguments)
+                # Cheap/flaky models sometimes emit valid JSON followed by trailing
+                # junk ("Extra data") or minor malformation. Salvage the leading
+                # object; if totally unparseable, fall back to empty args so
+                # dispatch returns a normal error the agent can retry — rather than
+                # a bare json.loads raising and killing the entire run.
+                try:
+                    fn_args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    try:
+                        fn_args, _ = json.JSONDecoder().raw_decode(tc.function.arguments.strip())
+                    except json.JSONDecodeError:
+                        if verbose:
+                            print(f"  [warn] unparseable tool args for {fn_name}; using empty args")
+                        fn_args = {}
 
                 if verbose:
                     arg_preview = {
