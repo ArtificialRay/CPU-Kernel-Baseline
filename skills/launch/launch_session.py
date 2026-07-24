@@ -427,7 +427,7 @@ def main(argv: list[str] | None = None) -> None:
 
     def _add_provision_args(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
-        sp.add_argument("--instance", default=None,
+        sp.add_argument("--instance", default="c7g.xlarge",
                          help="EC2 instance type override (e.g. c8g.xlarge). "
                               "Defaults to ISA_INSTANCE_MAP[isa].")
         sp.add_argument("--local-repo-dir", default=None,
