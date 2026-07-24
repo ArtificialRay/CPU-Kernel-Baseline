@@ -9,6 +9,7 @@ Compatible with any LiteLLM-supported model.
 
 import copy
 import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -232,7 +233,12 @@ def run_agentic_eval(
     schemas = [{"type": "function", "function": s} for s in ToolsCls.tool_schemas()]
 
     baseline_author = bench_cfg.baseline_author if bench_cfg else "reference-scalar"
-    ref_author = "reference-scalar" if dataset == "ncnn" or "llama.cpp" else baseline_author # TODO: use reference-scalar solution for all other dataset, simd-loop has no reference-scalar currently
+    # Agent's starting kernel + correctness anchor (NOT the speedup baseline, which
+    # is baseline_author). simd-loop's scalar author is "reference"; ncnn/llama.cpp
+    # use "reference-scalar". (Previously `== "ncnn" or "llama.cpp"` — a truthiness
+    # bug that forced "reference-scalar" for every dataset, including simd-loop.)
+    _REF_AUTHOR = {"ncnn": "reference-scalar", "llama.cpp": "reference-scalar", "simd-loop": "reference"}
+    ref_author = _REF_AUTHOR.get(dataset, "reference-scalar")
     # Starter code shown to the agent = the baseline solution for this dataset
     # (author varies: reference-scalar/reference/baseline-llamacpp-arm).
     ref_solution = trace_set.get_baseline_solution(definition.name, ref_author)
@@ -240,6 +246,21 @@ def run_agentic_eval(
     family = handle.instance_type.split(".")[0] if handle.instance_type else ""
     isa_desc = _AGENT_ISA_LABELS.get(family, handle.instance_type or "AArch64")
     isa_name = _AGENT_ISA_NAMES.get(family, "SVE2")
+
+    # ISA-ablation override (env ARMBENCH_ISA_MODE): must match agent_tools.base's
+    # _ISA_MODES so the prompt's allowed-ISA matches the actual compile flags.
+    # "portable" = no hand-written SIMD (compiler auto-vec still allowed).
+    _ISA_MODE_PROMPT = {
+        "portable": ("AArch64 (portable C++ only — do NOT use NEON or SVE "
+                     "intrinsics; rely on clean, compiler-vectorizable C++)",
+                     "portable C++ (no SIMD intrinsics)"),
+        "sve":      ("Graviton3 with SVE (SVE1, 128-bit) — use SVE intrinsics "
+                     "only, NOT SVE2", "SVE"),
+        "sve2":     ("Graviton4 with SVE2 (128-bit)", "SVE2"),
+    }
+    _mode = os.environ.get("ARMBENCH_ISA_MODE", "").strip().lower()
+    if _mode in _ISA_MODE_PROMPT:
+        isa_desc, isa_name = _ISA_MODE_PROMPT[_mode]
 
     _BASELINE_LABELS = {
         "baseline-ncnn-arm":     "hand-optimized ncnn ARM baseline",
@@ -294,6 +315,9 @@ def run_agentic_eval(
                 "messages": compressed,
                 "tools": schemas,
                 "tool_choice": "required",
+                # litellm defaults to 600s; large reasoning responses over
+                # OpenRouter can exceed that, so give more headroom.
+                "timeout": 1200,
             }
             if "opus-4-7" not in model and "opus-4-8" not in model:
                 completion_kwargs["temperature"] = 0.2
@@ -308,7 +332,7 @@ def run_agentic_eval(
                         print(f"  [rate limit] sleeping {wait}s: {e}")
                     time.sleep(wait)
                 except (litellm.InternalServerError, litellm.APIConnectionError,
-                        litellm.ServiceUnavailableError) as e:
+                        litellm.ServiceUnavailableError, litellm.Timeout) as e:
                     wait = 30 * (2 ** _retry)
                     if verbose:
                         print(f"  [server error] sleeping {wait}s: {type(e).__name__}: {e}")
