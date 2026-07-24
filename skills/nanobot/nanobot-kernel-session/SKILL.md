@@ -24,12 +24,12 @@ you.
 
 - Never target two definitions in the same turn. `evaluate`/`disassemble`/
   `submit` take no `definition` arg — they act on whoever you last `compile()`'d.
-- Interleaving compiles across definitions silently drops the earlier one's
-  evaluation, and gains nothing — these calls run sequentially regardless.
-- Finish one definition's full chain (`compile` → `evaluate` → `disassemble`
-  if needed → `submit`) before moving to the next.
-- Revisiting an earlier definition later is fine — its version counter and
-  `best_compile` pick up where you left off (state is never evicted).
+- If you are targeted to optimize one or more definition in one specific ISA, DO NOT fall back to use another ISA (e.g. `sve2` → `sve`) unless the prompt explicitly allows it.
+
+### Useful guidelines at optimization
+- feel free to call builtin `write` tool to write anything you find it is interesting in the optimize process, e.g. `disassemble` output, `evaluate` logs, or your own notes.
+- feel free to call builtin `read` tool to read any resource you wrote in the optimize process
+- disassemble is a good friend to inpsect if SIMD really helps improving performance, or if you are not sure why your optimization is not working as expected. It can help you understand the generated assembly code and identify potential bottlenecks or inefficiencies.
 
 ## SKILL referenced:
 **KernelWiki** is a useful skill for you to optimize kernel in GPU. Although you are required to optimize kernel in CPU, you can still apply similar optimization techniques if it is applicable. You can use it as a reference, but you are FORBIDDEN to copy the code from it.
@@ -55,20 +55,21 @@ Before writing any optimized code for a given definition:
 
 Record `v1`'s `time_speedup_geomean`/`cycle_speedup_geomean` — you'll need
 them at the end (§4) to report how much you improved over the naive
-starting point, not just over the competitive baseline.
+starting point, not just over the competitive baseline; If you already gain the speedup numbers from resources before optimization, you can skip this step.
 
 ## 2. Optimize
 
 Standard loop for the definition you're currently working on:
 
 1. `compile({"definition": "<same definition>", "code": ...})` your optimized attempt.
-2. `evaluate({})` — correctness + timing + cycle speedup in one call.
+2. `evaluate({})` — correctness + timing + cycle speedup in one call. It also auto-persists the best-performing version the moment it beats your previous best this session — that result is already saved to `trajectory.jsonl` and `bench-trace` even before you call `submit`; see §3.
 3. `disassemble({})` when IPC is low or speedup is unexpectedly poor
    (defaults to your kernel's own symbol).
 4. Iterate: compile → evaluate → improve. Use `list_resources()`/
-   `read_resource()` to re-read any of your own earlier versions
-   (`<definition>/v2.cpp`, `<definition>/v3.cpp`, ...) if you need to compare
-   against them.
+   `read_resource()` to re-read any of your own earlier versions or optimization trajectory. The resources you can read are:
+   - `<definition>/vN.cpp` — the kernel source for version N, written by `compile()`. Re-read an earlier version to compare against or revert to.
+   - `<definition>/vN.s` — the disassembled AArch64 for version N, written by `disassemble()`. Only exists for versions you actually disassembled.
+   - `<definition>/trajectory.jsonl` — the full turn-by-turn history for this definition (every `compile`/`evaluate`/`disassemble`/`submit` call, updated live as you go). Read it to check a past attempt's recorded scores instead of re-evaluating it.
 
 ### Metrics from evaluate({}) (on `"status": "PASSED"`)
 - `max_absolute_error`/`max_relative_error` — correctness, always present.
@@ -80,30 +81,7 @@ Standard loop for the definition you're currently working on:
 On a non-`PASSED` status, `failed_workload`/`log` say which workload failed
 and why (correctness or a runtime/timeout error).
 
-### Useful guidelines
-- feel free to call builtin `write` tool to write anything you find it is interesting in the optimize process, e.g. `disassemble` output, `evaluate` logs, or your own notes.
-- feel free to call builtin `read` tool to read any resource you wrote in the optimize process
-- disassemble is a good friend to inpsect if SIMD really helps improving performance, or if you are not sure why your optimization is not working as expected. It can help you understand the generated assembly code and identify potential bottlenecks or inefficiencies.
-
-
-## 3. Valid `--dataset` / `--baseline-author` / `--isa` values
-
-Hand-maintained (small, rarely changes — kept in sync by hand rather than generated, see `mcp_app/README.md`):
-
-| dataset      | baseline_author         | isa (pick by target hardware)          |
-|--------------|--------------------------|-----------------------------------------|
-| `ncnn`       | `baseline-ncnn-arm`      | `sve` (Graviton3) / `sve2` (Graviton4) |
-| `simd-loop`  | `reference`              | `sve` (Graviton3) / `sve2` (Graviton4) |
-| `llama.cpp`  | `baseline-llamacpp-arm`  | `sve` (Graviton3) / `sve2` (Graviton4) |
-
-`baseline_author` is only needed here if you want to override the server's
-auto-derived default — you no longer have to pass it explicitly.
-
-`portable` is also a valid `--isa` for any dataset: it forces the baseline
-`-march=armv8-a` and means **write portable C++ only — no NEON/SVE intrinsics**
-(the compiler may still auto-vectorize). Use it for the without-SIMD ablation.
-
-## 4. Finish and report
+## 3. Finish and report
 
 Before calling `submit` for a definition, compare its best version's
 `time_speedup_geomean`/`cycle_speedup_geomean` against that definition's
@@ -117,23 +95,19 @@ stop), results get synced back by whoever is orchestrating this session.
 
 ## Recovering from an MCP session reset
 
-If you find the server/the session was reset, please
-**Don't just restart from `reference-scalar-kernel.cpp`.** Every
-`compile()`/`disassemble()` call writes its source/asm straight to disk
-under that definition's run-dir as it happens (`v1.cpp`, `v2.cpp`, ...,
-`trajectory.jsonl`) — this is independent of the in-memory session, so it
-survives a reset even though the live session doesn't:
+Don't restart from `reference-scalar-kernel.cpp` — nothing is actually lost.
+`compile()`/`disassemble()` write every version's source/asm straight to
+disk under that definition's run-dir as they happen, and `evaluate()`
+auto-persists a `submit` turn the moment it finds a new best (§2) — all of
+that survives a reset independent of the live session:
 
-1. `list_resources()` and find the definition you were working on — its
-   `v1.cpp` … `vN.cpp` entries and `trajectory.jsonl` are still listed.
-2. `read_resource()` its `trajectory.jsonl` and check the last few turns
-   for the best-performing version's number and its recorded
-   `time_speedup_geomean`/`cycle_speedup_geomean` — the highest `vN.cpp`
-   isn't necessarily the best one if a later attempt regressed.
-3. `read_resource()` that best `vN.cpp` and `compile()` it again to resume
-   from there. It becomes a new `v1` in the fresh session, but it's the
-   same code you already had working — you lose the version-history
-   numbering, not the optimization progress.
-4. For the final §4 report, keep using the *original* starting-point
-   numbers from the first `compile`/`evaluate` turns in `trajectory.jsonl`
-   — not the numbers from this recovery compile.
+1. `list_resources()` → find that definition's `vN.cpp` entries and `trajectory.jsonl`.
+2. `read_resource()` the `trajectory.jsonl` and find the **last `submit` turn**
+   — its `source_file` names the actual best version (not necessarily the
+   highest `vN.cpp`, if a later attempt regressed) and its `metrics` carries
+   the recorded speedups, so there's no need to scan/compare earlier turns.
+3. `read_resource()` that `vN.cpp` and `compile()` it again to resume — it
+   becomes a new `v1`, same working code, just a fresh version count.
+4. For the final §3 report, keep the *original* `v1` numbers from
+   `trajectory.jsonl`'s first `compile`/`evaluate` turns — not the numbers
+   from this recovery compile.
