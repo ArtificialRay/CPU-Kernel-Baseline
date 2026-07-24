@@ -76,8 +76,13 @@ def _write_reference_scalar_kernels(ts: TraceSet, dataset: str, run_dir: Path) -
         for def_name, sols in ts.solutions.items()
         if any(s.dataset.value == dataset for s in sols)
     }
+    # simd-loop's naive-scalar starter is author "reference"; ncnn/llama.cpp use
+    # "reference-scalar". Using the wrong author => no starter kernel written =>
+    # the agent starts simd-loop defs with no scalar reference (mirrors the eval
+    # ref_author fix in eval/evaluator.py).
+    ref_author = "reference" if dataset == "simd-loop" else "reference-scalar"
     for def_name in def_names:
-        ref = ts.get_baseline_solution(def_name, "reference-scalar")
+        ref = ts.get_baseline_solution(def_name, ref_author)
         if ref is None:
             continue
         kernel_src = next((s for s in ref.sources if s.path == "kernel.cpp"), None)
