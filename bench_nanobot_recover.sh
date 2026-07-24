@@ -123,7 +123,7 @@ for job in "${JOBS[@]}"; do
   log_file="$LOG_DIR/${DATASET}_${ISA}_${name}.log"
 
   echo "=== [$(date '+%H:%M:%S')] starting job: $name ==="
-  nanobot agent --logs -m "$prompt" > "$log_file" 2>&1 
+  nanobot agent --logs -m "$prompt" > "$log_file" 2>&1  --session "$(date +%Y%m%d-%H%M%S)"
   echo "=== [$(date '+%H:%M:%S')] job $name finished -> $log_file ==="
 done
 
