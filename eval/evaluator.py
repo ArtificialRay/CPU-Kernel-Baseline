@@ -231,6 +231,24 @@ def run_agentic_eval(
     ToolsCls = resolve_tools(dataset)
     tools = ToolsCls(handle, definition, trace_set, author, bench_cfg=bench_cfg)
     schemas = [{"type": "function", "function": s} for s in ToolsCls.tool_schemas()]
+    _no_submit = os.environ.get("ARMBENCH_NO_SUBMIT", "").strip() == "1"
+    if _no_submit:
+        schemas = [s for s in schemas if s["function"]["name"] != "submit"]
+
+    # Optional persistent scratchpad (ARMBENCH_NOTEPAD=1): survives history
+    # compression so the agent can track what it has already tried over long runs.
+    _use_notepad = os.environ.get("ARMBENCH_NOTEPAD", "").strip() == "1"
+    if _use_notepad:
+        schemas.append({"type": "function", "function": {
+            "name": "notepad",
+            "description": ("Append a note to your persistent notepad. Old turns get "
+                            "summarized away, but your FULL notepad is shown to you every "
+                            "turn. Use it to record which optimizations you tried and their "
+                            "measured speedup, what to try next, and your plan."),
+            "parameters": {"type": "object",
+                           "properties": {"note": {"type": "string", "description": "Note to append."}},
+                           "required": ["note"]}}})
+    notepad: list[str] = []
 
     baseline_author = bench_cfg.baseline_author if bench_cfg else "reference-scalar"
     # Agent's starting kernel + correctness anchor (NOT the speedup baseline, which
@@ -277,6 +295,16 @@ def run_agentic_eval(
         baseline_label=baseline_label,
     )
     user_msg = build_user_prompt(definition, ref_solution)
+    if _no_submit:
+        user_msg += ("\n\nIMPORTANT: There is NO submit tool this session. Do NOT stop early — "
+                     "keep compiling and measuring NEW kernel versions for the FULL turn budget, "
+                     "trying a different optimization strategy each time to push time_speedup as "
+                     "high as possible. The best measured version is recorded automatically at the end.")
+    if os.environ.get("ARMBENCH_PUSH_ITER", "").strip() == "1":
+        user_msg += ("\n\nIMPORTANT: Do NOT submit until you have compiled AND measured "
+                     "(evaluate(measure=true)) at least 5 GENUINELY DIFFERENT implementations "
+                     "and can no longer beat your best measured time_speedup. Each new version "
+                     "must try a distinct strategy — not a small tweak of the previous one.")
 
     messages: list[dict] = [
         {"role": "system", "content": system},
@@ -310,6 +338,10 @@ def run_agentic_eval(
                 })
 
             compressed = _compress_history(messages, version_history=version_history)
+            if _use_notepad and notepad:
+                compressed = compressed + [{"role": "user", "content":
+                    "[Your notepad — persists across turns]\n"
+                    + "\n".join(f"- {n}" for n in notepad)}]
             completion_kwargs: dict = {
                 "model": model,
                 "messages": compressed,
@@ -397,7 +429,11 @@ def run_agentic_eval(
                     }
                     print(f"  → {fn_name}({arg_preview})")
 
-                result_dict = tools.dispatch_tool_call(fn_name, fn_args)
+                if fn_name == "notepad":
+                    notepad.append(str(fn_args.get("note", ""))[:2000])
+                    result_dict = {"status": "OK", "notes_saved": len(notepad)}
+                else:
+                    result_dict = tools.dispatch_tool_call(fn_name, fn_args)
 
                 if verbose:
                     if fn_name == "compile":
@@ -491,12 +527,14 @@ def run_agentic_eval(
                 print(f"\n[Auto-submit] {reason} — submitting "
                       f"v{best_version['version']} (time_speedup={ts})...")
             try:
+                # submit() already auto-selects the best-cycle_speedup version;
+                # it takes only `explanation` (passing source_version raised
+                # TypeError -> auto-submit silently failed -> spurious NO_SUBMIT).
                 result = tools.submit(
                     explanation=(
                         f"[auto-submitted: v{best_version['version']} had best "
                         f"time_speedup={best_version.get('time_speedup', '?')}]"
                     ),
-                    source_version=best_version["version"],
                 )
                 if result.get("status") == "PASSED":
                     final_result = {
