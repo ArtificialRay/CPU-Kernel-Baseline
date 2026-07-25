@@ -125,15 +125,15 @@ def _spawn_command(
     target: RemoteTarget, remote_root: str, dataset: str,
     author: str, baseline_author: Optional[str], isa: str, *, port: int,
 ) -> str:
-    """Remote command for a persistent sse-mode mcp_app.server (see
-    prepare_session's docstring for why this is the only mode this script
-    offers — mcp_app/smoke_test_driver.py still uses stdio directly, this
-    is unrelated to that)."""
+    """Remote command for a persistent streamable-http-mode mcp_app.server
+    (see prepare_session's docstring for why this is the only mode this
+    script offers — mcp_app/smoke_test_driver.py still uses stdio directly,
+    this is unrelated to that)."""
     run_dir = f"{remote_root}/agent-runs-mcp/{author}"
     cmd = (
         f"cd {remote_root} && python3 -m mcp_app.server --dataset {dataset} "
         f"--author {author} --isa {isa} --run-dir {run_dir} "
-        f"--transport sse --bind-host 127.0.0.1 --port {port}"
+        f"--transport streamable-http --bind-host 127.0.0.1 --port {port}"
     )
     if baseline_author:
         cmd += f" --baseline-author {baseline_author}"
@@ -204,9 +204,12 @@ def prepare_session(
     auto-derives it from `dataset`
     (mcp_app/agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR).
 
-    Always use sse: establishes an SSH local-port-forward + starts the remote
-    server, returns {"transport": "sse", "endpoint": "http://127.0.0.1:<port>",
-    "_tunnel_proc": <Popen>} — call stop_tunnel() on the result when done.
+    Always use streamable-http: establishes an SSH local-port-forward +
+    starts the remote server, returns {"transport": "streamable-http",
+    "endpoint": "http://127.0.0.1:<port>/mcp", "_tunnel_proc": <Popen>} —
+    call stop_tunnel() on the result when done. The SSH tunnel (not the
+    server's own transport) is what keeps the compile/evaluate tool surface
+    off the public network — see mcp_app/server.py's module docstring.
     """
     if sync_repo:
         if local_repo_dir is None:
@@ -225,19 +228,19 @@ def prepare_session(
         *target.ssh_base_args(), f"{target.user}@{target.host}", remote_cmd,
     ]
     proc = subprocess.Popen(ssh_cmd)
-    endpoint = f"http://127.0.0.1:{local_port}/sse"
+    endpoint = f"http://127.0.0.1:{local_port}/mcp"
     try:
         _wait_for_port(local_port, timeout=startup_timeout, proc=proc)
     except BaseException:
         # Any exception will kill the listening local port, including ctrl+C
-        print(f"[launch_session] kill sse listening local port...")
+        print(f"[launch_session] kill listening local port...")
         proc.kill()
         proc.wait()
         _kill_remote_port(target, remote_port)
-        print(f"[launch_session] sse listening local port successfully killed")
+        print(f"[launch_session] listening local port successfully killed")
         raise
     return {
-        "transport": "sse", "endpoint": endpoint, "_tunnel_proc": proc,
+        "transport": "streamable-http", "endpoint": endpoint, "_tunnel_proc": proc,
         "_target": target, "_remote_port": remote_port,
     }
 
@@ -427,7 +430,7 @@ def main(argv: list[str] | None = None) -> None:
 
     def _add_provision_args(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
-        sp.add_argument("--instance", default=None,
+        sp.add_argument("--instance", default="c7g.xlarge",
                          help="EC2 instance type override (e.g. c8g.xlarge). "
                               "Defaults to ISA_INSTANCE_MAP[isa].")
         sp.add_argument("--local-repo-dir", default=None,
