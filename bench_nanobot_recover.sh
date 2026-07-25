@@ -16,6 +16,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/harness_trajs/nanobot"
 NANOBOT_DIR="$HOME/l3/CPU-Kernel-Baseline/nanobot"
 DEFINITIONS_DIR="$SCRIPT_DIR/bench-trace/definitions"
+GLOBAL_WORKSPACE="${NANOBOT_WORKSPACE:-$HOME/.nanobot/workspace}"
+JOB_WORKSPACES_DIR="$HOME/.nanobot/job_workspaces"
+
+if [ ! -d "$GLOBAL_WORKSPACE" ]; then
+  echo "GLOBAL_WORKSPACE ($GLOBAL_WORKSPACE) doesn't exist yet — run" \
+       "'nanobot agent -m \"hi\"' once to bootstrap AGENTS.md/SOUL.md/skills/ before using this script." >&2
+  exit 1
+fi
+
+make_job_workspace() {
+  local job_ws="$JOB_WORKSPACES_DIR/$1"
+  mkdir -p "$job_ws"
+  local shared
+  for shared in AGENTS.md HEARTBEAT.md SOUL.md USER.md prompts skills; do
+    if [ -e "$GLOBAL_WORKSPACE/$shared" ]; then
+      ln -sfn "$GLOBAL_WORKSPACE/$shared" "$job_ws/$shared"
+    fi
+  done
+  echo "$job_ws"
+}
 
 # ---------------------------------------------------------------------------
 # Global knobs — override via env, e.g. `DATASET=simd-loop MAX_ITERATIONS=50 ISA=sve2 ./bench_nanobot_recover.sh`
@@ -38,6 +58,24 @@ MAX_ITERATIONS="${MAX_ITERATIONS:-100}"
 ISA="${ISA:-sve}"
 DEFINITIONS='
 [
+"gemm_bf16_n1024_k2048",
+"gemm_bf16_n1408_k2048",
+"gemm_bf16_n2048_k1024",
+"gemm_bf16_n2048_k1408",
+"gemm_bf16_n2048_k2048",
+"gemm_q4_k_m_n1024_k2048",
+"gemm_q4_k_m_n1408_k2048",
+"gemm_q4_k_m_n2048_k1024",
+"gemm_q4_k_m_n2048_k1408",
+"gemm_q4_k_m_n2048_k2048",
+"gemm_q8_0_n1024_k2048",
+"gemm_q8_0_n1408_k2048",
+"gemm_q8_0_n2048_k1024",
+"gemm_q8_0_n2048_k1408",
+"gemm_q8_0_n2048_k2048",
+"mha_bf16_h16_d128_kvh16",
+"moe_bf16_e60_k4_d2048_ff1408",
+"moe_bf16_e64_k8_d2048_ff1024",
 "llama.cpp_sve_moe_q4_k_m_e60_k4_d2048_ff1536",
 "llama.cpp_sve_moe_q4_k_m_e64_k8_d2048_ff1024",
 "llama.cpp_sve_moe_q8_0_e60_k4_d2048_ff1408",
@@ -121,9 +159,10 @@ for job in "${JOBS[@]}"; do
   name="${job%%|*}"
   prompt="${job#*|}"
   log_file="$LOG_DIR/${DATASET}_${ISA}_${name}.log"
+  job_workspace="$(make_job_workspace "${DATASET}_${ISA}_${name}")"
 
-  echo "=== [$(date '+%H:%M:%S')] starting job: $name ==="
-  nanobot agent --logs -m "$prompt" > "$log_file" 2>&1  --session "$(date +%Y%m%d-%H%M%S)"
+  echo "=== [$(date '+%H:%M:%S')] starting job: $name (workspace: $job_workspace) ==="
+  nanobot agent --logs -m "$prompt" -w "$job_workspace" --session "$(date +%Y%m%d-%H%M%S)" > "$log_file" 2>&1
   echo "=== [$(date '+%H:%M:%S')] job $name finished -> $log_file ==="
 done
 

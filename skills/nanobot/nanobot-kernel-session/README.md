@@ -23,7 +23,9 @@ system prompt every turn — no trigger phrase needed.
 
 General mechanism: nanobot's [MCP tools
 guide](https://github.com/HKUDS/nanobot/blob/main/docs/guides/mcp-tools-for-ai-agents.md).
-Add the command `launch`/`prepare-session` printed to
+`launch`/`prepare-session` prints a streamable-http `endpoint` (an
+SSH-tunneled `http://127.0.0.1:<port>/mcp` URL — the tunnel is managed by
+`launch_session.py`, not by nanobot). Add it as a `url`-based entry under
 `tools.mcpServers` in `~/.nanobot/config.json`:
 
 ```json
@@ -31,8 +33,8 @@ Add the command `launch`/`prepare-session` printed to
   "tools": {
     "mcpServers": {
       "cpu-kernel-baseline": {
-        "command": "ssh",
-        "args": ["...as printed by launch/prepare-session..."],
+        "type": "streamableHttp",
+        "url": "http://127.0.0.1:<port>/mcp",
         "toolTimeout": 600
       }
     }

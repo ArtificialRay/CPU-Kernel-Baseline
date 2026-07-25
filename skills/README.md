@@ -49,14 +49,8 @@ This reuses an already-up instance for that `isa` tier if `launch/`
 provisioned one earlier and it's still reachable, otherwise provisions a
 fresh one (Terraform apply, wait for SSH, rsync the repo, install build
 deps, build the dataset's native lib if needed) — then starts a persistent
-`mcp_app` server on it over an SSH-tunneled sse connection and prints the
-endpoint. (stdio — one spawn-command-per-connection — isn't offered here:
-under stdio, every single MCP-client message would tear the remote server
-process down along with its connection, re-paying the SSH connect +
-baseline-collection cost each time; mcp_app/server.py itself still supports
-stdio, this script just doesn't expose it. `mcp_app/smoke_test_driver.py`
-uses stdio directly for its own one-shot verification runs, where that
-per-connection cost doesn't matter.)
+`mcp_app` server on it in streamable-http mode, reached through an
+SSH local-port-forward (not exposed publicly), and prints the endpoint.
 
 ### `launch` flags
 

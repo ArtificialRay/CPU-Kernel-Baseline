@@ -20,11 +20,14 @@ By the time you're reading this as the driving agent, a `compile`/`evaluate`/
 `disassemble`/`submit` MCP server should already be connected and visible to
 you.
 
-## Ground rules: one definition at a time
-
+## Ground rules: 
+### ONE DEFINITION AT A TIME
 - Never target two definitions in the same turn. `evaluate`/`disassemble`/
   `submit` take no `definition` arg — they act on whoever you last `compile()`'d.
 - If you are targeted to optimize one or more definition in one specific ISA, DO NOT fall back to use another ISA (e.g. `sve2` → `sve`) unless the prompt explicitly allows it.
+
+### KERNEL ARE ALWAYRS RUN AT REMOTE INSTANCE
+- Remote instance has all dependencies installed, check dependency at local helps nothing but consume your budget
 
 ### Useful guidelines at optimization
 - feel free to call builtin `write` tool to write anything you find it is interesting in the optimize process, e.g. `disassemble` output, `evaluate` logs, or your own notes.

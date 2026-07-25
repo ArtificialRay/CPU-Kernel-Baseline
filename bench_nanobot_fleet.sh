@@ -17,6 +17,35 @@ LOG_DIR="$SCRIPT_DIR/harness_trajs/nanobot"
 NANOBOT_DIR="$HOME/l3/CPU-Kernel-Baseline/nanobot"
 DEFINITIONS_DIR="$SCRIPT_DIR/bench-trace/definitions"
 
+# Per-job workspace isolation: each job gets its own nanobot workspace under
+# JOB_WORKSPACES_DIR so memory/ and sessions/ never bleed between unrelated
+# kernel-optimization jobs. The shared/static parts (persona docs + skills,
+# incl. the nanobot-kernel-session skill this workflow depends on) are
+# symlinked in from GLOBAL_WORKSPACE rather than duplicated. Job workspaces
+# must live outside any git repo — nanobot's GitStore refuses to init a
+# memory-versioning repo when already nested inside one (see
+# nanobot/utils/gitstore.py::_is_inside_git_repo).
+GLOBAL_WORKSPACE="${NANOBOT_WORKSPACE:-$HOME/.nanobot/workspace}"
+JOB_WORKSPACES_DIR="$HOME/.nanobot/job_workspaces"
+
+if [ ! -d "$GLOBAL_WORKSPACE" ]; then
+  echo "GLOBAL_WORKSPACE ($GLOBAL_WORKSPACE) doesn't exist yet — run" \
+       "'nanobot agent -m \"hi\"' once to bootstrap AGENTS.md/SOUL.md/skills/ before using this script." >&2
+  exit 1
+fi
+
+make_job_workspace() {
+  local job_ws="$JOB_WORKSPACES_DIR/$1"
+  mkdir -p "$job_ws"
+  local shared
+  for shared in AGENTS.md HEARTBEAT.md SOUL.md USER.md prompts skills; do
+    if [ -e "$GLOBAL_WORKSPACE/$shared" ]; then
+      ln -sfn "$GLOBAL_WORKSPACE/$shared" "$job_ws/$shared"
+    fi
+  done
+  echo "$job_ws"
+}
+
 # ---------------------------------------------------------------------------
 # Global knobs — override via env, e.g. `DATASET=simd-loop MAX_ITERATIONS=50 ISA=sve2 ./bench_nanobot_fleet.sh`
 # ---------------------------------------------------------------------------
@@ -73,10 +102,12 @@ for job in "${JOBS[@]}"; do
   name="${job%%|*}"
   prompt="${job#*|}"
   log_file="$LOG_DIR/${DATASET}_${ISA}_${name}.log"
+  job_workspace="$(make_job_workspace "${DATASET}_${ISA}_${name}")"
 
-  echo "=== [$(date '+%H:%M:%S')] starting job: $name ==="
-  nanobot agent --logs -m "$prompt" > "$log_file" 2>&1 --session "$(date +%Y%m%d-%H%M%S)"
+  echo "=== [$(date '+%H:%M:%S')] starting job: $name (workspace: $job_workspace) ==="
+  nanobot agent --logs -m "$prompt" -w "$job_workspace" --session "$(date +%Y%m%d-%H%M%S)" > "$log_file" 2>&1
   echo "=== [$(date '+%H:%M:%S')] job $name finished -> $log_file ==="
 done
+
 
 echo "All jobs done. Logs in $LOG_DIR"

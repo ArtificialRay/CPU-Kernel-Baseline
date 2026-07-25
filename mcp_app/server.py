@@ -18,6 +18,18 @@ handler set maps onto both needs directly.
 Usage:
     python -m mcp_app.server --dataset ncnn --author test --isa sve2 \\
         --run-dir <path> --transport stdio
+
+Two transports:
+- stdio: harness and server share a host (spawn-command integration —
+  local dev, or already SSHed into the target instance). Most broadly
+  supported by MCP client configs since it needs no network stack.
+- streamable-http: harness reaches a server on a different host (the
+  normal case — server runs on a provisioned Graviton instance, harness
+  runs wherever the user's agent lives). skills/launch/launch_session.py
+  reaches this over an SSH local-port-forward rather than exposing the
+  port publicly, keeping the compile/evaluate tool surface (effectively
+  remote code execution) off the network — the transport and the
+  network-reachability question are orthogonal, see its docstring.
 """
 
 from __future__ import annotations
@@ -28,7 +40,7 @@ import contextlib
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import mcp.types as types
 from mcp.server.lowlevel import Server
@@ -37,6 +49,9 @@ from . import resources as resources_mod
 from .agent_tools import isa as isa_mod
 from .agent_tools.base import KernelSession
 from .session import SessionConfig, build_tools
+
+if TYPE_CHECKING:
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 # compile()/evaluate() run synchronously and can take minutes, set a tool call ping to notify agent that the tool is still running
 TOOL_CALL_PING_INTERVAL_S = 120
@@ -113,31 +128,36 @@ async def _run_stdio(server: Server) -> None:
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-async def _run_sse(server: Server, bind_host: str, port: int) -> None:
-    """Fallback transport — see mcp_app/README.md: only build/exercise this if
-    stdio-over-ssh turns out not to work with nanobot's real MCP config format.
-    """
+class _StreamableHTTPASGIApp:
+    """Thin ASGI wrapper so Starlette's Route treats this as an already-ASGI
+    endpoint (scope, receive, send) rather than wrapping it as a
+    request->response function — a plain `async def` here would get the
+    wrong calling convention (see mcp.server.fastmcp.server's equivalent)."""
+
+    def __init__(self, session_manager: "StreamableHTTPSessionManager") -> None:
+        self._session_manager = session_manager
+
+    async def __call__(self, scope, receive, send) -> None:
+        await self._session_manager.handle_request(scope, receive, send)
+
+
+async def _run_streamable_http(server: Server, bind_host: str, port: int) -> None:
     import uvicorn
-    from mcp.server.sse import SseServerTransport
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from starlette.applications import Starlette
-    from starlette.responses import Response
-    from starlette.routing import Mount, Route
+    from starlette.routing import Route
 
-    transport = SseServerTransport("/messages/")
+    # session_idle_timeout reaps sessions abandoned by a dropped tunnel/client
+    # without waiting on process teardown to free the KernelSession/compile cache.
+    session_manager = StreamableHTTPSessionManager(app=server, session_idle_timeout=1800)
+    asgi_app = _StreamableHTTPASGIApp(session_manager)
 
-    async def handle_sse(request):
-        async with transport.connect_sse(
-            request.scope, request.receive, request._send
-        ) as (read_stream, write_stream):
-            await server.run(read_stream, write_stream, server.create_initialization_options())
-        return Response()
-
-    app = Starlette(routes=[
-        Route("/sse", endpoint=handle_sse),
-        Mount("/messages/", app=transport.handle_post_message),
-    ])
+    app = Starlette(
+        routes=[Route("/mcp", endpoint=asgi_app)],
+        lifespan=lambda _app: session_manager.run(),
+    )
     config = uvicorn.Config(app, host=bind_host, port=port, log_level="warning")
-    print("[mcp_app.server] MCP server ready (sse transport).", file=sys.stderr, flush=True)
+    print("[mcp_app.server] MCP server ready (streamable-http transport).", file=sys.stderr, flush=True)
     await uvicorn.Server(config).serve()
 
 
@@ -157,7 +177,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "definition compile()'d gets its own <run-dir>/<definition>/ subdir.")
     p.add_argument("--instance-label", default=None,
                     help="Cosmetic only (e.g. 'c8g.large') — never used for compile-flag decisions.")
-    p.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
+    p.add_argument("--transport", choices=["stdio", "streamable-http"])
     p.add_argument("--bind-host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
     return p.parse_args(argv)
@@ -183,7 +203,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.transport == "stdio":
             asyncio.run(_run_stdio(server))
         else:
-            asyncio.run(_run_sse(server, args.bind_host, args.port))
+            asyncio.run(_run_streamable_http(server, args.bind_host, args.port))
     finally:
         tools.cleanup()
 

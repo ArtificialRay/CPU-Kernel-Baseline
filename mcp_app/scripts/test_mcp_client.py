@@ -11,6 +11,11 @@ and a standalone CLI for manual runs.
     # prepare_session(..., transport="stdio")'s output) would use.
     python -m mcp_app.scripts.test_mcp_client --transport stdio --definition <name> \\
         --command ssh --spawn-args ubuntu@host "cd ~/arm-bench && python3 -m mcp_app.server ..."
+
+    # streamable-http mode: point at the endpoint skills/launch/launch_session.py's
+    # prepare_session() prints (an SSH-tunneled http://127.0.0.1:<port>/mcp URL).
+    python -m mcp_app.scripts.test_mcp_client --transport streamable-http \\
+        --endpoint http://127.0.0.1:8888/mcp --definition <name>
 """
 
 from __future__ import annotations
@@ -118,7 +123,7 @@ async def run_stdio_sequence(
             )
 
 
-async def run_sse_sequence(
+async def run_streamable_http_sequence(
     endpoint: str,
     definition: str,
     *,
@@ -126,11 +131,11 @@ async def run_sse_sequence(
     submit_explanation: str = "smoke test",
     verbose: bool = True,
 ) -> dict[str, Any]:
-    """Fallback path — see mcp_app/README.md: only needed if stdio-over-ssh
-    turns out not to work with nanobot's real MCP config format."""
-    from mcp.client.sse import sse_client
+    """Used whenever harness and server are on different hosts — the normal
+    deployment via skills/launch/launch_session.py's SSH-tunneled endpoint."""
+    from mcp.client.streamable_http import streamablehttp_client
 
-    async with sse_client(endpoint) as (read, write):
+    async with streamablehttp_client(endpoint) as (read, write, _get_session_id):
         async with ClientSession(read, write) as session:
             return await run_tool_sequence(
                 session, definition, starter_code=starter_code,
@@ -140,10 +145,10 @@ async def run_sse_sequence(
 
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
+    p.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     p.add_argument("--command", default="ssh", help="stdio mode: spawn command.")
     p.add_argument("--spawn-args", nargs="*", default=[], help="stdio mode: spawn command args.")
-    p.add_argument("--endpoint", help="sse mode: e.g. http://127.0.0.1:8765/sse")
+    p.add_argument("--endpoint", help="streamable-http mode: e.g. http://127.0.0.1:8888/mcp")
     p.add_argument("--definition", required=True,
                     help="Definition name to compile/evaluate/disassemble/submit.")
     p.add_argument("--code-file", help="Path to a kernel.cpp to compile; defaults to "
@@ -158,8 +163,8 @@ def main(argv: list[str] | None = None) -> None:
         ))
     else:
         if not args.endpoint:
-            p.error("--endpoint is required for --transport sse")
-        result = asyncio.run(run_sse_sequence(args.endpoint, args.definition, starter_code=starter_code))
+            p.error("--endpoint is required for --transport streamable-http")
+        result = asyncio.run(run_streamable_http_sequence(args.endpoint, args.definition, starter_code=starter_code))
 
     print(json.dumps(result, indent=2))
 
