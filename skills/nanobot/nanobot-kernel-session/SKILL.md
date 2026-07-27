@@ -23,7 +23,10 @@ you.
 ## Ground rules: 
 ### ONE DEFINITION AT A TIME
 - Never target two definitions in the same turn. `evaluate`/`disassemble`/
-  `submit` take no `definition` arg — they act on whoever you last `compile()`'d.
+  `submit` all require an explicit `definition` argument (`evaluate`/
+  `disassemble` also require `version`), checked against whoever you last
+  `compile()`'d — if it doesn't match, you get back `{"status":
+  "DEF_CHECK_FAILED"}` instead of it silently acting on the wrong one.
 - If you are targeted to optimize one or more definition in one specific ISA, DO NOT fall back to use another ISA (e.g. `sve2` → `sve`) unless the prompt explicitly allows it.
 
 ### KERNEL ARE ALWAYRS RUN AT REMOTE INSTANCE
@@ -95,22 +98,3 @@ recorded in that definition's `trajectory.jsonl`'s final `submit` turn.
 
 Once you've `submit`'d every definition you were assigned (or you decide to
 stop), results get synced back by whoever is orchestrating this session.
-
-## Recovering from an MCP session reset
-
-Don't restart from `reference-scalar-kernel.cpp` — nothing is actually lost.
-`compile()`/`disassemble()` write every version's source/asm straight to
-disk under that definition's run-dir as they happen, and `evaluate()`
-auto-persists a `submit` turn the moment it finds a new best (§2) — all of
-that survives a reset independent of the live session:
-
-1. `list_resources()` → find that definition's `vN.cpp` entries and `trajectory.jsonl`.
-2. `read_resource()` the `trajectory.jsonl` and find the **last `submit` turn**
-   — its `source_file` names the actual best version (not necessarily the
-   highest `vN.cpp`, if a later attempt regressed) and its `metrics` carries
-   the recorded speedups, so there's no need to scan/compare earlier turns.
-3. `read_resource()` that `vN.cpp` and `compile()` it again to resume — it
-   becomes a new `v1`, same working code, just a fresh version count.
-4. For the final §3 report, keep the *original* `v1` numbers from
-   `trajectory.jsonl`'s first `compile`/`evaluate` turns — not the numbers
-   from this recovery compile.

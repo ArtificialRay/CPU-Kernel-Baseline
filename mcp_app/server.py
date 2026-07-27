@@ -105,15 +105,26 @@ def build_server(tools: KernelSession) -> Server:
         result = task.result()
         print(f"[mcp_app.server] tool '{name}' done in {time.monotonic() - started:.1f}s: "
               f"{_truncate_repr(result, RESULT_LOG_TRUNCATE_CHARS)}", file=sys.stderr, flush=True)
+        # Resource-visibility bookkeeping only (see resources_mod / KernelSession
+        # .note_session_definition) — never consulted by dispatch_tool_call's own
+        # definition-match guard, so this can't affect tool-call correctness.
+        if name == "compile" and result.get("status") == "OK":
+            tools.note_session_definition(session, arguments["definition"])
         return result
 
     @server.list_resources()
     async def _list_resources() -> list[types.Resource]:
-        return resources_mod.list_run_dir_resources(tools._run_dir)
+        session = server.request_context.session
+        return resources_mod.list_run_dir_resources(
+            tools._run_dir, visible_definitions=tools.session_definitions(session),
+        )
 
     @server.read_resource()
     async def _read_resource(uri: Any) -> str:
-        return resources_mod.read_run_dir_resource(tools._run_dir, str(uri))
+        session = server.request_context.session
+        return resources_mod.read_run_dir_resource(
+            tools._run_dir, str(uri), visible_definitions=tools.session_definitions(session),
+        )
 
     return server
 

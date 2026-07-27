@@ -18,7 +18,7 @@ from __future__ import annotations
 import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from bench.data.json_utils import save_json_file
 
@@ -208,6 +208,12 @@ class KernelSession(ABC):
         self._definitions: dict[str, dict] = {}
         self._active_definition: Optional[str] = None
 
+        # MCP session (server.request_context.session, one per client
+        # connection) -> set of definitions *that session* has itself
+        # compile()'d. Purely a resource-visibility scope for
+        # mcp_app/resources.py
+        self._session_definitions: dict[Any, set[str]] = {}
+
     @property
     def _definition(self) -> "Definition":
         """The Definition object for the currently active definition.
@@ -295,6 +301,20 @@ class KernelSession(ABC):
                 ),
             }
         return None
+
+    def note_session_definition(self, session: Any, definition: str) -> None:
+        """Record that `session` has itself successfully compile()'d `definition`.
+
+        Called from server.py right after a successful compile() dispatch.
+        Grows unbounded for the life of the process (one small set entry per
+        connection), same tradeoff as `self._definitions` never being evicted.
+        """
+        self._session_definitions.setdefault(session, set()).add(definition)
+
+    def session_definitions(self, session: Any) -> frozenset[str]:
+        """Definitions `session` has itself compile()'d — the MCP resource
+        visibility scope for that connection (see mcp_app/resources.py)."""
+        return frozenset(self._session_definitions.get(session, ()))
 
     # ── shared tool implementations ───────────────────────────────────────────
 

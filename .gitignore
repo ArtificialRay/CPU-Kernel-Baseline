@@ -61,6 +61,7 @@ notebooks/
 
 # Local clone of the HuggingFace arm-bench-trace dataset (not part of the repo)
 arm-bench/
+test_scripts/
 
 # Claude Code project settings (keep skills/ but not local config)
 .claude/settings.json
