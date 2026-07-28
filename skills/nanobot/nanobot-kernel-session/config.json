@@ -739,6 +739,11 @@
         "type": "streamableHttp",
         "url": "http://127.0.0.1:8888/mcp",
         "toolTimeout": 900
+      },
+      "NCNNArmKernelBench": {
+        "type": "streamableHttp",
+        "url": "http://127.0.0.1:2333/mcp",
+        "toolTimeout": 900
       }
     },
     "ssrfWhitelist": ["127.0.0.0/8"]

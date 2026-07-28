@@ -317,7 +317,7 @@ def _cli_prepare(args: argparse.Namespace) -> None:
         baseline_author=args.baseline_author,
         remote_root=args.remote_root, sync_repo=not args.no_sync,
         local_repo_dir=args.local_repo_dir, skip_preflight=args.skip_preflight,
-        local_port=args.local_port,
+        local_port=args.local_port, remote_port=args.remote_port,
     )
     try:
         print(f"tunnel up: {info['endpoint']}")
@@ -378,7 +378,7 @@ def _cli_launch(args: argparse.Namespace) -> None:
         remote_root=args.remote_root, sync_repo=not args.no_sync,
         local_repo_dir=args.local_repo_dir or str(REPO_ROOT),
         skip_preflight=args.skip_preflight,
-        local_port=args.local_port,
+        local_port=args.local_port, remote_port=args.remote_port,
     )
     try:
         print(f"tunnel up: {info['endpoint']}")
@@ -409,6 +409,10 @@ def main(argv: list[str] | None = None) -> None:
                        help="Fix the local tunnel port instead of picking a random free "
                             "one each run, so a reused mcp client config (e.g. nanobot's) "
                             "doesn't need editing every relaunch.")
+    prep.add_argument("--remote-port", type=int, default=8765,
+                       help="Port mcp_app.server binds to on the remote instance. Override "
+                            "when reusing the same instance (same --isa) for more than one "
+                            "concurrent session, so the servers don't collide on 8765.")
     prep.add_argument("--local-repo-dir", help="Required unless --no-sync.")
     prep.add_argument("--no-sync", action="store_true")
     prep.add_argument("--skip-preflight", action="store_true",
@@ -465,6 +469,10 @@ def main(argv: list[str] | None = None) -> None:
                          help="Fix the local tunnel port instead of picking a random free "
                               "one each run, so a reused mcp client config (e.g. nanobot's) "
                               "doesn't need editing every relaunch.")
+    launch.add_argument("--remote-port", type=int, default=8765,
+                         help="Port mcp_app.server binds to on the remote instance. Override "
+                              "when reusing the same instance (same --isa) for more than one "
+                              "concurrent session, so the servers don't collide on 8765.")
     launch.add_argument("--no-sync", action="store_true",
                          help="Skip prepare_session's own rsync (provision already synced once).")
     launch.add_argument("--skip-preflight", action="store_true",
