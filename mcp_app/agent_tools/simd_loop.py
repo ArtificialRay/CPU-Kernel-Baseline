@@ -84,23 +84,15 @@ class SIMDLoopKernelSession(KernelSession):
             sources=[*harness, agent_kernel],
         )
 
-    def disassemble(self, fn: Optional[str] = None) -> dict:
+    def disassemble(self, definition: str, version: int, fn: Optional[str] = None) -> dict:
         """Disassemble the agent's inner kernel (not the harness wrapper)."""
         if fn is None:
             fn = f"inner_{self._definition.op_type}"
-        return super().disassemble(fn=fn)
+        return super().disassemble(definition=definition, version=version, fn=fn)
 
     @classmethod
     def tool_schemas(cls) -> list[dict]:
-        return standard_tool_schemas(
-            code_description=(
-                "Full C++ source for kernel.cpp. Must implement the "
-                "`inner_<op_type>` function declared in `<op_type>.h` (e.g. "
-                "`extern \"C\" void inner_loop_001(struct loop_001_data *data)`). "
-                "The harness calls it internally; the symbol need not be exported."
-            ),
-            disasm_hint="inner_<op_type>",
-        )
+        return standard_tool_schemas()
 
 
 __all__ = ["SIMDLoopKernelSession"]

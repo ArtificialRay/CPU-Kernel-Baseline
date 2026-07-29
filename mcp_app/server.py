@@ -47,7 +47,8 @@ from mcp.server.lowlevel import Server
 
 from . import resources as resources_mod
 from .agent_tools import isa as isa_mod
-from .agent_tools.base import KernelSession
+from .agent_tools.base import KernelSessionLike
+from .agent_tools.dispatcher import DispatcherKernelSession
 from .session import SessionConfig, build_tools
 
 if TYPE_CHECKING:
@@ -68,7 +69,7 @@ def _truncate_repr(obj: Any, limit: int) -> str:
     return f"{text[:limit]}... ({len(text) - limit} more chars truncated)"
 
 
-def build_server(tools: KernelSession) -> Server:
+def build_server(tools: KernelSessionLike) -> Server:
     server: Server = Server("armbench-kernel-session")
 
     @server.list_tools()
@@ -174,11 +175,19 @@ async def _run_streamable_http(server: Server, bind_host: str, port: int) -> Non
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--dataset", required=True, choices=["ncnn", "simd-loop", "llama.cpp"])
+    p.add_argument("--dataset", action="append", required=True,
+                    choices=["ncnn", "simd-loop", "llama.cpp"],
+                    help="Repeatable — pass more than once (e.g. --dataset ncnn "
+                         "--dataset llama.cpp) to serve several datasets from one "
+                         "process, dispatching each tool call by which dataset its "
+                         "`definition` belongs to (see agent_tools/dispatcher.py). "
+                         "A single --dataset behaves exactly as before.")
     p.add_argument("--author", required=True)
     p.add_argument("--baseline-author", default=None,
                     help="Override only — auto-derived from --dataset by default "
-                         "(see agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR).")
+                         "(see agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR). "
+                         "Not allowed together with multiple --dataset values, since a "
+                         "single override can't correctly apply to more than one dataset.")
     p.add_argument("--isa", required=True, choices=sorted(isa_mod.SUPPORTED_ISAS),
                     help="Explicit, never auto-detected — drives compile flags deterministically.")
     p.add_argument("--bench-trace-root", default="bench-trace",
@@ -191,23 +200,46 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--transport", choices=["stdio", "streamable-http"])
     p.add_argument("--bind-host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    args.dataset = list(dict.fromkeys(args.dataset))  # dedupe, preserve order
+    if len(args.dataset) > 1 and args.baseline_author is not None:
+        p.error(
+            "--baseline-author can't be used with multiple --dataset values — "
+            "each dataset auto-derives its own (see DEFAULT_BASELINE_AUTHOR)."
+        )
+    return args
 
 
-def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-    cfg = SessionConfig(
-        dataset=args.dataset,
+def _build_session_config(args: argparse.Namespace, dataset: str, *, baseline_author) -> SessionConfig:
+    return SessionConfig(
+        dataset=dataset,
         author=args.author,
-        baseline_author=args.baseline_author,
+        baseline_author=baseline_author,
         isa=args.isa,
         bench_trace_root=Path(args.bench_trace_root),
         run_dir=Path(args.run_dir),
         instance_label=args.instance_label,
     )
-    print(f"[mcp_app.server] Initializing session (dataset={args.dataset!r}, "
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    datasets: list[str] = args.dataset
+
+    print(f"[mcp_app.server] Initializing session (dataset(s)={datasets!r}, "
           f"isa={args.isa!r}, author={args.author!r})...", file=sys.stderr, flush=True)
-    tools = build_tools(cfg)
+
+    tools: KernelSessionLike
+    if len(datasets) == 1:
+        cfg = _build_session_config(args, datasets[0], baseline_author=args.baseline_author)
+        tools = build_tools(cfg)
+    else:
+        sessions = {
+            dataset: build_tools(_build_session_config(args, dataset, baseline_author=None))
+            for dataset in datasets
+        }
+        tools = DispatcherKernelSession(sessions, run_dir=Path(args.run_dir))
+
     print("[mcp_app.server] Session initialized.", file=sys.stderr, flush=True)
     server = build_server(tools)
     try:
