@@ -47,7 +47,40 @@ def evaluate_kernel(
     solution_name: str,
     bench_cfg: "BenchmarkConfig",
 ) -> dict:
-    """Dlopen so_path and run the evaluator across all workloads for this definition.
+    """Dlopen so_path and run the evaluator across all workloads for this
+    definition, isolated in a subprocess (bench/runtime/isolation.py) so a
+    candidate kernel that hangs or crashes can't take this MCP server process
+    down with it — see the incident this was added for:
+    harness_trajs/nanobot/ncnn_sve_conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0.log.
+    `_evaluate_kernel_direct` (below) does the actual work; this just wraps it.
+    """
+    from bench.runtime.isolation import SubprocessCrashed, SubprocessTimeout, run_in_subprocess
+
+    snapshot = trace_set.freeze_for(definition.name, bench_cfg.baseline_author)
+    try:
+        return run_in_subprocess(
+            _evaluate_kernel_direct,
+            args=(snapshot, definition, so_path, solution_name, bench_cfg),
+        )
+    except SubprocessTimeout as e:
+        return {"status": "TIMEOUT", "error": str(e)}
+    except SubprocessCrashed as e:
+        return {"status": "RUNTIME_ERROR", "error": str(e)}
+
+
+def _evaluate_kernel_direct(
+    trace_set: "TraceSet",
+    definition: "Definition",
+    so_path: str,
+    solution_name: str,
+    bench_cfg: "BenchmarkConfig",
+) -> dict:
+    """The actual dlopen + per-workload evaluate work — runs inside the
+    isolated subprocess `evaluate_kernel` spawns. `trace_set` here is a
+    TraceSetSnapshot when called that way (duck-typed against the 3 lookup
+    methods this function and the evaluator it drives actually use), or a
+    real TraceSet if you're calling this directly for local debugging (e.g.
+    with a debugger attached, where subprocess isolation gets in the way).
 
     "All workloads" = every entry in trace_set.get_workloads(definition.name).
     Performance aggregation (geomean) is therefore across those workloads only.

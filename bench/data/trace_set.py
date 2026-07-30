@@ -323,6 +323,31 @@ class TraceSet:
     # query (get_baseline_solution / get_baseline_min_ns), and persist
     # (add_traces). bench/cli.py constructs a Benchmark and dispatches into it.
 
+    # ── Isolated-evaluation snapshot ────────────────────────────────────────────
+
+    def freeze_for(self, def_name: str, baseline_author: str) -> "TraceSetSnapshot":
+        """A read-only, picklable slice of this definition's workloads + baseline
+        lookups — everything bench/runtime/isolation.py's isolated evaluate
+        subprocess needs from a TraceSet, and nothing else (no other
+        definitions' data, no add_traces/root — the subprocess has no way to
+        touch the warehouse even in principle). Computed here, in the parent,
+        from already-loaded in-memory data — no disk I/O.
+        """
+        workloads = self.get_workloads(def_name)
+        baseline = {
+            wl.uuid: {
+                "min_ns": self.get_baseline_min_ns(def_name, wl.uuid, baseline_author),
+                "cycles": self.get_baseline_min_cycles(def_name, wl.uuid, baseline_author),
+            }
+            for wl in workloads
+        }
+        return TraceSetSnapshot(
+            definition_name=def_name,
+            baseline_author=baseline_author,
+            _workloads=workloads,
+            _baseline=baseline,
+        )
+
     # ── Summary ───────────────────────────────────────────────────────────────
 
     def summary(self) -> Dict[str, Any]:
@@ -337,3 +362,46 @@ class TraceSet:
             "traces_passed": passed,
             "traces_failed": len(all_traces) - passed,
         }
+
+
+@dataclass(frozen=True)
+class TraceSetSnapshot:
+    """Read-only, picklable slice of one TraceSet definition's data.
+
+    Produced by TraceSet.freeze_for() and handed to an isolated evaluate
+    subprocess (bench/runtime/isolation.py) in place of a live TraceSet: it
+    exposes the same 3 read-only lookup methods evaluate paths actually call
+    (get_workloads / get_baseline_min_ns / get_baseline_min_cycles), backed by
+    a small pre-computed slice instead of the whole warehouse — cheap to
+    pickle across the process boundary, and structurally incapable of writing
+    to the warehouse (no add_traces, no root) even if something inside the
+    subprocess tried.
+    """
+
+    definition_name: str
+    baseline_author: str
+    _workloads: List[Workload]
+    _baseline: Dict[str, Dict[str, Optional[float]]]
+    """workload uuid -> {"min_ns": ..., "cycles": ...}."""
+
+    def get_workloads(self, def_name: str) -> List[Workload]:
+        assert def_name == self.definition_name, (
+            f"TraceSetSnapshot is scoped to {self.definition_name!r}, got {def_name!r}"
+        )
+        return list(self._workloads)
+
+    def get_baseline_min_ns(
+        self, def_name: str, workload_uuid: str, baseline_author: Optional[str] = None
+    ) -> Optional[int]:
+        assert def_name == self.definition_name, (
+            f"TraceSetSnapshot is scoped to {self.definition_name!r}, got {def_name!r}"
+        )
+        return self._baseline.get(workload_uuid, {}).get("min_ns")
+
+    def get_baseline_min_cycles(
+        self, def_name: str, workload_uuid: str, baseline_author: Optional[str] = None
+    ) -> Optional[int]:
+        assert def_name == self.definition_name, (
+            f"TraceSetSnapshot is scoped to {self.definition_name!r}, got {def_name!r}"
+        )
+        return self._baseline.get(workload_uuid, {}).get("cycles")
