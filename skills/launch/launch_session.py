@@ -122,16 +122,19 @@ def _status() -> None:
 
 
 def _spawn_command(
-    target: RemoteTarget, remote_root: str, dataset: str,
+    target: RemoteTarget, remote_root: str, datasets: list[str],
     author: str, baseline_author: Optional[str], isa: str, *, port: int,
 ) -> str:
     """Remote command for a persistent streamable-http-mode mcp_app.server
     (see prepare_session's docstring for why this is the only mode this
     script offers — mcp_app/smoke_test_driver.py still uses stdio directly,
-    this is unrelated to that)."""
+    this is unrelated to that). `datasets` with more than one entry starts
+    mcp_app.server's dispatcher mode (repeated --dataset flags) — see
+    mcp_app/agent_tools/dispatcher.py."""
     run_dir = f"{remote_root}/agent-runs-mcp/{author}"
+    dataset_flags = " ".join(f"--dataset {ds}" for ds in datasets)
     cmd = (
-        f"cd {remote_root} && python3 -m mcp_app.server --dataset {dataset} "
+        f"cd {remote_root} && python3 -m mcp_app.server {dataset_flags} "
         f"--author {author} --isa {isa} --run-dir {run_dir} "
         f"--transport streamable-http --bind-host 127.0.0.1 --port {port}"
     )
@@ -185,7 +188,7 @@ def ensure_dataset_ready(target: RemoteTarget, dataset: str, *, verbose: bool = 
 
 def prepare_session(
     target: RemoteTarget,
-    dataset: str,
+    dataset: str | list[str],
     author: str,
     isa: str,
     *,
@@ -200,9 +203,14 @@ def prepare_session(
 ) -> dict:
     """Get an mcp_app session ready to be driven by a real MCP client.
 
-    `baseline_author` is an override only — omit it and the server
-    auto-derives it from `dataset`
-    (mcp_app/agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR).
+    `dataset` accepts either a single dataset string (today's behavior,
+    unchanged) or a list of more than one — the remote mcp_app.server then
+    starts in dispatcher mode, serving all of them over one connection (see
+    mcp_app/agent_tools/dispatcher.py). `baseline_author` is a single-dataset
+    override only — omit it and the server auto-derives it from `dataset`
+    (mcp_app/agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR); it
+    can't be combined with more than one dataset, since one override can't
+    correctly apply to more than one dataset's baseline.
 
     Always use streamable-http: establishes an SSH local-port-forward +
     starts the remote server, returns {"transport": "streamable-http",
@@ -211,16 +219,24 @@ def prepare_session(
     server's own transport) is what keeps the compile/evaluate tool surface
     off the public network — see mcp_app/server.py's module docstring.
     """
+    datasets = [dataset] if isinstance(dataset, str) else list(dict.fromkeys(dataset))
+    if len(datasets) > 1 and baseline_author is not None:
+        raise ValueError(
+            "baseline_author can't be used with more than one dataset — each "
+            "dataset auto-derives its own (see DEFAULT_BASELINE_AUTHOR)."
+        )
+
     if sync_repo:
         if local_repo_dir is None:
             raise ValueError("local_repo_dir is required when sync_repo=True")
         target.rsync_to(local_repo_dir, remote_root, paths=RSYNC_ALLOWLIST)
 
     if not skip_preflight:
-        ensure_dataset_ready(target, dataset)
+        for ds in datasets:
+            ensure_dataset_ready(target, ds)
 
     remote_cmd = _spawn_command(
-        target, remote_root, dataset, author, baseline_author, isa,
+        target, remote_root, datasets, author, baseline_author, isa,
         port=remote_port,
     )
     ssh_cmd = [
@@ -346,9 +362,17 @@ def _resolve_instance(args: argparse.Namespace) -> ProvisionedInstance:
     eval/provision.py always rsyncs its own repo checkout during
     provisioning, so `--local-repo-dir` has no effect on that initial sync;
     `_cli_launch` re-syncs via `prepare_session()` afterward, which does
-    respect it."""
+    respect it.
+
+    eval/provision.py's own `--dataset` only builds one dataset's native lib
+    at provision time. With more than one --dataset requested here, skip
+    that step (pass "") and rely on prepare_session's own per-dataset
+    ensure_dataset_ready loop right after — slower on a cold instance's very
+    first multi-dataset launch, correct thereafter, no eval/ changes needed.
+    """
     instance_type = args.instance or ISA_INSTANCE_MAP.get(args.isa, "c7g.large")
-    return _provision(args.isa, instance_type, args.dataset)
+    provision_dataset = args.dataset[0] if len(args.dataset) == 1 else ""
+    return _provision(args.isa, instance_type, provision_dataset)
 
 
 def _cli_provision(args: argparse.Namespace) -> None:
@@ -400,7 +424,13 @@ def main(argv: list[str] | None = None) -> None:
     prep.add_argument("--user", default="ubuntu")
     prep.add_argument("--key-file", default="~/.ssh/id_rsa")
     prep.add_argument("--remote-root", default="~/arm-bench")
-    prep.add_argument("--dataset", required=True, choices=["ncnn", "simd-loop", "llama.cpp"])
+    prep.add_argument("--dataset", action="append", required=True,
+                       choices=["ncnn", "simd-loop", "llama.cpp"],
+                       help="Repeatable — pass more than once to start the remote "
+                            "mcp_app.server in dispatcher mode, serving several "
+                            "datasets over one connection (see "
+                            "mcp_app/agent_tools/dispatcher.py). A single --dataset "
+                            "behaves exactly as before.")
     prep.add_argument("--author", default="nanobot")
     prep.add_argument("--baseline-author", default=None,
                        help="Override only — the server auto-derives this from --dataset.")
@@ -460,7 +490,13 @@ def main(argv: list[str] | None = None) -> None:
         help="provision (or reuse) an instance for --isa, then start an mcp_app session on it.",
     )
     _add_provision_args(launch)
-    launch.add_argument("--dataset", required=True, choices=["ncnn", "simd-loop", "llama.cpp"])
+    launch.add_argument("--dataset", action="append", required=True,
+                         choices=["ncnn", "simd-loop", "llama.cpp"],
+                         help="Repeatable — pass more than once to start the remote "
+                              "mcp_app.server in dispatcher mode, serving several "
+                              "datasets over one connection (see "
+                              "mcp_app/agent_tools/dispatcher.py). A single --dataset "
+                              "behaves exactly as before.")
     launch.add_argument("--author", default="nanobot")
     launch.add_argument("--baseline-author", default=None,
                          help="Override only — the server auto-derives this from --dataset.")
@@ -481,6 +517,8 @@ def main(argv: list[str] | None = None) -> None:
     launch.set_defaults(func=_cli_launch)
 
     args = p.parse_args(argv)
+    if isinstance(getattr(args, "dataset", None), list):
+        args.dataset = list(dict.fromkeys(args.dataset))  # dedupe, preserve order
     args.func(args)
 
 

@@ -78,23 +78,15 @@ class LlamaCppKernelSession(KernelSession):
             sources=[*harness, agent_kernel],
         )
 
-    def disassemble(self, fn: Optional[str] = None) -> dict:
+    def disassemble(self, definition: str, version: int, fn: Optional[str] = None) -> dict:
         """Disassemble the agent's kernel function (not the entry wrapper)."""
         if fn is None:
             fn = f"armbench_llamacpp_{self._definition.op_type}"
-        return super().disassemble(fn=fn)
+        return super().disassemble(definition=definition, version=version, fn=fn)
 
     @classmethod
     def tool_schemas(cls) -> list[dict]:
-        return standard_tool_schemas(
-            code_description=(
-                "Full C++ source for kernel.cpp. Must implement the "
-                "`armbench_llamacpp_<op_type>(...)` function declared in `<op_type>.h`. "
-                "You may use ggml (headers/libs are linked) or hand-written SVE/SVE2 "
-                "intrinsics. binding.cpp (the void* ABI shim) is provided automatically."
-            ),
-            disasm_hint="armbench_llamacpp_<op_type>",
-        )
+        return standard_tool_schemas()
 
 
 __all__ = ["LlamaCppKernelSession"]

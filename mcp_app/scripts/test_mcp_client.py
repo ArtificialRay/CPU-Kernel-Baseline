@@ -1,9 +1,10 @@
 """Plain MCP client for end-to-end verification without nanobot.
 
 Drives list_tools() (assert no read_code) -> call_tool("compile", {"definition":
-..., "code": ...}) -> call_tool("evaluate", {}) -> call_tool("disassemble", {}) ->
-list_resources()/read_resource() -> call_tool("submit", ...) for one
-definition. Exposes both a callable API (used by mcp_app/smoke_test_driver.py)
+..., "code": ...}) -> call_tool("evaluate", {"definition": ..., "version": ...}) ->
+call_tool("disassemble", {"definition": ..., "version": ...}) ->
+list_resources()/read_resource() -> call_tool("submit", {"definition": ..., ...})
+for one definition. Exposes both a callable API (used by mcp_app/smoke_test_driver.py)
 and a standalone CLI for manual runs.
 
     # stdio mode: spawn the exact command a real MCP client (nanobot, or
@@ -74,14 +75,15 @@ async def run_tool_sequence(
     assert compile_result.get("status") == "OK", compile_result
     if verbose:
         print(f"  compile: {compile_result}")
+    version = compile_result["version"]
 
-    r = await session.call_tool("evaluate", {})
+    r = await session.call_tool("evaluate", {"definition": definition, "version": version})
     eval_result = _tool_result_dict(r)
     assert eval_result.get("status") == "PASSED", eval_result
     if verbose:
         print(f"  evaluate: {eval_result.get('performance')}")
 
-    r = await session.call_tool("disassemble", {})
+    r = await session.call_tool("disassemble", {"definition": definition, "version": version})
     disasm_result = _tool_result_dict(r)
     assert "asm" in disasm_result, disasm_result
     if verbose:
@@ -96,7 +98,7 @@ async def run_tool_sequence(
     v1_text = read_result.contents[0].text  # type: ignore[union-attr]
     assert v1_text == code, f"{v1_name} resource content doesn't match the code that was compiled"
 
-    r = await session.call_tool("submit", {"explanation": submit_explanation})
+    r = await session.call_tool("submit", {"definition": definition, "explanation": submit_explanation})
     submit_result = _tool_result_dict(r)
     assert submit_result.get("status") == "PASSED", submit_result
     if verbose:

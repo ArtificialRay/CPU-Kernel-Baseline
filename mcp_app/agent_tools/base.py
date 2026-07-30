@@ -18,7 +18,7 @@ from __future__ import annotations
 import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional, Protocol
 
 from bench.data.json_utils import save_json_file
 
@@ -36,13 +36,40 @@ ASM_TRUNCATE_LINES: int = 300
 REFERENCE_SCALAR_FILENAME = "reference-scalar-kernel.cpp"
 
 
-def standard_tool_schemas(*, code_description: str, disasm_hint: str) -> list[dict]:
-    """The four standard agent tool schemas, shared across datasets.
+class KernelSessionLike(Protocol):
+    """Structural interface mcp_app/server.py actually needs from `tools` —
+    satisfied by both a plain per-dataset KernelSession and by
+    DispatcherKernelSession (agent_tools/dispatcher.py). The dispatcher does
+    NOT inherit from KernelSession: that ABC commits every subclass to a
+    single `dataset: ClassVar[str]` and an abstract `make_solution()` its own
+    concrete `compile()` calls internally — both meaningless for a router
+    that overrides `compile()` to delegate to sub-sessions instead of ever
+    calling its own `make_solution()`. This Protocol is the single source of
+    truth for what server.py needs, so both call sites can be checked
+    against it instead of against KernelSession's full (larger) surface.
+    """
 
-    `code_description` is the help text for compile()'s `code` argument (states
-    which function the agent must implement); `disasm_hint` names the symbol
-    disassemble() defaults to (the agent's kernel function). No `read_code`
-    entry — retired at the source (see module docstring).
+    _run_dir: Path
+
+    def tool_schemas(self) -> list[dict]: ...
+    def dispatch_tool_call(self, name: str, args: dict) -> dict: ...
+    def note_session_definition(self, session: Any, definition: str) -> None: ...
+    def session_definitions(self, session: Any) -> frozenset[str]: ...
+    def cleanup(self) -> None: ...
+
+
+def standard_tool_schemas() -> list[dict]:
+    """The four standard agent tool schemas, identical across datasets.
+
+    Dataset-specific guidance (which function name/signature to implement)
+    used to be baked into this text per-dataset, but it's redundant with —
+    and less precise than — the `reference-scalar-kernel.cpp` resource
+    already written per definition at server startup (see
+    session.py::_write_reference_scalar_kernels): a working, correctly
+    signatured scalar reference the agent can just read. Keeping this text
+    dataset-agnostic is what lets one server process serve multiple datasets
+    (see agent_tools/dispatcher.py) without needing to pick whose wording to
+    show. No `read_code` entry — retired at the source (see module docstring).
     """
     return [
         {
@@ -69,7 +96,20 @@ def standard_tool_schemas(*, code_description: str, disasm_hint: str) -> list[di
                             "belong to this server's dataset."
                         ),
                     },
-                    "code": {"type": "string", "description": code_description},
+                    "code": {
+                        "type": "string",
+                        "description": (
+                            "Full C++ source for kernel.cpp. Before writing this, read "
+                            "the `reference-scalar-kernel.cpp` resource for this "
+                            "definition — it's a working scalar reference implementation "
+                            "showing the exact function name and signature you must "
+                            "implement (naming convention varies by dataset, e.g. "
+                            "`inner_<op_type>` vs `armbench_llamacpp_<op_type>(...)`). "
+                            "Replace its body with an optimized SIMD version; keep the "
+                            "same signature. Harness/binding files are provided "
+                            "automatically."
+                        ),
+                    },
                 },
                 "required": ["definition", "code"],
             },
@@ -112,11 +152,11 @@ def standard_tool_schemas(*, code_description: str, disasm_hint: str) -> list[di
             "name": "disassemble",
             "description": (
                 "Disassemble the compiled .so identified by (`definition`, `version`) "
-                "(up to 300 lines of AArch64 assembly). Defaults to `{disasm_hint}` "
-                "(your kernel); pass `fn` to inspect a different symbol. `definition`/"
-                "`version` are required and validated the same way as evaluate()'s — "
-                "see its description."
-            ).format(disasm_hint=disasm_hint),
+                "(up to 300 lines of AArch64 assembly). Defaults to this definition's "
+                "own kernel entry symbol (the function you implemented); pass `fn` to "
+                "inspect a different symbol. `definition`/`version` are required and "
+                "validated the same way as evaluate()'s — see its description."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -130,7 +170,7 @@ def standard_tool_schemas(*, code_description: str, disasm_hint: str) -> list[di
                     },
                     "fn": {
                         "type": "string",
-                        "description": f"Symbol to disassemble. Omit to use `{disasm_hint}`.",
+                        "description": "Symbol to disassemble. Omit to use this definition's own kernel entry symbol.",
                     },
                 },
                 "required": ["definition", "version"],
@@ -638,4 +678,7 @@ class KernelSession(ABC):
             current.unlink()
 
 
-__all__ = ["KernelSession", "ASM_TRUNCATE_LINES", "REFERENCE_SCALAR_FILENAME", "standard_tool_schemas"]
+__all__ = [
+    "KernelSession", "KernelSessionLike", "ASM_TRUNCATE_LINES",
+    "REFERENCE_SCALAR_FILENAME", "standard_tool_schemas",
+]
