@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import os
 import sys
 import time
 from pathlib import Path
@@ -81,6 +82,13 @@ def build_server(tools: KernelSessionLike) -> Server:
                 inputSchema=s["parameters"],
             )
             for s in tools.tool_schemas()
+            # ARMBENCH_NO_SUBMIT=1 -> "forced-iteration" mode: hide the submit
+            # tool so the agent can't short-circuit its budget by submitting
+            # early. The best-performing version is still auto-recorded on every
+            # evaluate(), so nothing is lost — this is purely to force the agent
+            # to keep iterating (used for budget-scaling / capability-ceiling
+            # experiments, e.g. best-so-far-vs-turn curves).
+            if not (os.environ.get("ARMBENCH_NO_SUBMIT") and s["name"] == "submit")
         ]
 
     @server.call_tool()
