@@ -90,15 +90,19 @@ def _read_config_instance(isa: str) -> Optional[ProvisionedInstance]:
     )
 
 
-def _provision(isa: str, instance_type: str, dataset: str) -> ProvisionedInstance:
+def _provision(
+    isa: str, instance_type: str, dataset: str, *, on_demand: bool = False
+) -> ProvisionedInstance:
     """Subprocess-invoke the standalone eval/provision.py, then read the
     eval_config.json it wrote. Reuses a reachable instance for this ISA
-    tier if one's already up; otherwise provisions a fresh one."""
-    subprocess.run(
-        [sys.executable, str(PROVISION_SCRIPT),
-         "--isa", isa, "--instance", instance_type, "--dataset", dataset],
-        check=True,
-    )
+    tier if one's already up; otherwise provisions a fresh one.
+
+    `on_demand` only takes effect when running a long-run job."""
+    cmd = [sys.executable, str(PROVISION_SCRIPT),
+           "--isa", isa, "--instance", instance_type, "--dataset", dataset]
+    if on_demand:
+        cmd.append("--on-demand")
+    subprocess.run(cmd, check=True)
     instance = _read_config_instance(isa)
     if instance is None:
         raise RuntimeError(
@@ -372,7 +376,7 @@ def _resolve_instance(args: argparse.Namespace) -> ProvisionedInstance:
     """
     instance_type = args.instance or ISA_INSTANCE_MAP.get(args.isa, "c7g.large")
     provision_dataset = args.dataset[0] if len(args.dataset) == 1 else ""
-    return _provision(args.isa, instance_type, provision_dataset)
+    return _provision(args.isa, instance_type, provision_dataset, on_demand=args.on_demand)
 
 
 def _cli_provision(args: argparse.Namespace) -> None:
@@ -472,6 +476,13 @@ def main(argv: list[str] | None = None) -> None:
                               "subcommand only — eval/provision.py always rsyncs its own "
                               "repo root during provisioning itself). Defaults to this "
                               "repo's own root.")
+        sp.add_argument("--on-demand", action="store_true",
+                         help="Provision on-demand instead of the default spot — AWS won't "
+                              "reclaim the instance mid-run (e.g. during a long unattended "
+                              "fleet run), at a higher hourly price. Only takes effect when "
+                              "actually provisioning a fresh instance; an existing reachable "
+                              "one is reused as-is regardless — run the `teardown` subcommand "
+                              "first to force a clean on-demand replacement.")
 
     prov = sub.add_parser("provision", help="Bring up (or reuse) a Graviton instance for --isa.")
     _add_provision_args(prov)

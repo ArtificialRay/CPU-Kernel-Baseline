@@ -180,7 +180,12 @@ def _install_deps(handle: InstanceHandle) -> None:
             print(f"[provision] WARNING: {label} failed: {err[:200]}")
 
 
-def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset: str = "") -> InstanceHandle:
+def provision(
+    instance_type: str = "c7g.large",
+    initial_build: str = "",
+    dataset: str = "",
+    on_demand: bool = False,
+) -> InstanceHandle:
     """
     Run terraform apply to provision an instance. Blocks until SSH is available,
     rsyncs source, installs deps, and runs dataset-specific build steps.
@@ -193,18 +198,22 @@ def provision(instance_type: str = "c7g.large", initial_build: str = "", dataset
         instance_type: EC2 instance type string (e.g. "c7g.large", "c8g.large", "c8g.xlarge")
         initial_build: make target for initial build, e.g. "c-scalar". Empty = skip.
         dataset: Dataset name (e.g. "ncnn") — triggers build steps from dataset_builds.json.
+        on_demand: If True, provision on-demand instead of the default spot — AWS
+            won't reclaim the instance mid-run, at a higher hourly price. 
     """
     is_c8g = "c8g" in instance_type
-    print(f"[provision] Provisioning {instance_type} via Terraform...")
+    print(f"[provision] Provisioning {instance_type} via Terraform"
+          f"{' (on-demand)' if on_demand else ' (spot)'}...")
 
+    on_demand_var = f"-var=on_demand={'true' if on_demand else 'false'}"
     if is_c8g:
         # c8g has its own fixed resource block — pass instance type as a variable.
         result = _tf("apply", "-auto-approve",
-                     f"-var=instance_type={instance_type}",
+                     f"-var=instance_type={instance_type}", on_demand_var,
                      "-target=aws_instance.c8g",
                      "-target=null_resource.deploy_c8g")
     else:
-        vars = [f"-var=instance_type={instance_type}"]
+        vars = [f"-var=instance_type={instance_type}", on_demand_var]
         if initial_build:
             vars.append(f"-var=build_target={initial_build}")
         # Scope to the c7g instance + its deploy resource only. Without -target this
@@ -295,13 +304,14 @@ def get_running_instance(instance_type: str) -> InstanceHandle | None:
     )
 
 
-def get_or_provision(instance_type: str, dataset: str = "") -> InstanceHandle:
+def get_or_provision(instance_type: str, dataset: str = "", on_demand: bool = False) -> InstanceHandle:
     """
     Return an existing reachable instance for this tier, or provision a new one.
 
     Args:
         instance_type: EC2 instance type, e.g. "c7g.large", "c8g.xlarge".
         dataset: Dataset name — ensured ready on the returned instance either way.
+        on_demand: Only takes effect when you want a long-run job.
     """
     handle = get_running_instance(instance_type)
     if handle and _is_reachable(handle):
@@ -309,7 +319,7 @@ def get_or_provision(instance_type: str, dataset: str = "") -> InstanceHandle:
         if dataset:
             ensure_dataset_ready(handle, dataset)
         return handle
-    return provision(instance_type, dataset=dataset)
+    return provision(instance_type, dataset=dataset, on_demand=on_demand)
 
 
 def _wait_for_ssh(handle: InstanceHandle, max_wait: int = 300, interval: int = 10):
@@ -377,6 +387,10 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", default="",
                         help="Dataset to build after provisioning (e.g. ncnn). "
                              "Default: skip — instance will lack that dataset's build artifacts.")
+    parser.add_argument("--on-demand", action="store_true",
+                        help="Provision on-demand instead of the default spot — AWS won't "
+                             "reclaim the instance mid-run, at a higher hourly price. Use "
+                             "when you want to start a long-run job.")
     args = parser.parse_args()
 
     if args.status:
@@ -394,7 +408,8 @@ if __name__ == "__main__":
             if args.dataset:
                 ensure_dataset_ready(handle, args.dataset)
         else:
-            handle = provision(instance_type, args.initial_build, dataset=args.dataset)
+            handle = provision(instance_type, args.initial_build, dataset=args.dataset,
+                               on_demand=args.on_demand)
         print(f"\nInstance handle: {handle}")
         print(f"host={handle.host} user={handle.user} key_file={handle.key_file} "
               f"instance_type={handle.instance_type}")

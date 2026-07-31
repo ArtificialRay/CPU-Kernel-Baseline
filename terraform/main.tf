@@ -28,6 +28,12 @@ variable "instance_type" {
   default     = "c7g.large"
 }
 
+variable "on_demand" {
+  description = "If true, provision on-demand instead of spot — AWS won't reclaim the instance mid-run, at a higher hourly price (spot is the default: cheaper, but can be interrupted/terminated by AWS at any time with no fixed schedule)."
+  type        = bool
+  default     = false
+}
+
 
 # ---------------------------------------------------------------------------
 # Security group — SSH only
@@ -65,8 +71,11 @@ resource "aws_key_pair" "kernel_testing" {
 # ---------------------------------------------------------------------------
 
 resource "aws_instance" "kernel_testing" {
-  instance_market_options {
-    market_type = "spot"
+  dynamic "instance_market_options" {
+    for_each = var.on_demand ? [] : [1]
+    content {
+      market_type = "spot"
+    }
   }
 
   ami                    = "ami-012798e88aebdba5c" # Ubuntu 22.04 LTS arm64 us-west-2
@@ -122,8 +131,11 @@ resource "null_resource" "deploy" {
 # ---------------------------------------------------------------------------
 
 resource "aws_instance" "c8g" {
-  instance_market_options {
-    market_type = "spot"
+  dynamic "instance_market_options" {
+    for_each = var.on_demand ? [] : [1]
+    content {
+      market_type = "spot"
+    }
   }
 
   ami                    = "ami-012798e88aebdba5c" # Ubuntu 22.04 LTS arm64 us-west-2
