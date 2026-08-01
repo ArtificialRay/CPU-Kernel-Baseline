@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import mcp.types as types
+from contracts import REFERENCE_SCALAR_FILENAME
 
 _MIME_TYPES = {
     ".cpp": "text/x-c++src",
@@ -25,7 +26,7 @@ _MIME_TYPES = {
 # at server startup (see session.py::_write_reference_scalar_kernels), never
 # authored by an agent. Visible to every MCP session regardless of
 # `visible_definitions`
-_REFERENCE_PATTERN = "reference-scalar-kernel.cpp"
+_REFERENCE_PATTERN = REFERENCE_SCALAR_FILENAME
 
 # Glob patterns for files exposed as resources, in listing order.
 _PATTERNS = ["trajectory.jsonl", _REFERENCE_PATTERN, "v*.cpp", "v*.s"]

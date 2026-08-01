@@ -44,6 +44,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from bench.data.trace_set import TraceSet
+from contracts import BASELINE_AUTHORS
 
 from .agent_tools.isa import SUPPORTED_ISAS
 from .scripts import _local_ssh
@@ -61,12 +62,12 @@ DATASET_BUILDS: dict = json.loads((Path(__file__).parent / "dataset_builds.json"
 # eval/provision.py and skills/launch/launch_session.py).
 RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
 
-# Hand-typed, matching skills/nanobot/nanobot-kernel-session/SKILL.md's table
-# (decision 10 — no shared source of truth to import from eval/run_benchmark.py).
+# baseline_author from contracts.BASELINE_AUTHORS (shared with eval/run_benchmark.py
+# and mcp_app/agent_tools/baseline_readiness.py); isa_hint is display-only, local to
+# this smoke-test driver.
 DATASET_REFERENCE = {
-    "ncnn": {"baseline_author": "baseline-ncnn-arm", "isa_hint": "sve (Graviton3) / sve2 (Graviton4)"},
-    "simd-loop": {"baseline_author": "baseline-sve", "isa_hint": "sve (Graviton3) / sve2 (Graviton4)"},
-    "llama.cpp": {"baseline_author": "baseline-llamacpp-arm", "isa_hint": "sve (Graviton3) / sve2 (Graviton4)"},
+    dataset: {"baseline_author": author, "isa_hint": "sve (Graviton3) / sve2 (Graviton4)"}
+    for dataset, author in BASELINE_AUTHORS.items()
 }
 
 

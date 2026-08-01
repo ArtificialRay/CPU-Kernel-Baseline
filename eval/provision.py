@@ -32,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from contracts import ISA_INSTANCE_MAP
 from eval.remote import InstanceHandle
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -40,17 +41,9 @@ EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see InstanceHandle.rsync_to's docstring.
-# TODO: fold into an env var 
+# TODO: fold into an env var
 RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
 DATASET_BUILDS_PATH = REPO_ROOT / "eval" / "dataset_builds.json"
-
-# Map ISA targets to instance types
-ISA_INSTANCE_MAP = {
-    "neon": "c7g.large",
-    "sve": "c7g.large",
-    "sve2": "c8g.large",
-    "sme2": "c8g.large",
-}
 
 
 def _tier_for_instance_type(instance_type: str) -> str:

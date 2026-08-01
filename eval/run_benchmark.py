@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 
 from bench.config import BenchmarkConfig
 from bench.data.trace_set import TraceSet
+from contracts import BASELINE_AUTHORS, ISA_INSTANCE_MAP
 from eval.config import REPO_ROOT
 from eval.evaluator import run_agentic_eval
 from eval.remote import InstanceHandle
@@ -40,17 +41,6 @@ RESULTS_DIR = REPO_ROOT / "results"
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
 load_dotenv(REPO_ROOT / ".env")
-
-# Own copy of eval/provision.py's ISA_INSTANCE_MAP — small (4 rows), rarely
-# changes, kept in sync by hand. eval/provision.py is a standalone script;
-# nothing here imports from it — see its module docstring.
-ISA_INSTANCE_MAP = {
-    "neon": "c7g.large",
-    "sve": "c7g.large",
-    "sve2": "c8g.large",
-    "sme2": "c8g.large",
-}
-
 
 def _tier_for_isa(isa: str) -> str:
     return "c8g" if isa in ("sve2", "sme2") else "c7g"
@@ -93,18 +83,10 @@ def _provision(isa: str, dataset: str) -> InstanceHandle:
 def _teardown() -> None:
     subprocess.run([sys.executable, str(PROVISION_SCRIPT), "--teardown"], check=True)
 
-# Dataset → bench.cli collect-baselines --baseline-author value.
-# Must match the baseline_author used by AgentTools (BenchmarkConfig default in
-# eval/agent_tools/base.py is "reference-scalar"), so speedup computation works.
-_DATASET_BASELINE_AUTHOR: dict[str, str] = {
-    "ncnn": "baseline-ncnn-arm",
-    # Expert baseline = Arm's hand-written SVE intrinsics (extracted from the
-    # upstream simd-loops HAVE_SVE_INTRINSICS blocks). "reference" is the naive
-    # scalar the agent STARTS from, not a speedup target. Coverage is 36/47 defs
-    # (loops with a clean, validated SVE block); the rest are in _SVE_SKIP.
-    "simd-loop": "baseline-sve",
-    "llama.cpp": "baseline-llamacpp-arm",
-}
+# Dataset → bench.cli collect-baselines --baseline-author value, from contracts.py
+# (shared with mcp_app/agent_tools/baseline_readiness.py and
+# mcp_app/smoke_test_driver.py — see contracts.BASELINE_AUTHORS).
+_DATASET_BASELINE_AUTHOR: dict[str, str] = BASELINE_AUTHORS
 
 
 def _author_from_model(model: str) -> str:

@@ -34,21 +34,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+REPO_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+# contracts.py lives at the repo root, outside both eval/ and mcp_app/, so
+# importing it doesn't violate this module's "zero imports from eval/ or
+# mcp_app/" boundary (see module docstring).
+from contracts import ISA_INSTANCE_MAP
 from remote import RemoteTarget
 
-REPO_ROOT = Path(__file__).parent.parent.parent
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
-
-# Own copy of eval/provision.py's ISA_INSTANCE_MAP — small (4 rows), rarely
-# changes, kept in sync by hand rather than generated (same tradeoff as the
-# dataset/baseline_author/isa table in SKILL.md).
-ISA_INSTANCE_MAP = {
-    "neon": "c7g.large",
-    "sve": "c7g.large",
-    "sve2": "c8g.large",
-    "sme2": "c8g.large",
-}
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see RemoteTarget.rsync_to's docstring.

@@ -28,6 +28,7 @@ from bench.data.solution import Solution
 from bench.data.trace import Trace
 from bench.data.trace_set import TraceSet
 from bench.data.json_utils import save_json_file
+from contracts import AGENT_KERNEL_FILENAME, ISA_TABLE
 from eval.remote import InstanceHandle
 
 from .trajectory import TrajectoryWriter
@@ -36,16 +37,34 @@ from .trajectory import TrajectoryWriter
 ASM_TRUNCATE_LINES: int = 300
 
 
-# Map EC2 instance type → (march flag, isa_features, target_hardware labels).
-# Shared by the dataset AgentTools so candidate ISA flags always match the real
-# hardware the kernel is timed on.
+def _isa_tuple(isa: str) -> tuple[str, list[str], list[str]]:
+    spec = ISA_TABLE[isa]
+    return (spec.march, list(spec.features), list(spec.labels))
+
+
+# Map EC2 instance type → (march flag, isa_features, target_hardware labels),
+# derived from contracts.ISA_TABLE so these stay in sync with mcp_app/
+# agent_tools/isa.py's march_for_isa() and eval/provision.py's instance
+# selection. Shared by the dataset AgentTools so candidate ISA flags always
+# match the real hardware the kernel is timed on.
+#
+# NOTE: sme2 has no entry here on purpose, not an oversight — sve2 and sme2
+# both provision onto "c8g.large" (contracts.yaml: no AWS instance actually
+# offers SME2 yet), so an instance-type-keyed table can't distinguish a
+# "--isa sve2" run from a "--isa sme2" run on the same box; both resolve to
+# whatever's keyed under "c8g.large" here. Passing ARMBENCH_ISA_MODE=sve2
+# is the only way today to get an explicit answer for that box — there is no
+# equivalent "sme2" mode below for the same reason. Fixing this for real needs
+# derive_isa() (and its callers) to take the originally-requested isa string
+# explicitly instead of inferring it from instance_type, mirroring how
+# mcp_app/agent_tools/isa.py's march_for_isa(isa) already works.
 INSTANCE_ISA: dict[str, tuple[str, list[str], list[str]]] = {
-    "c7g.large":  ("-march=armv8.2-a+sve",  ["sve"],  ["graviton3", "aarch64-sve"]),
-    "c8g.large":  ("-march=armv9-a+sve2",   ["sve2"], ["graviton4", "aarch64-sve2"]),
-    "c7g.xlarge": ("-march=armv8.2-a+sve",  ["sve"],  ["graviton3", "aarch64-sve"]),
-    "c8g.xlarge": ("-march=armv9-a+sve2",   ["sve2"], ["graviton4", "aarch64-sve2"]),
+    "c7g.large":  _isa_tuple("sve"),
+    "c8g.large":  _isa_tuple("sve2"),
+    "c7g.xlarge": _isa_tuple("sve"),
+    "c8g.xlarge": _isa_tuple("sve2"),
 }
-_FALLBACK_ISA = ("-march=armv8-a", [], ["aarch64"])
+FALLBACK_ISA = ("-march=armv8-a", [], ["aarch64"])
 
 # Per-run ISA override (env ARMBENCH_ISA_MODE) for the ISA-ablation experiments:
 # force a tier's compile flags regardless of the instance's native ISA, so
@@ -54,9 +73,9 @@ _FALLBACK_ISA = ("-march=armv8-a", [], ["aarch64"])
 # constraint is applied via the agent prompt (evaluator._ISA_MODE_PROMPT), since
 # armv8-a still permits compiler auto-vectorization.
 _ISA_MODES: dict[str, tuple[str, list[str], list[str]]] = {
-    "portable": ("-march=armv8-a",        [],       ["aarch64"]),
-    "sve":      ("-march=armv8.2-a+sve",  ["sve"],  ["aarch64-sve"]),
-    "sve2":     ("-march=armv9-a+sve2",   ["sve2"], ["aarch64-sve2"]),
+    "portable": (ISA_TABLE["neon"].march, [], ["aarch64"]),
+    "sve":      _isa_tuple("sve"),
+    "sve2":     _isa_tuple("sve2"),
 }
 
 
@@ -69,7 +88,7 @@ def derive_isa(instance_type: str) -> tuple[str, list[str], list[str]]:
     mode = os.environ.get("ARMBENCH_ISA_MODE", "").strip().lower()
     if mode in _ISA_MODES:
         return _ISA_MODES[mode]
-    return INSTANCE_ISA.get(instance_type, _FALLBACK_ISA)
+    return INSTANCE_ISA.get(instance_type, FALLBACK_ISA)
 
 
 def standard_tool_schemas(*, code_description: str, disasm_hint: str) -> list[dict]:
@@ -397,7 +416,7 @@ class AgentTools(ABC):
             return {"status": "COMPILE_ERROR", "error": "nothing compiled yet — call compile() first"}
 
         kernel_src = next(
-            (s for s in chosen["solution"].sources if s.path == "kernel.cpp"), None
+            (s for s in chosen["solution"].sources if s.path == AGENT_KERNEL_FILENAME), None
         )
         if kernel_src is None:
             self._trajectory.write_turn(

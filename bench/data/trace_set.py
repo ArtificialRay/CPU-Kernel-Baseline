@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from .definition import Definition
 from .json_utils import append_jsonl_file, load_json_file, load_jsonl_file
 from .solution import Solution
-from .trace import Trace
+from .trace import EvaluationStatus, Trace
 from .workload import Workload
 
 
@@ -196,7 +196,7 @@ class TraceSet:
         return list(self._traces_by_solution.get(sol_name, []))
 
     def get_baseline_solution(
-        self, def_name: str, baseline_author: str = "baseline-ncnn-arm"
+        self, def_name: str, baseline_author: str
     ) -> Optional[Solution]:
         """Resolve the unique `baseline_author` Solution for `def_name`.
 
@@ -220,7 +220,7 @@ class TraceSet:
         self,
         def_name: str,
         workload_uuid: str,
-        baseline_author: str = "baseline-ncnn-arm",
+        baseline_author: str,
     ) -> Optional[int]:
         """Return the cached baseline `min_ns` for (def_name, workload_uuid).
 
@@ -237,7 +237,7 @@ class TraceSet:
             if t.workload.uuid != workload_uuid:
                 continue
             ev = t.evaluation
-            if ev is None or ev.status.value != "PASSED" or ev.performance is None:
+            if ev is None or ev.status != EvaluationStatus.PASSED or ev.performance is None:
                 continue
             ns = ev.performance.min_ns
             if best is None or ns < best:
@@ -248,7 +248,7 @@ class TraceSet:
         self,
         def_name: str,
         workload_uuid: str,
-        baseline_author: str = "baseline-ncnn-arm",
+        baseline_author: str,
     ) -> Optional[int]:
         """Return the cached baseline `cycles` for (def_name, workload_uuid).
 
@@ -268,7 +268,7 @@ class TraceSet:
             if t.workload.uuid != workload_uuid:
                 continue
             ev = t.evaluation
-            if ev is None or ev.status.value != "PASSED" or ev.performance is None:
+            if ev is None or ev.status != EvaluationStatus.PASSED or ev.performance is None:
                 continue
             cyc = ev.performance.cycles
             if cyc is None:

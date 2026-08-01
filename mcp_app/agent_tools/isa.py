@@ -22,16 +22,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NamedTuple
 
-# isa name -> (march flag, isa_features, target_hardware label)
+from contracts import ISA_TABLE
+
+# isa name -> (march flag, isa_features, target_hardware label), from contracts.py
+# (shared with eval/agent_tools/base.py, eval/provision.py, etc.) plus a local
+# "portable" alias: same -march as neon (armv8-a mandates NEON); the "no
+# hand-written SIMD" constraint is a PROMPT concern (nanobot skill), not a
+# compile flag, so "portable" isn't a real hardware tier in contracts.yaml.
 _ISA_MARCH: dict[str, tuple[str, list[str], list[str]]] = {
-    # portable: same -march as neon (armv8-a mandates NEON); the "no hand-written
-    # SIMD" constraint is a PROMPT concern (nanobot skill), not a compile flag.
-    "portable": ("-march=armv8-a", [], ["aarch64"]),
-    "neon": ("-march=armv8-a", [], ["aarch64-neon"]),
-    "sve": ("-march=armv8.2-a+sve", ["sve"], ["aarch64-sve"]),
-    "sve2": ("-march=armv9-a+sve2", ["sve2"], ["aarch64-sve2"]),
-    "sme2": ("-march=armv9-a+sve2+sme2", ["sve2", "sme2"], ["aarch64-sme2"]),
+    isa: (spec.march, spec.features, spec.labels) for isa, spec in ISA_TABLE.items()
 }
+# Same compile flags as neon (armv8-a mandates NEON), but its own generic
+# target_hardware label — "portable" solutions aren't claiming NEON-specific
+# intent, just whatever the compiler auto-vectorizes.
+_ISA_MARCH["portable"] = (ISA_TABLE["neon"].march, list(ISA_TABLE["neon"].features), ["aarch64"])
 
 # isa name -> /proc/cpuinfo "Features" tokens that must ALL be present.
 # Open item (see mcp_app/README.md): exact token names for Graviton3 (sve) vs.
