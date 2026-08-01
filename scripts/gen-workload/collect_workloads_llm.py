@@ -335,15 +335,19 @@ def main() -> None:
     # Step 1 — provision. eval/provision.py is a standalone script (see its
     # module docstring) — invoke it via subprocess, then read the shared
     # eval/eval_config.json it wrote, rather than importing its internals.
-    print("[llm] Provisioning/reusing Graviton4 instance...")
+    # Explicit --label (rather than relying on the isa-only default) so this
+    # keeps working even if this collector later grows a --dataset flag.
+    label = "sve2"
+    print(f"[llm] Provisioning/reusing Graviton4 instance (label={label!r})...")
     subprocess.run(
-        [sys.executable, str(REPO_ROOT / "eval" / "provision.py"), "--isa", "sve2"],
+        [sys.executable, str(REPO_ROOT / "eval" / "provision.py"),
+         "--isa", "sve2", "--label", label],
         check=True,
     )
     eval_config = json.loads((REPO_ROOT / "eval" / "eval_config.json").read_text())
-    c8g = eval_config.get("instances", {}).get("c8g", {})
+    c8g = eval_config.get("instances", {}).get(label, {})
     if not c8g.get("host"):
-        raise RuntimeError("eval/provision.py exited successfully but wrote no c8g instance")
+        raise RuntimeError(f"eval/provision.py exited successfully but wrote no instance for label={label!r}")
 
     sys.path.insert(0, str(REPO_ROOT))
     from eval.remote import InstanceHandle  # noqa: PLC0415

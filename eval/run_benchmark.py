@@ -42,17 +42,22 @@ EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
 load_dotenv(REPO_ROOT / ".env")
 
-def _tier_for_isa(isa: str) -> str:
-    return "c8g" if isa in ("sve2", "sme2") else "c7g"
+# label = f"{dataset}-{isa}" — mirrors eval/provision.py's default_label()
+# (dataset is always given at this module's call sites, so the full chain
+# there never needs to fall back). Not imported from eval/provision.py: that
+# module is a standalone script invoked only via subprocess (see its own
+# docstring) — kept in sync by hand, same tradeoff as ISA_INSTANCE_MAP used
+# to be before it moved to contracts.py.
+def _label_for(isa: str, dataset: str) -> str:
+    return f"{dataset}-{isa}"
 
 
-def _read_config_instance(isa: str) -> InstanceHandle | None:
-    """Read eval/eval_config.json directly for a running instance of `isa`'s tier."""
+def _read_config_instance(label: str) -> InstanceHandle | None:
+    """Read eval/eval_config.json directly for a running instance under `label`."""
     if not EVAL_CONFIG_PATH.exists():
         return None
     config = json.loads(EVAL_CONFIG_PATH.read_text())
-    tier = _tier_for_isa(isa)
-    inst = config.get("instances", {}).get(tier, {})
+    inst = config.get("instances", {}).get(label, {})
     host = inst.get("host", "")
     if not host:
         return None
@@ -60,28 +65,33 @@ def _read_config_instance(isa: str) -> InstanceHandle | None:
         host=host,
         user=inst.get("user", "ubuntu"),
         key_file=inst.get("key_file", "~/.ssh/id_rsa"),
-        instance_type=ISA_INSTANCE_MAP.get(isa, "c7g.large"),
+        instance_type=inst.get("instance_type", "c7g.large"),
     )
 
 
 def _provision(isa: str, dataset: str) -> InstanceHandle:
     """Subprocess-invoke the standalone eval/provision.py, then read the
-    eval_config.json it wrote. Reuses a reachable instance for this ISA
-    tier if one's already up; otherwise provisions a fresh one."""
+    eval_config.json it wrote. Reuses a reachable instance under this
+    dataset+isa's label if one's already up; otherwise provisions a fresh one."""
+    label = _label_for(isa, dataset)
     subprocess.run(
-        [sys.executable, str(PROVISION_SCRIPT), "--isa", isa, "--dataset", dataset],
+        [sys.executable, str(PROVISION_SCRIPT), "--isa", isa, "--dataset", dataset,
+         "--label", label],
         check=True,
     )
-    handle = _read_config_instance(isa)
+    handle = _read_config_instance(label)
     if handle is None:
         raise RuntimeError(
-            f"eval/provision.py exited successfully but wrote no instance for isa={isa!r}"
+            f"eval/provision.py exited successfully but wrote no instance for label={label!r}"
         )
     return handle
 
 
-def _teardown() -> None:
-    subprocess.run([sys.executable, str(PROVISION_SCRIPT), "--teardown"], check=True)
+def _teardown(isa: str, dataset: str) -> None:
+    label = _label_for(isa, dataset)
+    subprocess.run(
+        [sys.executable, str(PROVISION_SCRIPT), "--teardown", "--label", label], check=True,
+    )
 
 # Dataset → bench.cli collect-baselines --baseline-author value, from contracts.py
 # (shared with mcp_app/agent_tools/baseline_readiness.py and
@@ -235,7 +245,7 @@ def main():
     try:
         if args.provision:
             # Force a genuinely new instance: teardown, then provision.
-            _teardown()
+            _teardown(isa, args.dataset)
         handle = _provision(isa, args.dataset)
     except (subprocess.CalledProcessError, RuntimeError) as e:
         print(f"[ERROR] {e}")
@@ -335,14 +345,14 @@ def main():
     # ── Teardown ──────────────────────────────────────────────────────────
     if args.teardown:
         print("\n[teardown] Destroying instance...")
-        _teardown()
+        _teardown(isa, args.dataset)
     else:
-        handle = _read_config_instance(isa)
+        handle = _read_config_instance(_label_for(isa, args.dataset))
         if handle and handle.host:
             print(
                 f"\n[WARNING] Instance at {handle.host} is still running and accruing cost. "
                 f"Run with --teardown to destroy it after evaluation, "
-                f"or: python eval/provision.py --teardown"
+                f"or: python eval/provision.py --teardown --label {_label_for(isa, args.dataset)}"
             )
 
 
