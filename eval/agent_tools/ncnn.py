@@ -19,17 +19,9 @@ from bench.data.solution import (
     SupportedDatasets,
     SupportedLanguages,
 )
+from contracts import AGENT_KERNEL_FILENAME
 
-from .base import AgentTools
-
-# Map EC2 instance type → (march flag, isa_features, target_hardware label)
-_INSTANCE_ISA: dict[str, tuple[str, list[str], list[str]]] = {
-    "c7g.large":  ("-march=armv8.2-a+sve",  ["sve"],  ["graviton3", "aarch64-sve"]),
-    "c8g.large":  ("-march=armv9-a+sve2",   ["sve2"], ["graviton4", "aarch64-sve2"]),
-    "c7g.xlarge": ("-march=armv8.2-a+sve",  ["sve"],  ["graviton3", "aarch64-sve"]),
-    "c8g.xlarge": ("-march=armv9-a+sve2",   ["sve2"], ["graviton4", "aarch64-sve2"]),
-}
-_FALLBACK_ISA = ("-march=armv8-a", [], ["aarch64"])
+from .base import AgentTools, INSTANCE_ISA, FALLBACK_ISA
 
 
 class NCNNAgentTools(AgentTools):
@@ -60,18 +52,18 @@ class NCNNAgentTools(AgentTools):
             )
 
         # Lift all harness files except kernel.cpp from the reference solution.
-        harness = [s for s in ref.sources if s.path != "kernel.cpp"]
+        harness = [s for s in ref.sources if s.path != AGENT_KERNEL_FILENAME]
         if not harness:
             raise ValueError(
                 f"reference-scalar solution for {self._definition.name!r} has no "
-                "harness files besides kernel.cpp — unexpected layout"
+                f"harness files besides {AGENT_KERNEL_FILENAME} — unexpected layout"
             )
 
-        agent_kernel = SourceFile(path="kernel.cpp", content=code)
+        agent_kernel = SourceFile(path=AGENT_KERNEL_FILENAME, content=code)
 
         # Derive ISA-specific flags from the remote instance type.
-        march, isa_features, target_hardware = _INSTANCE_ISA.get(
-            self._handle.instance_type, _FALLBACK_ISA
+        march, isa_features, target_hardware = INSTANCE_ISA.get(
+            self._handle.instance_type, FALLBACK_ISA
         )
 
         # Inherit non-optimization, non-march flags from the reference spec

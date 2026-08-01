@@ -8,15 +8,17 @@ from __future__ import annotations
 
 from typing import Type
 
+from bench.data.solution import SupportedDatasets
+
 from .base import KernelSession
 from .llama_cpp import LlamaCppKernelSession
 from .ncnn import NCNNKernelSession
 from .simd_loop import SIMDLoopKernelSession
 
 _TOOLS: dict[str, Type[KernelSession]] = {
-    "ncnn": NCNNKernelSession,
-    "simd-loop": SIMDLoopKernelSession,
-    "llama.cpp": LlamaCppKernelSession,
+    SupportedDatasets.NCNN.value: NCNNKernelSession,
+    SupportedDatasets.SIMD_LOOP.value: SIMDLoopKernelSession,
+    SupportedDatasets.LLAMA_CPP.value: LlamaCppKernelSession,
 }
 
 

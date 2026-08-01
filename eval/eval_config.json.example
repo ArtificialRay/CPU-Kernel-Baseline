@@ -1,14 +1,16 @@
 {
   "instances": {
-    "c7g": {
+    "ncnn-sve": {
       "host": "1.2.3.4",
       "user": "ubuntu",
-      "key_file": "~/.ssh/id_rsa"
+      "key_file": "~/.ssh/id_rsa",
+      "instance_type": "c7g.large"
     },
-    "c8g": {
+    "llama.cpp-sve": {
       "host": "",
       "user": "ubuntu",
-      "key_file": "~/.ssh/id_rsa"
+      "key_file": "~/.ssh/id_rsa",
+      "instance_type": "c7g.large"
     }
   }
 }

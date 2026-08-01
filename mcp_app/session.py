@@ -13,10 +13,11 @@ from typing import Optional
 
 from bench.config import BenchmarkConfig
 from bench.data.trace_set import TraceSet
+from contracts import REFERENCE_SCALAR_AUTHORS, REFERENCE_SCALAR_FILENAME
 
 from .agent_tools import isa as isa_mod
 from .agent_tools import resolve_tools
-from .agent_tools.base import REFERENCE_SCALAR_FILENAME, KernelSession
+from .agent_tools.base import KernelSession
 from .agent_tools.baseline_readiness import DEFAULT_BASELINE_AUTHOR
 
 
@@ -76,10 +77,10 @@ def _write_reference_scalar_kernels(ts: TraceSet, dataset: str, run_dir: Path) -
         for def_name, sols in ts.solutions.items()
         if any(s.dataset.value == dataset for s in sols)
     }
-    # simd-loop's naive-scalar starter is author "reference"; ncnn/llama.cpp use
-    # "reference-scalar". Using the wrong author => no starter kernel written =>
-    # the agent starts simd-loop defs with no scalar reference.
-    ref_author = "reference" if dataset == "simd-loop" else "reference-scalar"
+    # Dataset-dependent (simd-loop's solution author is "reference", not
+    # "reference-scalar" — see contracts.py). A single flat literal here
+    # silently dropped every simd-loop definition's starter kernel.
+    ref_author = REFERENCE_SCALAR_AUTHORS[dataset]
     for def_name in def_names:
         ref = ts.get_baseline_solution(def_name, ref_author)
         if ref is None:

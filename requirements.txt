@@ -6,3 +6,4 @@ ml_dtypes
 torch
 dotenv
 mcp>=1.20,<2
+pyyaml

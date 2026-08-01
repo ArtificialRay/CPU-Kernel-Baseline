@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Optional
 
 from bench.data.solution import Solution, SourceFile, SolutionSpec, SupportedDatasets
+from contracts import AGENT_KERNEL_FILENAME
 
 from . import isa
 from .base import KernelSession, standard_tool_schemas
@@ -43,14 +44,14 @@ class NCNNKernelSession(KernelSession):
                 "Run scripts/gen_definitions.py to generate reference solutions."
             )
 
-        harness = [s for s in ref.sources if s.path != "kernel.cpp"]
+        harness = [s for s in ref.sources if s.path != AGENT_KERNEL_FILENAME]
         if not harness:
             raise ValueError(
                 f"reference-scalar solution for {self._definition.name!r} has no "
-                "harness files besides kernel.cpp — unexpected layout"
+                f"harness files besides {AGENT_KERNEL_FILENAME} — unexpected layout"
             )
 
-        agent_kernel = SourceFile(path="kernel.cpp", content=code)
+        agent_kernel = SourceFile(path=AGENT_KERNEL_FILENAME, content=code)
 
         march, isa_features, target_hardware = isa.march_for_isa(
             self._isa, instance_label=self._instance_label

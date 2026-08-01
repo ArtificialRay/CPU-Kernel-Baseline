@@ -138,8 +138,7 @@ def _evaluate_kernel_direct(
                 "log": ev.log,
                 "correctness": (
                     ev.correctness.model_dump(mode="json") if ev.correctness else None
-                ),
-                "traces": [t.model_dump(mode="json") for t in traces],
+                )
             }
 
     perfs = [
@@ -189,7 +188,6 @@ def _evaluate_kernel_direct(
         "status": "PASSED",
         "correctness": correctness,
         "performance": performance,
-        "traces": [t.model_dump(mode="json") for t in traces],
     }
 
 

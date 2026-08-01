@@ -15,12 +15,14 @@ many different definition names across the lifetime of one process; see
 
 from __future__ import annotations
 
+import re
 import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional, Protocol
 
 from bench.data.json_utils import save_json_file
+from contracts import REFERENCE_SCALAR_FILENAME
 
 from . import ops
 from .trajectory import TrajectoryWriter
@@ -33,7 +35,6 @@ if TYPE_CHECKING:
 
 
 ASM_TRUNCATE_LINES: int = 300
-REFERENCE_SCALAR_FILENAME = "reference-scalar-kernel.cpp"
 
 
 class KernelSessionLike(Protocol):
@@ -59,7 +60,7 @@ class KernelSessionLike(Protocol):
 
 
 def standard_tool_schemas() -> list[dict]:
-    """The four standard agent tool schemas, identical across datasets.
+    """The three standard agent tool schemas, identical across datasets.
 
     Dataset-specific guidance (which function name/signature to implement)
     used to be baked into this text per-dataset, but it's redundant with —
@@ -174,40 +175,6 @@ def standard_tool_schemas() -> list[dict]:
                     },
                 },
                 "required": ["definition", "version"],
-            },
-        },
-        {
-            "name": "submit",
-            "description": (
-                "Optional: attach your reasoning to the best-performing version for "
-                "`definition`. The best version itself is already saved the moment "
-                "evaluate() finds it — this doesn't recompile or re-measure anything, "
-                "it only records `explanation` against it, so it's cheap and safe to "
-                "call more than once (e.g. once early with a rough note, again at the "
-                "end with your final summary). `definition` is required and must be "
-                "whichever definition you last compile()'d — no `version` needed here "
-                "(submit always targets the best version found so far, not necessarily "
-                "your last compile()). "
-                "Returns {\"status\": \"PASSED\", \"time_speedup\": X, \"cycle_speedup\": Y}."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "definition": {
-                        "type": "string",
-                        "description": "Must match the `definition` from your last compile() call.",
-                    },
-                    "explanation": {
-                        "type": "string",
-                        "description": (
-                            "Brief description of the optimization approach and key perf "
-                            "observations. Include the speedup vs. the competitive baseline "
-                            "AND the speedup vs. the unoptimized reference-scalar starting "
-                            "point (v1) if you measured it."
-                        ),
-                    },
-                },
-                "required": ["definition"],
             },
         },
     ]
@@ -358,6 +325,20 @@ class KernelSession(ABC):
 
     # ── shared tool implementations ───────────────────────────────────────────
 
+    def _check_source_policy(self, definition: "Definition", code: str) -> Optional[str]:
+        """Return the first disallowed pattern found in `code`, or None if clean.
+
+        Patterns come from `self._bench_cfg.resolve_source_policy(definition)`
+        (bench/config.py) — default is DEFAULT_DISALLOWED_SOURCE_PATTERNS
+        (threading/parallelism APIs), overridable per op_type. This is a raw
+        text scan against the agent's submitted source
+        """
+        patterns = self._bench_cfg.resolve_source_policy(definition)
+        for pattern in patterns:
+            if re.search(pattern, code):
+                return pattern
+        return None
+
     def compile(self, definition: str, code: str) -> dict:
         """Compile agent code in-process for `definition`; store so_path for evaluate/disassemble."""
         is_new = definition not in self._definitions
@@ -371,6 +352,23 @@ class KernelSession(ABC):
         self._active_definition = definition
 
         state["turn"] += 1
+
+        rejection = self._check_source_policy(state["definition"], code)
+        if rejection is not None:
+            state["trajectory"].write_turn(
+                turn=state["turn"],
+                tool="compile",
+                metrics={"status": "REJECTED", "matched_pattern": rejection},
+            )
+            return {
+                "status": "REJECTED",
+                "error": (
+                    "kernel.cpp must not use threading/parallelism APIs "
+                    f"(matched pattern: {rejection!r}). This benchmark evaluates "
+                    "single-core SIMD/assembly kernel performance only."
+                ),
+            }
+
         solution = self.make_solution(code)
 
         result = ops.compile_kernel(state["definition"], solution)

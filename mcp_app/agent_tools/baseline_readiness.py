@@ -18,19 +18,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from bench.data.trace import EvaluationStatus
+from contracts import BASELINE_AUTHORS
+
 if TYPE_CHECKING:
     from bench.data.trace_set import TraceSet
 
-# Hand-maintained, matching skills/nanobot/nanobot-kernel-session/SKILL.md's
-# table and eval/run_benchmark.py::_DATASET_BASELINE_AUTHOR — no shared
-# source of truth to import from eval/ (see mcp_app/README.md's Scope boundary).
-DEFAULT_BASELINE_AUTHOR: dict[str, str] = {
-    "ncnn": "baseline-ncnn-arm",
-    # Expert = Arm hand-written SVE (baseline-sve); "reference" is the agent's
-    # scalar starting point, not the speedup baseline. Matches eval/run_benchmark.
-    "simd-loop": "baseline-sve",
-    "llama.cpp": "baseline-llamacpp-arm",
-}
+# From contracts.py — shared with eval/run_benchmark.py::_DATASET_BASELINE_AUTHOR
+# and mcp_app/smoke_test_driver.py::DATASET_REFERENCE. contracts.py lives at the
+# repo root, outside both eval/ and mcp_app/, so importing it doesn't violate
+# mcp_app/README.md's "zero coupling to eval/ or skills/" scope boundary.
+DEFAULT_BASELINE_AUTHOR: dict[str, str] = BASELINE_AUTHORS
 
 
 def _has_passed_baseline(
@@ -41,7 +39,7 @@ def _has_passed_baseline(
         return False
     for trace in trace_set.get_traces_by_solution(baseline.name):
         ev = trace.evaluation
-        if ev is not None and ev.status.value == "PASSED":
+        if ev is not None and ev.status == EvaluationStatus.PASSED:
             return True
     return False
 

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 import litellm
 
+from contracts import AGENT_KERNEL_FILENAME, REFERENCE_SCALAR_AUTHORS
 from eval.remote import InstanceHandle
 
 
@@ -77,7 +78,7 @@ def build_user_prompt(definition, ref_solution) -> str:
             (s for s in ref_solution.sources if s.path.endswith(".h")), None
         )
         kernel = next(
-            (s for s in ref_solution.sources if s.path == "kernel.cpp"), None
+            (s for s in ref_solution.sources if s.path == AGENT_KERNEL_FILENAME), None
         )
         if header:
             parts.append(
@@ -235,10 +236,10 @@ def run_agentic_eval(
     baseline_author = bench_cfg.baseline_author if bench_cfg else "reference-scalar"
     # Agent's starting kernel + correctness anchor (NOT the speedup baseline, which
     # is baseline_author). simd-loop's scalar author is "reference"; ncnn/llama.cpp
-    # use "reference-scalar". (Previously `== "ncnn" or "llama.cpp"` — a truthiness
-    # bug that forced "reference-scalar" for every dataset, including simd-loop.)
-    _REF_AUTHOR = {"ncnn": "reference-scalar", "llama.cpp": "reference-scalar", "simd-loop": "reference"}
-    ref_author = _REF_AUTHOR.get(dataset, "reference-scalar")
+    # use "reference-scalar" — see contracts.REFERENCE_SCALAR_AUTHORS. (Previously
+    # `== "ncnn" or "llama.cpp"` — a truthiness bug that forced "reference-scalar"
+    # for every dataset, including simd-loop.)
+    ref_author = REFERENCE_SCALAR_AUTHORS.get(dataset, "reference-scalar")
     # Starter code shown to the agent = the baseline solution for this dataset
     # (author varies: reference-scalar/reference/baseline-llamacpp-arm).
     ref_solution = trace_set.get_baseline_solution(definition.name, ref_author)

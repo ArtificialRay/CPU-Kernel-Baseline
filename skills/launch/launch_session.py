@@ -34,21 +34,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+REPO_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+# contracts.py lives at the repo root, outside both eval/ and mcp_app/, so
+# importing it doesn't violate this module's "zero imports from eval/ or
+# mcp_app/" boundary (see module docstring).
+from contracts import ISA_INSTANCE_MAP
 from remote import RemoteTarget
 
-REPO_ROOT = Path(__file__).parent.parent.parent
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
-
-# Own copy of eval/provision.py's ISA_INSTANCE_MAP — small (4 rows), rarely
-# changes, kept in sync by hand rather than generated (same tradeoff as the
-# dataset/baseline_author/isa table in SKILL.md).
-ISA_INSTANCE_MAP = {
-    "neon": "c7g.large",
-    "sve": "c7g.large",
-    "sve2": "c8g.large",
-    "sme2": "c8g.large",
-}
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see RemoteTarget.rsync_to's docstring.
@@ -67,52 +63,72 @@ class ProvisionedInstance:
     instance_id: Optional[str] = None
 
 
-def _tier_for_isa(isa: str) -> str:
-    return "c8g" if isa in ("sve2", "sme2") else "c7g"
+# label — see eval/provision.py's module docstring for the full rationale
+# (replaces the old tier-keyed "c7g"/"c8g" design, which could only ever
+# track one instance per ISA tier). `dataset` here can be a single string
+# (the `provision` subcommand) or a list (`launch`'s repeatable --dataset,
+# for dispatcher mode serving several datasets off one instance) — both
+# fold into the same default label.
+def _dataset_label_part(dataset) -> str:
+    if isinstance(dataset, list):
+        return "-".join(sorted(dataset))
+    return dataset or ""
 
 
-def _read_config_instance(isa: str) -> Optional[ProvisionedInstance]:
+def _label_for(isa: str, dataset) -> str:
+    ds_part = _dataset_label_part(dataset)
+    return f"{ds_part}-{isa}" if ds_part else isa
+
+
+def _read_config_instance(label: str) -> Optional[ProvisionedInstance]:
     """Read the shared eval/eval_config.json directly for a running instance
-    of `isa`'s tier. No import from eval/provision.py."""
+    under `label`. No import from eval/provision.py."""
     if not EVAL_CONFIG_PATH.exists():
         return None
     config = json.loads(EVAL_CONFIG_PATH.read_text())
-    tier = _tier_for_isa(isa)
-    inst = config.get("instances", {}).get(tier, {})
+    inst = config.get("instances", {}).get(label, {})
     host = inst.get("host", "")
     if not host:
         return None
     return ProvisionedInstance(
         target=RemoteTarget(host=host, user=inst.get("user", "ubuntu"),
                              key_file=inst.get("key_file", "~/.ssh/id_rsa")),
-        instance_type=inst.get("instance_type", ISA_INSTANCE_MAP.get(isa, "c7g.large")),
+        instance_type=inst.get("instance_type", "c7g.large"),
         instance_id=inst.get("instance_id"),
     )
 
 
 def _provision(
-    isa: str, instance_type: str, dataset: str, *, on_demand: bool = False
+    isa: str, instance_type: str, dataset: str, *, label: str, on_demand: bool = False
 ) -> ProvisionedInstance:
     """Subprocess-invoke the standalone eval/provision.py, then read the
-    eval_config.json it wrote. Reuses a reachable instance for this ISA
-    tier if one's already up; otherwise provisions a fresh one.
+    eval_config.json it wrote. Reuses a reachable instance under `label`
+    if one's already up; otherwise provisions a fresh one.
 
     `on_demand` only takes effect when running a long-run job."""
     cmd = [sys.executable, str(PROVISION_SCRIPT),
-           "--isa", isa, "--instance", instance_type, "--dataset", dataset]
+           "--isa", isa, "--instance", instance_type, "--dataset", dataset,
+           "--label", label]
     if on_demand:
         cmd.append("--on-demand")
     subprocess.run(cmd, check=True)
-    instance = _read_config_instance(isa)
+    instance = _read_config_instance(label)
     if instance is None:
         raise RuntimeError(
-            f"eval/provision.py exited successfully but wrote no instance for isa={isa!r}"
+            f"eval/provision.py exited successfully but wrote no instance for label={label!r}"
         )
     return instance
 
 
-def _teardown() -> None:
-    subprocess.run([sys.executable, str(PROVISION_SCRIPT), "--teardown"], check=True)
+def _teardown(label: Optional[str] = None) -> None:
+    """`label` given: destroy just that one instance. Omitted: tear down
+    every label eval/provision.py knows about (old "destroy everything"
+    behavior, kept as an explicit opt-in — see its own teardown() docstring).
+    """
+    cmd = [sys.executable, str(PROVISION_SCRIPT), "--teardown"]
+    if label:
+        cmd += ["--label", label]
+    subprocess.run(cmd, check=True)
 
 
 def _status() -> None:
@@ -120,9 +136,10 @@ def _status() -> None:
     if not config.get("instances"):
         print("No eval/eval_config.json instances found. Run `provision` first.")
         return
-    for tier, inst in config["instances"].items():
+    for label, inst in config["instances"].items():
         host = inst.get("host", "")
-        print(f"  {tier}: {host or 'not provisioned'}")
+        instance_type = inst.get("instance_type", "?")
+        print(f"  {label} ({instance_type}): {host or 'not provisioned'}")
 
 
 def _spawn_command(
@@ -376,7 +393,9 @@ def _resolve_instance(args: argparse.Namespace) -> ProvisionedInstance:
     """
     instance_type = args.instance or ISA_INSTANCE_MAP.get(args.isa, "c7g.large")
     provision_dataset = args.dataset[0] if len(args.dataset) == 1 else ""
-    return _provision(args.isa, instance_type, provision_dataset, on_demand=args.on_demand)
+    label = args.label or _label_for(args.isa, args.dataset)
+    return _provision(args.isa, instance_type, provision_dataset, label=label,
+                       on_demand=args.on_demand)
 
 
 def _cli_provision(args: argparse.Namespace) -> None:
@@ -386,7 +405,7 @@ def _cli_provision(args: argparse.Namespace) -> None:
 
 
 def _cli_teardown(args: argparse.Namespace) -> None:
-    _teardown()
+    _teardown(args.label)
 
 
 def _cli_status(args: argparse.Namespace) -> None:
@@ -468,6 +487,10 @@ def main(argv: list[str] | None = None) -> None:
 
     def _add_provision_args(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
+        sp.add_argument("--label", default=None,
+                         help="Name identifying this instance — one per concurrently-desired "
+                              "instance (see eval/provision.py's module docstring). Default: "
+                              "f'{dataset(s)}-{isa}'.")
         sp.add_argument("--instance", default="c7g.xlarge",
                          help="EC2 instance type override (e.g. c8g.xlarge). "
                               "Defaults to ISA_INSTANCE_MAP[isa].")
@@ -491,6 +514,9 @@ def main(argv: list[str] | None = None) -> None:
     prov.set_defaults(func=_cli_provision)
 
     teardown_p = sub.add_parser("teardown", help="Terraform-destroy the instance(s).")
+    teardown_p.add_argument("--label", default=None,
+                             help="Destroy just this one instance. Omit to tear down every "
+                                  "label eval/eval_config.json knows about.")
     teardown_p.set_defaults(func=_cli_teardown)
 
     status_p = sub.add_parser("status", help="Show eval/eval_config.json's tracked instances.")
