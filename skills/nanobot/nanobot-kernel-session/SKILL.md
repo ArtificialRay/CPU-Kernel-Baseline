@@ -17,17 +17,20 @@ metadata:
 Drives one or more kernel-optimization sessions against `mcp_app`'s MCP
 server
 By the time you're reading this as the driving agent, a `compile`/`evaluate`/
-`disassemble`/`submit` MCP server should already be connected and visible to
+`disassemble` MCP server should already be connected and visible to
 you.
 
 ## Ground rules: 
 ### ONE DEFINITION AT A TIME
 - Never target two definitions in the same turn. `evaluate`/`disassemble`/
-  `submit` all require an explicit `definition` argument (`evaluate`/
+   all require an explicit `definition` argument (`evaluate`/
   `disassemble` also require `version`), checked against whoever you last
   `compile()`'d — if it doesn't match, you get back `{"status":
   "DEF_CHECK_FAILED"}` instead of it silently acting on the wrong one.
 - If you are targeted to optimize one or more definition in one specific ISA, DO NOT fall back to use another ISA (e.g. `sve2` → `sve`) unless the prompt explicitly allows it.
+
+### NEVER USE OPENMP PARALLELIZATION
+- Kernel implementation that use OpenMp will be rejected by the evaluator
 
 ### KERNEL ARE ALWAYRS RUN AT REMOTE INSTANCE
 - Remote instance has all dependencies installed, check dependency at local helps nothing but consume your budget
@@ -68,7 +71,7 @@ starting point, not just over the competitive baseline; If you already gain the 
 Standard loop for the definition you're currently working on:
 
 1. `compile({"definition": "<same definition>", "code": ...})` your optimized attempt.
-2. `evaluate({})` — correctness + timing + cycle speedup in one call. It also auto-persists the best-performing version the moment it beats your previous best this session — that result is already saved to `trajectory.jsonl` and `bench-trace` even before you call `submit`; see §3.
+2. `evaluate({})` — correctness + timing + cycle speedup in one call. It also auto-persists the best-performing version the moment it beats your previous best this session — that result is already saved to `trajectory.jsonl` and `bench-trace`.
 3. `disassemble({})` when IPC is low or speedup is unexpectedly poor
    (defaults to your kernel's own symbol).
 4. Iterate: compile → evaluate → improve. Use `list_resources()`/
@@ -88,13 +91,3 @@ On a non-`PASSED` status, `failed_workload`/`log` say which workload failed
 and why (correctness or a runtime/timeout error).
 
 ## 3. Finish and report
-
-Before calling `submit` for a definition, compare its best version's
-`time_speedup_geomean`/`cycle_speedup_geomean` against that definition's
-`v1` numbers from §1. Call `submit({"explanation": ...})` with **both**
-numbers in the explanation — e.g. "vs baseline-ncnn-arm: 1.85x; vs
-unoptimized reference-scalar starting point (v1): 5.9x". Both end up
-recorded in that definition's `trajectory.jsonl`'s final `submit` turn.
-
-Once you've `submit`'d every definition you were assigned (or you decide to
-stop), results get synced back by whoever is orchestrating this session.
