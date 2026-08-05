@@ -47,6 +47,7 @@ from bench.runtime.correctness import compare_low_bit
 
 from .default import DefaultEvaluator, _align_to_definition_output
 from .evaluator import BoundKernel, RefBaseline, _error
+from .sqnr import SQNR_TAG
 
 # Tags that opt a Definition into low-bit evaluation (case-insensitive).
 LOW_BIT_TAGS = frozenset({"low-bit", "low_bit", "lowbit", "quantized", "quantised"})
@@ -61,6 +62,11 @@ class LowBitEvaluator(DefaultEvaluator):
 
     @classmethod
     def can_evaluate(cls, definition: Definition) -> bool:
+        # Defer to SqnrEvaluator when a def is explicitly SQNR-tagged: the two
+        # evaluators must stay mutually exclusive (resolve_evaluator raises if
+        # >1 matches), and an SQNR-tagged def is that evaluator's contract.
+        if SQNR_TAG in definition.tags:
+            return False
         if any(t.lower() in LOW_BIT_TAGS for t in definition.tags):
             return True
         # Quantised-requant signature: 8-bit integer output computed from at
@@ -110,9 +116,10 @@ class LowBitEvaluator(DefaultEvaluator):
             extra["max_lsb_error"] = c.max_lsb_error
 
         if not c.passed:
+            reason = c.fail_reason or ""
             status = (
-                EvaluationStatus.INCORRECT_SHAPE if c.fail_reason == "shape"
-                else EvaluationStatus.INCORRECT_DTYPE if c.fail_reason == "dtype"
+                EvaluationStatus.INCORRECT_SHAPE if reason.startswith("shape")
+                else EvaluationStatus.INCORRECT_DTYPE if reason.startswith("dtype")
                 else EvaluationStatus.INCORRECT_NUMERICAL
             )
             log = (
