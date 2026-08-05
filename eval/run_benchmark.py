@@ -22,6 +22,8 @@ Usage:
 import argparse
 import base64
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -29,30 +31,72 @@ from dotenv import load_dotenv
 
 from bench.config import BenchmarkConfig
 from bench.data.trace_set import TraceSet
+from contracts import BASELINE_AUTHORS, ISA_INSTANCE_MAP
 from eval.config import REPO_ROOT
 from eval.evaluator import run_agentic_eval
-from eval.provision import (
-    get_or_provision,
-    get_running_instance,
-    teardown,
-    provision,
-    ensure_dataset_ready,
-    ISA_INSTANCE_MAP,
-    InstanceHandle,
-)
+from eval.remote import InstanceHandle
 
 BENCH_TRACE = REPO_ROOT / "bench-trace"
 RESULTS_DIR = REPO_ROOT / "results"
+EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
+PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
 load_dotenv(REPO_ROOT / ".env")
 
-# Dataset → bench.cli collect-baselines --baseline-author value.
-# Must match the baseline_author used by AgentTools (BenchmarkConfig default in
-# eval/agent_tools/base.py is "reference-scalar"), so speedup computation works.
-_DATASET_BASELINE_AUTHOR: dict[str, str] = {
-    "ncnn": "baseline-ncnn-arm",
-    "simd-loop": "reference",
-    "llama.cpp": "baseline-llamacpp-arm",
-}
+# label = f"{dataset}-{isa}" — mirrors eval/provision.py's default_label()
+# (dataset is always given at this module's call sites, so the full chain
+# there never needs to fall back). Not imported from eval/provision.py: that
+# module is a standalone script invoked only via subprocess (see its own
+# docstring) — kept in sync by hand, same tradeoff as ISA_INSTANCE_MAP used
+# to be before it moved to contracts.py.
+def _label_for(isa: str, dataset: str) -> str:
+    return f"{dataset}-{isa}"
+
+
+def _read_config_instance(label: str) -> InstanceHandle | None:
+    """Read eval/eval_config.json directly for a running instance under `label`."""
+    if not EVAL_CONFIG_PATH.exists():
+        return None
+    config = json.loads(EVAL_CONFIG_PATH.read_text())
+    inst = config.get("instances", {}).get(label, {})
+    host = inst.get("host", "")
+    if not host:
+        return None
+    return InstanceHandle(
+        host=host,
+        user=inst.get("user", "ubuntu"),
+        key_file=inst.get("key_file", "~/.ssh/id_rsa"),
+        instance_type=inst.get("instance_type", "c7g.large"),
+    )
+
+
+def _provision(isa: str, dataset: str) -> InstanceHandle:
+    """Subprocess-invoke the standalone eval/provision.py, then read the
+    eval_config.json it wrote. Reuses a reachable instance under this
+    dataset+isa's label if one's already up; otherwise provisions a fresh one."""
+    label = _label_for(isa, dataset)
+    subprocess.run(
+        [sys.executable, str(PROVISION_SCRIPT), "--isa", isa, "--dataset", dataset,
+         "--label", label],
+        check=True,
+    )
+    handle = _read_config_instance(label)
+    if handle is None:
+        raise RuntimeError(
+            f"eval/provision.py exited successfully but wrote no instance for label={label!r}"
+        )
+    return handle
+
+
+def _teardown(isa: str, dataset: str) -> None:
+    label = _label_for(isa, dataset)
+    subprocess.run(
+        [sys.executable, str(PROVISION_SCRIPT), "--teardown", "--label", label], check=True,
+    )
+
+# Dataset → bench.cli collect-baselines --baseline-author value, from contracts.py
+# (shared with mcp_app/agent_tools/baseline_readiness.py and
+# mcp_app/smoke_test_driver.py — see contracts.BASELINE_AUTHORS).
+_DATASET_BASELINE_AUTHOR: dict[str, str] = BASELINE_AUTHORS
 
 
 def _author_from_model(model: str) -> str:
@@ -200,19 +244,10 @@ def main():
 
     try:
         if args.provision:
-            handle = provision(instance_type, dataset=args.dataset)
-        else:
-            handle = get_running_instance(isa)
-            if handle is None:
-                print(f"No running {instance_type} instance ({isa}). Provisioning...")
-                handle = provision(instance_type, dataset=args.dataset)
-            else:
-                # Instance may have been provisioned standalone (e.g. via
-                # `python eval/provision.py` without --dataset) — don't silently
-                # launch the agent against an instance missing this dataset's
-                # build artifacts.
-                ensure_dataset_ready(handle, args.dataset)
-    except RuntimeError as e:
+            # Force a genuinely new instance: teardown, then provision.
+            _teardown(isa, args.dataset)
+        handle = _provision(isa, args.dataset)
+    except (subprocess.CalledProcessError, RuntimeError) as e:
         print(f"[ERROR] {e}")
         return
 
@@ -310,14 +345,14 @@ def main():
     # ── Teardown ──────────────────────────────────────────────────────────
     if args.teardown:
         print("\n[teardown] Destroying instance...")
-        teardown()
+        _teardown(isa, args.dataset)
     else:
-        handle = get_running_instance(instance_type)
+        handle = _read_config_instance(_label_for(isa, args.dataset))
         if handle and handle.host:
             print(
                 f"\n[WARNING] Instance at {handle.host} is still running and accruing cost. "
                 f"Run with --teardown to destroy it after evaluation, "
-                f"or: python -m eval.provision --teardown"
+                f"or: python eval/provision.py --teardown --label {_label_for(isa, args.dataset)}"
             )
 
 

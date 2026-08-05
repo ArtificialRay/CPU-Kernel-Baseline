@@ -9,12 +9,14 @@ Compatible with any LiteLLM-supported model.
 
 import copy
 import json
+import os
 import time
 from datetime import datetime, timezone
 
 import litellm
 
-from eval.provision import InstanceHandle
+from contracts import AGENT_KERNEL_FILENAME, REFERENCE_SCALAR_AUTHORS
+from eval.remote import InstanceHandle
 
 
 AGENT_SYSTEM_PROMPT = """\
@@ -76,7 +78,7 @@ def build_user_prompt(definition, ref_solution) -> str:
             (s for s in ref_solution.sources if s.path.endswith(".h")), None
         )
         kernel = next(
-            (s for s in ref_solution.sources if s.path == "kernel.cpp"), None
+            (s for s in ref_solution.sources if s.path == AGENT_KERNEL_FILENAME), None
         )
         if header:
             parts.append(
@@ -230,16 +232,54 @@ def run_agentic_eval(
     ToolsCls = resolve_tools(dataset)
     tools = ToolsCls(handle, definition, trace_set, author, bench_cfg=bench_cfg)
     schemas = [{"type": "function", "function": s} for s in ToolsCls.tool_schemas()]
+    _no_submit = os.environ.get("ARMBENCH_NO_SUBMIT", "").strip() == "1"
+    if _no_submit:
+        schemas = [s for s in schemas if s["function"]["name"] != "submit"]
+
+    # Optional persistent scratchpad (ARMBENCH_NOTEPAD=1): survives history
+    # compression so the agent can track what it has already tried over long runs.
+    _use_notepad = os.environ.get("ARMBENCH_NOTEPAD", "").strip() == "1"
+    if _use_notepad:
+        schemas.append({"type": "function", "function": {
+            "name": "notepad",
+            "description": ("Append a note to your persistent notepad. Old turns get "
+                            "summarized away, but your FULL notepad is shown to you every "
+                            "turn. Use it to record which optimizations you tried and their "
+                            "measured speedup, what to try next, and your plan."),
+            "parameters": {"type": "object",
+                           "properties": {"note": {"type": "string", "description": "Note to append."}},
+                           "required": ["note"]}}})
+    notepad: list[str] = []
 
     baseline_author = bench_cfg.baseline_author if bench_cfg else "reference-scalar"
-
+    # Agent's starting kernel + correctness anchor (NOT the speedup baseline, which
+    # is baseline_author). simd-loop's scalar author is "reference"; ncnn/llama.cpp
+    # use "reference-scalar" — see contracts.REFERENCE_SCALAR_AUTHORS. (Previously
+    # `== "ncnn" or "llama.cpp"` — a truthiness bug that forced "reference-scalar"
+    # for every dataset, including simd-loop.)
+    ref_author = REFERENCE_SCALAR_AUTHORS.get(dataset, "reference-scalar")
     # Starter code shown to the agent = the baseline solution for this dataset
     # (author varies: reference-scalar/reference/baseline-llamacpp-arm).
-    ref_solution = trace_set.get_baseline_solution(definition.name, baseline_author)
+    ref_solution = trace_set.get_baseline_solution(definition.name, ref_author)
 
     family = handle.instance_type.split(".")[0] if handle.instance_type else ""
     isa_desc = _AGENT_ISA_LABELS.get(family, handle.instance_type or "AArch64")
     isa_name = _AGENT_ISA_NAMES.get(family, "SVE2")
+
+    # ISA-ablation override (env ARMBENCH_ISA_MODE): must match agent_tools.base's
+    # _ISA_MODES so the prompt's allowed-ISA matches the actual compile flags.
+    # "portable" = no hand-written SIMD (compiler auto-vec still allowed).
+    _ISA_MODE_PROMPT = {
+        "portable": ("AArch64 (portable C++ only — do NOT use NEON or SVE "
+                     "intrinsics; rely on clean, compiler-vectorizable C++)",
+                     "portable C++ (no SIMD intrinsics)"),
+        "sve":      ("Graviton3 with SVE (SVE1, 128-bit) — use SVE intrinsics "
+                     "only, NOT SVE2", "SVE"),
+        "sve2":     ("Graviton4 with SVE2 (128-bit)", "SVE2"),
+    }
+    _mode = os.environ.get("ARMBENCH_ISA_MODE", "").strip().lower()
+    if _mode in _ISA_MODE_PROMPT:
+        isa_desc, isa_name = _ISA_MODE_PROMPT[_mode]
 
     _BASELINE_LABELS = {
         "baseline-ncnn-arm":     "hand-optimized ncnn ARM baseline",
@@ -256,6 +296,16 @@ def run_agentic_eval(
         baseline_label=baseline_label,
     )
     user_msg = build_user_prompt(definition, ref_solution)
+    if _no_submit:
+        user_msg += ("\n\nIMPORTANT: There is NO submit tool this session. Do NOT stop early — "
+                     "keep compiling and measuring NEW kernel versions for the FULL turn budget, "
+                     "trying a different optimization strategy each time to push time_speedup as "
+                     "high as possible. The best measured version is recorded automatically at the end.")
+    if os.environ.get("ARMBENCH_PUSH_ITER", "").strip() == "1":
+        user_msg += ("\n\nIMPORTANT: Do NOT submit until you have compiled AND measured "
+                     "(evaluate(measure=true)) at least 5 GENUINELY DIFFERENT implementations "
+                     "and can no longer beat your best measured time_speedup. Each new version "
+                     "must try a distinct strategy — not a small tweak of the previous one.")
 
     messages: list[dict] = [
         {"role": "system", "content": system},
@@ -289,11 +339,18 @@ def run_agentic_eval(
                 })
 
             compressed = _compress_history(messages, version_history=version_history)
+            if _use_notepad and notepad:
+                compressed = compressed + [{"role": "user", "content":
+                    "[Your notepad — persists across turns]\n"
+                    + "\n".join(f"- {n}" for n in notepad)}]
             completion_kwargs: dict = {
                 "model": model,
                 "messages": compressed,
                 "tools": schemas,
                 "tool_choice": "required",
+                # litellm defaults to 600s; large reasoning responses over
+                # OpenRouter can exceed that, so give more headroom.
+                "timeout": 1200,
             }
             if "opus-4-7" not in model and "opus-4-8" not in model:
                 completion_kwargs["temperature"] = 0.2
@@ -308,7 +365,7 @@ def run_agentic_eval(
                         print(f"  [rate limit] sleeping {wait}s: {e}")
                     time.sleep(wait)
                 except (litellm.InternalServerError, litellm.APIConnectionError,
-                        litellm.ServiceUnavailableError) as e:
+                        litellm.ServiceUnavailableError, litellm.Timeout) as e:
                     wait = 30 * (2 ** _retry)
                     if verbose:
                         print(f"  [server error] sleeping {wait}s: {type(e).__name__}: {e}")
@@ -324,7 +381,22 @@ def run_agentic_eval(
                 raise RuntimeError("Exceeded retry budget for rate/server errors")
 
             msg = response.choices[0].message
-            messages.append(msg.model_dump())
+            dumped = msg.model_dump()
+            # Sanitize tool-call arguments to valid JSON before storing in history:
+            # cheap/flaky models emit valid-JSON-plus-trailing-junk, and the provider
+            # rejects the whole request next turn ("function.arguments must be valid
+            # JSON"). Salvage the leading object (or {}), so the round-trip is clean.
+            for _tc in (dumped.get("tool_calls") or []):
+                _raw = (_tc.get("function") or {}).get("arguments", "")
+                try:
+                    json.loads(_raw)
+                except (json.JSONDecodeError, TypeError):
+                    try:
+                        _obj, _ = json.JSONDecoder().raw_decode((_raw or "").strip())
+                    except json.JSONDecodeError:
+                        _obj = {}
+                    _tc["function"]["arguments"] = json.dumps(_obj)
+            messages.append(dumped)
 
             if not msg.tool_calls:
                 if verbose:
@@ -336,7 +408,20 @@ def run_agentic_eval(
 
             for tc in msg.tool_calls:
                 fn_name = tc.function.name
-                fn_args = json.loads(tc.function.arguments)
+                # Cheap/flaky models sometimes emit valid JSON followed by trailing
+                # junk ("Extra data") or minor malformation. Salvage the leading
+                # object; if totally unparseable, fall back to empty args so
+                # dispatch returns a normal error the agent can retry — rather than
+                # a bare json.loads raising and killing the entire run.
+                try:
+                    fn_args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    try:
+                        fn_args, _ = json.JSONDecoder().raw_decode(tc.function.arguments.strip())
+                    except json.JSONDecodeError:
+                        if verbose:
+                            print(f"  [warn] unparseable tool args for {fn_name}; using empty args")
+                        fn_args = {}
 
                 if verbose:
                     arg_preview = {
@@ -345,7 +430,11 @@ def run_agentic_eval(
                     }
                     print(f"  → {fn_name}({arg_preview})")
 
-                result_dict = tools.dispatch_tool_call(fn_name, fn_args)
+                if fn_name == "notepad":
+                    notepad.append(str(fn_args.get("note", ""))[:2000])
+                    result_dict = {"status": "OK", "notes_saved": len(notepad)}
+                else:
+                    result_dict = tools.dispatch_tool_call(fn_name, fn_args)
 
                 if verbose:
                     if fn_name == "compile":
@@ -439,12 +528,14 @@ def run_agentic_eval(
                 print(f"\n[Auto-submit] {reason} — submitting "
                       f"v{best_version['version']} (time_speedup={ts})...")
             try:
+                # submit() already auto-selects the best-cycle_speedup version;
+                # it takes only `explanation` (passing source_version raised
+                # TypeError -> auto-submit silently failed -> spurious NO_SUBMIT).
                 result = tools.submit(
                     explanation=(
                         f"[auto-submitted: v{best_version['version']} had best "
                         f"time_speedup={best_version.get('time_speedup', '?')}]"
                     ),
-                    source_version=best_version["version"],
                 )
                 if result.get("status") == "PASSED":
                     final_result = {

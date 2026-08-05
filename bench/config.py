@@ -7,6 +7,8 @@ depending on each other.
 - `BenchmarkConfig` — the run-level knobs (what to run + how to evaluate).
   Call `BenchmarkConfig.resolve_eval_config(definition)` to get the evaluator
   knobs for a specific definition, including any per-op-type overrides.
+  Call `BenchmarkConfig.resolve_source_policy(definition)` to get the list of
+  disallowed source patterns (e.g. threading APIs) for a specific definition.
 - `EvalConfig` — the evaluator-facing subset, fully resolved (no None fields).
 - `EvalOverride` — sparse per-op-type overrides (None = inherit from BenchmarkConfig).
 """
@@ -52,11 +54,35 @@ class EvalOverride:
 # absolute. These op-type overrides make such baselines pass on correctness while
 # staying tight enough to catch a real bug. Keyed by Definition.op_type, so they
 # only apply to these ops (conv2d / loop_* / rms_norm keep the strict default).
+#
+# moe gets a looser rel_tol than gemm/mha: near-degenerate softmax routing (one
+# expert taking ~99.98% of the gate weight) concentrates the whole token's output
+# magnitude into a single expert's gate/up/down GEMMs, so bf16 accumulation-order
+# noise pushes ~10% of the 2048 output elements past rel_tol=1e-2 even though the
+# baseline is algorithmically correct 
 DEFAULT_OP_TYPE_CONFIG: Dict[str, "EvalOverride"] = {
     "gemm": EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
-    "moe":  EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
+    "moe":  EvalOverride(abs_tol=1e-1, rel_tol=5e-2, required_matched_ratio=0.95),
     "mha":  EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
 }
+
+# Agent kernels are meant to be evaluated as single-core SIMD/assembly — openMP parallelism is forbidden
+DEFAULT_DISALLOWED_SOURCE_PATTERNS: List[str] = [
+    r"#\s*pragma\s+omp",
+    r"#\s*include\s*[<\"]omp\.h[>\"]",
+    r"#\s*include\s*[<\"]thread[>\"]",
+    r"#\s*include\s*[<\"]pthread\.h[>\"]",
+    r"std::thread",
+    r"std::async",
+    r"std::jthread",
+    r"pthread_create",
+    r"omp_set_num_threads",
+    r"omp_get_num_threads",
+    r"omp_get_thread_num",
+    r"\bfork\s*\(",
+    r"\bvfork\s*\(",
+    r"\bclone\s*\(",
+]
 
 
 @dataclass
@@ -74,6 +100,10 @@ class BenchmarkConfig:
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
     required_matched_ratio: float = DEFAULT_REQUIRED_MATCHED_RATIO
     low_bit_lsb_tol: float = DEFAULT_LOW_BIT_LSB_TOL
+    min_sqnr_db: float = 20.0
+    """SQNR pass threshold (dB) for definitions tagged `correctness:sqnr` (e.g. q8_0
+    MoE, whose real quantized arithmetic can't match a full-precision reference on
+    an elementwise tolerance). ggml scores ~44 dB; garbage/overflow ~0 dB."""
     op_type_config: Dict[str, EvalOverride] = field(
         default_factory=lambda: dict(DEFAULT_OP_TYPE_CONFIG)
     )
@@ -82,6 +112,13 @@ class BenchmarkConfig:
     pass an explicit dict (e.g. {}) to opt out."""
     watchdog_s: float = DEFAULT_WATCHDOG_S
     collect_perf_counters: bool = DEFAULT_COLLECT_PERF_COUNTERS
+    source_policy: Dict[str, List[str]] = field(default_factory=dict)
+    """Per-op-type override of the disallowed-source-pattern list, keyed by
+    definition.op_type. If an op_type key is *absent*, DEFAULT_DISALLOWED_SOURCE_PATTERNS
+    applies. If present, its list *replaces* the default for that op_type —
+    an empty list ([]) means "no patterns checked, fully permissive" for that
+    op_type, not "use the default". Leave this {} (the default) to apply
+    DEFAULT_DISALLOWED_SOURCE_PATTERNS to every op_type."""
 
     def resolve_eval_config(self, definition=None) -> "EvalConfig":
         """Merge: BenchmarkConfig base → op_type_config[definition.op_type].
@@ -109,6 +146,7 @@ class BenchmarkConfig:
             rel_tol=rtol,
             required_matched_ratio=ratio,
             low_bit_lsb_tol=lsb,
+            min_sqnr_db=self.min_sqnr_db,
             warmup=self.warmup,
             repeat=self.repeat,
             inner_iters=self.inner_iters,
@@ -117,6 +155,17 @@ class BenchmarkConfig:
             collect_perf_counters=self.collect_perf_counters,
             baseline_author=self.baseline_author,
         )
+
+    def resolve_source_policy(self, definition=None) -> List[str]:
+        """Disallowed source-pattern list for `definition.op_type`.
+
+        Key present in `source_policy` (even as []) → use that list verbatim
+        (a present-but-empty list means "no restriction" for that op_type).
+        Key absent, or `definition` is None → DEFAULT_DISALLOWED_SOURCE_PATTERNS.
+        """
+        if definition is not None and definition.op_type in self.source_policy:
+            return self.source_policy[definition.op_type]
+        return list(DEFAULT_DISALLOWED_SOURCE_PATTERNS)
 
 
 @dataclass(frozen=True)
@@ -132,6 +181,7 @@ class EvalConfig:
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
     required_matched_ratio: float = DEFAULT_REQUIRED_MATCHED_RATIO
     low_bit_lsb_tol: float = DEFAULT_LOW_BIT_LSB_TOL
+    min_sqnr_db: float = 20.0
     # timing
     warmup: int = DEFAULT_WARMUP
     repeat: int = DEFAULT_REPEAT
@@ -159,4 +209,5 @@ __all__ = [
     "DEFAULT_REQUIRED_MATCHED_RATIO",
     "DEFAULT_COLLECT_PERF_COUNTERS",
     "DEFAULT_LOW_BIT_LSB_TOL",
+    "DEFAULT_DISALLOWED_SOURCE_PATTERNS",
 ]

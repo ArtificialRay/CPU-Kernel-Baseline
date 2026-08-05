@@ -43,6 +43,7 @@ from bench.data.trace import (
 from bench.data.workload import Workload
 from bench.datasets import get as get_dataset_adapter
 from bench.evaluators import BoundKernel, resolve_evaluator
+from bench.runtime.isolation import SubprocessCrashed, SubprocessTimeout, run_in_subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +63,59 @@ def run_solution_on_workloads(
 ) -> List[Trace]:
     """Run one Solution against a list of Workloads, return one Trace each.
 
-    On compile failure, every workload gets a COMPILE_ERROR Trace (same log).
-    On load/runtime errors, the affected workload's Trace records the status.
+    Runs `_run_solution_on_workloads_direct` in an isolated subprocess (see
+    bench/runtime/isolation.py) — the actual compile+dlopen+evaluate work is
+    unchanged, just contained so a candidate that hangs or crashes can't take
+    this process down with it. On compile failure, every workload gets a
+    COMPILE_ERROR Trace (same log); on a subprocess timeout/crash, every
+    workload gets a TIMEOUT/RUNTIME_ERROR Trace the same way.
     """
+    cfg = cfg or EvalConfig()
+    snapshot = trace_set.freeze_for(definition.name, cfg.baseline_author) if trace_set is not None else None
+
+    try:
+        return run_in_subprocess(
+            _run_solution_on_workloads_direct,
+            args=(definition, solution, workloads),
+            kwargs={
+                "is_baseline": is_baseline,
+                "cfg": cfg,
+                "trace_set": snapshot,
+                "solutions_root": solutions_root,
+            },
+        )
+    except SubprocessTimeout as e:
+        env = _current_environment(cpu_pinned=cfg.cpu)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        return [
+            _trace(definition.name, w, solution.name,
+                   _eval_error(EvaluationStatus.TIMEOUT, env, timestamp, str(e)))
+            for w in workloads
+        ]
+    except SubprocessCrashed as e:
+        env = _current_environment(cpu_pinned=cfg.cpu)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        return [
+            _trace(definition.name, w, solution.name,
+                   _eval_error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, str(e)))
+            for w in workloads
+        ]
+
+
+def _run_solution_on_workloads_direct(
+    definition: Definition,
+    solution: Solution,
+    workloads: List[Workload],
+    *,
+    is_baseline: bool = False,
+    cfg: Optional[EvalConfig] = None,
+    trace_set: Optional[Any] = None,
+    solutions_root: Optional[Path] = None,
+) -> List[Trace]:
+    """The actual compile+dlopen+per-workload-evaluate work — runs inside the
+    isolated subprocess `run_solution_on_workloads` spawns. Not meant to be
+    called directly except for local debugging (e.g. with a debugger attached,
+    where subprocess isolation gets in the way)."""
     cfg = cfg or EvalConfig()
 
     if solution.definition != definition.name:
@@ -125,19 +176,24 @@ def _bind_kernel(
 ) -> BoundKernel:
     """Dlopen the compiled .so and wrap it as a BoundKernel.
 
-    Adapter + ctypes signatures are chosen by solution.dataset first, then
-    is_baseline for ncnn vs raw dispatch. simd-loop always routes to
-    SimdLoopDataset with signature derived from Definition.simd_loop_meta.
+    simd-loop always routes to SimdLoopDataset (signature derived from
+    Definition.simd_loop_meta), regardless of is_baseline. Every non-baseline
+    solution (reference-scalar, agent-submitted candidates) routes to
+    RawDataset — the slim raw-pointer ABI every candidate builder targets,
+    regardless of its declared dataset. Only a true baseline picks its
+    framework-specific adapter by dataset.
     """
     lib = ctypes.CDLL(str(compiled.so_path))
     if solution.dataset.value == "simd-loop":
         adapter_name = "simd-loop"
-    elif solution.dataset.value == "llama.cpp":
-        adapter_name = "llama.cpp"
     elif not is_baseline:
         adapter_name = "raw"
-    else:
+    elif solution.dataset.value == "llama.cpp":
+        adapter_name = "llama.cpp"
+    elif solution.dataset.value == "ncnn":
         adapter_name = "ncnn"
+    else:
+        raise ValueError(f"No baseline adapter for dataset {solution.dataset.value!r}")
     entry = _bind_entry(lib, definition.op_type)
     adapter = get_dataset_adapter(adapter_name)()
     return BoundKernel(entry=entry, adapter=adapter, op_type=definition.op_type)

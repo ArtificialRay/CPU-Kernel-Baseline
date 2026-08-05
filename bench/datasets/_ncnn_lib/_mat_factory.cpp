@@ -83,6 +83,18 @@ void* armbench_ncnn_mat_create_3d_i8(int w, int h, int c, const int8_t* data)
     return m;
 }
 
+// Create a 2D int8 Mat (h, w) — used for gemm's w8a8ch primary input A.
+void* armbench_ncnn_mat_create_2d_i8(int w, int h, const int8_t* data)
+{
+    auto* m = new ncnn::Mat();
+    m->create(w, h, (size_t)1u, (ncnn::Allocator*)0);
+    if (m->empty()) { delete m; return nullptr; }
+    for (int hh = 0; hh < h; ++hh) {
+        std::memcpy((signed char*)m->row(hh), data + hh * w, w * sizeof(int8_t));
+    }
+    return m;
+}
+
 // Create a flat 1D int8 Mat (w,) — used for int8 weights.
 void* armbench_ncnn_mat_create_1d_i8(int w, const int8_t* data)
 {

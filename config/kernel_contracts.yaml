@@ -1,0 +1,62 @@
+# Kernel-session contracts shared across every evaluation path (eval/, mcp_app/,
+# skills/, bench/). Loaded once by contracts.py at the repo root.
+#
+# These are not per-machine settings and not secrets — they're naming/mapping
+# conventions that every dataset's AgentTools/KernelSession implementation
+# (eval/agent_tools/* and mcp_app/agent_tools/*) must agree on. Keeping them
+# here instead of duplicated Python literals is what prevents Path 1 and
+# Path 3 from silently disagreeing about e.g. which author a dataset's
+# baseline lives under.
+
+# Fixed filenames every dataset's harness/solution machinery relies on.
+contracts:
+  # The file every agent-submitted kernel is written to, regardless of dataset.
+  agent_kernel_filename: "kernel.cpp"
+  # The file an agent's unoptimized starting-point kernel is exposed as
+  # (MCP resource name in mcp_app; also the file eval/'s AgentTools shows the
+  # agent as its starter code).
+  reference_scalar_filename: "reference-scalar-kernel.cpp"
+
+# dataset -> the Solution.author tag for that dataset's reference/starting-point
+# scalar kernel (what an agent begins from, NOT the speedup baseline below).
+# simd-loop intentionally uses "reference" instead of "reference-scalar" — a
+# historical naming difference from before the "reference-scalar" convention
+# was adopted for ncnn/llama.cpp, not a typo. See eval/evaluator.py's original
+# comment on this distinction.
+reference_scalar_authors:
+  ncnn: "reference-scalar"
+  llama.cpp: "reference-scalar"
+  simd-loop: "reference"
+
+# dataset -> the Solution.author tag for the competitive speedup baseline
+# (what time_speedup_geomean / cycle_speedup_geomean are computed against).
+baseline_authors:
+  ncnn: "baseline-ncnn-arm"
+  simd-loop: "baseline-sve"
+  llama.cpp: "baseline-llamacpp-arm"
+
+# isa -> compile flags + the EC2 instance type that satisfies it.
+# "portable"/"neon" both compile to plain armv8-a; portable's "no hand-written
+# SIMD" constraint is a prompt-level rule (see eval/evaluator.py's ISA-ablation
+# mode), not a compile flag, so it isn't represented here.
+isa:
+  neon:
+    march: "-march=armv8-a"
+    features: []
+    labels: ["aarch64-neon"]
+    instance_type: "c7g.large"
+  sve:
+    march: "-march=armv8.2-a+sve"
+    features: ["sve"]
+    labels: ["graviton3", "aarch64-sve"]
+    instance_type: "c7g.large"
+  sve2:
+    march: "-march=armv9-a+sve2"
+    features: ["sve2"]
+    labels: ["graviton4", "aarch64-sve2"]
+    instance_type: "c8g.large"
+  sme2:
+    march: "-march=armv9-a+sve2+sme2"
+    features: ["sve2", "sme2"]
+    labels: ["aarch64-sme2"]
+    instance_type: "c8g.large"

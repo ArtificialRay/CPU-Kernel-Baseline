@@ -5,18 +5,69 @@ Guidance for Claude Code when working in this repository.
 ## What this repo is
 
 **CPU-Kernel-Baseline** evaluates LLMs on their ability to write optimized AArch64
-SIMD kernels. Two evaluation paths:
+SIMD kernels for ncnn / llama.cpp / synthetic simd-loop benchmarks. Three evaluation
+paths, all built on the same `bench/` harness and the same `bench-trace/` warehouse:
 
-- **Path 1 — Agentic SSH eval** (`eval/`): LLM gets tools (compile, run, perf,
-  disassemble, submit) over SSH on a provisioned Graviton instance. Driven by
-  `eval/run_benchmark.py`.
-- **Path 2 — Local `bench/` harness**: Compiles solutions into `.so` files using
-  clang++ locally, dlopens them, runs correctness + timing without SSH. Works on
-  any machine; produces real SVE2 numbers when run on Graviton.
+- **Path 1 — Agentic SSH eval** (`eval/`): a self-contained litellm agent loop
+  (`eval/run_benchmark.py`) drives compile/evaluate/disassemble/submit tools
+  (`eval/agent_tools/`) over SSH against a provisioned Graviton instance.
+- **Path 2 — Local `bench/` harness**: compiles solutions into `.so` files with
+  clang++ locally, dlopens them, runs correctness + timing without SSH or any
+  agent loop. Works on any machine; produces real SVE2 numbers on Graviton.
+  Also the library every other path calls into.
+- **Path 3 — MCP-server-driven eval** (`mcp_app/` + `skills/`): the same
+  compile/evaluate/disassemble/submit surface exposed as an MCP server
+  (`mcp_app/server.py`) so an external agent harness (nanobot today; Claude
+  Code/Gemini CLI planned) drives the session instead of an in-repo agent
+  loop. `skills/launch/` provisions an instance and starts the server;
+  `skills/<harness>/` holds that harness's own `SKILL.md`.
 
 Top-level framework directories (`ncnn/`, `ggml/`, `vllm/`, `paddleLite/`, `tnn/`)
 are read-only reference baselines. `ncnn/` is NOT in this repo — clone separately
 for ncnn baseline builds (see below).
+
+---
+
+## System walkthrough
+
+**Shared warehouse (`bench-trace/`)**: every path reads/writes the same on-disk
+store — `definitions/<op_type>/*.json` (op shape + `simd_loop_meta`),
+`workloads/<op_type>/*.jsonl` (concrete input shapes, append-only),
+`solutions/<dataset>/<author>/<op_type>/*.json` (kernel source + metadata),
+`traces/<op_type>/*.json` (correctness/timing results). `bench/runner.py`
+compiles a solution once via `BuilderRegistry`, binds it into a `BoundKernel`,
+and hands it to an `Evaluator` per workload.
+
+**Path 1 flow**: `run_benchmark.py` → `eval.evaluator.run_agentic_eval` → a
+litellm agent loop calling `eval/agent_tools/*` (compile/evaluate/disassemble/
+submit) over SSH → results land in `bench-trace/` and `results/`/`traces/`.
+
+**Path 3 flow**: `skills/launch/launch_session.py` provisions/reaches an
+instance via `eval/provision.py` (called only as a subprocess, never
+imported — both sides share the same `eval/eval_config.json` "what's up"
+record), rsyncs the repo, builds the dataset's native lib, then starts
+`mcp_app.server` in streamable-http mode over an SSH local-port-forward. The
+external harness (e.g. nanobot, via
+`skills/nanobot/nanobot-kernel-session/SKILL.md`) connects and calls
+`compile`/`evaluate`/`disassemble`/`submit`. `mcp_app.session` builds one
+`KernelSession` per dataset (`mcp_app/agent_tools/{ncnn,simd_loop,llama_cpp}.py`,
+all subclassing the `KernelSession` ABC in `base.py`); when a run spans
+multiple datasets, `DispatcherKernelSession` (`dispatcher.py`) wraps them and
+routes each call by looking up which dataset owns the given `definition`.
+`evaluate` runs in an isolated subprocess (`bench/runtime/isolation.py`) so
+one crashing kernel can't take down the whole server. Every definition's
+`reference-scalar-kernel.cpp` is written out as an MCP Resource at startup
+(`session.py`); `resources.py` exposes each version's source/disassembly/
+trajectory as further resources, scoped per `run_dir`. `trajectory.py` writes
+a live, append-only turn-by-turn audit trail per definition. After the run,
+`launch_session.py sync-results` pulls results back to the local checkout.
+
+**Other directories**: `dataset/problems/` — 75 raw simd-loop problem specs,
+the source `scripts/gen_simd_loop_harness.py` reads from; `case-study/` —
+human-readable write-ups of one definition's optimization trajectory
+(produced by the `case-study` skill); `terraform/` — the Graviton EC2 config
+`eval/provision.py` drives; `agent-runs*/` — historical run artifacts per
+path, gitignored.
 
 ---
 
@@ -57,16 +108,36 @@ bench-trace/                    # On-disk warehouse (TraceSet root) — gitignor
   solutions/<dataset>/<author>/<op_type>/
   traces/<op_type>/
 
-eval/                           # Agentic SSH eval (Path 1)
+eval/                           # Agentic SSH eval (Path 1) — also owns provisioning for Path 3
   provision.py                  # Terraform lifecycle for Graviton EC2 instances
   run_benchmark.py              # LLM agent loop (SSH path)
-  eval_config.json              # SSH connection info — copy from .example
+  agent_tools/                  # compile/evaluate/disassemble/submit tools for the SSH litellm loop
+  eval_config.json              # SSH connection info — copy from .example; shared "what's up" record
+
+mcp_app/                        # MCP server for Path 3 (nanobot etc.) — no imports from eval/ or skills/
+  server.py                     # the MCP server process (--transport stdio|streamable-http)
+  session.py                    # SessionConfig + build_tools() — server-side bootstrap
+  resources.py                  # MCP Resources over a session's run_dir (source/disasm/trajectory)
+  agent_tools/
+    base.py                     # KernelSession ABC — compile/evaluate/disassemble/submit
+    dispatcher.py                # DispatcherKernelSession — routes calls across multiple datasets
+    baseline_readiness.py       # lazy per-definition baseline check-then-collect
+    ncnn.py, simd_loop.py, llama_cpp.py   # per-dataset KernelSession subclasses
+    trajectory.py                # per-definition audit trail writer
+
+skills/                         # Harness-agnostic session launch + per-harness SKILL.md files
+  launch/launch_session.py      # provision/prepare-session/sync-results/status/teardown (Path 3)
+  nanobot/nanobot-kernel-session/SKILL.md   # nanobot's own optimization workflow doc
 
 scripts/
   gen_definitions.py            # Regenerate ncnn definitions+workloads from test files
   gen_simd_loop_harness.py      # Code-gen all simd-loop harnesses + bench-trace artifacts
   bench_loop_agent.py           # Local iterative LLM agent (Path 2, works locally + on Graviton)
   test_reference_scalars.py     # Correctness smoke-test: all reference-scalar solutions vs Python ref
+
+dataset/problems/               # 75 raw simd-loop problem specs (source for gen_simd_loop_harness.py)
+case-study/                     # Per-definition optimization write-ups (case-study skill output)
+terraform/                      # Graviton EC2 Terraform config, driven by eval/provision.py
 ```
 
 ---
@@ -205,10 +276,3 @@ No Python files need manual editing to add a supported loop pattern.
 | SVE  | c7g.large | Graviton3, Neoverse V1, 256-bit SVE  |
 | SVE2 | c8g.large | Graviton4, Neoverse V2, 128-bit SVE2 |
 | SME2 | —         | No AWS instance supports SME2 yet    |
-
-## In-flight PRs (as of 2026-06-12)
-
-| Branch                          | Status     | Notes                                                    |
-|---------------------------------|------------|----------------------------------------------------------|
-| `feat/simd-loop-20-loops` (#21) | Open       | 20 loops (array-output + inplace-sort); needs review     |
-| Next branch (unpushed)          | Local only | Arch refactor: self-contained solutions, no _LOOP_META   |

@@ -21,6 +21,7 @@ from bench.data.solution import (
     SolutionSpec,
     SupportedDatasets,
 )
+from contracts import AGENT_KERNEL_FILENAME
 
 from .base import AgentTools, derive_isa, standard_tool_schemas
 
@@ -52,14 +53,14 @@ class SIMDLoopAgentTools(AgentTools):
                 "candidate harness. Run scripts/gen_simd_loop_harness.py to generate it."
             )
 
-        harness = [s for s in ref.sources if s.path != "kernel.cpp"]
+        harness = [s for s in ref.sources if s.path != AGENT_KERNEL_FILENAME]
         if not harness:
             raise ValueError(
                 f"'{ref_author}' solution for {self._definition.name!r} has no harness "
-                "files besides kernel.cpp — unexpected layout"
+                f"files besides {AGENT_KERNEL_FILENAME} — unexpected layout"
             )
 
-        agent_kernel = SourceFile(path="kernel.cpp", content=code)
+        agent_kernel = SourceFile(path=AGENT_KERNEL_FILENAME, content=code)
 
         march, isa_features, target_hardware = derive_isa(self._handle.instance_type)
 

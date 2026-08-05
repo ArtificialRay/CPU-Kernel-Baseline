@@ -18,9 +18,11 @@ from bench.data.definition import Definition
 from .default import DefaultEvaluator
 from .evaluator import Evaluator
 from .low_bit import LowBitEvaluator
+from .sqnr import SqnrEvaluator
 
 _EVALUATORS: List[Type[Evaluator]] = [
-    LowBitEvaluator,
+    SqnrEvaluator,   # `correctness:sqnr`-tagged defs (e.g. q8_0 MoE, float output)
+    LowBitEvaluator,  # int8/low-bit *output* kernels by signature (e.g. w8a8ch)
     # SamplingEvaluator, ...  ← add specialized evaluators here
 ]
 

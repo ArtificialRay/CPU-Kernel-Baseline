@@ -23,16 +23,26 @@ variable "build_target" {
   # No AWS instance type supports SME/SME2 as of early 2026.
 }
 
-variable "instance_type" {
-  description = "EC2 instance type (must be arm64 / Graviton)"
-  default     = "c7g.large"
+variable "instances" {
+  description = <<-EOT
+    label -> EC2 instance type, one entry per concurrently-desired instance
+    (e.g. {"ncnn-sve" = "c7g.large", "llama.cpp-sve" = "c7g.large"}). Driven
+    by eval/provision.py's --label — see its module docstring.
+
+    IMPORTANT: every apply against this config MUST be scoped with
+    -target=aws_instance.labeled["<label>"] (and the matching null_resource.deploy
+    target) — eval/provision.py already always does this. 
+  EOT
+  type        = map(string)
+  default     = {}
 }
 
-
-variable "skip_initial_build" {
-  description = "Skip the initial make build step (eval harness builds on demand)"
-  default     = true
+variable "on_demand" {
+  description = "If true, provision on-demand instead of spot — AWS won't reclaim the instance mid-run, at a higher hourly price (spot is the default: cheaper, but can be interrupted/terminated by AWS at any time with no fixed schedule)."
+  type        = bool
+  default     = false
 }
+
 
 # ---------------------------------------------------------------------------
 # Security group — SSH only
@@ -57,7 +67,7 @@ resource "aws_security_group" "kernel_testing" {
 }
 
 # ---------------------------------------------------------------------------
-# Key pair
+# Key pair — shared across every labeled instance
 # ---------------------------------------------------------------------------
 
 resource "aws_key_pair" "kernel_testing" {
@@ -66,16 +76,23 @@ resource "aws_key_pair" "kernel_testing" {
 }
 
 # ---------------------------------------------------------------------------
-# Instance
+# Instances — one per label in var.instances. Replaces the old fixed
+# aws_instance.kernel_testing ("c7g") / aws_instance.c8g pair: any number of
+# instances, of any instance type, one per concurrent benchmarking job.
 # ---------------------------------------------------------------------------
 
-resource "aws_instance" "kernel_testing" {
-  instance_market_options {
-    market_type = "spot"
+resource "aws_instance" "labeled" {
+  for_each = var.instances
+
+  dynamic "instance_market_options" {
+    for_each = var.on_demand ? [] : [1]
+    content {
+      market_type = "spot"
+    }
   }
 
   ami                    = "ami-012798e88aebdba5c" # Ubuntu 22.04 LTS arm64 us-west-2
-  instance_type          = var.instance_type
+  instance_type          = each.value
   key_name               = aws_key_pair.kernel_testing.key_name
   vpc_security_group_ids = [aws_security_group.kernel_testing.id]
 
@@ -88,145 +105,54 @@ resource "aws_instance" "kernel_testing" {
   }
 
   tags = {
-    Name = "kernel-testing"
+    Name = "kernel-testing-${each.key}"
   }
 }
 
 # ---------------------------------------------------------------------------
-# Deploy: sync source + build
-# Sequence:
-#   1. Wait for cloud-init (setup.sh) to finish installing the toolchain
-#   2. rsync the arm-bench tree from local → instance (excluding build artefacts)
-#   3. Build the requested make target on the instance
+# Deploy: wait for each instance's own bootstrap to finish.
+# Source sync (allow-listed to RSYNC_ALLOWLIST — bench/, bench-trace/,
+# mcp_app/, requirements.txt) and any initial build happen afterward, from
+# eval/provision.py's own rsync_to()/run() calls once this resource
+# completes — not here, so there's a single place that decides what gets
+# synced instead of this resource's own separate deny-list rsync drifting
+# out of sync with RSYNC_ALLOWLIST.
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "deploy" {
+  for_each = var.instances
+
   triggers = {
     # Re-run whenever the instance is replaced
-    instance_id = aws_instance.kernel_testing.id
+    instance_id = aws_instance.labeled[each.key].id
   }
 
   connection {
     type        = "ssh"
     user        = "ubuntu"
     private_key = file("~/.ssh/id_rsa")
-    host        = aws_instance.kernel_testing.public_ip
+    host        = aws_instance.labeled[each.key].public_ip
     timeout     = "15m"
   }
 
-  # 1. Block until user_data (setup.sh) is done
+  # Block until user_data (setup.sh) is done
   provisioner "remote-exec" {
     inline = ["cloud-init status --wait"]
   }
-
-  # 2. Rsync sources from the local machine to the instance
-  provisioner "local-exec" {
-    command = <<-EOT
-      rsync -avz \
-        --exclude=build \
-        --exclude=.git \
-        --exclude=terraform \
-        -e 'ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' \
-        ${path.module}/../ \
-        ubuntu@${aws_instance.kernel_testing.public_ip}:~/arm-bench/
-    EOT
-  }
-
-  # 3. Build (optional — eval harness builds on demand with HAVE_CANDIDATE)
-  provisioner "remote-exec" {
-    inline = [
-      var.skip_initial_build ? "echo 'Skipping initial build (eval harness builds on demand)'" : "cd ~/arm-bench && make ${var.build_target}",
-    ]
-  }
 }
 
 # ---------------------------------------------------------------------------
-# c8g instance (Graviton4, SVE2 128-bit)
+# Outputs — maps keyed by label, so eval/provision.py can read out.instance_public_ips[label].
 # ---------------------------------------------------------------------------
 
-resource "aws_instance" "c8g" {
-  instance_market_options {
-    market_type = "spot"
-  }
-
-  ami                    = "ami-012798e88aebdba5c" # Ubuntu 22.04 LTS arm64 us-west-2
-  instance_type          = var.instance_type
-  key_name               = aws_key_pair.kernel_testing.key_name
-  vpc_security_group_ids = [aws_security_group.kernel_testing.id]
-  user_data              = base64encode(file("${path.module}/setup.sh"))
-
-  root_block_device {
-    volume_size = 50
-    volume_type = "gp3"
-  }
-
-  tags = {
-    Name = "kernel-testing-c8g"
-  }
+output "instance_public_ips" {
+  value = { for label, inst in aws_instance.labeled : label => inst.public_ip }
 }
 
-resource "null_resource" "deploy_c8g" {
-  triggers = {
-    instance_id = aws_instance.c8g.id
-  }
-
-  connection {
-    type        = "ssh"
-    user        = "ubuntu"
-    private_key = file("~/.ssh/id_rsa")
-    host        = aws_instance.c8g.public_ip
-    timeout     = "15m"
-  }
-
-  provisioner "remote-exec" {
-    inline = ["cloud-init status --wait"]
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      rsync -avz \
-        --exclude=build \
-        --exclude=.git \
-        --exclude=terraform \
-        -e 'ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' \
-        ${path.module}/../ \
-        ubuntu@${aws_instance.c8g.public_ip}:~/arm-bench/
-    EOT
-  }
-
-  provisioner "remote-exec" {
-    inline = ["echo 'c8g ready'"]
-  }
-}
-
-# ---------------------------------------------------------------------------
-# Outputs
-# ---------------------------------------------------------------------------
-
-output "instance_public_ip" {
-  value = aws_instance.kernel_testing.public_ip
-}
-
-output "ssh_command" {
-  value = "ssh -i ~/.ssh/id_rsa ubuntu@${aws_instance.kernel_testing.public_ip}"
-}
-
-output "run_example" {
-  value = "ssh -i ~/.ssh/id_rsa ubuntu@${aws_instance.kernel_testing.public_ip} './arm-bench/build/${var.build_target}/bin/simd_loops -k 1 -n 10'"
-}
-
-output "instance_id" {
-  value = aws_instance.kernel_testing.id
+output "instance_ids" {
+  value = { for label, inst in aws_instance.labeled : label => inst.id }
 }
 
 output "ssh_key_path" {
   value = "~/.ssh/id_rsa"
-}
-
-output "c8g_public_ip" {
-  value = aws_instance.c8g.public_ip
-}
-
-output "c8g_instance_id" {
-  value = aws_instance.c8g.id
 }
