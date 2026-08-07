@@ -18,51 +18,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-# ── Defaults (single source of truth) ─────────────────────────────────────────
+from contracts import BASELINE_AUTHORS, EVAL_DEFAULTS, EVAL_OP_TYPE_OVERRIDES
 
-DEFAULT_BASELINE_AUTHOR = "baseline-ncnn-arm"
-DEFAULT_WARMUP = 5
-DEFAULT_REPEAT = 50
-DEFAULT_INNER_ITERS = 1
-DEFAULT_CPU = 0
-DEFAULT_WATCHDOG_S = 30.0
-DEFAULT_CORRECTNESS_ABS_TOL = 1e-3
-DEFAULT_CORRECTNESS_REL_TOL = 1e-3
-DEFAULT_REQUIRED_MATCHED_RATIO = 1.0
-DEFAULT_COLLECT_PERF_COUNTERS = True
+# ── Defaults (single source of truth: config/kernel_contracts.yaml) ───────────
 
-
-@dataclass
-class EvalOverride:
-    """Sparse per-op-type tolerance overrides for BenchmarkConfig.op_type_config.
-
-    None fields are skipped during merge — only set fields override the
-    BenchmarkConfig base values.
-    """
-
-    abs_tol: Optional[float] = None
-    rel_tol: Optional[float] = None
-    required_matched_ratio: Optional[float] = None
-
-
-# Large fp32 reductions (matmul / attention / MoE) legitimately diverge from a
-# numpy reference by more than the elementwise 1e-3 default: ggml accumulates in
-# a different SIMD/FMA order, so a few permille of elements drift by ~1e-2..1e-1
-# absolute. These op-type overrides make such baselines pass on correctness while
-# staying tight enough to catch a real bug. Keyed by Definition.op_type, so they
-# only apply to these ops (conv2d / loop_* / rms_norm keep the strict default).
-#
-# moe gets a looser rel_tol than gemm/mha: near-degenerate softmax routing (one
-# expert taking ~99.98% of the gate weight) concentrates the whole token's output
-# magnitude into a single expert's gate/up/down GEMMs, so bf16 accumulation-order
-# noise pushes ~10% of the 2048 output elements past rel_tol=1e-2 even though the
-# baseline is algorithmically correct 
-DEFAULT_OP_TYPE_CONFIG: Dict[str, "EvalOverride"] = {
-    "gemm": EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
-    "moe":  EvalOverride(abs_tol=1e-1, rel_tol=5e-2, required_matched_ratio=0.95),
-    "mha":  EvalOverride(abs_tol=1e-1, rel_tol=1e-2, required_matched_ratio=0.98),
-}
-
+DEFAULT_BASELINE_AUTHOR = BASELINE_AUTHORS["ncnn"]
+DEFAULT_WARMUP = EVAL_DEFAULTS["warmup"]
+DEFAULT_REPEAT = EVAL_DEFAULTS["repeat"]
+DEFAULT_INNER_ITERS = EVAL_DEFAULTS["inner_iters"]
+DEFAULT_CPU = EVAL_DEFAULTS["cpu"]
+DEFAULT_WATCHDOG_S = EVAL_DEFAULTS["watchdog_s"]
+DEFAULT_CORRECTNESS_ABS_TOL = EVAL_DEFAULTS["correctness_abs_tol"]
+DEFAULT_CORRECTNESS_REL_TOL = EVAL_DEFAULTS["correctness_rel_tol"]
+DEFAULT_REQUIRED_MATCHED_RATIO = EVAL_DEFAULTS["required_matched_ratio"]
+DEFAULT_COLLECT_PERF_COUNTERS = EVAL_DEFAULTS["collect_perf_counters"]
 # Agent kernels are meant to be evaluated as single-core SIMD/assembly — openMP parallelism is forbidden
 DEFAULT_DISALLOWED_SOURCE_PATTERNS: List[str] = [
     r"#\s*pragma\s+omp",
@@ -80,6 +49,26 @@ DEFAULT_DISALLOWED_SOURCE_PATTERNS: List[str] = [
     r"\bvfork\s*\(",
     r"\bclone\s*\(",
 ]
+
+@dataclass
+class EvalOverride:
+    """Sparse per-op-type tolerance overrides for BenchmarkConfig.op_type_config.
+
+    None fields are skipped during merge — only set fields override the
+    BenchmarkConfig base values.
+    """
+
+    abs_tol: Optional[float] = None
+    rel_tol: Optional[float] = None
+    required_matched_ratio: Optional[float] = None
+
+
+# Per-op-type tolerance overrides — see eval_op_type_overrides in
+# config/kernel_contracts.yaml for the rationale (fp32 reduction order drift
+# in gemm/moe/mha baselines).
+DEFAULT_OP_TYPE_CONFIG: Dict[str, "EvalOverride"] = {
+    op: EvalOverride(**cfg) for op, cfg in EVAL_OP_TYPE_OVERRIDES.items()
+}
 
 
 @dataclass
@@ -110,11 +99,7 @@ class BenchmarkConfig:
     collect_perf_counters: bool = DEFAULT_COLLECT_PERF_COUNTERS
     source_policy: Dict[str, List[str]] = field(default_factory=dict)
     """Per-op-type override of the disallowed-source-pattern list, keyed by
-    definition.op_type. If an op_type key is *absent*, DEFAULT_DISALLOWED_SOURCE_PATTERNS
-    applies. If present, its list *replaces* the default for that op_type —
-    an empty list ([]) means "no patterns checked, fully permissive" for that
-    op_type, not "use the default". Leave this {} (the default) to apply
-    DEFAULT_DISALLOWED_SOURCE_PATTERNS to every op_type."""
+    definition.op_type. """
 
     def resolve_eval_config(self, definition=None) -> "EvalConfig":
         """Merge: BenchmarkConfig base → op_type_config[definition.op_type].

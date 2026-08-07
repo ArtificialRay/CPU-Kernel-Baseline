@@ -5,7 +5,11 @@ instance, using ShareGPT prompts as traffic.
 
 Flow
 ----
-1. Provision (or reuse) Graviton4 via a subprocess call to eval/provision.py
+1. Reuse the Graviton instance already running under --label, or provision
+   one (needs --isa) via a subprocess call to eval/provision.py. Shape
+   collection only hooks GGML_OP_MUL_MAT and reads token-count/tensor-shape
+   metadata that's identical across ISA backends — it's instance-agnostic,
+   any already-running Graviton tier works.
 2. Rsync cpu-kernel-baseline/llama.cpp → remote ~/llama.cpp/
 3. Upload scripts/collect_ggml_shapes.cpp and a CMakeLists.txt stub;
    patch remote examples/CMakeLists.txt to include the new target
@@ -33,12 +37,16 @@ definition to an already-registered op_type needs no script changes.
 
 Usage
 -----
+    # Reuse an already-running instance recorded under label "sve":
     python scripts/collect_workloads_llm.py \\
+        --label sve \\
         --model ~/models/Llama-3.2-1B-Instruct-Q8_0.gguf \\
         --op-type gemm --definition gemm_fp32_n2048_k2048 \\
         --num-prompts 200
 
+    # No instance running yet under this label — provision one (any ISA works):
     python scripts/collect_workloads_llm.py \\
+        --label sve --isa sve \\
         --model ~/models/Llama-3.2-1B-Instruct-Q8_0.gguf \\
         --op-type mha --definition mha_fp32_h16_d128_kvh16 \\
         --num-prompts 50 --dry-run
@@ -129,15 +137,31 @@ def _build_moe_axes(m_values: list[int], moe_m_values: Optional[list[int]]) -> l
     return [{"n_tokens": m} for m in sorted(set([1] + [m for m in effective if m > 0]))]
 
 
+def _build_decode_axes(m_values: list[int], moe_m_values: Optional[list[int]]) -> list[dict]:
+    # Decode: M=1 (one new token per step); S sweeps the observed sequence-length
+    # distribution as a proxy for how deep the KV cache has grown by that step.
+    all_s = sorted(set([1] + [m for m in m_values if m > 0]))
+    return [{"M": 1, "S": s} for s in all_s]
+
+
 LLM_AXES_BUILDERS: dict[str, Callable[[list[int], Optional[list[int]]], list[dict]]] = {
-    "gemm":     _build_m_axes,
-    "rms_norm": _build_m_axes,
-    "mha":      _build_mha_axes,
-    "moe":      _build_moe_axes,
+    "gemm":        _build_m_axes,
+    "rms_norm":    _build_m_axes,
+    "mha":         _build_mha_axes,
+    # gqa is shape-identical to mha (kv_heads is a const axis, doesn't change
+    # how M/S are generated) — same builder, no new capture logic needed.
+    "gqa":         _build_mha_axes,
+    # mla_prefill's M==S sweep matches mha's prefill half exactly; the one
+    # extra M=1,S=max_m point mha's builder appends is a harmless bonus
+    # decode-shaped workload, not the primary use of this definition.
+    "mla_prefill": _build_mha_axes,
+    "mla_decode":  _build_decode_axes,
+    "moe":         _build_moe_axes,
 }
 
 LLM_BATCH_KEYS: dict[str, str] = {
-    "gemm": "M", "rms_norm": "M", "mha": "M", "moe": "n_tokens",
+    "gemm": "M", "rms_norm": "M", "mha": "M", "gqa": "M",
+    "mla_prefill": "M", "mla_decode": "S", "moe": "n_tokens",
 }
 
 
@@ -198,11 +222,13 @@ def _setup_remote(handle) -> str:
         )
 
     print("[llm] Rsyncing llama.cpp to remote ~/llama.cpp/ ...")
-    handle.rsync_to(
-        str(LLAMA_LOCAL),
-        "~/llama.cpp",
-        excludes=["build", ".git", "/models", "*.gguf", "__pycache__"],
-    )
+    # InstanceHandle.rsync_to() is allow-list only (see its docstring in
+    # eval/remote.py) — no excludes kwarg. Build the allowlist dynamically from
+    # whatever's actually in the local checkout, skipping just .git (huge,
+    # irrelevant to the build) and any local build/__pycache__ artifacts.
+    _rsync_skip = {".git", "build", "__pycache__"}
+    rsync_paths = sorted(p.name for p in LLAMA_LOCAL.iterdir() if p.name not in _rsync_skip)
+    handle.rsync_to(str(LLAMA_LOCAL), "~/llama.cpp", paths=rsync_paths)
 
     # Place collect_ggml_shapes.cpp as a new example subdir.
     handle.run("mkdir -p ~/llama.cpp/examples/collect-ggml-shapes")
@@ -312,6 +338,19 @@ def main() -> None:
                         help="Number of ShareGPT prompts to sample (default: 200)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print workloads without writing JSONL files")
+    parser.add_argument(
+        "--label", default="sve2",
+        help="eval_config.json instance label to use (default: 'sve2', for "
+             "backwards compat). Shape collection only hooks GGML_OP_MUL_MAT — "
+             "it's ISA-agnostic, so any already-running label works as-is, "
+             "whatever Graviton tier it happens to be.",
+    )
+    parser.add_argument(
+        "--isa", default=None,
+        help="ISA to provision with if --label has no running instance yet "
+             "(e.g. sve, sve2). Not needed if the instance is already up — "
+             "shape collection doesn't care which ISA it's compiled for.",
+    )
     args = parser.parse_args()
 
     if args.list_op_types:
@@ -332,29 +371,48 @@ def main() -> None:
     # Validates the definition exists before provisioning/building anything remote.
     _load_definition(args.op_type, args.definition)
 
-    # Step 1 — provision. eval/provision.py is a standalone script (see its
-    # module docstring) — invoke it via subprocess, then read the shared
-    # eval/eval_config.json it wrote, rather than importing its internals.
-    # Explicit --label (rather than relying on the isa-only default) so this
-    # keeps working even if this collector later grows a --dataset flag.
-    label = "sve2"
-    print(f"[llm] Provisioning/reusing Graviton4 instance (label={label!r})...")
-    subprocess.run(
-        [sys.executable, str(REPO_ROOT / "eval" / "provision.py"),
-         "--isa", "sve2", "--label", label],
-        check=True,
-    )
-    eval_config = json.loads((REPO_ROOT / "eval" / "eval_config.json").read_text())
-    c8g = eval_config.get("instances", {}).get(label, {})
-    if not c8g.get("host"):
+    # Step 1 — provision. Shape collection only hooks GGML_OP_MUL_MAT and reads
+    # token-count/tensor-shape metadata that's identical across ISA backends —
+    # nothing here needs SVE2 specifically, so this is instance-agnostic: any
+    # already-running label works as-is, whatever tier it happens to be.
+    # eval/provision.py is a standalone script (see its module docstring) —
+    # invoke it via subprocess, then read the shared eval/eval_config.json it
+    # wrote, rather than importing its internals.
+    label = args.label
+    eval_config_path = REPO_ROOT / "eval" / "eval_config.json"
+    existing = {}
+    if eval_config_path.exists():
+        existing = json.loads(eval_config_path.read_text()).get("instances", {}).get(label, {})
+
+    if existing.get("host"):
+        print(f"[llm] Reusing already-provisioned instance for label={label!r} "
+              f"({existing.get('instance_type', '?')})...")
+    else:
+        if not args.isa:
+            parser.error(
+                f"No running instance found for label={label!r} and --isa not given. "
+                f"Either provision it first (python eval/provision.py --isa <isa> --label {label}) "
+                f"or pass --isa here to provision it now."
+            )
+        print(f"[llm] No instance found for label={label!r} — provisioning via --isa {args.isa}...")
+        subprocess.run(
+            [sys.executable, str(REPO_ROOT / "eval" / "provision.py"),
+             "--isa", args.isa, "--label", label],
+            check=True,
+        )
+
+    eval_config = json.loads(eval_config_path.read_text())
+    inst = eval_config.get("instances", {}).get(label, {})
+    if not inst.get("host"):
         raise RuntimeError(f"eval/provision.py exited successfully but wrote no instance for label={label!r}")
 
     sys.path.insert(0, str(REPO_ROOT))
     from eval.remote import InstanceHandle  # noqa: PLC0415
 
     handle = InstanceHandle(
-        host=c8g["host"], user=c8g.get("user", "ubuntu"),
-        key_file=c8g.get("key_file", "~/.ssh/id_rsa"), instance_type="c8g.large",
+        host=inst["host"], user=inst.get("user", "ubuntu"),
+        key_file=inst.get("key_file", "~/.ssh/id_rsa"),
+        instance_type=inst.get("instance_type", "c7g.large"),
     )
 
     # Step 2–4 — sync + build.

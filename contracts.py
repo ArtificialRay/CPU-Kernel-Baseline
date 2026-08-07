@@ -64,6 +64,14 @@ ISA_TABLE: dict[str, IsaSpec] = _isa_table()
 # isa -> EC2 instance type, the subset of ISA_TABLE most callers actually need.
 ISA_INSTANCE_MAP: dict[str, str] = {isa: spec.instance_type for isa, spec in ISA_TABLE.items()}
 
+# bench/config.py's BenchmarkConfig/EvalConfig field defaults, and its
+# per-op-type tolerance overrides. Raw dicts — bench/config.py owns the
+# EvalOverride dataclass these get wrapped in, since that shape is bench-specific.
+EVAL_DEFAULTS: dict = dict(_load()["eval_defaults"])
+EVAL_OP_TYPE_OVERRIDES: dict[str, dict] = {
+    op: dict(cfg) for op, cfg in _load()["eval_op_type_overrides"].items()
+}
+
 __all__ = [
     "IsaSpec",
     "AGENT_KERNEL_FILENAME",
@@ -72,4 +80,6 @@ __all__ = [
     "BASELINE_AUTHORS",
     "ISA_TABLE",
     "ISA_INSTANCE_MAP",
+    "EVAL_DEFAULTS",
+    "EVAL_OP_TYPE_OVERRIDES",
 ]
