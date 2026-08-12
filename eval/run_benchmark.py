@@ -22,6 +22,7 @@ Usage:
 import argparse
 import base64
 import json
+import os
 import subprocess
 import sys
 import time
@@ -48,8 +49,26 @@ load_dotenv(REPO_ROOT / ".env")
 # module is a standalone script invoked only via subprocess (see its own
 # docstring) — kept in sync by hand, same tradeoff as ISA_INSTANCE_MAP used
 # to be before it moved to contracts.py.
+#
+# ARMBENCH_LABEL_SUFFIX appends a run identifier, e.g. "sonnet46-tcloop" ->
+# "ncnn-sve-sonnet46-tcloop". Needed because label is the *only* key mapping a
+# run to an instance (eval_config.json is label -> host, one host per label), so
+# two runs over the same dataset+isa otherwise resolve to the same box: they
+# then contend for its single-threaded benchmark (wrecking every timing) and
+# overwrite each other under agent-runs-mcp/<author>/<definition>/. Worse, a
+# --provision run tears that shared label down first, killing the other run's
+# instance mid-flight.
+#
+# dataset and isa stay in the label: provision.py keys instance *type* off it
+# (c7g vs c8g), and terraform tags the box kernel-testing-<label>.
+# Deliberately no timestamp by default -- provision.py reuses a reachable
+# instance under the same label, which is what you want when resuming a
+# half-finished sweep (a fresh llama.cpp box costs ~10min of ggml build). Add
+# one explicitly (…-tcloop-0812-1900) when you do want forced isolation.
 def _label_for(isa: str, dataset: str) -> str:
-    return f"{dataset}-{isa}"
+    base = f"{dataset}-{isa}"
+    suffix = os.environ.get("ARMBENCH_LABEL_SUFFIX", "").strip().strip("-")
+    return f"{base}-{suffix}" if suffix else base
 
 
 def _read_config_instance(label: str) -> InstanceHandle | None:
