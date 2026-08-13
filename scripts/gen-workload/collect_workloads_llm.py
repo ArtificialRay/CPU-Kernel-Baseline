@@ -88,7 +88,7 @@ _SHAREGPT_URL = (
 _SHAREGPT_CACHE = Path(tempfile.gettempdir()) / "ShareGPT_V3_unfiltered_cleaned_split.json"
 
 
-def _load_sharegpt_prompts(n: int) -> list[str]:
+def _load_sharegpt_prompts(n: int,seed:int=42) -> list[str]:
     import urllib.request
 
     if not _SHAREGPT_CACHE.exists():
@@ -99,6 +99,7 @@ def _load_sharegpt_prompts(n: int) -> list[str]:
         print(f"[llm] Using cached ShareGPT at {_SHAREGPT_CACHE}")
 
     data = json.loads(_SHAREGPT_CACHE.read_text())
+    random.Random(seed).shuffle(data)
     prompts: list[str] = []
     for ex in data:
         if len(prompts) >= n:
