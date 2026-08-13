@@ -35,6 +35,47 @@ baseline_authors:
   simd-loop: "baseline-sve"
   llama.cpp: "baseline-llamacpp-arm"
 
+# bench/config.py's BenchmarkConfig/EvalConfig field defaults. baseline_author
+# intentionally isn't duplicated here — it reuses baseline_authors.ncnn above.
+eval_defaults:
+  warmup: 5
+  repeat: 50
+  inner_iters: 1
+  cpu: 0
+  watchdog_s: 30.0
+  correctness_abs_tol: 1.0e-3
+  correctness_rel_tol: 1.0e-3
+  required_matched_ratio: 1.0
+  collect_perf_counters: true
+
+eval_op_type_overrides:
+  gemm:
+    abs_tol: 2.0e-3
+    rel_tol: 1.0e-2
+    required_matched_ratio: 0.98
+  moe:
+    abs_tol: 1.0e-2
+    rel_tol: 5.0e-2
+    required_matched_ratio: 0.95
+  mha:
+    abs_tol: 1.0e-3
+    rel_tol: 1.0e-3
+    required_matched_ratio: 0.98
+  gqa:
+    abs_tol: 5.0e-3
+    required_matched_ratio: 0.98
+  mla_prefill:
+    abs_tol: 5.0e-3
+    required_matched_ratio: 0.98
+  mla_decode:
+    # kv_lora_rank=512 up-projection contraction is 4x longer than mha/gqa's
+    # head_dim=128, accumulating more bf16 rounding noise (measured max_abs
+    # ~2.9e-2 across all 20 workloads; verified via intermediate-tensor dump
+    # against a from-scratch numpy reference -- not an algorithmic bug).
+    abs_tol: 3.0e-2
+    rel_tol: 1.0e-2
+    required_matched_ratio: 0.98
+
 # isa -> compile flags + the EC2 instance type that satisfies it.
 # "portable"/"neon" both compile to plain armv8-a; portable's "no hand-written
 # SIMD" constraint is a prompt-level rule (see eval/evaluator.py's ISA-ablation

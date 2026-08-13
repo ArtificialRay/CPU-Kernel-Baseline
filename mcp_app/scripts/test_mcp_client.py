@@ -57,7 +57,7 @@ async def run_tool_sequence(
     tools_result = await session.list_tools()
     tool_names = {t.name for t in tools_result.tools}
     assert "read_code" not in tool_names, f"read_code should be retired, got {tool_names}"
-    assert tool_names == {"compile", "evaluate", "disassemble", "submit"}, tool_names
+    assert tool_names == {"compile", "evaluate", "disassemble"}, tool_names
     if verbose:
         print(f"  tools: {sorted(tool_names)}")
 
