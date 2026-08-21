@@ -53,7 +53,10 @@ Before writing any optimized code for a given definition:
    resource for **every** definition in this dataset, present from the
    start (the unoptimized scalar kernel for each). Pick the definition
    you're working on and find its entry.
-2. `read_resource()` it.
+2. `read_resource()` it. It `#include`s a per-definition `.h` header — that header is NOT exposed as an MCP resource and you don't
+   need to read it: its constants are baked in automatically when you
+   `compile()`. Don't try `list_resources()`/`read_resource()` on it — it
+   will 404.
 3. `compile({"definition": "<that definition's name>", "code": <that content>})`
    — this becomes version `v1` for that definition.
 4. `evaluate({})` — one call, always returns both correctness and
