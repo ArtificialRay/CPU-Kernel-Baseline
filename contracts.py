@@ -1,16 +1,5 @@
 """Kernel-session contracts shared by eval/, mcp_app/, skills/, and bench/.
-
-Single source of truth for naming/mapping conventions that every dataset's
-AgentTools (eval/agent_tools/*) or KernelSession (mcp_app/agent_tools/*)
-implementation must agree on — which file an agent's kernel is always named,
-which Solution.author a dataset's reference-scalar/baseline solution lives
-under, and which compile flags + EC2 instance type an ISA maps to. Backed by
-config/kernel_contracts.yaml; loaded once and cached.
-
-Lives at the repo root (not inside bench/) because it's consumed by every
-top-level package equally — bench/, eval/, mcp_app/, skills/ — none of which
-should appear to "own" it. mcp_app/README.md's "zero coupling to eval/ or
-skills/" boundary is preserved: this module has no dependency on any of them.
+config is in <REPO-ROOT>/config/kernel_contracts.yaml with 
 """
 
 from __future__ import annotations

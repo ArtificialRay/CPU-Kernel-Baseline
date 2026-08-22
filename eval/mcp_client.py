@@ -1,0 +1,411 @@
+"""eval/mcp_client.py — MCP client bridge for eval/evaluator.py's litellm loop.
+
+This loop's tools are driven over a real MCP client of mcp_app/server.py —
+the same server nanobot/Claude Code drive — instead of a separate SSH-based
+tool system (the now-deleted eval/agent_tools/: AgentTools + remote_runner.py).
+One execution backend, not two hand-synced ones. See
+`.claude/plans/functional-yawning-knuth.md` for the migration this came out of.
+
+Two public entry points:
+- `connect(...)` — provisions/reuses an instance, starts mcp_app.server on
+  it via skills/launch/launch_session.py, opens an MCP ClientSession over
+  the resulting SSH-tunneled streamable-http endpoint, and returns an
+  `MCPKernelClient`. One of these lives for the whole eval/run_benchmark.py
+  run (potentially many definitions — mcp_app's KernelSession is explicitly
+  designed to serve many definitions off one long-lived connection, so
+  there's no per-definition session teardown/rebuild here).
+- `MCPKernelClient.tools_for(definition_name)` — a thin per-definition
+  facade (`MCPToolsForDefinition`) exposing `dispatch_tool_call`/`submit`/
+  `cleanup`, the interface `eval/evaluator.py::run_agentic_eval`'s turn
+  loop calls.
+
+Tool surface presented to the model is intentionally NOT derived from
+`session.list_tools()` — that lists mcp_app's own 3-tool, multi-definition
+schema (definition/version args the model would have to track itself).
+eval/'s design is one definition per session, so `_tool_schemas()` below
+reconstructs eval/'s original 5-tool contract (compile/evaluate/
+disassemble/read_code/submit, no `definition`/`version` args) and this
+module injects `definition` + the last compiled `version` on every
+forwarded call — the model's-eye view of the tools doesn't change.
+
+`evaluate(measure=...)` is dropped (not forwarded) — confirmed dead
+weight: the underlying evaluator always runs the full timed pass
+regardless of `measure`, so `measure=false` was never actually faster,
+only suppressed the returned performance dict.
+
+`submit` IS forwarded as a real call (`session.call_tool("submit", ...)`),
+even though mcp_app's `KernelSession.tool_schemas()` doesn't advertise it —
+`mcp_app/server.py::_call_tool` dispatches by name via
+`tools.dispatch_tool_call(name, args)` regardless of what `list_tools()`
+advertises, and `KernelSession.submit()` is a real method, just not
+LLM-discoverable by design (mcp_app relies on its own evaluate()'s
+auto-submit-on-new-best instead). Calling it again after an auto-submit is
+harmless — it just re-persists the same `best_compile` with a better
+`explanation` string than the generic "Auto submit by evaluate()" one.
+
+`read_code` has no such fallback (mcp_app genuinely retired the method,
+not just its schema) — reimplemented here over MCP Resources
+(`list_resources`/`read_resource`), the same primitive mcp_app/resources.py
+serves to nanobot/Claude Code.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import socket
+import threading
+from pathlib import Path
+from typing import Any, Callable, Coroutine, Optional
+
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+from eval.remote import InstanceHandle
+from skills.launch.launch_session import RemoteTarget, prepare_session, stop_tunnel, sync_results
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Generous per-call timeouts — evaluate() runs a full compile+timed-repeat
+# pass and can legitimately take minutes; mcp_app/server.py pings the MCP
+# session every 120s while a call is in flight (server.py's
+# TOOL_CALL_PING_INTERVAL_S) specifically so a slow call doesn't look dead,
+# so waiting generously here is the correct match, not a band-aid.
+_CONNECT_TIMEOUT_S = 60.0
+_TOOL_CALL_TIMEOUT_S = 900.0
+_RESOURCE_CALL_TIMEOUT_S = 60.0
+
+
+def remote_target_from_instance_handle(handle: InstanceHandle) -> RemoteTarget:
+    """eval/'s InstanceHandle and skills/launch/remote.py's RemoteTarget are
+    separately-duplicated, same-shaped classes (see both modules' own
+    docstrings on why) — this is the one place that bridges them, since
+    connecting to mcp_app.server needs a RemoteTarget."""
+    return RemoteTarget(host=handle.host, user=handle.user, key_file=handle.key_file)
+
+
+def _free_local_port() -> int:
+    """Pick an ephemeral free port for the SSH -L tunnel's local side. Small
+    bind-then-close race (something else could grab it before `ssh -L`
+    binds) is the standard accepted tradeoff for this idiom."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _tool_schemas() -> list[dict]:
+    """eval/'s original 5-tool contract, litellm {"type": "function", ...}
+    shape, `measure` dropped from evaluate() (see module docstring) and no
+    per-dataset custom wording (ncnn/simd_loop/llama_cpp used to hand-write
+    slightly different code_description/disasm_hint text — dropped for the
+    same reason mcp_app dropped it: redundant with, and less precise than,
+    the reference-scalar-kernel.cpp resource the model already reads)."""
+    return [
+        {"type": "function", "function": {
+            "name": "compile",
+            "description": (
+                "Compile your kernel.cpp on the remote ARM instance. The harness/binding "
+                "files are provided automatically — you only write the kernel. Returns "
+                "{\"status\": \"OK\", \"version\": N} on success, or "
+                "{\"status\": \"COMPILE_ERROR\", \"error\": \"...\"} on failure."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"code": {"type": "string", "description": "Full C++ source for kernel.cpp."}},
+                "required": ["code"],
+            },
+        }},
+        {"type": "function", "function": {
+            "name": "evaluate",
+            "description": (
+                "Run the last compiled kernel against all workloads on the remote: checks "
+                "correctness (fail-fast on the first failing workload) and, if that passes, "
+                "measures wall-time and cycle counts in the same pass. Returns "
+                "{\"status\": \"PASSED\", \"performance\": {...}} or "
+                "{\"status\": \"<error>\", \"failed_workload\": \"...\", \"log\": \"...\"}."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        }},
+        {"type": "function", "function": {
+            "name": "disassemble",
+            "description": (
+                "Disassemble the last compiled .so on the remote (up to 300 lines of "
+                "AArch64 assembly). Defaults to your kernel's own entry symbol; pass `fn` "
+                "to inspect a different symbol."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"fn": {"type": "string",
+                                       "description": "Symbol to disassemble. Omit to use your kernel's entry symbol."}},
+                "required": [],
+            },
+        }},
+        {"type": "function", "function": {
+            "name": "read_code",
+            "description": (
+                "Read a source file or disassembly saved during this session. "
+                "Compiled versions are saved as v1.cpp, v2.cpp, ... (N from compile() result). "
+                "Disassembled versions are saved as v1.s, v2.s, ... (written by disassemble()). "
+                "On error, returns the list of available files so you can pick the right one."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"filename": {"type": "string", "description": "File to read, e.g. 'v2.cpp' or 'v1.s'."}},
+                "required": ["filename"],
+            },
+        }},
+        {"type": "function", "function": {
+            "name": "submit",
+            "description": (
+                "Score and persist the best-performing version from this session. "
+                "Automatically selects the version with the highest cycle speedup "
+                "seen in evaluate() calls. Call this when you have finished optimizing. "
+                "Returns {\"status\": \"PASSED\", \"time_speedup\": X, \"cycle_speedup\": Y}."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"explanation": {"type": "string",
+                                                "description": "Brief description of the optimization approach and key perf observations."}},
+                "required": [],
+            },
+        }},
+    ]
+
+
+class _SessionThread:
+    """Runs one MCP ClientSession's async context managers alive on a
+    dedicated background thread + event loop, exposing a blocking `call()`
+    for evaluator.py's fully-synchronous turn loop. The MCP SDK is
+    async-only; evaluator.py's history compression / retry-loop / litellm
+    calls are all sync and out of scope to convert (see the plan) — this is
+    the bridge, not a rewrite.
+    """
+
+    def __init__(self, endpoint: str, *, connect_timeout: float = _CONNECT_TIMEOUT_S) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._session: Optional[ClientSession] = None
+        self._stop_event: Optional[asyncio.Event] = None
+        self._error: Optional[BaseException] = None
+        ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, args=(endpoint, ready), daemon=True, name="mcp-client-session",
+        )
+        self._thread.start()
+        if not ready.wait(timeout=connect_timeout):
+            raise TimeoutError(f"MCP session to {endpoint!r} did not become ready within {connect_timeout}s")
+        if self._error is not None:
+            raise self._error
+
+    def _run(self, endpoint: str, ready: threading.Event) -> None:
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_until_complete(self._main(endpoint, ready))
+        finally:
+            self._loop.close()
+
+    async def _main(self, endpoint: str, ready: threading.Event) -> None:
+        try:
+            async with streamablehttp_client(endpoint) as (read, write, _get_session_id):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    self._session = session
+                    self._stop_event = asyncio.Event()
+                    ready.set()
+                    await self._stop_event.wait()
+        except BaseException as e:  # noqa: BLE001 — surfaced to the constructor / next call()
+            self._error = e
+            ready.set()
+
+    def call(self, coro_factory: Callable[[ClientSession], Coroutine[Any, Any, Any]], *, timeout: float) -> Any:
+        if self._error is not None:
+            raise RuntimeError(f"MCP session already failed: {self._error}") from self._error
+        assert self._session is not None, "call() before session ready"
+        future = asyncio.run_coroutine_threadsafe(coro_factory(self._session), self._loop)
+        return future.result(timeout=timeout)
+
+    def close(self) -> None:
+        if self._stop_event is not None and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+        self._thread.join(timeout=15)
+
+
+def _call_tool_result_to_dict(result: Any) -> dict:
+    """mcp.types.CallToolResult -> plain dict, preferring structuredContent
+    (mirrors mcp_app/scripts/test_mcp_client.py's `_tool_result_dict`, kept
+    as a separate copy here since importing a `mcp_app.scripts` test helper
+    from eval/'s runtime path would be an odd direction of dependency for
+    non-test code)."""
+    if result.structuredContent is not None:
+        return result.structuredContent
+    text = "".join(getattr(c, "text", "") for c in result.content)
+    if not text:
+        return {}
+    import json
+    return json.loads(text)
+
+
+class MCPKernelClient:
+    """One MCP session shared across every definition in a run. Construct
+    via `connect()`, not directly."""
+
+    def __init__(self, session_thread: _SessionThread, *, prepared: dict, target: RemoteTarget,
+                 author: str, remote_root: str) -> None:
+        self._session = session_thread
+        self._prepared = prepared
+        self._target = target
+        self._author = author
+        self._remote_root = remote_root
+
+    # ── raw MCP calls ───────────────────────────────────────────────────
+
+    def _call_tool(self, name: str, args: dict, *, timeout: float = _TOOL_CALL_TIMEOUT_S) -> dict:
+        result = self._session.call(lambda s: s.call_tool(name, args), timeout=timeout)
+        return _call_tool_result_to_dict(result)
+
+    def _list_resources(self):
+        return self._session.call(lambda s: s.list_resources(), timeout=_RESOURCE_CALL_TIMEOUT_S)
+
+    def _read_resource(self, uri):
+        return self._session.call(lambda s: s.read_resource(uri), timeout=_RESOURCE_CALL_TIMEOUT_S)
+
+    # ── public surface ──────────────────────────────────────────────────
+
+    def tool_schemas(self) -> list[dict]:
+        return _tool_schemas()
+
+    def tools_for(self, definition_name: str) -> "MCPToolsForDefinition":
+        return MCPToolsForDefinition(self, definition_name)
+
+    def sync_bench_trace_back(self, *, local_results_dir: str, definition: Optional[str] = None) -> dict:
+        """Pull this run's trajectory + any new bench-trace solutions/traces
+        back from the remote instance. See skills/launch/launch_session.py's
+        `sync_results(sync_bench_trace=...)` docstring for why this step
+        exists at all: mcp_app.server runs ON the remote instance, so
+        KernelSession.compile()/submit() persist into the *remote*
+        bench-trace, not the caller's local one."""
+        return sync_results(
+            self._target, self._author, definition=definition,
+            remote_root=self._remote_root, local_results_dir=local_results_dir,
+            sync_bench_trace=True,
+        )
+
+    def close(self) -> None:
+        self._session.close()
+        stop_tunnel(self._prepared)
+
+
+class MCPToolsForDefinition:
+    """Per-definition facade matching AgentTools' public interface
+    (dispatch_tool_call/submit/cleanup) exactly, so
+    eval/evaluator.py::run_agentic_eval's turn loop needs no changes beyond
+    its construction line. Backed by a shared MCPKernelClient — cleanup()
+    is a no-op here on purpose; the shared session's real teardown
+    (MCPKernelClient.close()) happens once, after every definition in the
+    run is done, not per-definition (mcp_app's KernelSession is explicitly
+    designed to serve many definitions off one connection — rebuilding the
+    tunnel + remote server process per definition would be wasteful and
+    defeats that design)."""
+
+    def __init__(self, client: MCPKernelClient, definition_name: str) -> None:
+        self._client = client
+        self._definition_name = definition_name
+        self._last_version: Optional[int] = None
+
+    def dispatch_tool_call(self, name: str, args: dict) -> dict:
+        try:
+            if name == "compile":
+                result = self._client._call_tool(
+                    "compile", {"definition": self._definition_name, "code": args["code"]},
+                    timeout=180,
+                )
+                if result.get("status") == "OK":
+                    self._last_version = result.get("version")
+                return result
+            if name == "evaluate":
+                # `measure` intentionally dropped — see module docstring.
+                if self._last_version is None:
+                    return {"status": "COMPILE_ERROR", "error": "nothing compiled yet"}
+                return self._client._call_tool(
+                    "evaluate", {"definition": self._definition_name, "version": self._last_version},
+                    timeout=_TOOL_CALL_TIMEOUT_S,
+                )
+            if name == "disassemble":
+                if self._last_version is None:
+                    return {"error": "nothing compiled yet — call compile() first"}
+                call_args = {"definition": self._definition_name, "version": self._last_version}
+                if args.get("fn"):
+                    call_args["fn"] = args["fn"]
+                return self._client._call_tool("disassemble", call_args, timeout=60)
+            if name == "read_code":
+                return self._read_code(args.get("filename", ""))
+            return {"error": f"unknown tool: {name!r}"}
+        except Exception as e:  # noqa: BLE001 — surfaced to the agent loop as a normal tool error, not a crash
+            return {"error": str(e)}
+
+    def _read_code(self, filename: str) -> dict:
+        if not filename:
+            return {"error": "filename is required"}
+        resource_name = f"{self._definition_name}/{filename}"
+        listing = self._client._list_resources()
+        match = next((r for r in listing.resources if r.name == resource_name), None)
+        if match is None:
+            available = sorted(
+                r.name.split("/", 1)[1] for r in listing.resources
+                if r.name.startswith(f"{self._definition_name}/")
+                and (r.name.endswith(".cpp") or r.name.endswith(".s"))
+            )
+            return {"error": f"{filename!r} not found", "available": available}
+        read_result = self._client._read_resource(match.uri)
+        content = read_result.contents[0].text
+        return {"filename": filename, "content": content}
+
+    def submit(self, explanation: str = "") -> dict:
+        try:
+            return self._client._call_tool(
+                "submit", {"definition": self._definition_name, "explanation": explanation},
+                timeout=_TOOL_CALL_TIMEOUT_S,
+            )
+        except Exception as e:  # noqa: BLE001
+            return {"status": "RUNTIME_ERROR", "error": str(e)}
+
+    def cleanup(self) -> None:
+        pass  # see class docstring — real teardown is MCPKernelClient.close()
+
+
+def connect(
+    handle: InstanceHandle,
+    dataset: str,
+    author: str,
+    isa: str,
+    *,
+    baseline_author: Optional[str] = None,
+    remote_root: str = "~/arm-bench",
+    sync_repo: bool = True,
+    skip_preflight: bool = False,
+) -> MCPKernelClient:
+    """Start mcp_app.server on `handle`'s instance and open an MCP session
+    against it — the eval/-side equivalent of what nanobot/Claude Code get
+    from `skills/launch/launch_session.py`'s `launch`/`prepare-session` CLI,
+    called here as a library instead of a subprocess so the endpoint comes
+    back as a plain Python value (see that module's own docstring on why
+    it's safe to import despite its "zero imports from eval/" boundary —
+    that boundary is about its own imports, not about being imported).
+    """
+    target = remote_target_from_instance_handle(handle)
+    prepared = prepare_session(
+        target, dataset, author, isa,
+        baseline_author=baseline_author,
+        remote_root=remote_root,
+        sync_repo=sync_repo,
+        local_repo_dir=str(REPO_ROOT) if sync_repo else None,
+        skip_preflight=skip_preflight,
+        local_port=_free_local_port(),
+    )
+    try:
+        session_thread = _SessionThread(prepared["endpoint"])
+    except BaseException:
+        stop_tunnel(prepared)
+        raise
+    return MCPKernelClient(session_thread, prepared=prepared, target=target, author=author, remote_root=remote_root)
+
+
+__all__ = ["MCPKernelClient", "MCPToolsForDefinition", "connect", "remote_target_from_instance_handle"]

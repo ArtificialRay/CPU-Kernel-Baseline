@@ -36,6 +36,12 @@ from typing import Optional
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+# This module's own directory, so `from remote import RemoteTarget` below
+# resolves whether this file is run as a script (already implicit — Python
+# puts the script's own dir on sys.path[0]) or imported as a package
+# submodule (e.g. `from skills.launch import launch_session`, which does
+# NOT add this directory automatically — see eval/mcp_client.py).
+sys.path.insert(0, str(Path(__file__).parent))
 
 # contracts.py lives at the repo root, outside both eval/ and mcp_app/, so
 # importing it doesn't violate this module's "zero imports from eval/ or
@@ -329,22 +335,34 @@ def sync_results(
     definition: Optional[str] = None,
     remote_root: str = "~/arm-bench",
     local_results_dir: str | Path,
+    sync_bench_trace: bool = False,
+    local_bench_trace_dir: Optional[str | Path] = None,
 ) -> dict:
     """Pull this author's session results back to local_results_dir.
 
     Pulls the whole `agent-runs-mcp/<author>/` directory (every definition
     that author's session touched) unless `definition` is given, in which
     case only that one definition's subdirectory is synced.
+
+    `sync_bench_trace=True` additionally pulls back `bench-trace/solutions/`
+    and `bench-trace/traces/` from the remote instance 
     """
     remote_dir = f"agent-runs-mcp/{author}"
     if definition:
         remote_dir += f"/{definition}"
     target.rsync_from(f"{remote_root}/{remote_dir}", local_results_dir)
-    return {
+    result = {
         "author": author,
         "definition": definition,
         "local_run_dir": str(Path(local_results_dir) / Path(remote_dir).name),
     }
+    if sync_bench_trace:
+        bt_dir = Path(local_bench_trace_dir) if local_bench_trace_dir else REPO_ROOT / "bench-trace"
+        # sync back new solutions and traces for kernel stability test
+        target.rsync_from(f"{remote_root}/bench-trace/solutions/", bt_dir / "solutions")
+        target.rsync_from(f"{remote_root}/bench-trace/traces/", bt_dir / "traces")
+        result["local_bench_trace_dir"] = str(bt_dir)
+    return result
 
 
 def _cli_prepare(args: argparse.Namespace) -> None:
@@ -372,6 +390,7 @@ def _cli_sync(args: argparse.Namespace) -> None:
     result = sync_results(
         target, args.author, definition=args.definition,
         remote_root=args.remote_root, local_results_dir=args.local_results_dir,
+        sync_bench_trace=args.sync_bench_trace,
     )
     print(result)
 
@@ -483,6 +502,9 @@ def main(argv: list[str] | None = None) -> None:
                        help="Sync only this definition's subdirectory. Omit to sync everything "
                             "this author's session touched.")
     sync.add_argument("--local-results-dir", required=True)
+    sync.add_argument("--sync-bench-trace", action="store_true",
+                       help="Also pull back bench-trace/solutions/ and bench-trace/traces/ "
+                            "from the remote instance (merge-pull, no --delete) ")
     sync.set_defaults(func=_cli_sync)
 
     def _add_provision_args(sp: argparse.ArgumentParser) -> None:

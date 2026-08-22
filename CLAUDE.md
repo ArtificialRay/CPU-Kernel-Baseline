@@ -6,21 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **CPU-Kernel-Baseline** evaluates LLMs on their ability to write optimized AArch64
 SIMD kernels for ncnn / llama.cpp / synthetic simd-loop benchmarks. Three evaluation
-paths, all built on the same `bench/` harness and the same `bench-trace/` warehouse:
+paths, all built on the same `bench/` harness, the same `bench-trace/` warehouse,
+and — as of the eval/mcp_client.py migration — the same `mcp_app/server.py` tool
+execution surface for every agent-driven path:
 
-- **Path 1 — Agentic SSH eval** (`eval/`): a self-contained litellm agent loop
-  (`eval/run_benchmark.py`) drives compile/evaluate/disassemble/submit tools
-  (`eval/agent_tools/`) over SSH against a provisioned Graviton instance.
+- **Path 1 — In-repo litellm agent loop** (`eval/`): a self-contained litellm
+  agent loop (`eval/run_benchmark.py`) drives compile/evaluate/disassemble/submit
+  as an MCP client of `mcp_app/server.py` (`eval/mcp_client.py`), started on a
+  provisioned Graviton instance over an SSH-tunneled MCP session — the same
+  server nanobot/Claude Code drive in Path 3, just with this repo's own litellm
+  loop as the client instead of an external harness. (Previously had its own
+  independent SSH-based tool system, `eval/agent_tools/` — retired; see
+  `eval/mcp_client.py`'s module docstring.)
 - **Path 2 — Local `bench/` harness**: compiles solutions into `.so` files with
   clang++ locally, dlopens them, runs correctness + timing without SSH or any
   agent loop. Works on any machine; produces real SVE2 numbers on Graviton.
   Also the library every other path calls into.
 - **Path 3 — MCP-server-driven eval** (`mcp_app/` + `skills/`): the same
   compile/evaluate/disassemble/submit surface exposed as an MCP server
-  (`mcp_app/server.py`) so an external agent harness (nanobot today; Claude
-  Code/Gemini CLI planned) drives the session instead of an in-repo agent
-  loop. `skills/launch/` provisions an instance and starts the server;
-  `skills/<harness>/` holds that harness's own `SKILL.md`.
+  (`mcp_app/server.py`) so an external agent harness (nanobot, Claude Code)
+  drives the session instead of an in-repo agent loop. `skills/launch/`
+  provisions an instance and starts the server; `skills/<harness>/` holds
+  that harness's own `SKILL.md`.
 
 Top-level framework directories (`ncnn/`, `ggml/`, `vllm/`, `paddleLite/`, `tnn/`)
 are read-only reference baselines. `ncnn/` is NOT in this repo — clone separately
@@ -197,13 +204,13 @@ bench-trace/                    # On-disk warehouse (TraceSet root) — .gitigno
   solutions/<dataset>/<author>/<op_type>/
   traces/<op_type>/
 
-eval/                           # Agentic SSH eval (Path 1)
+eval/                           # In-repo litellm agent loop (Path 1)
   provision.py                  # Terraform lifecycle for Graviton EC2 instances
-  run_benchmark.py              # LLM agent loop (litellm, SSH path)
-  agent_tools/                  # compile/evaluate/disassemble/submit for the SSH litellm loop
-    base.py                     # AgentTools ABC
-    ncnn.py, simd_loop.py, llama_cpp.py
-    registry.py, trajectory.py, remote_runner.py
+  run_benchmark.py              # LLM agent loop (litellm) + MCP session lifecycle
+  evaluator.py                  # run_agentic_eval turn loop (prompts, retries, history compression)
+  mcp_client.py                 # MCP client bridge — drives mcp_app/server.py's
+                                 #   compile/evaluate/disassemble/submit, same as Path 3
+  remote.py                     # InstanceHandle — SSH/rsync to a provisioned instance
   eval_config.json              # SSH connection info — copy from .example
 
 mcp_app/                        # MCP server for Path 3
@@ -248,7 +255,7 @@ python eval/provision.py --isa sve        # Graviton3 c7g.large (SVE=256-bit)
 python eval/provision.py --teardown
 ```
 
-### Agentic SSH eval (Path 1 — requires Graviton instance)
+### In-repo litellm agent loop (Path 1 — requires Graviton instance)
 ```bash
 # Single definition
 python eval/run_benchmark.py --problem loop_001 --isa sve2 --model anthropic/claude-opus-4-6

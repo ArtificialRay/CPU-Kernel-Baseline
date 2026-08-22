@@ -2,7 +2,9 @@
 eval/evaluator.py — Agentic LLM evaluation orchestrator for arm-bench.
 
 Runs an agent loop where the LLM iteratively uses compile/evaluate/disassemble/submit
-tools over SSH on a Graviton instance, then persists the best solution to bench-trace/.
+tools against a real Graviton instance over MCP (eval/mcp_client.py — the same
+mcp_app/server.py nanobot/Claude Code drive), then persists the best solution
+to bench-trace/.
 
 Compatible with any LiteLLM-supported model.
 """
@@ -12,11 +14,15 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import litellm
 
 from contracts import AGENT_KERNEL_FILENAME, REFERENCE_SCALAR_AUTHORS
 from eval.remote import InstanceHandle
+
+if TYPE_CHECKING:
+    from eval.mcp_client import MCPKernelClient
 
 
 AGENT_SYSTEM_PROMPT = """\
@@ -25,19 +31,19 @@ You are an expert AArch64 SIMD programmer. Your task: write an optimized
 
 Tools:
   compile(code)              — compile kernel.cpp on the remote ARM instance
-  evaluate(measure=true)     — run all workloads: correctness + timing
+  evaluate()                 — run all workloads: correctness + timing, one pass
   disassemble(fn=None)       — view AArch64 assembly (up to 300 lines)
   submit(explanation=...)    — finalize and persist the best version from this session
 
 Workflow:
   1. compile() your first attempt.
-  2. evaluate(measure=false) — fast correctness check only.
-  3. evaluate(measure=true)  — collect timing and cycle speedup.
-  4. disassemble()           — inspect assembly when IPC is low or speedup is unexpectedly poor.
-  5. Iterate: compile → evaluate → improve.
-  6. submit() when satisfied.
+  2. evaluate()     — checks correctness first (fail-fast); if that passes, also
+                       measures timing and cycle speedup in the same call.
+  3. disassemble()  — inspect assembly when IPC is low or speedup is unexpectedly poor.
+  4. Iterate: compile → evaluate → improve.
+  5. submit() when satisfied.
 
-Metrics from evaluate(measure=true):
+Metrics from evaluate():
   time_speedup_geomean   — wall-time speedup vs {baseline_label} (geomean across workloads; >1.0 = faster than baseline)
   cycle_speedup_geomean  — cycle count speedup vs {baseline_label} (geomean)
   ipc_mean               — mean IPC across workloads
@@ -54,8 +60,7 @@ Key rules:
   - The harness files (.h and the entry .cpp) are provided automatically — write only kernel.cpp.
   - Use {isa_name} intrinsics freely; the build system passes the correct -march flag.
   - Can write asm directly to your implementation if you think it may bring performance gain
-  - Always verify correctness before profiling: evaluate(measure=false) first.
-  - Do NOT submit without at least one evaluate(measure=true) showing a speedup.
+  - Do NOT submit without at least one evaluate() call showing a speedup.
 """
 
 _AGENT_ISA_LABELS: dict[str, str] = {
@@ -201,25 +206,33 @@ def run_agentic_eval(
     author: str,
     model: str,
     handle: InstanceHandle,
+    mcp_client: "MCPKernelClient",
     *,
     dataset: str = "ncnn",
     bench_cfg=None,
     max_turns: int = 20,
     verbose: bool = True,
 ) -> dict:
-    """Run one agentic optimization session using the AgentTools ecosystem.
-
-    The LLM receives compile/evaluate/disassemble/submit tools backed by a real
-    Graviton instance via SSH. Iterates until the agent calls submit() or max_turns
-    is reached (triggering auto-submit of the best correct version found).
+    """Run one agentic optimization session, tools backed by mcp_app/server.py
+    over a shared MCP session (eval/mcp_client.py) — the same server
+    nanobot/Claude Code drive. Iterates until the agent calls submit() or
+    max_turns is reached (triggering auto-submit of the best correct
+    version found).
 
     Args:
         definition: bench Definition object for the target op.
         trace_set: TraceSet used for solution persistence and baseline lookup.
         author: Solution author label (e.g. "claude-opus-4-8").
         model: LiteLLM model string (e.g. "anthropic/claude-opus-4-8").
-        handle: SSH handle to the provisioned Graviton instance.
-        dataset: Dataset key for resolve_tools() dispatch (default "ncnn").
+        handle: SSH handle to the provisioned Graviton instance — used only
+            for isa_desc/isa_name prompt text below (the actual tool
+            execution goes through `mcp_client`, not SSH).
+        mcp_client: Shared MCP session (eval/mcp_client.py::connect()) —
+            one MCPKernelClient is meant to be shared across every
+            definition in a run (see its own docstring), so it's passed in
+            already connected, not built here.
+        dataset: Dataset key, used for REFERENCE_SCALAR_AUTHORS lookup below
+            (the MCP server itself already knows its own dataset).
         bench_cfg: Optional BenchmarkConfig override (baselines, perf counter settings).
         max_turns: Maximum agent turns before auto-submit.
         verbose: Print turn-by-turn progress.
@@ -227,11 +240,8 @@ def run_agentic_eval(
     Returns:
         dict with keys: status, time_speedup, cycle_speedup, timestamp, version_history
     """
-    from eval.agent_tools import resolve_tools
-
-    ToolsCls = resolve_tools(dataset)
-    tools = ToolsCls(handle, definition, trace_set, author, bench_cfg=bench_cfg)
-    schemas = [{"type": "function", "function": s} for s in ToolsCls.tool_schemas()]
+    tools = mcp_client.tools_for(definition.name)
+    schemas = mcp_client.tool_schemas()
     _no_submit = os.environ.get("ARMBENCH_NO_SUBMIT", "").strip() == "1"
     if _no_submit:
         schemas = [s for s in schemas if s["function"]["name"] != "submit"]
