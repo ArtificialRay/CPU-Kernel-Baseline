@@ -95,9 +95,13 @@ class DefaultEvaluator(Evaluator):
             required_matched_ratio=cfg.required_matched_ratio,
         )
         if not c.passed:
+            # compare() returns the long form ("shape: got X, ref Y" / "dtype: ...")
+            # so match on prefix — an exact `== "shape"` never fires and every
+            # shape/dtype mismatch would be mislabeled INCORRECT_NUMERICAL.
+            reason = c.fail_reason or ""
             status = (
-                EvaluationStatus.INCORRECT_SHAPE if c.fail_reason == "shape"
-                else EvaluationStatus.INCORRECT_DTYPE if c.fail_reason == "dtype"
+                EvaluationStatus.INCORRECT_SHAPE if reason.startswith("shape")
+                else EvaluationStatus.INCORRECT_DTYPE if reason.startswith("dtype")
                 else EvaluationStatus.INCORRECT_NUMERICAL
             )
             log = (
