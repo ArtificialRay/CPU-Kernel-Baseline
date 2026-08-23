@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 import litellm
 
 from contracts import AGENT_KERNEL_FILENAME, REFERENCE_SCALAR_AUTHORS
-from eval.remote import InstanceHandle
 
 if TYPE_CHECKING:
     from eval.mcp_client import MCPKernelClient
@@ -63,15 +62,19 @@ Key rules:
   - Do NOT submit without at least one evaluate() call showing a speedup.
 """
 
-_AGENT_ISA_LABELS: dict[str, str] = {
-    "c7g": "Graviton3 (SVE, 256-bit vector length)",
-    "c8g": "Graviton4 (SVE2, 128-bit vector length)",
-}
-
-# Maps EC2 family → the ISA intrinsic family the agent should use.
-_AGENT_ISA_NAMES: dict[str, str] = {
-    "c7g": "SVE",
-    "c8g": "SVE2",
+# isa string -> (isa_desc, isa_name) shown to the agent in the system prompt.
+# Keyed by the SAME `isa` string passed to eval/mcp_client.py::connect() (and
+# from there, mcp_app.server's --isa) 
+_ISA_PROMPT_INFO: dict[str, tuple[str, str]] = {
+    "neon":     ("Arm Neoverse V1 (AWS Graviton3, NEON 128-bit)", "NEON"),
+    "sve":      ("Graviton3 with SVE (SVE1, 256-bit)", "SVE"),
+    "sve2":     ("Graviton4 with SVE2 (128-bit)", "SVE2"),
+    "sme2":     ("Graviton4 with SME2", "SME2"),
+    "portable": (
+        "AArch64 (portable C++ only — do NOT use NEON or SVE intrinsics; "
+        "rely on clean, compiler-vectorizable C++)",
+        "portable C++ (no SIMD intrinsics)",
+    ),
 }
 
 
@@ -205,8 +208,8 @@ def run_agentic_eval(
     trace_set,
     author: str,
     model: str,
-    handle: InstanceHandle,
     mcp_client: "MCPKernelClient",
+    isa: str,
     *,
     dataset: str = "ncnn",
     bench_cfg=None,
@@ -224,13 +227,16 @@ def run_agentic_eval(
         trace_set: TraceSet used for solution persistence and baseline lookup.
         author: Solution author label (e.g. "claude-opus-4-8").
         model: LiteLLM model string (e.g. "anthropic/claude-opus-4-8").
-        handle: SSH handle to the provisioned Graviton instance — used only
-            for isa_desc/isa_name prompt text below (the actual tool
-            execution goes through `mcp_client`, not SSH).
         mcp_client: Shared MCP session (eval/mcp_client.py::connect()) —
             one MCPKernelClient is meant to be shared across every
             definition in a run (see its own docstring), so it's passed in
             already connected, not built here.
+        isa: The SAME isa string passed to `mcp_client`'s `connect()` call
+            (e.g. "sve2", "portable") — drives the system prompt's
+            isa_desc/isa_name via `_ISA_PROMPT_INFO` so the agent is never
+            told a different ISA than what the server actually compiles
+            with. Not derived from instance type — see `_ISA_PROMPT_INFO`'s
+            comment for why that used to be a real bug.
         dataset: Dataset key, used for REFERENCE_SCALAR_AUTHORS lookup below
             (the MCP server itself already knows its own dataset).
         bench_cfg: Optional BenchmarkConfig override (baselines, perf counter settings).
@@ -272,24 +278,7 @@ def run_agentic_eval(
     # (author varies: reference-scalar/reference/baseline-llamacpp-arm).
     ref_solution = trace_set.get_baseline_solution(definition.name, ref_author)
 
-    family = handle.instance_type.split(".")[0] if handle.instance_type else ""
-    isa_desc = _AGENT_ISA_LABELS.get(family, handle.instance_type or "AArch64")
-    isa_name = _AGENT_ISA_NAMES.get(family, "SVE2")
-
-    # ISA-ablation override (env ARMBENCH_ISA_MODE): must match agent_tools.base's
-    # _ISA_MODES so the prompt's allowed-ISA matches the actual compile flags.
-    # "portable" = no hand-written SIMD (compiler auto-vec still allowed).
-    _ISA_MODE_PROMPT = {
-        "portable": ("AArch64 (portable C++ only — do NOT use NEON or SVE "
-                     "intrinsics; rely on clean, compiler-vectorizable C++)",
-                     "portable C++ (no SIMD intrinsics)"),
-        "sve":      ("Graviton3 with SVE (SVE1, 128-bit) — use SVE intrinsics "
-                     "only, NOT SVE2", "SVE"),
-        "sve2":     ("Graviton4 with SVE2 (128-bit)", "SVE2"),
-    }
-    _mode = os.environ.get("ARMBENCH_ISA_MODE", "").strip().lower()
-    if _mode in _ISA_MODE_PROMPT:
-        isa_desc, isa_name = _ISA_MODE_PROMPT[_mode]
+    isa_desc, isa_name = _ISA_PROMPT_INFO.get(isa, (isa or "AArch64", "SVE2"))
 
     _BASELINE_LABELS = {
         "baseline-ncnn-arm":     "hand-optimized ncnn ARM baseline",

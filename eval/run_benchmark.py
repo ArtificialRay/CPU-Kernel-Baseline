@@ -241,8 +241,15 @@ def main():
     parser.add_argument("--teardown", action="store_true",
                         help="Destroy the instance after evaluation")
     parser.add_argument(
-        "--isa", default=None, choices=["neon", "sve", "sve2", "sme2"],
-        help="ISA target (default: sve2). Determines the EC2 instance type via ISA_INSTANCE_MAP.",
+        "--isa", default=None, choices=["neon", "sve", "sve2", "sme2", "portable"],
+        help=(
+            "ISA target (default: sve2). Determines the EC2 instance type via "
+            "ISA_INSTANCE_MAP. 'portable' compiles with plain -march=armv8-a (same "
+            "as neon) and additionally rejects hand-written NEON/SVE intrinsics in "
+            "agent-submitted code (see contracts.DISALLOWED_SOURCE_PATTERNS_BY_ISA) "
+            "— for the ablation comparing agent-optimized plain C++ against "
+            "hand-written SIMD."
+        ),
     )
 
     # Eval options
@@ -259,7 +266,14 @@ def main():
 
     # ── Resolve ISA → instance type ────────────────────────────────────────
     isa = args.isa or "sve2"
-    instance_type = ISA_INSTANCE_MAP.get(isa, "c8g.large")
+    # "portable" isn't in contracts.ISA_TABLE (see config/kernel_contracts.yaml's
+    # isa comment — its "no hand-written SIMD" constraint is a source-policy
+    # rule, not a compile flag, so it was never given its own hardware tier).
+    # It only needs baseline NEON/asimd (mandatory on any AArch64 box), so the
+    # cheapest instance type works — same reasoning as "neon".
+    instance_type = ISA_INSTANCE_MAP.get(isa) or (
+        ISA_INSTANCE_MAP["neon"] if isa == "portable" else "c8g.large"
+    )
 
     try:
         if args.provision:
@@ -323,12 +337,12 @@ def main():
                     trace_set=ts,
                     author=author,
                     model=args.model,
-                    handle=handle,
+                    mcp_client=mcp_client,
+                    isa=isa,
                     dataset=args.dataset,
                     bench_cfg=bench_cfg,
                     max_turns=args.max_turns,
                     verbose=not args.quiet,
-                    mcp_client=mcp_client,
                 )
             except Exception as e:
                 print(f"  ERROR: {e}")

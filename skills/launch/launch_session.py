@@ -58,8 +58,10 @@ PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
 # eval/provision.py and mcp_app/smoke_test_driver.py).
 RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
 
-# Directory to this skill's own copy of eval/dataset_builds.json's content
-DATASET_BUILDS: dict = json.loads((Path(__file__).parent / "dataset_builds.json").read_text())
+# Shared with eval/provision.py and mcp_app/smoke_test_driver.py — lives at
+# the repo root (like contracts.py/config/kernel_contracts.yaml) so none of
+# the three packages "owns" a separately-duplicated copy that can drift.
+DATASET_BUILDS: dict = json.loads((REPO_ROOT / "config" / "dataset_builds.json").read_text())
 
 
 @dataclass(frozen=True)

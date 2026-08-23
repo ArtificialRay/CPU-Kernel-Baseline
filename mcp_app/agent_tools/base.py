@@ -22,7 +22,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional, Protocol
 
 from bench.data.json_utils import save_json_file
-from contracts import REFERENCE_SCALAR_FILENAME
+from contracts import (
+    DISALLOWED_SOURCE_PATTERNS_BY_ISA,
+    DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE,
+    DISALLOWED_SOURCE_PATTERNS_DEFAULT,
+    REFERENCE_SCALAR_FILENAME,
+)
 
 from . import ops
 from .trajectory import TrajectoryWriter
@@ -325,16 +330,19 @@ class KernelSession(ABC):
 
     # ── shared tool implementations ───────────────────────────────────────────
 
-    def _check_source_policy(self, definition: "Definition", code: str) -> Optional[str]:
-        """Return the first disallowed pattern found in `code`, or None if clean.
-
-        Patterns come from `self._bench_cfg.resolve_source_policy(definition)`
-        (bench/config.py) — default is DEFAULT_DISALLOWED_SOURCE_PATTERNS
-        (threading/parallelism APIs), overridable per op_type. This is a raw
-        text scan against the agent's submitted source
+    def _disallowed_source_patterns(self, definition: "Definition") -> list[str]:
+        """All disallowed-source-pattern lists that apply to this compile,
+        including op-type disallowed source pattern and isa disallowed source pattern
         """
-        patterns = self._bench_cfg.resolve_source_policy(definition)
-        for pattern in patterns:
+        op_type_override = DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE.get(definition.op_type)
+        return [
+            *(op_type_override if op_type_override is not None else DISALLOWED_SOURCE_PATTERNS_DEFAULT),
+            *DISALLOWED_SOURCE_PATTERNS_BY_ISA.get(self._isa, []),
+        ]
+
+    def _check_source_policy(self, definition: "Definition", code: str) -> Optional[str]:
+        """Return the first disallowed pattern found in `code`, or None if clean."""
+        for pattern in self._disallowed_source_patterns(definition):
             if re.search(pattern, code):
                 return pattern
         return None
@@ -362,11 +370,7 @@ class KernelSession(ABC):
             )
             return {
                 "status": "REJECTED",
-                "error": (
-                    "kernel.cpp must not use threading/parallelism APIs "
-                    f"(matched pattern: {rejection!r}). This benchmark evaluates "
-                    "single-core SIMD/assembly kernel performance only."
-                ),
+                "error": f"kernel.cpp rejected: matched disallowed pattern {rejection!r}.",
             }
 
         solution = self.make_solution(code)

@@ -61,6 +61,19 @@ EVAL_OP_TYPE_OVERRIDES: dict[str, dict] = {
     op: dict(cfg) for op, cfg in _load()["eval_op_type_overrides"].items()
 }
 
+# Disallowed-source-pattern policy for agent-submitted kernel.cpp — consumed
+# by mcp_app/agent_tools/base.py::_disallowed_source_patterns(), never by
+# bench/ (see config/kernel_contracts.yaml's disallowed_source_patterns
+# comment for why this lives here and not in bench/config.py).
+_DISALLOWED_SOURCE_PATTERNS: dict = _load()["disallowed_source_patterns"]
+DISALLOWED_SOURCE_PATTERNS_DEFAULT: list[str] = list(_DISALLOWED_SOURCE_PATTERNS["default"])
+DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE: dict[str, list[str]] = {
+    op: list(patterns) for op, patterns in _DISALLOWED_SOURCE_PATTERNS["by_op_type"].items()
+}
+DISALLOWED_SOURCE_PATTERNS_BY_ISA: dict[str, list[str]] = {
+    isa: list(patterns) for isa, patterns in _DISALLOWED_SOURCE_PATTERNS["by_isa"].items()
+}
+
 __all__ = [
     "IsaSpec",
     "AGENT_KERNEL_FILENAME",
@@ -71,4 +84,7 @@ __all__ = [
     "ISA_INSTANCE_MAP",
     "EVAL_DEFAULTS",
     "EVAL_OP_TYPE_OVERRIDES",
+    "DISALLOWED_SOURCE_PATTERNS_DEFAULT",
+    "DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE",
+    "DISALLOWED_SOURCE_PATTERNS_BY_ISA",
 ]

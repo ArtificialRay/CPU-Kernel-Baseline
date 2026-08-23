@@ -7,8 +7,6 @@ depending on each other.
 - `BenchmarkConfig` — the run-level knobs (what to run + how to evaluate).
   Call `BenchmarkConfig.resolve_eval_config(definition)` to get the evaluator
   knobs for a specific definition, including any per-op-type overrides.
-  Call `BenchmarkConfig.resolve_source_policy(definition)` to get the list of
-  disallowed source patterns (e.g. threading APIs) for a specific definition.
 - `EvalConfig` — the evaluator-facing subset, fully resolved (no None fields).
 - `EvalOverride` — sparse per-op-type overrides (None = inherit from BenchmarkConfig).
 """
@@ -32,23 +30,6 @@ DEFAULT_CORRECTNESS_ABS_TOL = EVAL_DEFAULTS["correctness_abs_tol"]
 DEFAULT_CORRECTNESS_REL_TOL = EVAL_DEFAULTS["correctness_rel_tol"]
 DEFAULT_REQUIRED_MATCHED_RATIO = EVAL_DEFAULTS["required_matched_ratio"]
 DEFAULT_COLLECT_PERF_COUNTERS = EVAL_DEFAULTS["collect_perf_counters"]
-# Agent kernels are meant to be evaluated as single-core SIMD/assembly — openMP parallelism is forbidden
-DEFAULT_DISALLOWED_SOURCE_PATTERNS: List[str] = [
-    r"#\s*pragma\s+omp",
-    r"#\s*include\s*[<\"]omp\.h[>\"]",
-    r"#\s*include\s*[<\"]thread[>\"]",
-    r"#\s*include\s*[<\"]pthread\.h[>\"]",
-    r"std::thread",
-    r"std::async",
-    r"std::jthread",
-    r"pthread_create",
-    r"omp_set_num_threads",
-    r"omp_get_num_threads",
-    r"omp_get_thread_num",
-    r"\bfork\s*\(",
-    r"\bvfork\s*\(",
-    r"\bclone\s*\(",
-]
 
 @dataclass
 class EvalOverride:
@@ -97,9 +78,6 @@ class BenchmarkConfig:
     pass an explicit dict (e.g. {}) to opt out."""
     watchdog_s: float = DEFAULT_WATCHDOG_S
     collect_perf_counters: bool = DEFAULT_COLLECT_PERF_COUNTERS
-    source_policy: Dict[str, List[str]] = field(default_factory=dict)
-    """Per-op-type override of the disallowed-source-pattern list, keyed by
-    definition.op_type. """
 
     def resolve_eval_config(self, definition=None) -> "EvalConfig":
         """Merge: BenchmarkConfig base → op_type_config[definition.op_type].
@@ -132,17 +110,6 @@ class BenchmarkConfig:
             collect_perf_counters=self.collect_perf_counters,
             baseline_author=self.baseline_author,
         )
-
-    def resolve_source_policy(self, definition=None) -> List[str]:
-        """Disallowed source-pattern list for `definition.op_type`.
-
-        Key present in `source_policy` (even as []) → use that list verbatim
-        (a present-but-empty list means "no restriction" for that op_type).
-        Key absent, or `definition` is None → DEFAULT_DISALLOWED_SOURCE_PATTERNS.
-        """
-        if definition is not None and definition.op_type in self.source_policy:
-            return self.source_policy[definition.op_type]
-        return list(DEFAULT_DISALLOWED_SOURCE_PATTERNS)
 
 
 @dataclass(frozen=True)
@@ -184,5 +151,4 @@ __all__ = [
     "DEFAULT_CORRECTNESS_REL_TOL",
     "DEFAULT_REQUIRED_MATCHED_RATIO",
     "DEFAULT_COLLECT_PERF_COUNTERS",
-    "DEFAULT_DISALLOWED_SOURCE_PATTERNS",
 ]

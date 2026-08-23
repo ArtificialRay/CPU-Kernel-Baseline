@@ -55,7 +55,7 @@ EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 # Allow-list, not a deny-list — see InstanceHandle.rsync_to's docstring.
 # TODO: fold into an env var
 RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt","config","contracts.py"]
-DATASET_BUILDS_PATH = REPO_ROOT / "eval" / "dataset_builds.json"
+DATASET_BUILDS_PATH = REPO_ROOT / "config" / "dataset_builds.json"
 
 # Must stay shell/HCL/JSON-key/AWS-tag safe — flows into a `terraform -target`
 # CLI arg, an eval_config.json dict key, and an AWS resource tag. Rejected
