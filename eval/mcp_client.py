@@ -19,34 +19,33 @@ Two public entry points:
   `cleanup`, the interface `eval/evaluator.py::run_agentic_eval`'s turn
   loop calls.
 
-Tool surface presented to the model is intentionally NOT derived from
-`session.list_tools()` — that lists mcp_app's own 3-tool, multi-definition
-schema (definition/version args the model would have to track itself).
-eval/'s design is one definition per session, so `_tool_schemas()` below
-reconstructs eval/'s original 5-tool contract (compile/evaluate/
-disassemble/read_code/submit, no `definition`/`version` args) and this
-module injects `definition` + the last compiled `version` on every
-forwarded call — the model's-eye view of the tools doesn't change.
+Tool surface presented to the model IS derived directly from
+`session.list_tools()` — compile/evaluate/disassemble's schemas (including
+`definition`/`version`) are forwarded to litellm exactly as mcp_app wrote
+them, no stripping or re-injection. The model tracks and passes
+`definition`/`version` itself, same as nanobot/Claude Code already do
+against this same server — `build_user_prompt()` tells it which
+`definition` this session is for, and it reads `version` back from each
+`compile()` result. `dispatch_tool_call` is therefore a near-total
+passthrough: whatever the model calls, forward as-is. This also means any
+NEW tool mcp_app/server.py adds shows up here automatically, with zero
+eval/ code changes — the only two exceptions, and the reason this isn't a
+100% blind passthrough:
 
-`evaluate(measure=...)` is dropped (not forwarded) — confirmed dead
-weight: the underlying evaluator always runs the full timed pass
-regardless of `measure`, so `measure=false` was never actually faster,
-only suppressed the returned performance dict.
-
-`submit` IS forwarded as a real call (`session.call_tool("submit", ...)`),
-even though mcp_app's `KernelSession.tool_schemas()` doesn't advertise it —
-`mcp_app/server.py::_call_tool` dispatches by name via
-`tools.dispatch_tool_call(name, args)` regardless of what `list_tools()`
-advertises, and `KernelSession.submit()` is a real method, just not
-LLM-discoverable by design (mcp_app relies on its own evaluate()'s
-auto-submit-on-new-best instead). Calling it again after an auto-submit is
-harmless — it just re-persists the same `best_compile` with a better
-`explanation` string than the generic "Auto submit by evaluate()" one.
-
-`read_code` has no such fallback (mcp_app genuinely retired the method,
-not just its schema) — reimplemented here over MCP Resources
-(`list_resources`/`read_resource`), the same primitive mcp_app/resources.py
-serves to nanobot/Claude Code.
+- `submit` is NOT exposed to the model at all (not in `tool_schemas()`),
+  matching mcp_app's own design exactly: `evaluate()` already
+  auto-persists on every new best, so there's nothing for the model to
+  explicitly submit. `MCPToolsForDefinition.submit()` still exists as a
+  plain Python method — `eval/evaluator.py`'s max-turns-exhausted fallback
+  calls it directly (never through `dispatch_tool_call`, never something
+  the model can trigger) purely to attach a better `explanation` string to
+  the trajectory than the generic "Auto submit by evaluate()" one; the
+  result was already durably persisted by then either way.
+- `read_code` has no such fallback (mcp_app genuinely retired the method,
+  not just its schema, and it was never a `list_tools()` entry to begin
+  with) — reimplemented here over MCP Resources (`list_resources`/
+  `read_resource`), the same primitive mcp_app/resources.py serves to
+  nanobot/Claude Code.
 """
 
 from __future__ import annotations
@@ -60,6 +59,7 @@ from typing import Any, Callable, Coroutine, Optional
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+from contracts import MCP_CLIENT_DEFAULTS
 from eval.remote import InstanceHandle
 from skills.launch.launch_session import RemoteTarget, prepare_session, stop_tunnel, sync_results
 
@@ -69,10 +69,21 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # pass and can legitimately take minutes; mcp_app/server.py pings the MCP
 # session every 120s while a call is in flight (server.py's
 # TOOL_CALL_PING_INTERVAL_S) specifically so a slow call doesn't look dead,
-# so waiting generously here is the correct match, not a band-aid.
-_CONNECT_TIMEOUT_S = 60.0
-_TOOL_CALL_TIMEOUT_S = 900.0
-_RESOURCE_CALL_TIMEOUT_S = 60.0
+# so waiting generously here is the correct match, not a band-aid. Values
+# from config/kernel_contracts.yaml's mcp_client section.
+_CONNECT_TIMEOUT_S = MCP_CLIENT_DEFAULTS["connect_timeout_s"]
+_TOOL_CALL_TIMEOUT_S = MCP_CLIENT_DEFAULTS["tool_call_timeout_s"]
+_RESOURCE_CALL_TIMEOUT_S = MCP_CLIENT_DEFAULTS["resource_call_timeout_s"]
+_COMPILE_TIMEOUT_S = MCP_CLIENT_DEFAULTS["compile_timeout_s"]
+_DISASSEMBLE_TIMEOUT_S = MCP_CLIENT_DEFAULTS["disassemble_timeout_s"]
+
+# Per-tool-name timeout override for dispatch_tool_call's generic forwarding
+# below — pure tuning, not dispatch logic: a tool with no entry here just
+# gets _TOOL_CALL_TIMEOUT_S, so a new mcp_app tool needs no entry to work.
+_TOOL_TIMEOUTS_S: dict[str, float] = {
+    "compile": _COMPILE_TIMEOUT_S,
+    "disassemble": _DISASSEMBLE_TIMEOUT_S,
+}
 
 
 def remote_target_from_instance_handle(handle: InstanceHandle) -> RemoteTarget:
@@ -91,84 +102,39 @@ def _free_local_port() -> int:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
+# Tool schema specifically for 'read_code', which is not a real mcp tool
+# Not a real MCP tool — never appears in session.list_tools() (mcp_app
+# retired read_code entirely, see module docstring) — reconstructed here as
+# a pseudo-tool wrapping list_resources()/read_resource().
+_READ_CODE_SCHEMA: dict = {"type": "function", "function": {
+    "name": "read_code",
+    "description": (
+        "Read a source file or disassembly saved during this session. "
+        "Compiled versions are saved as v1.cpp, v2.cpp, ... (N from compile() result). "
+        "Disassembled versions are saved as v1.s, v2.s, ... (written by disassemble()). "
+        "On error, returns the list of available files so you can pick the right one."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"filename": {"type": "string", "description": "File to read, e.g. 'v2.cpp' or 'v1.s'."}},
+        "required": ["filename"],
+    },
+}}
 
-def _tool_schemas() -> list[dict]:
-    """eval/'s original 5-tool contract, litellm {"type": "function", ...}
-    shape, `measure` dropped from evaluate() (see module docstring) and no
-    per-dataset custom wording (ncnn/simd_loop/llama_cpp used to hand-write
-    slightly different code_description/disasm_hint text — dropped for the
-    same reason mcp_app dropped it: redundant with, and less precise than,
-    the reference-scalar-kernel.cpp resource the model already reads)."""
-    return [
+
+def _tool_schemas_from_raw(raw_tools: list) -> list[dict]:
+    """mcp.types.Tool list (from session.list_tools()) -> litellm
+    {"type": "function", ...} shape — forwarded as-is, `submit` excluded
+    (see module docstring on why neither of these is a stripping/rewriting
+    step)."""
+    schemas = [
         {"type": "function", "function": {
-            "name": "compile",
-            "description": (
-                "Compile your kernel.cpp on the remote ARM instance. The harness/binding "
-                "files are provided automatically — you only write the kernel. Returns "
-                "{\"status\": \"OK\", \"version\": N} on success, or "
-                "{\"status\": \"COMPILE_ERROR\", \"error\": \"...\"} on failure."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"code": {"type": "string", "description": "Full C++ source for kernel.cpp."}},
-                "required": ["code"],
-            },
-        }},
-        {"type": "function", "function": {
-            "name": "evaluate",
-            "description": (
-                "Run the last compiled kernel against all workloads on the remote: checks "
-                "correctness (fail-fast on the first failing workload) and, if that passes, "
-                "measures wall-time and cycle counts in the same pass. Returns "
-                "{\"status\": \"PASSED\", \"performance\": {...}} or "
-                "{\"status\": \"<error>\", \"failed_workload\": \"...\", \"log\": \"...\"}."
-            ),
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        }},
-        {"type": "function", "function": {
-            "name": "disassemble",
-            "description": (
-                "Disassemble the last compiled .so on the remote (up to 300 lines of "
-                "AArch64 assembly). Defaults to your kernel's own entry symbol; pass `fn` "
-                "to inspect a different symbol."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"fn": {"type": "string",
-                                       "description": "Symbol to disassemble. Omit to use your kernel's entry symbol."}},
-                "required": [],
-            },
-        }},
-        {"type": "function", "function": {
-            "name": "read_code",
-            "description": (
-                "Read a source file or disassembly saved during this session. "
-                "Compiled versions are saved as v1.cpp, v2.cpp, ... (N from compile() result). "
-                "Disassembled versions are saved as v1.s, v2.s, ... (written by disassemble()). "
-                "On error, returns the list of available files so you can pick the right one."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"filename": {"type": "string", "description": "File to read, e.g. 'v2.cpp' or 'v1.s'."}},
-                "required": ["filename"],
-            },
-        }},
-        {"type": "function", "function": {
-            "name": "submit",
-            "description": (
-                "Score and persist the best-performing version from this session. "
-                "Automatically selects the version with the highest cycle speedup "
-                "seen in evaluate() calls. Call this when you have finished optimizing. "
-                "Returns {\"status\": \"PASSED\", \"time_speedup\": X, \"cycle_speedup\": Y}."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"explanation": {"type": "string",
-                                                "description": "Brief description of the optimization approach and key perf observations."}},
-                "required": [],
-            },
-        }},
+            "name": t.name, "description": t.description, "parameters": t.inputSchema,
+        }}
+        for t in raw_tools
     ]
+    schemas.append(_READ_CODE_SCHEMA)
+    return schemas
 
 
 class _SessionThread:
@@ -254,6 +220,7 @@ class MCPKernelClient:
         self._target = target
         self._author = author
         self._remote_root = remote_root
+        self._schemas: Optional[list[dict]] = None  # cached — the server's tool set is fixed for its lifetime
 
     # ── raw MCP calls ───────────────────────────────────────────────────
 
@@ -270,7 +237,10 @@ class MCPKernelClient:
     # ── public surface ──────────────────────────────────────────────────
 
     def tool_schemas(self) -> list[dict]:
-        return _tool_schemas()
+        if self._schemas is None:
+            result = self._session.call(lambda s: s.list_tools(), timeout=_RESOURCE_CALL_TIMEOUT_S)
+            self._schemas = _tool_schemas_from_raw(result.tools)
+        return self._schemas
 
     def tools_for(self, definition_name: str) -> "MCPToolsForDefinition":
         return MCPToolsForDefinition(self, definition_name)
@@ -308,36 +278,18 @@ class MCPToolsForDefinition:
     def __init__(self, client: MCPKernelClient, definition_name: str) -> None:
         self._client = client
         self._definition_name = definition_name
-        self._last_version: Optional[int] = None
 
     def dispatch_tool_call(self, name: str, args: dict) -> dict:
+        """Forward whatever the model called, as-is — it supplies its own
+        `definition`/`version` (see module docstring on why this isn't
+        stripped/re-injected). `read_code` is the one exception: not a real
+        MCP tool, so it can't be forwarded at all."""
         try:
-            if name == "compile":
-                result = self._client._call_tool(
-                    "compile", {"definition": self._definition_name, "code": args["code"]},
-                    timeout=180,
-                )
-                if result.get("status") == "OK":
-                    self._last_version = result.get("version")
-                return result
-            if name == "evaluate":
-                # `measure` intentionally dropped — see module docstring.
-                if self._last_version is None:
-                    return {"status": "COMPILE_ERROR", "error": "nothing compiled yet"}
-                return self._client._call_tool(
-                    "evaluate", {"definition": self._definition_name, "version": self._last_version},
-                    timeout=_TOOL_CALL_TIMEOUT_S,
-                )
-            if name == "disassemble":
-                if self._last_version is None:
-                    return {"error": "nothing compiled yet — call compile() first"}
-                call_args = {"definition": self._definition_name, "version": self._last_version}
-                if args.get("fn"):
-                    call_args["fn"] = args["fn"]
-                return self._client._call_tool("disassemble", call_args, timeout=60)
             if name == "read_code":
                 return self._read_code(args.get("filename", ""))
-            return {"error": f"unknown tool: {name!r}"}
+            return self._client._call_tool(
+                name, args, timeout=_TOOL_TIMEOUTS_S.get(name, _TOOL_CALL_TIMEOUT_S),
+            )
         except Exception as e:  # noqa: BLE001 — surfaced to the agent loop as a normal tool error, not a crash
             return {"error": str(e)}
 

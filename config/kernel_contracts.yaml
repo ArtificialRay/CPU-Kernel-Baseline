@@ -104,10 +104,7 @@ isa:
 
 # Disallowed-source-pattern policy for agent-submitted kernel.cpp, consumed
 # by mcp_app's compile() tool (mcp_app/agent_tools/base.py::
-# _disallowed_source_patterns()) — NOT by bench/'s own compile pipeline,
-# which never gatekeeps source content (confirmed: zero references anywhere
-# under bench/, and no caller anywhere has ever overridden the old
-# BenchmarkConfig.source_policy field). Each key below is one restriction
+# _disallowed_source_patterns()). Each key below is one restriction
 # dimension; add a new dimension by adding a new key here and one line in
 # _disallowed_source_patterns(), nothing else needs to change.
 disallowed_source_patterns:
@@ -146,3 +143,31 @@ disallowed_source_patterns:
       - '#\s*include\s*[<"]arm_sve\.h[>"]'
       - '\bfloat(16|32|64)x[0-9]+x?[0-9]*_t\b'
       - '\bv(ld|st|add|mul|fma|mla|mls|sub|dup)[a-z0-9_]*_[fsu](8|16|32|64)\b'
+
+# eval/evaluator.py::run_agentic_eval's litellm turn loop — consumed via
+# contracts.AGENT_LOOP_DEFAULTS.
+tool_call_loop:
+  # litellm.completion()'s own timeout — large reasoning responses over
+  # OpenRouter can exceed litellm's 600s default.
+  completion_timeout_s: 1200
+  temperature: 0.2
+  # Model strings (matched as a substring) that reject an explicit
+  # `temperature` kwarg outright — skip setting it for these rather than
+  # relying solely on the runtime BadRequestError-drop-and-retry fallback.
+  models_without_temperature: ["opus-4-7", "opus-4-8"]
+  # Retry budget for rate-limit/server-error responses (exponential backoff:
+  # retry_base_wait_s * 2**attempt).
+  retry_max_attempts: 6
+  retry_base_wait_s: 30
+
+# eval/mcp_client.py's MCP session — consumed via contracts.MCP_CLIENT_DEFAULTS.
+# Generous timeouts: evaluate()/compile() run a full build+timed-repeat pass
+# and can legitimately take minutes; mcp_app/server.py pings the MCP session
+# every 120s while a call is in flight specifically so a slow call doesn't
+# look dead (server.py's TOOL_CALL_PING_INTERVAL_S).
+mcp_client:
+  connect_timeout_s: 60
+  tool_call_timeout_s: 900
+  resource_call_timeout_s: 60
+  compile_timeout_s: 180
+  disassemble_timeout_s: 60

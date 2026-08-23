@@ -74,6 +74,11 @@ DISALLOWED_SOURCE_PATTERNS_BY_ISA: dict[str, list[str]] = {
     isa: list(patterns) for isa, patterns in _DISALLOWED_SOURCE_PATTERNS["by_isa"].items()
 }
 
+# eval/evaluator.py::run_agentic_eval's litellm turn loop (completion timeout,
+# temperature, retry budget) and eval/mcp_client.py's MCP session (per-call timeouts) — raw dicts, same treatment as EVAL_DEFAULTS above.
+AGENT_LOOP_DEFAULTS: dict = dict(_load()["tool_call_loop"])
+MCP_CLIENT_DEFAULTS: dict = dict(_load()["mcp_client"])
+
 __all__ = [
     "IsaSpec",
     "AGENT_KERNEL_FILENAME",
@@ -87,4 +92,6 @@ __all__ = [
     "DISALLOWED_SOURCE_PATTERNS_DEFAULT",
     "DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE",
     "DISALLOWED_SOURCE_PATTERNS_BY_ISA",
+    "AGENT_LOOP_DEFAULTS",
+    "MCP_CLIENT_DEFAULTS",
 ]
