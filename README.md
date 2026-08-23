@@ -1,8 +1,7 @@
 # CPU-Kernel-Baseline
 
 Evaluates LLMs on writing optimized AArch64 SIMD kernels for ncnn / llama.cpp /
-synthetic simd-loop benchmarks. See [CLAUDE.md](CLAUDE.md) for full
-architecture; this document is the operator-facing quickstart.
+synthetic simd-loop benchmarks. 
 
 FP32 Kernels available:
 | Kernel Name | Type | Source |

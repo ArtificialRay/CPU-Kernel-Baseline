@@ -39,7 +39,6 @@ mcp_app/
 # On the target instance, once the repo is synced there.
 python -m mcp_app.server --dataset <ncnn|simd-loop|llama.cpp> --author <tag> \
     --isa <neon|sve|sve2|sme2> --run-dir ~/arm-bench/agent-runs-mcp/<author> \
-    --transport stdio
 ```
 
 One process serves **every** definition in `--dataset` — `compile()` takes
