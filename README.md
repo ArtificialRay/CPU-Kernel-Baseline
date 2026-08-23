@@ -63,72 +63,9 @@ python eval/run_benchmark.py --problem <op_type> --dataset <dataset> --model <mo
 MCP session against `mcp_app/server.py` on it (`eval/mcp_client.py`), and runs
 the litellm agent loop until the model stops or `--max-turns` is hit.
 
-### Usage examples
-
-**Run a single op type (ncnn dataset, SVE2 / Graviton4 by default):**
-```bash
-python eval/run_benchmark.py --problem conv2d --dataset ncnn --model anthropic/claude-opus-4-8
-```
-
-**Run all definitions for a dataset:**
-```bash
-python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-8
-```
-
-**Provision a fresh instance, run, then tear it down automatically:**
-```bash
-python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-8 \
-    --provision --teardown
-```
-
-**Override ISA (e.g. Graviton3 SVE), or run the `portable` C/C++-only ablation:**
-```bash
-python eval/run_benchmark.py --all --dataset simd-loop --model anthropic/claude-opus-4-8 \
-    --isa sve
-python eval/run_benchmark.py --all --dataset simd-loop --model anthropic/claude-opus-4-8 \
-    --isa portable
-```
-
-**Run simd-loop dataset:**
-```bash
-python eval/run_benchmark.py --problem loop_001 --dataset simd-loop --model anthropic/claude-opus-4-8
-```
-
-### All options
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--problem <name>` | — | Definition name or op_type prefix (e.g. `conv2d`) |
-| `--all` | — | Run all definitions for the dataset (mutually exclusive with `--problem`) |
-| `--dataset` | `ncnn` | Dataset to benchmark: `ncnn`, `simd-loop`, or `llama.cpp` |
-| `--model` | (required) | LiteLLM model string, e.g. `anthropic/claude-opus-4-8` |
-| `--isa` | `sve2` | ISA target: `neon`, `sve`, `sve2`, `sme2`, `portable` (plain C/C++, no SIMD intrinsics allowed) |
-| `--provision` | off | Provision a new instance even if one is already configured |
-| `--teardown` | off | Destroy the instance after evaluation |
-| `--max-turns` | `20` | Max agent turns per definition |
-| `--quiet` | off | Suppress per-turn output |
-| `--no-save` | off | Don't save results to `results/` |
-| `--save-trace` | off | Save full `version_history` to `traces/` |
-| `--skip-baselines` | off | Skip lazy baseline collection (use if baselines are already present) |
-
-### Instance types
-
-| ISA | Instance | Notes |
-|-----|----------|-------|
-| `neon` / `portable` | `c7g.large` | Graviton3, 128-bit NEON only |
-| `sve` | `c7g.large` | Graviton3, Neoverse V1, 256-bit SVE |
-| `sve2` | `c8g.large` | Graviton4, Neoverse V2, 128-bit SVE2 (default) |
-
-### Provision & teardown
-
-```bash
-python eval/provision.py --isa sve2       # Graviton4 c8g.large (SVE2=128-bit)
-python eval/provision.py --isa sve        # Graviton3 c7g.large (SVE=256-bit)
-python eval/provision.py --teardown
-```
-
-Or pass `--provision`/`--teardown` directly to `run_benchmark.py` to do it
-automatically around a run.
+See [`eval/README.md`](eval/README.md) for the full flag reference, more
+usage examples, `eval/provision.py`'s standalone provisioning commands, and
+where results/traces end up.
 
 ---
 
