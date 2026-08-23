@@ -25,8 +25,8 @@ the right moment for on its own.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
-import socket
 import subprocess
 import sys
 import time
@@ -36,6 +36,12 @@ from typing import Optional
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+# This module's own directory, so `from remote import RemoteTarget` below
+# resolves whether this file is run as a script (already implicit — Python
+# puts the script's own dir on sys.path[0]) or imported as a package
+# submodule (e.g. `from skills.launch import launch_session`, which does
+# NOT add this directory automatically — see eval/mcp_client.py).
+sys.path.insert(0, str(Path(__file__).parent))
 
 # contracts.py lives at the repo root, outside both eval/ and mcp_app/, so
 # importing it doesn't violate this module's "zero imports from eval/ or
@@ -52,8 +58,10 @@ PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
 # eval/provision.py and mcp_app/smoke_test_driver.py).
 RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
 
-# Directory to this skill's own copy of eval/dataset_builds.json's content
-DATASET_BUILDS: dict = json.loads((Path(__file__).parent / "dataset_builds.json").read_text())
+# Shared with eval/provision.py and mcp_app/smoke_test_driver.py — lives at
+# the repo root (like contracts.py/config/kernel_contracts.yaml) so none of
+# the three packages "owns" a separately-duplicated copy that can drift.
+DATASET_BUILDS: dict = json.loads((REPO_ROOT / "config" / "dataset_builds.json").read_text())
 
 
 @dataclass(frozen=True)
@@ -292,17 +300,33 @@ def _kill_remote_port(target: RemoteTarget, remote_port: int) -> None:
     )
 
 
+def _probe_ready(port: int) -> bool:
+    """One lightweight HTTP round-trip against the streamable-http endpoint.
+    verify if the real mcp server can answer request
+    """
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    try:
+        conn.request("POST", "/mcp", body=b"{}", headers={"Content-Type": "application/json"})
+        conn.getresponse()
+        return True
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        conn.close()
+
+
 def _wait_for_port(port: int, *, timeout: float, proc: subprocess.Popen) -> None:
+    """Wait until the remote mcp_app.server is actually answering requests
+    through the tunnel — not just until ssh's local listener is up (see
+    _probe_ready's docstring for why that distinction matters)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise RuntimeError(f"ssh tunnel process exited early (rc={proc.returncode})")
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                return
-        except OSError:
-            time.sleep(0.5)
-    raise TimeoutError(f"Nothing listening on 127.0.0.1:{port} after {timeout}s")
+        if _probe_ready(port):
+            return
+        time.sleep(0.3)
+    raise TimeoutError(f"mcp_app.server on 127.0.0.1:{port} not answering after {timeout}s")
 
 
 def stop_tunnel(prepared: dict) -> None:
@@ -329,22 +353,34 @@ def sync_results(
     definition: Optional[str] = None,
     remote_root: str = "~/arm-bench",
     local_results_dir: str | Path,
+    sync_bench_trace: bool = False,
+    local_bench_trace_dir: Optional[str | Path] = None,
 ) -> dict:
     """Pull this author's session results back to local_results_dir.
 
     Pulls the whole `agent-runs-mcp/<author>/` directory (every definition
     that author's session touched) unless `definition` is given, in which
     case only that one definition's subdirectory is synced.
+
+    `sync_bench_trace=True` additionally pulls back `bench-trace/solutions/`
+    and `bench-trace/traces/` from the remote instance 
     """
     remote_dir = f"agent-runs-mcp/{author}"
     if definition:
         remote_dir += f"/{definition}"
     target.rsync_from(f"{remote_root}/{remote_dir}", local_results_dir)
-    return {
+    result = {
         "author": author,
         "definition": definition,
         "local_run_dir": str(Path(local_results_dir) / Path(remote_dir).name),
     }
+    if sync_bench_trace:
+        bt_dir = Path(local_bench_trace_dir) if local_bench_trace_dir else REPO_ROOT / "bench-trace"
+        # sync back new solutions and traces for kernel stability test
+        target.rsync_from(f"{remote_root}/bench-trace/solutions/", bt_dir / "solutions")
+        target.rsync_from(f"{remote_root}/bench-trace/traces/", bt_dir / "traces")
+        result["local_bench_trace_dir"] = str(bt_dir)
+    return result
 
 
 def _cli_prepare(args: argparse.Namespace) -> None:
@@ -372,6 +408,7 @@ def _cli_sync(args: argparse.Namespace) -> None:
     result = sync_results(
         target, args.author, definition=args.definition,
         remote_root=args.remote_root, local_results_dir=args.local_results_dir,
+        sync_bench_trace=args.sync_bench_trace,
     )
     print(result)
 
@@ -483,6 +520,9 @@ def main(argv: list[str] | None = None) -> None:
                        help="Sync only this definition's subdirectory. Omit to sync everything "
                             "this author's session touched.")
     sync.add_argument("--local-results-dir", required=True)
+    sync.add_argument("--sync-bench-trace", action="store_true",
+                       help="Also pull back bench-trace/solutions/ and bench-trace/traces/ "
+                            "from the remote instance (merge-pull, no --delete) ")
     sync.set_defaults(func=_cli_sync)
 
     def _add_provision_args(sp: argparse.ArgumentParser) -> None:

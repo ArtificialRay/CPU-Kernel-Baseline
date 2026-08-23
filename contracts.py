@@ -1,16 +1,5 @@
 """Kernel-session contracts shared by eval/, mcp_app/, skills/, and bench/.
-
-Single source of truth for naming/mapping conventions that every dataset's
-AgentTools (eval/agent_tools/*) or KernelSession (mcp_app/agent_tools/*)
-implementation must agree on — which file an agent's kernel is always named,
-which Solution.author a dataset's reference-scalar/baseline solution lives
-under, and which compile flags + EC2 instance type an ISA maps to. Backed by
-config/kernel_contracts.yaml; loaded once and cached.
-
-Lives at the repo root (not inside bench/) because it's consumed by every
-top-level package equally — bench/, eval/, mcp_app/, skills/ — none of which
-should appear to "own" it. mcp_app/README.md's "zero coupling to eval/ or
-skills/" boundary is preserved: this module has no dependency on any of them.
+config is in <REPO-ROOT>/config/kernel_contracts.yaml with 
 """
 
 from __future__ import annotations
@@ -72,6 +61,24 @@ EVAL_OP_TYPE_OVERRIDES: dict[str, dict] = {
     op: dict(cfg) for op, cfg in _load()["eval_op_type_overrides"].items()
 }
 
+# Disallowed-source-pattern policy for agent-submitted kernel.cpp — consumed
+# by mcp_app/agent_tools/base.py::_disallowed_source_patterns(), never by
+# bench/ (see config/kernel_contracts.yaml's disallowed_source_patterns
+# comment for why this lives here and not in bench/config.py).
+_DISALLOWED_SOURCE_PATTERNS: dict = _load()["disallowed_source_patterns"]
+DISALLOWED_SOURCE_PATTERNS_DEFAULT: list[str] = list(_DISALLOWED_SOURCE_PATTERNS["default"])
+DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE: dict[str, list[str]] = {
+    op: list(patterns) for op, patterns in _DISALLOWED_SOURCE_PATTERNS["by_op_type"].items()
+}
+DISALLOWED_SOURCE_PATTERNS_BY_ISA: dict[str, list[str]] = {
+    isa: list(patterns) for isa, patterns in _DISALLOWED_SOURCE_PATTERNS["by_isa"].items()
+}
+
+# eval/evaluator.py::run_agentic_eval's litellm turn loop (completion timeout,
+# temperature, retry budget) and eval/mcp_client.py's MCP session (per-call timeouts) — raw dicts, same treatment as EVAL_DEFAULTS above.
+AGENT_LOOP_DEFAULTS: dict = dict(_load()["tool_call_loop"])
+MCP_CLIENT_DEFAULTS: dict = dict(_load()["tool_call_loop"]["mcp_client"])
+
 __all__ = [
     "IsaSpec",
     "AGENT_KERNEL_FILENAME",
@@ -82,4 +89,9 @@ __all__ = [
     "ISA_INSTANCE_MAP",
     "EVAL_DEFAULTS",
     "EVAL_OP_TYPE_OVERRIDES",
+    "DISALLOWED_SOURCE_PATTERNS_DEFAULT",
+    "DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE",
+    "DISALLOWED_SOURCE_PATTERNS_BY_ISA",
+    "AGENT_LOOP_DEFAULTS",
+    "MCP_CLIENT_DEFAULTS",
 ]

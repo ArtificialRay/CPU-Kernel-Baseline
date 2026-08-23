@@ -101,3 +101,72 @@ isa:
     features: ["sve2", "sme2"]
     labels: ["aarch64-sme2"]
     instance_type: "c8g.large"
+
+# Disallowed-source-pattern policy for agent-submitted kernel.cpp, consumed
+# by mcp_app's compile() tool (mcp_app/agent_tools/base.py::
+# _disallowed_source_patterns()). Each key below is one restriction
+# dimension; add a new dimension by adding a new key here and one line in
+# _disallowed_source_patterns(), nothing else needs to change.
+disallowed_source_patterns:
+  # Always-on baseline: agent kernels are evaluated as single-core
+  # SIMD/assembly — threading/parallelism APIs are forbidden regardless of
+  # op_type or isa.
+  default:
+    - '#\s*pragma\s+omp'
+    - '#\s*include\s*[<"]omp\.h[>"]'
+    - '#\s*include\s*[<"]thread[>"]'
+    - '#\s*include\s*[<"]pthread\.h[>"]'
+    - 'std::thread'
+    - 'std::async'
+    - 'std::jthread'
+    - 'pthread_create'
+    - 'omp_set_num_threads'
+    - 'omp_get_num_threads'
+    - 'omp_get_thread_num'
+    - '\bfork\s*\('
+    - '\bvfork\s*\('
+    - '\bclone\s*\('
+  # op_type -> pattern list REPLACING (not adding to) `default` for that
+  # op_type. Empty for now (nothing has ever needed this) — kept so the
+  # capability isn't lost in the move out of bench/config.py.
+  by_op_type: {}
+  # isa -> pattern list ADDED ON TOP of `default` (and any by_op_type
+  # override) when a session's isa matches. SVE/SVE2 intrinsics already fail
+  # to compile under "portable" (-march=armv8-a has no +sve target feature)
+  # — this list exists because NEON does NOT fail: NEON is AArch64 baseline,
+  # so an agent's NEON intrinsics would otherwise compile and run silently
+  # under "portable", contradicting the whole point of that ISA tier (agent
+  # optimizes via plain, compiler-vectorizable C++ only).
+  by_isa:
+    portable:
+      - '#\s*include\s*[<"]arm_neon\.h[>"]'
+      - '#\s*include\s*[<"]arm_sve\.h[>"]'
+      - '\bfloat(16|32|64)x[0-9]+x?[0-9]*_t\b'
+      - '\bv(ld|st|add|mul|fma|mla|mls|sub|dup)[a-z0-9_]*_[fsu](8|16|32|64)\b'
+
+# eval/evaluator.py::run_agentic_eval's litellm turn loop — consumed via
+# contracts.AGENT_LOOP_DEFAULTS.
+tool_call_loop:
+  # litellm.completion()'s own timeout — large reasoning responses over
+  # OpenRouter can exceed litellm's 600s default.
+  completion_timeout_s: 1200
+  temperature: 0.2
+  # Model strings (matched as a substring) that reject an explicit
+  # `temperature` kwarg outright — skip setting it for these rather than
+  # relying solely on the runtime BadRequestError-drop-and-retry fallback.
+  models_without_temperature: ["opus-4-7", "opus-4-8"]
+  # Retry budget for rate-limit/server-error responses (exponential backoff:
+  # retry_base_wait_s * 2**attempt).
+  retry_max_attempts: 6
+  retry_base_wait_s: 30
+  # eval/mcp_client.py's MCP session — consumed via contracts.MCP_CLIENT_DEFAULTS.
+  # Generous timeouts: evaluate()/compile() run a full build+timed-repeat pass
+  # and can legitimately take minutes; mcp_app/server.py pings the MCP session
+  # every 120s while a call is in flight specifically so a slow call doesn't
+  # look dead (server.py's TOOL_CALL_PING_INTERVAL_S).
+  mcp_client:
+    connect_timeout_s: 60
+    tool_call_timeout_s: 900
+    resource_call_timeout_s: 60
+    compile_timeout_s: 180
+    disassemble_timeout_s: 60

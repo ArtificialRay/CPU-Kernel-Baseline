@@ -1,26 +1,33 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this repo is
 
 **CPU-Kernel-Baseline** evaluates LLMs on their ability to write optimized AArch64
 SIMD kernels for ncnn / llama.cpp / synthetic simd-loop benchmarks. Three evaluation
-paths, all built on the same `bench/` harness and the same `bench-trace/` warehouse:
+paths, all built on the same `bench/` harness, the same `bench-trace/` warehouse,
+and — as of the eval/mcp_client.py migration — the same `mcp_app/server.py` tool
+execution surface for every agent-driven path:
 
-- **Path 1 — Agentic SSH eval** (`eval/`): a self-contained litellm agent loop
-  (`eval/run_benchmark.py`) drives compile/evaluate/disassemble/submit tools
-  (`eval/agent_tools/`) over SSH against a provisioned Graviton instance.
+- **Path 1 — In-repo litellm agent loop** (`eval/`): a self-contained litellm
+  agent loop (`eval/run_benchmark.py`) drives compile/evaluate/disassemble/submit
+  as an MCP client of `mcp_app/server.py` (`eval/mcp_client.py`), started on a
+  provisioned Graviton instance over an SSH-tunneled MCP session — the same
+  server nanobot/Claude Code drive in Path 3, just with this repo's own litellm
+  loop as the client instead of an external harness. (Previously had its own
+  independent SSH-based tool system, `eval/agent_tools/` — retired; see
+  `eval/mcp_client.py`'s module docstring.)
 - **Path 2 — Local `bench/` harness**: compiles solutions into `.so` files with
   clang++ locally, dlopens them, runs correctness + timing without SSH or any
   agent loop. Works on any machine; produces real SVE2 numbers on Graviton.
   Also the library every other path calls into.
 - **Path 3 — MCP-server-driven eval** (`mcp_app/` + `skills/`): the same
   compile/evaluate/disassemble/submit surface exposed as an MCP server
-  (`mcp_app/server.py`) so an external agent harness (nanobot today; Claude
-  Code/Gemini CLI planned) drives the session instead of an in-repo agent
-  loop. `skills/launch/` provisions an instance and starts the server;
-  `skills/<harness>/` holds that harness's own `SKILL.md`.
+  (`mcp_app/server.py`) so an external agent harness (nanobot, Claude Code)
+  drives the session instead of an in-repo agent loop. `skills/launch/`
+  provisions an instance and starts the server; `skills/<harness>/` holds
+  that harness's own `SKILL.md`.
 
 Top-level framework directories (`ncnn/`, `ggml/`, `vllm/`, `paddleLite/`, `tnn/`)
 are read-only reference baselines. `ncnn/` is NOT in this repo — clone separately
@@ -28,116 +35,213 @@ for ncnn baseline builds (see below).
 
 ---
 
-## System walkthrough
+## System architecture: key internals
 
-**Shared warehouse (`bench-trace/`)**: every path reads/writes the same on-disk
-store — `definitions/<op_type>/*.json` (op shape + `simd_loop_meta`),
-`workloads/<op_type>/*.jsonl` (concrete input shapes, append-only),
-`solutions/<dataset>/<author>/<op_type>/*.json` (kernel source + metadata),
-`traces/<op_type>/*.json` (correctness/timing results). `bench/runner.py`
-compiles a solution once via `BuilderRegistry`, binds it into a `BoundKernel`,
-and hands it to an `Evaluator` per workload.
+### Build pipeline: two paths, one builder registry
 
-**Path 1 flow**: `run_benchmark.py` → `eval.evaluator.run_agentic_eval` → a
-litellm agent loop calling `eval/agent_tools/*` (compile/evaluate/disassemble/
-submit) over SSH → results land in `bench-trace/` and `results/`/`traces/`.
+`bench/compile/registry.py` has a `BuilderRegistry` singleton that dispatches
+based on `is_baseline` (whether `solution.author == baseline_author`):
 
-**Path 3 flow**: `skills/launch/launch_session.py` provisions/reaches an
-instance via `eval/provision.py` (called only as a subprocess, never
-imported — both sides share the same `eval/eval_config.json` "what's up"
-record), rsyncs the repo, builds the dataset's native lib, then starts
-`mcp_app.server` in streamable-http mode over an SSH local-port-forward. The
-external harness (e.g. nanobot, via
-`skills/nanobot/nanobot-kernel-session/SKILL.md`) connects and calls
-`compile`/`evaluate`/`disassemble`/`submit`. `mcp_app.session` builds one
-`KernelSession` per dataset (`mcp_app/agent_tools/{ncnn,simd_loop,llama_cpp}.py`,
-all subclassing the `KernelSession` ABC in `base.py`); when a run spans
-multiple datasets, `DispatcherKernelSession` (`dispatcher.py`) wraps them and
-routes each call by looking up which dataset owns the given `definition`.
-`evaluate` runs in an isolated subprocess (`bench/runtime/isolation.py`) so
-one crashing kernel can't take down the whole server. Every definition's
-`reference-scalar-kernel.cpp` is written out as an MCP Resource at startup
-(`session.py`); `resources.py` exposes each version's source/disassembly/
-trajectory as further resources, scoped per `run_dir`. `trajectory.py` writes
-a live, append-only turn-by-turn audit trail per definition. After the run,
-`launch_session.py sync-results` pulls results back to the local checkout.
+- **`CandidateBuilder`** (`bench/compile/builders/candidate.py`): the raw `float*`
+  ABI path for ALL non-baseline solutions. No ncnn dependency. The solution's
+  own sources define `armbench_entry_<op>` — the only shared code is what ships
+  in the solution JSON. Uses `-O3 -march=armv8.2-a+sve -std=c++14` for SVE.
+- **`NcnnBuilder`** (`bench/compile/builders/ncnn.py`): baseline-only for ncnn
+  dataset. Links against real `libncnn.a` from `ncnn/build/src/`. Each baseline
+  solution ships its own `binding.cpp` (defines `armbench_entry_<op>` with
+  constexpr-baked params and `ncnn::Mat`/`Option` shim) + `kernel.cpp` (delegates
+  to ncnn's kernel layer) + a contract header.
+- **`SimdLoopBuilder`** / **`LlamaCppBuilder`**: dataset-specific paths for simd-loop
+  and llama.cpp solutions. Self-contained solutions (harness sources fused into
+  solution JSON).
 
-**Other directories**: `dataset/problems/` — 75 raw simd-loop problem specs,
-the source `scripts/gen_simd_loop_harness.py` reads from; `case-study/` —
-human-readable write-ups of one definition's optimization trajectory
-(produced by the `case-study` skill); `terraform/` — the Graviton EC2 config
-`eval/provision.py` drives; `agent-runs*/` — historical run artifacts per
-path, gitignored.
+Both GCC (`g++-13`, `g++-14`, `g++`) and clang (`clang++-18`, `clang++`, `clang++-17`)
+are detected at build time (see `_resolve_cxx` in `bench/compile/builder.py`).
+
+### Candidate kernel ABI (raw float* path)
+
+For candidate (LLM-generated) kernels in the ncnn dataset, the contract is:
+
+```c
+// conv2d_depthwise.h (per-op header, embedded in solution JSON)
+void inner_conv2d_depthwise(
+    const float* input, float* output,
+    const float* weight, const float* bias,
+    int N, int C, int H, int W, int H_out, int W_out);
+
+// binding.cpp (in solution JSON) computes H_out/W_out and calls inner_...:
+int armbench_entry_conv2d_depthwise(
+    const float* input, float* output,
+    const float* weight, const float* bias,
+    int N, int C, int H, int W);
+```
+
+Key constraints for candidate kernels:
+- Must be `extern "C"` (not `static`).
+- **No OpenMP** — `#pragma omp` and any threading APIs are detected by source-pattern
+  scanning in `bench/config.py` (`DEFAULT_DISALLOWED_SOURCE_PATTERNS`) and will be
+  rejected by the evaluator.
+- `Kernel.cpp` is the expected file path for the LLM's implementation. The entry
+  symbol name matches the op type (e.g., `inner_conv2d_depthwise` for conv2d_depthwise).
+- Per-definition constants (`Kh`, `Kw`, `Sh`, `Sw`, `Dh`, `Dw`, `pad`) are baked
+  into a namespace (`conv2d_depthwise_def`) in the solution's `.h` file.
+
+### Evaluation pipeline
+
+`bench/runner.py::run_solution_on_workloads` runs inside an **isolated subprocess**
+(`bench/runtime/isolation.py`) — a hanging or crashing kernel can't take the
+runner/server down. The subprocess:
+
+1. Compiles via `BuilderRegistry` → `.so`
+2. Dlopens and binds `armbench_entry_<op>` via ctypes
+3. Iterates workloads: for each, calls `bench/evaluators/default.py::DefaultEvaluator`
+   which runs correctness (hybrid abs+rel tolerance AND comparison) + timing
+   (CPU-pinned via `os.sched_setaffinity`, hardware perf counters via
+   `perf_event_open`, `min_ns` + `p5_ns` as the metrics)
+4. Reports speedup factors vs the competitive baseline
+
+Timing (`bench/runtime/timing.py`):
+- Default: warmup=5, repeat=50, inner_iters=1, watchdog=30s
+- `min_ns` is the canonical metric (one per workload), `p5_ns` as jitter proxy
+- Hardware perf counters: CYCLES, INSTRUCTIONS, CACHE_MISSES via Linux
+  `perf_event_open(2)` — best-effort (silently skips where unavailable)
+- CPU pinning on Linux via `os.sched_setaffinity`
+
+Correctness (`bench/runtime/correctness.py`):
+- An element FAILS only if BOTH `|got-ref| > abs_tol` AND `|got-ref|/|ref| > rel_tol`
+  (AND condition — more lenient than old `diff > abs_tol + rel_tol * |ref|`)
+- Default tolerances: abs=1e-3, rel=1e-3, required_matched_ratio=1.0
+- Per-op-type overrides in `config/kernel_contracts.yaml` (gemm: 2e-3/1e-2/0.98,
+  moe: 1e-2/5e-2/0.95, mha: same as default, gqa/mla refine: custom)
+
+### MCP server internals (`mcp_app/`)
+
+`mcp_app/server.py` starts an MCP server that exposes `compile`/`evaluate`/
+`disassemble`/`submit` as MCP tools. Key design:
+
+- **Zero coupling to `eval/` or `skills/`**: never provisions instances, never
+  imports from either. Uses `contracts.py` from repo root for shared naming.
+- **Long-lived process**: one server serves every definition in `--dataset`.
+  `compile()` takes `definition` string as per-call argument.
+- **`KernelSession` ABC** (`mcp_app/agent_tools/base.py`): subclasses per dataset
+  (`ncnn.py`, `simd_loop.py`, `llama_cpp.py`). `DispatcherKernelSession`
+  (`dispatcher.py`) routes across multiple datasets when a run spans them.
+- **Lazy baseline collection** (`baseline_readiness.py`): first `compile()` call
+  triggers baseline check-then-collect for that definition.
+- **Isolated evaluation**: `evaluate_kernel()` in `ops.py` wraps everything in
+  `run_in_subprocess` (timeout=750s, under the MCP client's 900s tool timeout).
+- ISA verification: `verify_isa_available()` checks `/proc/cpuinfo` at startup.
+  `march_for_isa()` is the compile-flag authority.
+- Multi-dataset routing: `DispatcherKernelSession` wraps multiple per-dataset
+  sessions and routes `compile`/`evaluate` by looking up which dataset owns
+  the given definition name.
+- MCP Resources: `resources.py` exposes each version's source/disassembly/
+  trajectory as scoped resources under the `run_dir`. `trajectory.py` maintains
+  a live append-only audit trail per definition.
+- Transport: supports both `stdio` (local) and `streamable-http` (remote, over
+  SSH local-port-forward).
+
+### Workloads and definitions
+
+Each definition JSON (`bench-trace/definitions/<op_type>/<name>.json`) specifies:
+- `axes`: const (fixed values like Kh=5, Sh=2) or var (per-workload like C, H, W)
+- `inputs`/`outputs`: tensor specs with shape expressions referencing axes
+- `constraints`: formulas like H_out = (H + 2*pad - Dh*(Kh-1) - 1) / Sh + 1
+- `reference`: Python reference implementation (usually torch/numpy, run as subprocess)
+
+Each definition has a set of workloads (`bench-trace/workloads/<op_type>/<name>.jsonl`),
+one JSON object per line with concrete axis values and input generation tags
+(e.g., `"type": "random"`).
 
 ---
 
-## Repository layout (after PR #15 flattening)
+## Repository layout
 
 ```
 bench/                          # Local harness Python package
   compile/
-    builder.py                  # Builder ABC + CompileResult
-    registry.py                 # BuilderRegistry (singleton, build cache)
+    builder.py                  # Builder ABC + CompileError/CompileResult
+    registry.py                 # BuilderRegistry singleton, build cache (hash-keyed)
     builders/
       candidate.py              # CandidateBuilder: raw float* for LLM candidates
-      ncnn.py                   # NcnnBuilder: ncnn::Mat for ncnn baselines
-      simd_loop.py              # SimdLoopBuilder: reads harness from solution sources
+      ncnn.py                   # NcnnBuilder: ncnn::Mat for ncnn baselines (links libncnn.a)
+      simd_loop.py              # SimdLoopBuilder: from solution sources
+      llama_cpp.py              # LlamaCppBuilder: ggml static libs
       candidate_harness/        # C shims for candidate kernels
       ncnn_harness/             # C shims for ncnn baseline kernels
-      simd_loop_harness/        # Legacy on-disk copies (fallback only; fused into solution JSON)
+      simd_loop_harness/        # Legacy on-disk copies (fallback only)
   datasets/
     ncnn.py                     # NcnnDataset adapter
     raw.py                      # RawDataset for candidates
-    simd_loop.py                # SimdLoopDataset — derives all metadata from Definition
+    simd_loop.py                # SimdLoopDataset
+    llama_cpp.py                # LlamaCppDataset
   evaluators/
-    evaluator.py                # BoundKernel (carries Definition), RefBaseline, Evaluator ABC
+    evaluator.py                # Evaluator ABC + BoundKernel (carries Definition)
     default.py                  # DefaultEvaluator (correctness + timing + speedup)
+    sqnr.py                     # SqnrEvaluator (for quantized/q8_0 MoE defs)
+    registry.py                 # resolve_evaluator() — first-match dispatch
   runner.py                     # compile-once → BoundKernel → evaluator per workload
+  benchmark.py                  # Benchmark orchestration (build lifecycle, candidate-vs-baseline)
+  cli.py                        # CLI entry points (bench, list-definitions, list-solutions)
+  config.py                     # BenchmarkConfig + EvalConfig (tolerances, source patterns)
   data/
     definition.py               # Definition + SimdLoopMeta + DType (incl. unsigned)
-    solution.py                 # Solution, SourceFile, SupportedDatasets
-    ...                         # Workload, Trace, TraceSet Pydantic schemas
+    solution.py                 # Solution, SourceFile, SolutionSpec, SupportedDatasets
+    trace.py                    # Trace, Evaluation, Environment, EvaluationStatus
+    trace_set.py                # TraceSet — in-memory warehouse (load/query/persist)
+    workload.py                 # Workload + Axes
+    utils.py                    # BaseModelWithDocstrings helpers
   runtime/
     inputs.py                   # Deterministic input generators
     timing.py                   # ns timing with CPU pinning + perf counters
-    correctness.py              # Hybrid abs+rel tolerance comparison
+    correctness.py              # Hybrid abs+rel tolerance AND comparison
+    isolation.py                # Subprocess isolation (timeout, crash containment)
+    perf_counters.py            # Linux perf_event_open wrapper
 
-bench-trace/                    # On-disk warehouse (TraceSet root) — gitignored, generated
-  definitions/<op_type>/        # Definition JSONs (include simd_loop_meta)
-  workloads/<op_type>/          # Workload JSONLs (append-only)
+bench-trace/                    # On-disk warehouse (TraceSet root) — .gitignored
+  definitions/<op_type>/
+  workloads/<op_type>/
   solutions/<dataset>/<author>/<op_type>/
   traces/<op_type>/
 
-eval/                           # Agentic SSH eval (Path 1) — also owns provisioning for Path 3
+eval/                           # In-repo litellm agent loop (Path 1)
   provision.py                  # Terraform lifecycle for Graviton EC2 instances
-  run_benchmark.py              # LLM agent loop (SSH path)
-  agent_tools/                  # compile/evaluate/disassemble/submit tools for the SSH litellm loop
-  eval_config.json              # SSH connection info — copy from .example; shared "what's up" record
+  run_benchmark.py              # LLM agent loop (litellm) + MCP session lifecycle
+  evaluator.py                  # run_agentic_eval turn loop (prompts, retries, history compression)
+  mcp_client.py                 # MCP client bridge — drives mcp_app/server.py's
+                                 #   compile/evaluate/disassemble/submit, same as Path 3
+  remote.py                     # InstanceHandle — SSH/rsync to a provisioned instance
+  eval_config.json              # SSH connection info — copy from .example
 
-mcp_app/                        # MCP server for Path 3 (nanobot etc.) — no imports from eval/ or skills/
-  server.py                     # the MCP server process (--transport stdio|streamable-http)
-  session.py                    # SessionConfig + build_tools() — server-side bootstrap
-  resources.py                  # MCP Resources over a session's run_dir (source/disasm/trajectory)
+mcp_app/                        # MCP server for Path 3
+  server.py                     # MCP server (--transport stdio|streamable-http)
+  session.py                    # SessionConfig + build_tools() bootstrap
+  resources.py                  # MCP Resources over run_dir (source/disasm/trajectory)
   agent_tools/
-    base.py                     # KernelSession ABC — compile/evaluate/disassemble/submit
-    dispatcher.py                # DispatcherKernelSession — routes calls across multiple datasets
-    baseline_readiness.py       # lazy per-definition baseline check-then-collect
-    ncnn.py, simd_loop.py, llama_cpp.py   # per-dataset KernelSession subclasses
-    trajectory.py                # per-definition audit trail writer
+    base.py                     # KernelSession ABC
+    dispatcher.py               # DispatcherKernelSession (multi-dataset routing)
+    ncnn.py, simd_loop.py, llama_cpp.py
+    ops.py                      # compile_kernel/evaluate_kernel/disassemble_so
+    isa.py                      # march_for_isa() + verify_isa_available()
+    trajectory.py               # per-definition audit trail writer
+    baseline_readiness.py       # Lazy baseline check-then-collect
+    registry.py                 # resolve_tools(dataset) -> Type[KernelSession]
 
-skills/                         # Harness-agnostic session launch + per-harness SKILL.md files
-  launch/launch_session.py      # provision/prepare-session/sync-results/status/teardown (Path 3)
-  nanobot/nanobot-kernel-session/SKILL.md   # nanobot's own optimization workflow doc
+skills/                         # Harness-agnostic session launch
+  launch/launch_session.py      # provision/prepare-session/sync-results/status/teardown
+  nanobot/nanobot-kernel-session/
+    SKILL.md, README.md
 
 scripts/
   gen_definitions.py            # Regenerate ncnn definitions+workloads from test files
   gen_simd_loop_harness.py      # Code-gen all simd-loop harnesses + bench-trace artifacts
-  bench_loop_agent.py           # Local iterative LLM agent (Path 2, works locally + on Graviton)
-  test_reference_scalars.py     # Correctness smoke-test: all reference-scalar solutions vs Python ref
+  bench_loop_agent.py           # Local iterative LLM agent (Path 2)
+  test_reference_scalars.py     # Correctness smoke-test for all reference-scalar solutions
 
-dataset/problems/               # 75 raw simd-loop problem specs (source for gen_simd_loop_harness.py)
-case-study/                     # Per-definition optimization write-ups (case-study skill output)
-terraform/                      # Graviton EC2 Terraform config, driven by eval/provision.py
+case-study/                     # Per-definition optimization write-ups
+terraform/                      # Graviton EC2 Terraform config
+config/kernel_contracts.yaml    # Single source of truth: ISA mappings, evaluator defaults,
+                                #   baseline/reference-scalar authors per dataset
 ```
 
 ---
@@ -146,133 +250,90 @@ terraform/                      # Graviton EC2 Terraform config, driven by eval/
 
 ### Provision & teardown
 ```bash
-python eval/provision.py --isa sve2       # Graviton4 c8g.large
+python eval/provision.py --isa sve2       # Graviton4 c8g.large (SVE2=128-bit)
+python eval/provision.py --isa sve        # Graviton3 c7g.large (SVE=256-bit)
 python eval/provision.py --teardown
 ```
 
-### Agentic SSH eval (Path 1 — requires Graviton)
+### In-repo litellm agent loop (Path 1 — requires Graviton instance)
 ```bash
-python -m eval.test_workflow --isa sve2
+# Single definition
 python eval/run_benchmark.py --problem loop_001 --isa sve2 --model anthropic/claude-opus-4-6
-./sync_remote.sh && python eval/run_benchmark.py --problem conv --mode ncnn --isa sve2 --model anthropic/claude-opus-4-6
+# All definitions, automatic provision+teardown
+python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-6 --provision --teardown
 ```
 
-### Local iterative LLM agent (Path 2)
+### Local iterative LLM agent (Path 2 — run on target machine for real timing)
 ```bash
-# Run on Mac for NEON dev/correctness, or on Graviton for real SVE2 timing
-OPENROUTER_API_KEY=sk-or-... python scripts/bench_loop_agent.py --loop loop_001
-python scripts/bench_loop_agent.py --all-loops --max-turns 4 \
-  --model openrouter/anthropic/claude-opus-4-6
+python scripts/bench_loop_agent.py --loop loop_001 --max-turns 6 --model openrouter/anthropic/claude-opus-4-6
 ```
 
 ### Validate via CLI (bench/cli.py)
 ```bash
-python -m bench.cli list-definitions          # list all 20 simd-loop + ncnn definitions
+python -m bench.cli list-definitions          # list all definitions
 python -m bench.cli bench --definition loop_001 --solution reference-scalar_loop_001
+python -m bench.cli bench --definition conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2 \
+  --solution reference-scalar_conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2
 ```
 
-### Correctness smoke-test (all 20 reference-scalar solutions)
+### Correctness smoke-test
 ```bash
-python scripts/test_reference_scalars.py      # should print 121/121 workloads passed
+python scripts/test_reference_scalars.py      # should print all workloads PASSED
 ```
 
-### Regenerate simd-loop harnesses + bench-trace
+### MCP session (Path 3)
 ```bash
-python scripts/gen_simd_loop_harness.py       # idempotent; only writes on content change
+# MCP server over SSH stdio (connect Claude Code MCP config to it)
+python3 -m mcp_app.server --dataset ncnn --author claude-code --isa sve \
+  --run-dir ~/arm-bench/agent-runs-mcp/claude-code --transport stdio \
+  --baseline-author baseline-ncnn-arm
+
+# Launch session (skills/launch/)
+python3 launch_session.py launch --isa sve --dataset ncnn
 ```
 
-### Regenerate ncnn definitions
+### Regenerate definitions/workloads
 ```bash
-python scripts/gen_definitions.py   # → bench-trace/definitions/ and bench-trace/workloads/
+python scripts/gen_simd_loop_harness.py       # simd-loop (idempotent)
+python scripts/gen_definitions.py             # ncnn definitions + workloads
+```
+
+### Sync local code to remote instance
+```bash
+./sync_remote.sh                              # rsync the repo
+./sync_remote.sh --mirror                     # force mirror (rm remote, then copy)
+HOST=1.2.3.4 ./sync_remote.sh                 # different instance
 ```
 
 ---
 
-## bench/ harness — two datasets
+## ISA targets and instance types
 
-### simd-loop (fully tested on Graviton4 SVE2)
-
-**20 loops** across three patterns (121/121 workload correctness, Mac + Graviton4):
-- **Scalar-output**: 001-004, 008, 010, 024, 032, 033, 126, 127 — reduction → single value
-- **Array-output**: 027, 028, 029, 035, 113, 128 — element-wise → N-element output
-- **Inplace-sort**: 120, 121, 122 — data sorted in-place
-
-**75 total loops in `dataset/problems/`; 55 not yet integrated:**
-
-| Reason skipped | Count | Examples |
-|----------------|-------|---------|
-| SME2/MOPA matmul — no AWS instance yet | ~25 | 200-series, 130, 135-137 |
-| Non-trivial multi-ptr structs (linked list, sparse, indirect) | ~15 | 009, 019, 023, 036, 102, 104 |
-| Multi-axis matmul needing m/n/k | ~5 | 025 |
-| String/char* ops | ~5 | 005, 006, 022, 031, 034 |
-| Complex C types (cuint32_t etc.) | ~5 | 037, 109, 110, 112 |
-| Scalar-only struct (no array ptr) | ~2 | 040, 012 |
-
-All 75 loops have SVE/NEON implementations — the blockers are ABI complexity, not ISA.
-
-**To add more loops**: add the loop ID to `TARGET_LOOP_IDS` in `scripts/gen_simd_loop_harness.py`
-and run it. The generator handles the three patterns automatically. Non-standard cases:
-- Sort/inplace: add to `_SORT_LOOPS` dict (lists scratch field names)
-- Custom kernel: add to `_CUSTOM_SCALAR_KERNELS` (e.g. loop_001 uses double accumulation)
-- Non-trivial reference: add to `_CUSTOM_REFS`
-- Array padding: add to `_LOOP_META_OVERRIDES` (e.g. `"array_pad": 2` for loop_113)
-
-**Architecture (self-contained solutions):**
-- Each solution JSON embeds its harness sources (`loop_NNN.h`, `loop_NNN.cpp`, `kernel.cpp`)
-- `SimdLoopBuilder` compiles directly from solution sources — no separate harness directory needed
-- `SimdLoopDataset` derives all adapter metadata from `Definition.simd_loop_meta` (written by
-  the generator into each definition JSON) — no hard-coded `_LOOP_META` or `SIGNATURES` dicts
-- `DType` enum includes unsigned types (uint8/16/32/64) needed for integer accumulation loops
-- `bench/cli.py` works for all simd-loop solutions without setting `is_baseline`
-
-**Candidate convention:** `inner_loop_NNN` must be `extern "C"` (not `static`).
-
-**Graviton4 results (clang++-18, -O3 -march=armv9-a+sve2):**
-- Claude Opus generates correct SVE2 on turn 1 for all 4 loops
-- Iterative agent: best timing stable within 4 turns (~552–561 ns small N, ~1590–1620 ns N=10K)
-- Self-corrects mixed SVE+NEON compile errors on the next turn
-
-### ncnn (fully tested on Graviton4 — compile + link verified for all 5 op_types)
-
-Conv2d (existing) + conv1d, conv2d_depthwise, deconv2d, deconv2d_depthwise (new).
-114 total definitions across all 5 op_types.
-
-- `NcnnBuilder` — links against `<repo_root>/ncnn/build/src/libncnn.a`
-- ncnn/ is NOT in this repo — clone and build it first:
-
-```bash
-sudo apt-get install clang-18 libomp-18-dev cmake   # libomp required for linking
-git clone --depth=1 https://github.com/Tencent/ncnn.git ncnn
-cd ncnn && cmake -B build \
-  -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF \
-  -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF \
-  -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
-cmake --build build -j$(nproc) ncnn
-```
+| ISA | Instance | March flag | Notes |
+|-----|----------|------------|-------|
+| NEON | c7g.large | `-march=armv8-a` | 128-bit NEON only |
+| SVE | c7g.large | `-march=armv8.2-a+sve` | Graviton3, Neoverse V1, 256-bit SVE |
+| SVE2 | c8g.large | `-march=armv9-a+sve2` | Graviton4, Neoverse V2, 128-bit SVE2 |
+| SME2 | — | `-march=armv9-a+sve2+sme2` | No AWS instance supports SME2 yet |
 
 ---
 
-## Adding a new simd-loop problem
+## Important constraints
 
-The generator handles everything — just run it after editing `TARGET_LOOP_IDS`:
-
-```bash
-python scripts/gen_simd_loop_harness.py
-```
-
-This writes (idempotently):
-1. `bench/compile/builders/simd_loop_harness/loop_NNN.{h,cpp}` — on-disk copies (legacy fallback)
-2. `bench-trace/definitions/simd-loop/loop_NNN.json` — includes `simd_loop_meta` for the adapter
-3. `bench-trace/workloads/simd-loop/loop_NNN.jsonl`
-4. `bench-trace/solutions/simd-loop/reference-scalar/loop_NNN/reference-scalar_loop_NNN.json`
-   — sources include fused `loop_NNN.h` + `loop_NNN.cpp` + `kernel.cpp`
-
-No Python files need manual editing to add a supported loop pattern.
-
-## Instance types
-
-| ISA  | Instance  | Notes                                |
-|------|-----------|--------------------------------------|
-| SVE  | c7g.large | Graviton3, Neoverse V1, 256-bit SVE  |
-| SVE2 | c8g.large | Graviton4, Neoverse V2, 128-bit SVE2 |
-| SME2 | —         | No AWS instance supports SME2 yet    |
+1. **No OpenMP in candidate kernels** — `#pragma omp`, `omp.h`, `std::thread`,
+   `pthread.h`, `fork`, etc. are all blocked by source-pattern scanning in
+   `bench/config.py::DEFAULT_DISALLOWED_SOURCE_PATTERNS`. Rejected at eval time.
+2. **Single-core timing** — `num_threads=1` assumed. The timer uses CPU pinning
+   and does not support multi-threaded timing.
+3. **Candidate kernel entry points must be `extern "C"`** — the dlopen/cffi
+   binding looks them up by mangled name.
+4. **Solution JSONs are self-contained** — each embeds its own harness sources
+   (`.h` + `.cpp` + `kernel.cpp`). The builder materializes them to a temp dir
+   and compiles them together.
+5. **`ncnn/` is NOT in this repo** — must be cloned and built separately for
+   ncnn baseline evaluation (see ncnn builder section above).
+6. **Subprocess isolation** — every evaluation spawns a child process for crash
+   protection. Timeout defaults to 750s in MCP mode, configurable per eval.
+7. **ISA mismatch at MCP startup** — `verify_isa_available()` reads
+   `/proc/cpuinfo` and rejects an ISA the hardware doesn't support (safety
+   check, not compile-flag authority — that's `march_for_isa()`).

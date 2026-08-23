@@ -53,8 +53,10 @@ from .scripts.test_mcp_client import run_stdio_sequence
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCH_TRACE = REPO_ROOT / "bench-trace"
 
-# Directory to mcp_app's own copy dataset_builds.json's content 
-DATASET_BUILDS: dict = json.loads((Path(__file__).parent / "dataset_builds.json").read_text())
+# Shared with eval/provision.py and skills/launch/launch_session.py — lives
+# at the repo root (like contracts.py/config/kernel_contracts.yaml) so none
+# of the three packages "owns" a separately-duplicated copy that can drift.
+DATASET_BUILDS: dict = json.loads((REPO_ROOT / "config" / "dataset_builds.json").read_text())
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see _local_ssh.rsync_to's docstring.

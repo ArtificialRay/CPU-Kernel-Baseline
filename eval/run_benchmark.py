@@ -33,10 +33,9 @@ from dotenv import load_dotenv
 from bench.config import BenchmarkConfig
 from bench.data.trace_set import TraceSet
 from contracts import BASELINE_AUTHORS, ISA_INSTANCE_MAP
-from eval.config import REPO_ROOT
 from eval.evaluator import run_agentic_eval
 from eval.remote import InstanceHandle
-
+REPO_ROOT = Path(__file__).parent.parent
 BENCH_TRACE = REPO_ROOT / "bench-trace"
 RESULTS_DIR = REPO_ROOT / "results"
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
@@ -241,8 +240,15 @@ def main():
     parser.add_argument("--teardown", action="store_true",
                         help="Destroy the instance after evaluation")
     parser.add_argument(
-        "--isa", default=None, choices=["neon", "sve", "sve2", "sme2"],
-        help="ISA target (default: sve2). Determines the EC2 instance type via ISA_INSTANCE_MAP.",
+        "--isa", default=None, choices=["neon", "sve", "sve2", "sme2", "portable"],
+        help=(
+            "ISA target (default: sve2). Determines the EC2 instance type via "
+            "ISA_INSTANCE_MAP. 'portable' compiles with plain -march=armv8-a (same "
+            "as neon) and additionally rejects hand-written NEON/SVE intrinsics in "
+            "agent-submitted code (see contracts.DISALLOWED_SOURCE_PATTERNS_BY_ISA) "
+            "— for the ablation comparing agent-optimized plain C++ against "
+            "hand-written SIMD."
+        ),
     )
 
     # Eval options
@@ -259,7 +265,14 @@ def main():
 
     # ── Resolve ISA → instance type ────────────────────────────────────────
     isa = args.isa or "sve2"
-    instance_type = ISA_INSTANCE_MAP.get(isa, "c8g.large")
+    # "portable" isn't in contracts.ISA_TABLE (see config/kernel_contracts.yaml's
+    # isa comment — its "no hand-written SIMD" constraint is a source-policy
+    # rule, not a compile flag, so it was never given its own hardware tier).
+    # It only needs baseline NEON/asimd (mandatory on any AArch64 box), so the
+    # cheapest instance type works — same reasoning as "neon".
+    instance_type = ISA_INSTANCE_MAP.get(isa) or (
+        ISA_INSTANCE_MAP["neon"] if isa == "portable" else "c8g.large"
+    )
 
     try:
         if args.provision:
@@ -295,8 +308,8 @@ def main():
         _ensure_baselines(handle, problem_defs, baseline_author, verbose=not args.quiet)
 
     # bench_cfg carries the correct baseline_author for this dataset so that
-    # AgentTools (and DefaultEvaluator on the remote) use the same author when
-    # computing speedup — otherwise speedup is always None.
+    # local speedup computation (in _print_summary/results/*.json) uses the
+    # same author as the remote KernelSession — otherwise speedup is always None.
     bench_cfg = BenchmarkConfig(baseline_author=baseline_author)
 
     # ── Run evaluations ───────────────────────────────────────────────────
@@ -304,59 +317,78 @@ def main():
     results: dict[str, dict] = {}
     RESULTS_DIR.mkdir(exist_ok=True)
 
-    for i, defn in enumerate(problem_defs):
-        print(f"\n[{i+1}/{len(problem_defs)}] {defn.name}")
-        try:
-            result = run_agentic_eval(
-                definition=defn,
-                trace_set=ts,
-                author=author,
-                model=args.model,
-                handle=handle,
-                dataset=args.dataset,
-                bench_cfg=bench_cfg,
-                max_turns=args.max_turns,
-                verbose=not args.quiet,
-            )
-        except Exception as e:
-            print(f"  ERROR: {e}")
-            result = {
-                "status": "ERROR",
-                "error": str(e),
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "version_history": [],
-            }
+    # One MCP session (one remote mcp_app.server + SSH tunnel) shared across
+    # every definition in this run, not rebuilt per definition — see
+    # eval/mcp_client.py's module docstring on why.
+    import eval.mcp_client as mcp_client_mod
 
-        results[defn.name] = result
+    print(f"\n[mcp] starting mcp_app.server on {handle.host} and connecting...")
+    mcp_client = mcp_client_mod.connect(
+        handle, args.dataset, author, isa, baseline_author=baseline_author,
+    )
 
-        if not args.no_save:
-            stem = f"{defn.name}_{args.dataset}_{args.model.replace('/', '_')}"
-            data = {
-                **{k: v for k, v in result.items() if k != "version_history"},
-                "definition": defn.name,
-                "dataset": args.dataset,
-                "model": args.model,
-            }
+    try:
+        for i, defn in enumerate(problem_defs):
+            print(f"\n[{i+1}/{len(problem_defs)}] {defn.name}")
+            try:
+                result = run_agentic_eval(
+                    definition=defn,
+                    trace_set=ts,
+                    author=author,
+                    model=args.model,
+                    mcp_client=mcp_client,
+                    isa=isa,
+                    dataset=args.dataset,
+                    bench_cfg=bench_cfg,
+                    max_turns=args.max_turns,
+                    verbose=not args.quiet,
+                )
+            except Exception as e:
+                print(f"  ERROR: {e}")
+                result = {
+                    "status": "ERROR",
+                    "error": str(e),
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "version_history": [],
+                }
 
-            out = RESULTS_DIR / f"{stem}.json"
-            out.write_text(json.dumps(data, indent=2))
+            results[defn.name] = result
 
-            jsonl_out = RESULTS_DIR / f"{stem}.jsonl"
-            with jsonl_out.open("a") as f:
-                f.write(json.dumps(data) + "\n")
-
-            if args.save_trace and result.get("version_history"):
-                traces_dir = REPO_ROOT / "traces"
-                traces_dir.mkdir(exist_ok=True)
-                ts_stamp = result.get("timestamp", "").replace(":", "-")
-                trace_out = traces_dir / f"{stem}_{ts_stamp}.json"
-                trace_out.write_text(json.dumps({
+            if not args.no_save:
+                stem = f"{defn.name}_{args.dataset}_{args.model.replace('/', '_')}"
+                data = {
+                    **{k: v for k, v in result.items() if k != "version_history"},
                     "definition": defn.name,
                     "dataset": args.dataset,
                     "model": args.model,
-                    "timestamp": result.get("timestamp"),
-                    "version_history": result.get("version_history"),
-                }, indent=2))
+                }
+
+                out = RESULTS_DIR / f"{stem}.json"
+                out.write_text(json.dumps(data, indent=2))
+
+                jsonl_out = RESULTS_DIR / f"{stem}.jsonl"
+                with jsonl_out.open("a") as f:
+                    f.write(json.dumps(data) + "\n")
+
+                if args.save_trace and result.get("version_history"):
+                    traces_dir = REPO_ROOT / "traces"
+                    traces_dir.mkdir(exist_ok=True)
+                    ts_stamp = result.get("timestamp", "").replace(":", "-")
+                    trace_out = traces_dir / f"{stem}_{ts_stamp}.json"
+                    trace_out.write_text(json.dumps({
+                        "definition": defn.name,
+                        "dataset": args.dataset,
+                        "model": args.model,
+                        "timestamp": result.get("timestamp"),
+                        "version_history": result.get("version_history"),
+                    }, indent=2))
+    finally:
+        print("\n[mcp] syncing bench-trace/agent-runs back from the remote instance...")
+        try:
+            mcp_client.sync_bench_trace_back(local_results_dir=str(REPO_ROOT / "agent-runs-mcp"))
+        except Exception as e:
+            print(f"  [mcp] WARNING: sync back failed: {e}")
+        mcp_client.close()
 
     # ── Print summary ─────────────────────────────────────────────────────
     _print_summary(results, args.dataset, args.model)

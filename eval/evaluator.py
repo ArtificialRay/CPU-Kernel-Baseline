@@ -2,7 +2,9 @@
 eval/evaluator.py — Agentic LLM evaluation orchestrator for arm-bench.
 
 Runs an agent loop where the LLM iteratively uses compile/evaluate/disassemble/submit
-tools over SSH on a Graviton instance, then persists the best solution to bench-trace/.
+tools against a real Graviton instance over MCP (eval/mcp_client.py — the same
+mcp_app/server.py nanobot/Claude Code drive), then persists the best solution
+to bench-trace/.
 
 Compatible with any LiteLLM-supported model.
 """
@@ -12,32 +14,37 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import litellm
 
-from contracts import AGENT_KERNEL_FILENAME, REFERENCE_SCALAR_AUTHORS
-from eval.remote import InstanceHandle
+from contracts import AGENT_KERNEL_FILENAME, AGENT_LOOP_DEFAULTS, REFERENCE_SCALAR_AUTHORS
+
+if TYPE_CHECKING:
+    from eval.mcp_client import MCPKernelClient
 
 
 AGENT_SYSTEM_PROMPT = """\
 You are an expert AArch64 SIMD programmer. Your task: write an optimized
 {op_type} kernel for {isa_desc}.
 
-Tools:
-  compile(code)              — compile kernel.cpp on the remote ARM instance
-  evaluate(measure=true)     — run all workloads: correctness + timing
-  disassemble(fn=None)       — view AArch64 assembly (up to 300 lines)
-  submit(explanation=...)    — finalize and persist the best version from this session
+Tools: compile, evaluate, disassemble — each takes `definition` (always
+"{definition_name}" for this session) and, except compile, `version` (the
+number compile() returned for the version you want to act on).
+
+There is no separate submit tool — evaluate() automatically persists your
+best result so far to bench-trace whenever it beats your previous best
+here. Just keep iterating; nothing is lost even if you never explicitly
+finalize anything.
 
 Workflow:
   1. compile() your first attempt.
-  2. evaluate(measure=false) — fast correctness check only.
-  3. evaluate(measure=true)  — collect timing and cycle speedup.
-  4. disassemble()           — inspect assembly when IPC is low or speedup is unexpectedly poor.
-  5. Iterate: compile → evaluate → improve.
-  6. submit() when satisfied.
+  2. evaluate()     — checks correctness first (fail-fast); if that passes, also
+                       measures timing and cycle speedup in the same call.
+  3. disassemble()  — inspect assembly when IPC is low or speedup is unexpectedly poor.
+  4. Iterate: compile → evaluate → improve, using the full turn budget to explore.
 
-Metrics from evaluate(measure=true):
+Metrics from evaluate():
   time_speedup_geomean   — wall-time speedup vs {baseline_label} (geomean across workloads; >1.0 = faster than baseline)
   cycle_speedup_geomean  — cycle count speedup vs {baseline_label} (geomean)
   ipc_mean               — mean IPC across workloads
@@ -54,19 +61,21 @@ Key rules:
   - The harness files (.h and the entry .cpp) are provided automatically — write only kernel.cpp.
   - Use {isa_name} intrinsics freely; the build system passes the correct -march flag.
   - Can write asm directly to your implementation if you think it may bring performance gain
-  - Always verify correctness before profiling: evaluate(measure=false) first.
-  - Do NOT submit without at least one evaluate(measure=true) showing a speedup.
 """
 
-_AGENT_ISA_LABELS: dict[str, str] = {
-    "c7g": "Graviton3 (SVE, 256-bit vector length)",
-    "c8g": "Graviton4 (SVE2, 128-bit vector length)",
-}
-
-# Maps EC2 family → the ISA intrinsic family the agent should use.
-_AGENT_ISA_NAMES: dict[str, str] = {
-    "c7g": "SVE",
-    "c8g": "SVE2",
+# isa string -> (isa_desc, isa_name) shown to the agent in the system prompt.
+# Keyed by the SAME `isa` string passed to eval/mcp_client.py::connect() (and
+# from there, mcp_app.server's --isa) 
+_ISA_PROMPT_INFO: dict[str, tuple[str, str]] = {
+    "neon":     ("Arm Neoverse V1 (AWS Graviton3, NEON 128-bit)", "NEON"),
+    "sve":      ("Graviton3 with SVE (SVE1, 256-bit)", "SVE"),
+    "sve2":     ("Graviton4 with SVE2 (128-bit)", "SVE2"),
+    "sme2":     ("Graviton4 with SME2", "SME2"),
+    "portable": (
+        "AArch64 (portable C++ only — do NOT use NEON or SVE intrinsics; "
+        "rely on clean, compiler-vectorizable C++)",
+        "portable C++ (no SIMD intrinsics)",
+    ),
 }
 
 
@@ -200,26 +209,37 @@ def run_agentic_eval(
     trace_set,
     author: str,
     model: str,
-    handle: InstanceHandle,
+    mcp_client: "MCPKernelClient",
+    isa: str,
     *,
     dataset: str = "ncnn",
     bench_cfg=None,
     max_turns: int = 20,
     verbose: bool = True,
 ) -> dict:
-    """Run one agentic optimization session using the AgentTools ecosystem.
-
-    The LLM receives compile/evaluate/disassemble/submit tools backed by a real
-    Graviton instance via SSH. Iterates until the agent calls submit() or max_turns
-    is reached (triggering auto-submit of the best correct version found).
+    """Run one agentic optimization session, tools backed by mcp_app/server.py
+    over a shared MCP session (eval/mcp_client.py) — the same server
+    nanobot/Claude Code drive. Iterates until the agent calls submit() or
+    max_turns is reached (triggering auto-submit of the best correct
+    version found).
 
     Args:
         definition: bench Definition object for the target op.
         trace_set: TraceSet used for solution persistence and baseline lookup.
         author: Solution author label (e.g. "claude-opus-4-8").
         model: LiteLLM model string (e.g. "anthropic/claude-opus-4-8").
-        handle: SSH handle to the provisioned Graviton instance.
-        dataset: Dataset key for resolve_tools() dispatch (default "ncnn").
+        mcp_client: Shared MCP session (eval/mcp_client.py::connect()) —
+            one MCPKernelClient is meant to be shared across every
+            definition in a run (see its own docstring), so it's passed in
+            already connected, not built here.
+        isa: The SAME isa string passed to `mcp_client`'s `connect()` call
+            (e.g. "sve2", "portable") — drives the system prompt's
+            isa_desc/isa_name via `_ISA_PROMPT_INFO` so the agent is never
+            told a different ISA than what the server actually compiles
+            with. Not derived from instance type — see `_ISA_PROMPT_INFO`'s
+            comment for why that used to be a real bug.
+        dataset: Dataset key, used for REFERENCE_SCALAR_AUTHORS lookup below
+            (the MCP server itself already knows its own dataset).
         bench_cfg: Optional BenchmarkConfig override (baselines, perf counter settings).
         max_turns: Maximum agent turns before auto-submit.
         verbose: Print turn-by-turn progress.
@@ -227,14 +247,8 @@ def run_agentic_eval(
     Returns:
         dict with keys: status, time_speedup, cycle_speedup, timestamp, version_history
     """
-    from eval.agent_tools import resolve_tools
-
-    ToolsCls = resolve_tools(dataset)
-    tools = ToolsCls(handle, definition, trace_set, author, bench_cfg=bench_cfg)
-    schemas = [{"type": "function", "function": s} for s in ToolsCls.tool_schemas()]
-    _no_submit = os.environ.get("ARMBENCH_NO_SUBMIT", "").strip() == "1"
-    if _no_submit:
-        schemas = [s for s in schemas if s["function"]["name"] != "submit"]
+    tools = mcp_client.tools_for(definition.name)
+    schemas = mcp_client.tool_schemas()
 
     # Optional persistent scratchpad (ARMBENCH_NOTEPAD=1): survives history
     # compression so the agent can track what it has already tried over long runs.
@@ -262,24 +276,7 @@ def run_agentic_eval(
     # (author varies: reference-scalar/reference/baseline-llamacpp-arm).
     ref_solution = trace_set.get_baseline_solution(definition.name, ref_author)
 
-    family = handle.instance_type.split(".")[0] if handle.instance_type else ""
-    isa_desc = _AGENT_ISA_LABELS.get(family, handle.instance_type or "AArch64")
-    isa_name = _AGENT_ISA_NAMES.get(family, "SVE2")
-
-    # ISA-ablation override (env ARMBENCH_ISA_MODE): must match agent_tools.base's
-    # _ISA_MODES so the prompt's allowed-ISA matches the actual compile flags.
-    # "portable" = no hand-written SIMD (compiler auto-vec still allowed).
-    _ISA_MODE_PROMPT = {
-        "portable": ("AArch64 (portable C++ only — do NOT use NEON or SVE "
-                     "intrinsics; rely on clean, compiler-vectorizable C++)",
-                     "portable C++ (no SIMD intrinsics)"),
-        "sve":      ("Graviton3 with SVE (SVE1, 128-bit) — use SVE intrinsics "
-                     "only, NOT SVE2", "SVE"),
-        "sve2":     ("Graviton4 with SVE2 (128-bit)", "SVE2"),
-    }
-    _mode = os.environ.get("ARMBENCH_ISA_MODE", "").strip().lower()
-    if _mode in _ISA_MODE_PROMPT:
-        isa_desc, isa_name = _ISA_MODE_PROMPT[_mode]
+    isa_desc, isa_name = _ISA_PROMPT_INFO.get(isa, (isa or "AArch64", "SVE2"))
 
     _BASELINE_LABELS = {
         "baseline-ncnn-arm":     "hand-optimized ncnn ARM baseline",
@@ -294,16 +291,12 @@ def run_agentic_eval(
         isa_desc=isa_desc,
         isa_name=isa_name,
         baseline_label=baseline_label,
+        definition_name=definition.name,
     )
     user_msg = build_user_prompt(definition, ref_solution)
-    if _no_submit:
-        user_msg += ("\n\nIMPORTANT: There is NO submit tool this session. Do NOT stop early — "
-                     "keep compiling and measuring NEW kernel versions for the FULL turn budget, "
-                     "trying a different optimization strategy each time to push time_speedup as "
-                     "high as possible. The best measured version is recorded automatically at the end.")
     if os.environ.get("ARMBENCH_PUSH_ITER", "").strip() == "1":
-        user_msg += ("\n\nIMPORTANT: Do NOT submit until you have compiled AND measured "
-                     "(evaluate(measure=true)) at least 5 GENUINELY DIFFERENT implementations "
+        user_msg += ("\n\nIMPORTANT: Keep going until you have compiled AND measured "
+                     "(evaluate()) at least 5 GENUINELY DIFFERENT implementations "
                      "and can no longer beat your best measured time_speedup. Each new version "
                      "must try a distinct strategy — not a small tweak of the previous one.")
 
@@ -316,7 +309,6 @@ def run_agentic_eval(
     final_result: dict | None = None
     version_history: list[dict] = []
     best_version: dict | None = None
-    agent_submitted_code: str | None = None
 
     if verbose:
         print(f"\n{'='*60}")
@@ -327,16 +319,6 @@ def run_agentic_eval(
         for turn in range(max_turns):
             if verbose:
                 print(f"\n[Turn {turn+1}/{max_turns}]")
-
-            turns_left = max_turns - turn
-            if turns_left == 3 and any(v.get("passed") for v in version_history):
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"[{turns_left} turns remaining] You have a correct implementation. "
-                        "Call submit() now — do not spend more turns optimizing."
-                    ),
-                })
 
             compressed = _compress_history(messages, version_history=version_history)
             if _use_notepad and notepad:
@@ -350,23 +332,23 @@ def run_agentic_eval(
                 "tool_choice": "required",
                 # litellm defaults to 600s; large reasoning responses over
                 # OpenRouter can exceed that, so give more headroom.
-                "timeout": 1200,
+                "timeout": AGENT_LOOP_DEFAULTS["completion_timeout_s"],
             }
-            if "opus-4-7" not in model and "opus-4-8" not in model:
-                completion_kwargs["temperature"] = 0.2
+            if not any(m in model for m in AGENT_LOOP_DEFAULTS["models_without_temperature"]):
+                completion_kwargs["temperature"] = AGENT_LOOP_DEFAULTS["temperature"]
 
-            for _retry in range(6):
+            for _retry in range(AGENT_LOOP_DEFAULTS["retry_max_attempts"]):
                 try:
                     response = litellm.completion(**completion_kwargs)
                     break
                 except litellm.RateLimitError as e:
-                    wait = 30 * (2 ** _retry)
+                    wait = AGENT_LOOP_DEFAULTS["retry_base_wait_s"] * (2 ** _retry)
                     if verbose:
                         print(f"  [rate limit] sleeping {wait}s: {e}")
                     time.sleep(wait)
                 except (litellm.InternalServerError, litellm.APIConnectionError,
                         litellm.ServiceUnavailableError, litellm.Timeout) as e:
-                    wait = 30 * (2 ** _retry)
+                    wait = AGENT_LOOP_DEFAULTS["retry_base_wait_s"] * (2 ** _retry)
                     if verbose:
                         print(f"  [server error] sleeping {wait}s: {type(e).__name__}: {e}")
                     time.sleep(wait)
@@ -466,8 +448,6 @@ def run_agentic_eval(
                     elif fn_name == "disassemble":
                         lines = result_dict.get("asm", "").count("\n")
                         print(f"  ← disassemble: {lines} lines")
-                    elif fn_name == "submit":
-                        print(f"  ← submit: {result_dict}")
                     else:
                         print(f"  ← {fn_name}: {str(result_dict)[:100]}")
 
@@ -506,26 +486,17 @@ def run_agentic_eval(
                                     "cycle_speedup": cs,
                                 }
 
-                # ── Capture submit ────────────────────────────────────────────
-                if fn_name == "submit" and result_dict.get("status") == "PASSED":
-                    agent_submitted_code = fn_args.get("code", "")
-                    final_result = {
-                        **result_dict,
-                        "timestamp": run_timestamp,
-                        "version_history": version_history,
-                    }
-
                 reasoning_text = ""  # emit reasoning only on the first tool call per turn
 
-            if final_result is not None:
-                break
-
-        # ── Auto-submit if agent never produced a successful submit ────────────
-        if final_result is None and best_version and best_version.get("code"):
-            reason = "max turns reached" if not agent_submitted_code else "submit did not pass"
+        # ── Submit the best version seen this session ───────────────────────────
+        # No model-facing submit tool (see AGENT_SYSTEM_PROMPT) — evaluate()
+        # already auto-persists on every new best, so this is purely to attach
+        # a real explanation to the trajectory instead of the generic one
+        # evaluate()'s own auto-submit writes.
+        if best_version and best_version.get("code"):
             if verbose:
                 ts = best_version.get("time_speedup", "?")
-                print(f"\n[Auto-submit] {reason} — submitting "
+                print(f"\n[Submit] max turns reached — submitting "
                       f"v{best_version['version']} (time_speedup={ts})...")
             try:
                 # submit() already auto-selects the best-cycle_speedup version;

@@ -10,9 +10,11 @@ description: >
 
 Drives one or more kernel-optimization sessions against `mcp_app`'s MCP
 server. By the time you're reading this, a `compile`/`evaluate`/
-`disassemble`/`submit` MCP server should already be connected and visible
-to you — exposed as `mcp__cpu-kernel-baseline__*` tools (you don't need to
-type that prefix; your tool list already resolves the real names).
+`disassemble` MCP server should already be connected and visible to you —
+exposed as `mcp__cpu-kernel-baseline__*` tools (you don't need to type that
+prefix; your tool list already resolves the real names). There is no
+separate `submit` tool —  `evaluate()` auto-persists the best-performing version the moment
+it beats your previous best; see "Finish and report" below.
 
 ## Ground rules
 
@@ -54,7 +56,10 @@ Before writing any optimized code for a given definition:
    definition in this dataset, present from the start (the unoptimized
    scalar kernel for each). Find the entry for the definition you're
    working on.
-2. Read it.
+2. Read it. It `#include`s a per-definition `.h` header —
+   that header is NOT exposed as an MCP resource and you don't need to read
+   it: its constants are baked in automatically when you `compile()`.
+   Don't try `ReadMcpResourceTool`/`list_resources()` on it — it will 404.
 3. `compile({"definition": "<that definition's name>", "code": <that
    content>})` — this becomes version `v1` for that definition.
 4. `evaluate({})` — one call, always returns both correctness and
@@ -91,9 +96,9 @@ Standard loop for the definition you're currently working on:
      by `disassemble()`. Only exists for versions you actually
      disassembled.
    - `<definition>/trajectory.jsonl` — the full turn-by-turn history for
-     this definition (every `compile`/`evaluate`/`disassemble`/`submit`
-     call, updated live as you go). Read it to check a past attempt's
-     recorded scores instead of re-evaluating it.
+     this definition (every `compile`/`evaluate`/`disassemble` call,
+     updated live as you go). Read it to check a past attempt's recorded
+     scores instead of re-evaluating it.
 
 ### Metrics from evaluate({}) (on `"status": "PASSED"`)
 - `max_absolute_error`/`max_relative_error` — correctness, always present.
@@ -108,7 +113,11 @@ and why (correctness or a runtime/timeout error).
 ## 3. Finish and report
 
 Once you've decided to stop — see your task message for this run's
-iteration floor and any other stopping criteria — call
-`submit({"definition": "<definition>"})` for that definition, then stop.
-Don't call `submit` for a definition you haven't compiled and evaluated at
-least once.
+iteration floor/ceiling and any other stopping criteria — just stop calling
+tools for that definition. There is no `submit` call to make: every
+`evaluate()` that beat your previous best this session already persisted
+that result to `trajectory.jsonl`/`bench-trace` as it happened (see the
+Optimize section above), so by the time you decide to stop, your
+best-so-far version is already saved. Summarize what you found (starting
+vs. final speedup, what optimizations worked) and move on to the next
+definition, if any.
