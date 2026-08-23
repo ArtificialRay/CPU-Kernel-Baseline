@@ -1,8 +1,7 @@
 """mcp_app.agent_tools — per-dataset tool surfaces backed by bench/ in-process.
 
-Self-contained: zero imports from eval/agent_tools/ (see mcp_app/README.md).
-Adapted from eval/agent_tools/, with the SSH abstraction dropped since
-execution is always local to the machine this code runs on.
+Self-contained: zero imports from eval/ — execution is always local to the
+machine this code runs on.
 
 Usage:
     from mcp_app.agent_tools import resolve_tools

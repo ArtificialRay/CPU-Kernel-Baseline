@@ -1,10 +1,6 @@
 """TrajectoryWriter — per-session append-only audit trail for one agent loop.
 
-Copied from eval/agent_tools/trajectory.py (pure file I/O, no SSH or
-eval.agent_tools-specific coupling — the copy needs no adaptation).
-
-Layout under `agent-runs-mcp/<def_name>/` (mcp_app's harness-neutral
-equivalent of eval/agent_tools's `agent-runs/<def_name>/`):
+Layout under `agent-runs-mcp/<def_name>/`:
     trajectory.jsonl   — one JSON line per turn, written immediately after each tool call
     v1.cpp             — full source for compile version 1
     v2.cpp             — full source for compile version 2 (etc.)

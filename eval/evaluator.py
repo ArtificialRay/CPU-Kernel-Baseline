@@ -236,8 +236,7 @@ def run_agentic_eval(
             (e.g. "sve2", "portable") — drives the system prompt's
             isa_desc/isa_name via `_ISA_PROMPT_INFO` so the agent is never
             told a different ISA than what the server actually compiles
-            with. Not derived from instance type — see `_ISA_PROMPT_INFO`'s
-            comment for why that used to be a real bug.
+            with. Not derived from instance type.
         dataset: Dataset key, used for REFERENCE_SCALAR_AUTHORS lookup below
             (the MCP server itself already knows its own dataset).
         bench_cfg: Optional BenchmarkConfig override (baselines, perf counter settings).

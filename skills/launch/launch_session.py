@@ -4,14 +4,13 @@ results back afterward. Runs on the caller's host, not the target instance.
 Provisioning (`provision`/`teardown`/`status`) is done by the standalone
 `eval/provision.py` script — invoked only via subprocess, never imported.
 This module has zero Python imports from eval/ or mcp_app/ (see remote.py's
-docstring and mcp_app/README.md's "Scope boundary" section); it only reads
-the shared `eval/eval_config.json` that `eval/provision.py` writes, which is
-a file-format contract, not a Python import. This module already assumes
-the full repo checkout (including eval/) is present locally, since it
-rsyncs REPO_ROOT to the remote. Sharing that one config file (instead of
-this skill keeping its own, as it used to) is what lets `eval/provision.py`
-and this module provision/reuse/teardown the same instances without either
-side going stale about what the other has done.
+docstring); it only reads the shared `eval/eval_config.json` that
+`eval/provision.py` writes, which is a file-format contract, not a Python
+import. This module already assumes the full repo checkout (including
+eval/) is present locally, since it rsyncs REPO_ROOT to the remote. Sharing
+that one config file is what lets `eval/provision.py` and this module
+provision/reuse/teardown the same instances without either side going stale
+about what the other has done.
 `launch` composes provisioning + `prepare_session()` in one call.
 `prepare-session`/`sync-results` stay separate commands: `prepare-session`
 blocks in the foreground for as long as you want the tunnel + remote server
@@ -175,7 +174,7 @@ def _spawn_command(
 # ── Pre-flight: make sure the instance actually has what a session needs
 #    before nanobot ever connects. mcp_app/smoke_test_driver.py (mcp_app's
 #    non-nanobot smoke-test tool) has its own independent copy of this same
-#    logic — see mcp_app/README.md's Scope boundary on why this isn't shared.
+#    logic, since mcp_app and skills/ never import from each other.
 
 def ensure_dataset_ready(target: RemoteTarget, dataset: str, *, verbose: bool = True) -> None:
     """Make sure `dataset`'s native-library build artifacts (ncnn/llama.cpp)

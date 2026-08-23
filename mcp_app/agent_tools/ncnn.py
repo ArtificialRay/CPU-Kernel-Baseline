@@ -1,13 +1,12 @@
 """NCNNKernelSession — KernelSession implementation for the NCNN dataset.
 
-Adapted from eval/agent_tools/ncnn.py: agent writes `kernel.cpp` containing
-`inner_<op_type>(...)`. The harness files (`<op_type>.h` + `<op_type>.cpp`) are
-lifted from the existing reference-scalar solution for the definition, so the
-agent only needs to write the inner kernel — not the binding boilerplate.
+Agent writes `kernel.cpp` containing `inner_<op_type>(...)`. The harness
+files (`<op_type>.h` + `<op_type>.cpp`) are lifted from the existing
+reference-scalar solution for the definition, so the agent only needs to
+write the inner kernel — not the binding boilerplate.
 
-ISA/march/target_hardware now come from `isa.march_for_isa(self._isa)` (the
-session's explicit, caller-supplied ISA) instead of an EC2-instance-type
-table lookup — see mcp_app/agent_tools/isa.py.
+ISA/march/target_hardware come from `isa.march_for_isa(self._isa)` (the
+session's explicit, caller-supplied ISA) — see mcp_app/agent_tools/isa.py.
 """
 
 from __future__ import annotations

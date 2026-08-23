@@ -13,8 +13,8 @@ Two deliberately different roles:
                                sve-only box) — it never decides march flags.
 
 No instance-type table lives here (or anywhere in mcp_app): which EC2 instance
-type satisfies a given ISA is a provisioning concern, entirely out of scope for
-mcp_app (see mcp_app/README.md).
+type satisfies a given ISA is a provisioning concern, out of scope for
+mcp_app.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from typing import NamedTuple
 from contracts import ISA_TABLE
 
 # isa name -> (march flag, isa_features, target_hardware label), from contracts.py
-# (shared with eval/agent_tools/base.py, eval/provision.py, etc.) plus a local
+# (shared with eval/provision.py etc.) plus a local
 # "portable" alias: same -march as neon (armv8-a mandates NEON); the "no
 # hand-written SIMD" constraint is a PROMPT concern (nanobot skill), not a
 # compile flag, so "portable" isn't a real hardware tier in contracts.yaml.
@@ -38,9 +38,9 @@ _ISA_MARCH: dict[str, tuple[str, list[str], list[str]]] = {
 _ISA_MARCH["portable"] = (ISA_TABLE["neon"].march, list(ISA_TABLE["neon"].features), ["aarch64"])
 
 # isa name -> /proc/cpuinfo "Features" tokens that must ALL be present.
-# Open item (see mcp_app/README.md): exact token names for Graviton3 (sve) vs.
-# Graviton4 (sve2) should be confirmed against real hardware; this only affects
-# the precision of the safety check below, never the compiled output.
+# TODO: exact token names for Graviton3 (sve) vs. Graviton4 (sve2) should be
+# confirmed against real hardware; this only affects the precision of the
+# safety check below, never the compiled output.
 _ISA_CPUINFO_TOKENS: dict[str, list[str]] = {
     "portable": ["asimd"],
     "neon": ["asimd"],

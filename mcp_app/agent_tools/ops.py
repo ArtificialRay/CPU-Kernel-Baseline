@@ -1,10 +1,8 @@
-"""compile/evaluate/disassemble — adapted from eval/agent_tools/remote_runner.py.
+"""compile/evaluate/disassemble — mcp_app's compile/evaluate/disassemble implementations.
 
-mcp_app's server is a long-lived process for the life of one session, so these are adapted to
-take an already-loaded TraceSet/Definition instead of reloading them —
-removes both a hardcoded path-climbing expression and redundant disk I/O per
-tool call. The compile/evaluate/disassemble logic itself is otherwise
-unchanged (copied, not imported — see mcp_app/README.md on why).
+mcp_app's server is a long-lived process for the life of one session, so
+these take an already-loaded TraceSet/Definition rather than reloading them
+from disk on every tool call.
 """
 
 from __future__ import annotations

@@ -81,8 +81,7 @@ class Builder(ABC):
     """Base class for all builders.
 
     Subclasses declare a `_build_dir_name` prefix (for tempdir naming) and
-    implement is_available / can_build / build. The shared helpers below lift
-    the boilerplate that used to live inline in `compile_solution`.
+    implement is_available / can_build / build.
     """
 
     _build_dir_name: str

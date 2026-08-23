@@ -308,10 +308,7 @@ def teardown(label: str | None = None):
 
     `label` given: destroys just that one instance (-target-scoped), leaving
     every other label's instance untouched. `label` omitted: tears down every
-    label currently recorded in eval_config.json, one at a time — reproduces
-    the old "destroy everything" behavior as an explicit opt-in rather than
-    the default, now that a single instance is no longer the only thing that
-    could possibly be up.
+    label currently recorded in eval_config.json, one at a time.
     """
     if label is None:
         if not EVAL_CONFIG_PATH.exists():

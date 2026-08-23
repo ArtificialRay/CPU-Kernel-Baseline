@@ -1,18 +1,7 @@
 """mcp_app.smoke_test_driver — sequential, non-nanobot fallback/testing driver.
 
-Loosely mirrors the *shape* of eval/run_benchmark.py's per-definition loop
-(not its code — zero imports from eval/, see mcp_app/README.md) and is
-functionally similar to what skills/nanobot/nanobot-kernel-session/scripts/
-launch_session.py does for a real nanobot session, but independently
-implemented — no import from skills/ either, so mcp_app and skills/ never
-depend on each other. Smoke-test-only — never invoked by the skill.
-
-Formerly split across two files (`driver.py` + `scripts/smoke_test.py`);
-merged since `scripts/smoke_test.py` was a strict subset of what this file
-already does (a fixed 2-definition sweep with none of the dataset-readiness/
-baseline-collection preflight below) — same tool, one name, renamed to make
-its smoke-test-only role explicit rather than the more general-sounding
-"driver".
+Smoke-test-only — never invoked by the skill. No imports from eval/ or
+skills/, so mcp_app stays independent of both.
 
 Usage:
     # General: any dataset/definition(s).
@@ -20,8 +9,7 @@ Usage:
         --dataset ncnn --baseline-author baseline-ncnn-arm --isa sve2 \\
         --problem conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0
 
-    # The two definitions used as this repo's standard verification check
-    # (see mcp_app/README.md's Verification section):
+    # The two definitions used as this repo's standard verification check:
     python -m mcp_app.smoke_test_driver --host <ip> --user ubuntu --key-file ~/.ssh/id_rsa \\
         --dataset ncnn --baseline-author baseline-ncnn-arm --isa sve2 \\
         --problem conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0
@@ -227,12 +215,10 @@ def run_definition(
     definition_name: str, dataset: str, author: str, baseline_author: str, isa: str,
     *, session_timeout_s: float = 1800,
 ) -> dict:
-    # Still one fresh server process per definition here (compatibility-only
-    # update, not the one-server-per-dataset efficiency refactor — see
-    # mcp_app/README.md's Open Items). run_dir is author-scoped to match the
-    # server's new contract; since each of these spawns only ever touches one
-    # definition, its agent-runs-mcp/<author>/<definition_name>/ subdirectory
-    # never collides with another spawn's.
+    # One fresh server process per definition here. run_dir is author-scoped;
+    # since each of these spawns only ever touches one definition, its
+    # agent-runs-mcp/<author>/<definition_name>/ subdirectory never collides
+    # with another spawn's.
     remote_cmd = (
         f"cd {remote_root} && python3 -m mcp_app.server --dataset {dataset} "
         f"--author {author} --baseline-author {baseline_author} --isa {isa} "
@@ -327,17 +313,14 @@ def main(argv: list[str] | None = None) -> None:
 
     print(f"Running {len(problem_defs)} definition(s) (dataset={args.dataset}, isa={args.isa})")
 
-    # Sync first — ensure_dataset_ready/ensure_baselines both need bench-trace/
-    # and bench/ to already exist at remote_root (the baseline-presence check
-    # script reads remote_root/bench-trace/traces/; 
+    # Sync first — ensure_dataset_ready/ensure_baselines and collect-baselines
+    # need bench-trace/ and bench/ already present at remote_root (the
+    # baseline-presence check script reads remote_root/bench-trace/traces/).
     _local_ssh.rsync_to(
         args.host, args.user, args.key_file, REPO_ROOT, args.remote_root,
         paths=RSYNC_ALLOWLIST,
     )
 
-    #collect-baselines needs bench/ importable there too). Running this before the sync used to be
-    # a latent ordering bug that just didn't manifest if the instance
-    # happened to already be synced from an earlier run.
     if not args.skip_dataset_check:
         ensure_dataset_ready(args.host, args.user, args.key_file, args.remote_root, args.dataset)
 
