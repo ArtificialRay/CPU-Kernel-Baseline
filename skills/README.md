@@ -27,9 +27,8 @@ this document first, then that harness's own `README.md`.
 ## 2. Start an mcp_app session
 
 `launch/` (`skills/launch/`) is a harness-agnostic, self-contained package —
-zero Python imports from `eval/` or `mcp_app/` (see `mcp_app/README.md`'s
-"Scope boundary") — that provisions a Graviton instance and starts an
-`mcp_app` session on it. Provisioning itself (Terraform apply/destroy) is
+zero Python imports from `eval/` or `mcp_app/` — that provisions a Graviton
+instance and starts an `mcp_app` session on it. Provisioning itself (Terraform apply/destroy) is
 done by the standalone `eval/provision.py` script; `launch/launch_session.py`
 invokes it only via subprocess, never imports it. Both sides read/write the
 same shared `eval/eval_config.json` for "what's currently up" — so an
