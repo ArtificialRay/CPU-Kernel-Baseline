@@ -61,7 +61,7 @@ SSH local-port-forward (not exposed publicly), and prints the endpoint.
 | `--instance` | no | derived from `--isa` | EC2 instance type override, e.g. `c8g.xlarge` |
 | `--author` | no | `nanobot` | tags every solution/trace this session writes; also names the session's `run_dir` (`agent-runs-mcp/<author>/`) |
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
-| `--local-repo-dir` | **no** | this checkout's own root (`REPO_ROOT`, computed from where `launch_session.py` itself lives — not your shell's cwd) | your local checkout of this repo, pushed to the instance by `prepare_session`'s rsync (the provisioning step's own rsync always uses `eval/provision.py`'s own repo checkout, not this) |
+| `--local-repo-dir` | **no** | this checkout's own root (`REPO_ROOT`, computed from where `launch_session.py` itself lives — not your shell's cwd) | your local checkout of this repo, pushed to the instance by `prepare_session`'s rsync |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
 | `--local-port` | no | random free port | pin the local tunnel port across relaunches, so a reused MCP client config doesn't need re-editing every time |
 | `--no-sync` | flag | off | skip the rsync step (repo already up to date on the instance) |

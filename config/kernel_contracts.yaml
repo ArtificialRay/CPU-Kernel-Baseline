@@ -159,15 +159,14 @@ tool_call_loop:
   # retry_base_wait_s * 2**attempt).
   retry_max_attempts: 6
   retry_base_wait_s: 30
-
-# eval/mcp_client.py's MCP session — consumed via contracts.MCP_CLIENT_DEFAULTS.
-# Generous timeouts: evaluate()/compile() run a full build+timed-repeat pass
-# and can legitimately take minutes; mcp_app/server.py pings the MCP session
-# every 120s while a call is in flight specifically so a slow call doesn't
-# look dead (server.py's TOOL_CALL_PING_INTERVAL_S).
-mcp_client:
-  connect_timeout_s: 60
-  tool_call_timeout_s: 900
-  resource_call_timeout_s: 60
-  compile_timeout_s: 180
-  disassemble_timeout_s: 60
+  # eval/mcp_client.py's MCP session — consumed via contracts.MCP_CLIENT_DEFAULTS.
+  # Generous timeouts: evaluate()/compile() run a full build+timed-repeat pass
+  # and can legitimately take minutes; mcp_app/server.py pings the MCP session
+  # every 120s while a call is in flight specifically so a slow call doesn't
+  # look dead (server.py's TOOL_CALL_PING_INTERVAL_S).
+  mcp_client:
+    connect_timeout_s: 60
+    tool_call_timeout_s: 900
+    resource_call_timeout_s: 60
+    compile_timeout_s: 180
+    disassemble_timeout_s: 60

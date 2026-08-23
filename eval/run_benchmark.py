@@ -33,10 +33,9 @@ from dotenv import load_dotenv
 from bench.config import BenchmarkConfig
 from bench.data.trace_set import TraceSet
 from contracts import BASELINE_AUTHORS, ISA_INSTANCE_MAP
-from eval.config import REPO_ROOT
 from eval.evaluator import run_agentic_eval
 from eval.remote import InstanceHandle
-
+REPO_ROOT = Path(__file__).parent.parent
 BENCH_TRACE = REPO_ROOT / "bench-trace"
 RESULTS_DIR = REPO_ROOT / "results"
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"

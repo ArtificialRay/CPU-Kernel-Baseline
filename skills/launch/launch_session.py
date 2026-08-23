@@ -25,8 +25,8 @@ the right moment for on its own.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
-import socket
 import subprocess
 import sys
 import time
@@ -300,17 +300,33 @@ def _kill_remote_port(target: RemoteTarget, remote_port: int) -> None:
     )
 
 
+def _probe_ready(port: int) -> bool:
+    """One lightweight HTTP round-trip against the streamable-http endpoint.
+    verify if the real mcp server can answer request
+    """
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    try:
+        conn.request("POST", "/mcp", body=b"{}", headers={"Content-Type": "application/json"})
+        conn.getresponse()
+        return True
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        conn.close()
+
+
 def _wait_for_port(port: int, *, timeout: float, proc: subprocess.Popen) -> None:
+    """Wait until the remote mcp_app.server is actually answering requests
+    through the tunnel — not just until ssh's local listener is up (see
+    _probe_ready's docstring for why that distinction matters)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise RuntimeError(f"ssh tunnel process exited early (rc={proc.returncode})")
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                return
-        except OSError:
-            time.sleep(0.5)
-    raise TimeoutError(f"Nothing listening on 127.0.0.1:{port} after {timeout}s")
+        if _probe_ready(port):
+            return
+        time.sleep(0.3)
+    raise TimeoutError(f"mcp_app.server on 127.0.0.1:{port} not answering after {timeout}s")
 
 
 def stop_tunnel(prepared: dict) -> None:
