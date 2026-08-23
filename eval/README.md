@@ -1,13 +1,6 @@
 # eval/ — own harness (in-repo litellm agent loop)
 
-This is Path 1 from the [root README](../README.md): a self-contained agent
-loop that drives the whole session itself — provision/reuse an instance,
-start `mcp_app/server.py` on it, run the LLM through compile/evaluate/
-disassemble turns, persist the best result, optionally tear the instance
-down. No external agent harness involved. If you want an external harness
-(nanobot, Claude Code, ...) to drive the session instead, see
-[`mcp_app/README.md`](../mcp_app/README.md) and
-[`skills/README.md`](../skills/README.md) instead — that's Path 2.
+The repo provide a in-repo litellm agent loop to use mcp tools for test and fun
 
 ## Prerequisites
 
