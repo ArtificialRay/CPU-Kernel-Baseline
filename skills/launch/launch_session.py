@@ -530,7 +530,7 @@ def main(argv: list[str] | None = None) -> None:
                          help="Name identifying this instance — one per concurrently-desired "
                               "instance (see eval/provision.py's module docstring). Default: "
                               "f'{dataset(s)}-{isa}'.")
-        sp.add_argument("--instance", default="c7g.xlarge",
+        sp.add_argument("--instance", default=None,
                          help="EC2 instance type override (e.g. c8g.xlarge). "
                               "Defaults to ISA_INSTANCE_MAP[isa].")
         sp.add_argument("--local-repo-dir", default=None,

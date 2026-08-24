@@ -85,22 +85,22 @@ isa:
     march: "-march=armv8-a"
     features: []
     labels: ["aarch64-neon"]
-    instance_type: "c7g.large"
+    instance_type: "c7g.xlarge"
   sve:
     march: "-march=armv8.2-a+sve"
     features: ["sve"]
     labels: ["graviton3", "aarch64-sve"]
-    instance_type: "c7g.large"
+    instance_type: "c7g.xlarge"
   sve2:
     march: "-march=armv9-a+sve2"
     features: ["sve2"]
     labels: ["graviton4", "aarch64-sve2"]
-    instance_type: "c8g.large"
+    instance_type: "c8g.xlarge"
   sme2:
     march: "-march=armv9-a+sve2+sme2"
     features: ["sve2", "sme2"]
     labels: ["aarch64-sme2"]
-    instance_type: "c8g.large"
+    instance_type: "c8g.xlarge"
 
 # Disallowed-source-pattern policy for agent-submitted kernel.cpp, consumed
 # by mcp_app's compile() tool (mcp_app/agent_tools/base.py::
