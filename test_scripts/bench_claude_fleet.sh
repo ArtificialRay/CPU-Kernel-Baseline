@@ -7,6 +7,14 @@
 # convention. Read that script's header first if you haven't; this one
 # only calls out where Claude Code differs from nanobot.
 #
+# Default: runs every definition found for DATASET. Pass DEFINITIONS to
+# scope the run to a fixed allow-list instead — e.g. to recover a specific
+# failure set from a prior sweep without re-running everything:
+#   DEFINITIONS="conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0" ./bench_claude_fleet.sh
+# Accepts a JSON array or space-separated bare names, or full
+# "<dataset>_<isa>_<name>" log-file stems (the dataset_isa_ prefix is
+# stripped automatically) — see the DEFINITIONS section below.
+#
 # Prerequisite: an mcp_app session must already be up, reachable at a known
 # local URL, and launched with --author matching AUTHOR below (submit()
 # authorship is fixed server-side at `python -m mcp_app.server --author
@@ -114,6 +122,18 @@ LOCAL_RESULTS_DIR="${LOCAL_RESULTS_DIR:-$REPO_DIR/agent-runs-claude}"
 EVAL_CONFIG="$REPO_DIR/eval/eval_config.json"
 LABEL="${LABEL:-${DATASET}-${ISA}}"
 
+# ---------------------------------------------------------------------------
+# DEFINITIONS: optional allow-list to scope the run to specific definitions
+# (e.g. recovering a failure set from a prior sweep) instead of the full
+# DATASET. Empty (the default) means every definition found for DATASET.
+# Accepts a JSON array, bare names or full "<dataset>_<isa>_<name>" log-file
+# stems (the dataset_isa_ prefix is stripped automatically), or
+# space-separated bare names:
+#   DEFINITIONS='["conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1"]' ./bench_claude_fleet.sh
+#   DEFINITIONS="conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1" ./bench_claude_fleet.sh
+# ---------------------------------------------------------------------------
+DEFINITIONS="${DEFINITIONS:-}"
+
 # Best-effort: a sync failure (or an unreachable/reclaimed instance) is
 # logged and swallowed, never fatal — losing the ability to sync one job's
 # results shouldn't abort the rest of the batch. (Same logic as
@@ -177,22 +197,36 @@ SYSTEM_PROMPT="$(cat "$SKILL_FILE")"
 # ---------------------------------------------------------------------------
 # Build JOBS: one "<definition_name>|<prompt>" entry per definition JSON
 # under DEFINITIONS_DIR whose baseline-solution dataset (or, for simd-loop
-# definitions, whose "simd-loop" tag) matches DATASET. Same discovery logic
-# and baseline_author table as bench_nanobot_fleet.sh — kept in sync by
-# hand, see that script's SKILL.md §3 reference for the source of truth.
+# definitions, whose "simd-loop" tag) matches DATASET, narrowed to
+# DEFINITIONS if given (empty DEFINITIONS matches everything). Same
+# discovery logic and baseline_author table as bench_nanobot_fleet.sh — kept
+# in sync by hand, see that script's SKILL.md §3 reference for the source of
+# truth.
 # ---------------------------------------------------------------------------
 TASK_TEMPLATE='Optimize the "%s" kernel definition (dataset: %s, baseline solution source: %s) in ISA %s. You must spend at least %s tool calls but not exceed %s tool calls to explore genuinely different optimization attempts before you are allowed to submit. once you hit that ceiling, stop iterating and submit your best version immediately, since every iteration spends real model API budget. Follow the ground rules and workflow in your system prompt.'
 
-mapfile -t JOBS < <(python3 - "$DATASET" "$MIN_ITERATIONS" "$DEFINITIONS_DIR" "$TASK_TEMPLATE" "$ISA" "$MAX_ITERATIONS" <<'PYEOF'
+mapfile -t JOBS < <(python3 - "$DATASET" "$MIN_ITERATIONS" "$DEFINITIONS_DIR" "$TASK_TEMPLATE" "$ISA" "$DEFINITIONS" "$MAX_ITERATIONS" <<'PYEOF'
 import json, sys
 from pathlib import Path
 
-dataset, min_iterations, definitions_dir, template, isa, max_iterations = sys.argv[1:7]
+dataset, min_iterations, definitions_dir, template, isa, definitions_filter, max_iterations = sys.argv[1:8]
 
 BASELINE_AUTHOR_BY_DATASET = {
     "ncnn": "baseline-ncnn-arm",
     "simd-loop": "reference",
     "llama.cpp": "baseline-llamacpp-arm",
+}
+
+definitions_filter = definitions_filter.strip()
+if definitions_filter.startswith("["):
+    raw_entries = json.loads(definitions_filter)
+else:
+    raw_entries = definitions_filter.split()
+
+log_stem_prefix = f"{dataset}_{isa}_"
+wanted = {
+    entry[len(log_stem_prefix):] if entry.startswith(log_stem_prefix) else entry
+    for entry in raw_entries
 }
 
 for path in sorted(Path(definitions_dir).rglob("*.json")):
@@ -204,6 +238,8 @@ for path in sorted(Path(definitions_dir).rglob("*.json")):
     if ds != dataset:
         continue
     name = d["name"]
+    if wanted and name not in wanted:
+        continue
     baseline_author = BASELINE_AUTHOR_BY_DATASET.get(ds, ds)
     prompt = template % (name, ds, baseline_author, isa, min_iterations, max_iterations)
     print(f"{name}|{prompt}")
@@ -211,14 +247,26 @@ PYEOF
 )
 
 if [ "${#JOBS[@]}" -eq 0 ]; then
-  echo "No definitions found for DATASET=$DATASET under $DEFINITIONS_DIR" >&2
+  echo "No definitions found for DATASET=$DATASET (DEFINITIONS=${DEFINITIONS:-<all>}) under $DEFINITIONS_DIR" >&2
   exit 1
+fi
+
+if [ -n "$DEFINITIONS" ]; then
+  requested_count=$(python3 -c '
+import json, sys
+s = sys.argv[1].strip()
+entries = json.loads(s) if s.startswith("[") else s.split()
+print(len(entries))
+' "$DEFINITIONS")
+  if [ "${#JOBS[@]}" -ne "$requested_count" ]; then
+    echo "WARNING: requested $requested_count definition(s) via DEFINITIONS, but only found ${#JOBS[@]} matching DATASET=$DATASET." >&2
+  fi
 fi
 
 mkdir -p "$LOG_DIR" "$LOCAL_RESULTS_DIR"
 cd "$REPO_DIR"
 
-echo "Running ${#JOBS[@]} job(s) for DATASET=$DATASET, ISA=$ISA, MIN_ITERATIONS=$MIN_ITERATIONS, MAX_ITERATIONS=$MAX_ITERATIONS"
+echo "Running ${#JOBS[@]} job(s) for DATASET=$DATASET, ISA=$ISA, MIN_ITERATIONS=$MIN_ITERATIONS, MAX_ITERATIONS=$MAX_ITERATIONS (DEFINITIONS=${DEFINITIONS:-<all>})"
 
 CLAUDE_ARGS=(
   -p
