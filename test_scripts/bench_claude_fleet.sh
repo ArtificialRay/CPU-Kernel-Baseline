@@ -1,60 +1,40 @@
 #!/usr/bin/env bash
 # Sequentially run one headless Claude Code kernel-optimization session per
-# definition, one at a time. This is the Claude Code analogue of
-# bench_nanobot_fleet.sh in this same directory — same JOBS discovery
-# (scan bench-trace/definitions/ for DATASET), same best-effort
-# sync-results-after-each-job behavior, same MIN_ITERATIONS floor
-# convention. Read that script's header first if you haven't; this one
-# only calls out where Claude Code differs from nanobot.
+# definition, one at a time. Claude Code analogue of bench_nanobot_fleet.sh
+# (same JOBS discovery, same best-effort sync-results-after-each-job).
 #
 # Default: runs every definition found for DATASET. Pass DEFINITIONS to
-# scope the run to a fixed allow-list instead — e.g. to recover a specific
-# failure set from a prior sweep without re-running everything:
+# scope the run to a fixed allow-list instead (e.g. recovering a specific
+# failure set without re-running everything). Accepts a JSON array,
+# space-separated bare names, or full "<dataset>_<isa>_<name>" log-file
+# stems (the dataset_isa_ prefix is stripped automatically):
 #   DEFINITIONS="conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0" ./bench_claude_fleet.sh
-# Accepts a JSON array or space-separated bare names, or full
-# "<dataset>_<isa>_<name>" log-file stems (the dataset_isa_ prefix is
-# stripped automatically) — see the DEFINITIONS section below.
 #
-# Prerequisite: an mcp_app session must already be up, reachable at a known
-# local URL, and launched with --author matching AUTHOR below (submit()
-# authorship is fixed server-side at `python -m mcp_app.server --author
-# ...` startup, not something this client can override per-request):
-#
+# Prerequisite: an mcp_app session must already be up, launched with
+# --author matching AUTHOR below (submit() authorship is fixed server-side
+# at server startup, not something this client can override per-request):
 #   python3 skills/launch/launch_session.py launch \
-#       --isa <isa> --dataset <dataset> --author claude-code \
-#       --local-port <fixed-port>
-#
-# --local-port matters: pin it (per skills/README.md) so the endpoint stays
-# predictable across relaunches. Export the printed endpoint here:
-#
+#       --isa <isa> --dataset <dataset> --author claude-code --local-port <fixed-port>
 #   MCP_ENDPOINT=http://127.0.0.1:<port>/mcp DATASET=<dataset> ISA=<isa> \
 #       ./bench_claude_fleet.sh
 #
-# Unlike nanobot, the `claude` CLI has no analogue of maxToolIterations (a
-# hard, code-enforced cap on tool-call rounds) directly, there is no --max-turns/--max-iterations flag. The only real
-# hard backstop available in headless (-p/--print) mode is --max-budget-usd
-# (dollar-denominated, not call-count) — see MAX_BUDGET_USD below. So
-# MIN_ITERATIONS here, same as bench_nanobot_fleet.sh, is a soft,
-# prompt-level instruction the model is told to follow — nothing enforces
-# it in code.
+# Headless Claude Code has no hard, code-enforced cap on tool-call rounds —
+# MIN_ITERATIONS/MAX_ITERATIONS below are prompt-level only; --max-budget-usd
+# is the one real dollar-denominated backstop.
 #
 # --permission-mode bypassPermissions runs every job unattended, so the
-# compile/evaluate tool surface really is remote code execution against
-# whatever instance MCP_ENDPOINT points at (see mcp_app/README.md) — only
-# point this at instances/networks you trust. --disallowedTools below is a
-# denylist, not an allowlist: nanobot's own README warns that allowlisting
-# tools for a KernelSession silently breaks resource listing/reading
-# (list_resources/read_resource) because it's easy to omit a built-in tool
-# name you didn't know existed. A denylist of tool names we're certain
-# about (Bash/Task/WebFetch/WebSearch) avoids that failure mode.
+# compile/evaluate tool surface is remote code execution against whatever
+# MCP_ENDPOINT points at — only point this at instances/networks you trust.
+# --disallowedTools is a denylist, not an allowlist: allowlisting tools for
+# a KernelSession silently breaks resource listing/reading
+# (list_resources/read_resource) since it's easy to omit a built-in tool
+# name you didn't know existed.
 #
 # Ground rules/workflow live in skills/claude-code/claude-code-kernel-session/
-# SKILL.md (the Claude Code analogue of nanobot-kernel-session/SKILL.md),
-# read at startup and appended as a system prompt to every job — nanobot
-# auto-injects its SKILL.md every turn via metadata.nanobot.always:true;
-# Claude Code has no such mechanism, so this script does the injection
-# explicitly instead. Keep that file in sync by hand with the nanobot
-# version's Ground Rules/Workflow sections if either changes.
+# SKILL.md, read at startup and appended as a system prompt to every job
+# (Claude Code has no nanobot-style always-inject mechanism, so this script
+# does it explicitly). Keep in sync by hand with nanobot-kernel-session's
+# SKILL.md if either changes.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -78,14 +58,10 @@ fi
 # ---------------------------------------------------------------------------
 DATASET="${DATASET:-ncnn}"
 ISA="${ISA:-sve}"
-# Floor, not a cap on its own — see header note. Soft limit: nothing
-# server-side or CLI-side enforces it, the model is just told not to submit
-# early. MAX_ITERATIONS is derived as MIN_ITERATIONS+10, a soft ceiling told
-# to the model alongside the floor so a job doesn't run away and rack up
-# unbounded API spend once it's already well past the floor — headless
-# Claude Code has no --max-turns equivalent, so this is prompt-level only,
-# same as MIN_ITERATIONS (--max-budget-usd below is the one real hard
-# backstop). Override MAX_ITERATIONS directly if +10 isn't the gap you want.
+# Floor, not a cap on its own — nothing enforces it, the model is just told
+# not to submit early. MAX_ITERATIONS = MIN_ITERATIONS+10, a soft ceiling so
+# a job doesn't run away once already past the floor. Override MAX_ITERATIONS
+# directly if +10 isn't the gap you want.
 MIN_ITERATIONS="${MIN_ITERATIONS:-40}"
 MAX_ITERATIONS="${MAX_ITERATIONS:-$((MIN_ITERATIONS + 10))}"
 MCP_ENDPOINT="${MCP_ENDPOINT:-}"
@@ -95,50 +71,33 @@ if [ -z "$MCP_ENDPOINT" ]; then
        "and export the printed endpoint as MCP_ENDPOINT, e.g. http://127.0.0.1:<port>/mcp" >&2
   exit 1
 fi
-MAX_BUDGET_USD="${MAX_BUDGET_USD:-}"   # optional hard $ ceiling per job — see header note
+MAX_BUDGET_USD="${MAX_BUDGET_USD:-}"   # optional hard $ ceiling per job
 MODEL="${MODEL:-}"                      # optional --model override; empty = CLI default
-# Defensive backstop, not a fix for a known-live bug: "API returned an empty
-# or malformed response" / StreamIdleTimeoutError transport faults used to
-# kill a job outright with zero warning (see harness_trajs/claude/*.log from
-# that period) — these correlated with routing --model through a
-# non-default (OpenRouter-hosted) backend, and stopped reproducing once back
-# on the CLI's default model. RETRIES stays as a cheap safety net for that
-# and other transient infra failures (dropped MCP transport, connection
-# errors). Each retry is a brand-new session (--no-session-persistence means
-# no --resume), but that's cheap: prior compile/evaluate results already
-# live server-side in bench-trace, and the new session's first move is
-# reading the definition's trajectory.jsonl/vN.cpp resources to catch up —
-# it doesn't restart the optimization from v1. Total attempts = RETRIES+1. A
-# failed attempt's log is preserved as "<log_file>.attemptN" before the next
-# attempt overwrites log_file.
+# Defensive backstop for transient infra failures (dropped MCP transport,
+# "API returned an empty or malformed response" / StreamIdleTimeoutError).
+# Each retry is a brand-new session (--no-session-persistence), but that's
+# cheap: prior compile/evaluate results already live server-side in
+# bench-trace, and the new session's first move is reading the definition's
+# trajectory.jsonl/vN.cpp resources to catch up rather than restarting from
+# v1. Total attempts = RETRIES+1. A failed attempt's log is preserved as
+# "<log_file>.attemptN" before the next attempt overwrites log_file.
 RETRIES="${RETRIES:-3}"
 
-# Must match whatever --author the mcp_app server was launched with — see
-# the prerequisite note above. Kept distinct from nanobot's default
-# ("nanobot") so the two fleets' solutions/traces never collide in
-# bench-trace/.
+# Must match whatever --author the mcp_app server was launched with. Kept
+# distinct from nanobot's default ("nanobot") so the two fleets' solutions/
+# traces never collide in bench-trace/.
 AUTHOR="${AUTHOR:-claude-code}"
 LOCAL_RESULTS_DIR="${LOCAL_RESULTS_DIR:-$REPO_DIR/agent-runs-claude}"
 EVAL_CONFIG="$REPO_DIR/eval/eval_config.json"
 LABEL="${LABEL:-${DATASET}-${ISA}}"
 
-# ---------------------------------------------------------------------------
-# DEFINITIONS: optional allow-list to scope the run to specific definitions
-# (e.g. recovering a failure set from a prior sweep) instead of the full
-# DATASET. Empty (the default) means every definition found for DATASET.
-# Accepts a JSON array, bare names or full "<dataset>_<isa>_<name>" log-file
-# stems (the dataset_isa_ prefix is stripped automatically), or
-# space-separated bare names:
-#   DEFINITIONS='["conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1"]' ./bench_claude_fleet.sh
-#   DEFINITIONS="conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1" ./bench_claude_fleet.sh
-# ---------------------------------------------------------------------------
+# DEFINITIONS: optional allow-list scoping the run — see header note. Empty
+# (the default) means every definition found for DATASET.
 DEFINITIONS="${DEFINITIONS:-}"
 
-# Best-effort: a sync failure (or an unreachable/reclaimed instance) is
-# logged and swallowed, never fatal — losing the ability to sync one job's
-# results shouldn't abort the rest of the batch. (Same logic as
-# bench_nanobot_fleet.sh's sync_job_results — duplicated rather than
-# sourced so each script stays a single self-contained file.)
+# Best-effort: a sync failure never aborts the rest of the batch. (Duplicated
+# from bench_nanobot_fleet.sh rather than sourced so each script stays a
+# single self-contained file.)
 sync_job_results() {
   local definition="$1"
   if [ ! -f "$EVAL_CONFIG" ]; then
@@ -169,12 +128,9 @@ print(json.load(open('$EVAL_CONFIG'))['instances']['$LABEL'].get('key_file', '~/
     || echo "  WARNING: sync-results failed for $definition" >&2
 }
 
-# ---------------------------------------------------------------------------
-# One-off MCP config file naming the mcp_app session as "cpu-kernel-baseline".
-# --strict-mcp-config (used below) makes this the *only* MCP server visible
-# to the job — the project's own .mcp.json (codegraph) is intentionally not
-# loaded, keeping each job's tool surface scoped to exactly this session.
-# ---------------------------------------------------------------------------
+# One-off MCP config naming the session "cpu-kernel-baseline".
+# --strict-mcp-config makes this the only MCP server visible to the job (the
+# project's own .mcp.json/codegraph stays unloaded).
 MCP_CONFIG_FILE="$(mktemp -t claude-fleet-mcp-XXXXXX.json)"
 trap 'rm -f "$MCP_CONFIG_FILE"' EXIT
 python3 -c "
@@ -182,27 +138,16 @@ import json, sys
 json.dump({'mcpServers': {'cpu-kernel-baseline': {'type': 'http', 'url': sys.argv[1]}}}, open(sys.argv[2], 'w'))
 " "$MCP_ENDPOINT" "$MCP_CONFIG_FILE"
 
-# ---------------------------------------------------------------------------
-# Ground rules + workflow, read from SKILL_FILE and appended as a system
-# prompt to every job — see the header note above. Tool names inside that
-# file are unprefixed ("compile"/"evaluate"/...) — Claude Code exposes them
-# to the model as mcp__cpu-kernel-baseline__*, which it resolves itself
-# from the connected server's tool schema. The iteration floor is NOT in
-# SKILL_FILE (it's static/shared across jobs) — it's per-job, so it goes in
-# TASK_TEMPLATE below instead, same split nanobot's PROMPT_TEMPLATE uses
-# relative to its own SKILL.md.
-# ---------------------------------------------------------------------------
+# Ground rules + workflow, appended as a system prompt to every job.
+# Unprefixed tool names in SKILL_FILE ("compile"/"evaluate"/...) are exposed
+# to the model as mcp__cpu-kernel-baseline__*.
 SYSTEM_PROMPT="$(cat "$SKILL_FILE")"
 
-# ---------------------------------------------------------------------------
 # Build JOBS: one "<definition_name>|<prompt>" entry per definition JSON
 # under DEFINITIONS_DIR whose baseline-solution dataset (or, for simd-loop
 # definitions, whose "simd-loop" tag) matches DATASET, narrowed to
-# DEFINITIONS if given (empty DEFINITIONS matches everything). Same
-# discovery logic and baseline_author table as bench_nanobot_fleet.sh — kept
-# in sync by hand, see that script's SKILL.md §3 reference for the source of
-# truth.
-# ---------------------------------------------------------------------------
+# DEFINITIONS if given. Same discovery logic and baseline_author table as
+# bench_nanobot_fleet.sh — kept in sync by hand.
 TASK_TEMPLATE='Optimize the "%s" kernel definition (dataset: %s, baseline solution source: %s) in ISA %s. You must spend at least %s tool calls but not exceed %s tool calls to explore genuinely different optimization attempts before you are allowed to submit. once you hit that ceiling, stop iterating and submit your best version immediately, since every iteration spends real model API budget. Follow the ground rules and workflow in your system prompt.'
 
 mapfile -t JOBS < <(python3 - "$DATASET" "$MIN_ITERATIONS" "$DEFINITIONS_DIR" "$TASK_TEMPLATE" "$ISA" "$DEFINITIONS" "$MAX_ITERATIONS" <<'PYEOF'
@@ -276,12 +221,9 @@ CLAUDE_ARGS=(
   --disallowedTools "Bash" "Task" "WebFetch" "WebSearch"
   --append-system-prompt "$SYSTEM_PROMPT"
   --no-session-persistence
-  # stream-json writes one JSON event per line as it happens (init,
-  # assistant messages, tool calls/results) instead of buffering until the
-  # whole run finishes — with a floor of MIN_ITERATIONS iterations, a job
-  # can run a long time, and plain --output-format text prints nothing to
-  # the log until it's fully done. --verbose is required by the CLI
-  # whenever --print is combined with --output-format stream-json.
+  # One JSON event per line as it happens, not buffered until the job
+  # finishes. --verbose is required whenever --print is combined with
+  # --output-format stream-json.
   --output-format stream-json
   --verbose
 )
@@ -297,9 +239,8 @@ for job in "${JOBS[@]}"; do
   while true; do
     echo "=== [$(date '+%H:%M:%S')] starting job: $name (attempt $((attempt + 1))/$((RETRIES + 1))) ==="
     set +e
-    # tee (not a plain redirect) so stream-json events also print live to the
-    # terminal as the job runs, not just after it finishes; PIPESTATUS[0] is
-    # needed because $? after a pipeline reflects tee's exit code, not claude's.
+    # tee so stream-json events also print live; PIPESTATUS[0] is claude's
+    # exit code, not tee's.
     claude "${CLAUDE_ARGS[@]}" "$prompt" 2>&1 | tee "$log_file"
     rc=${PIPESTATUS[0]}
     set -e

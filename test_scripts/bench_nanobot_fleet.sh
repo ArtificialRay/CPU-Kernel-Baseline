@@ -2,8 +2,8 @@
 # Sequentially run one nanobot kernel-optimization session per definition,
 # one at a time. JOBS is generated (not hand-edited) from every definition
 # JSON under bench-trace/definitions/ whose baseline-solution dataset
-# matches DATASET below. Each job's stdout/stderr goes straight into its own
-# log file under harness_trajs/nanobot/.
+# matches DATASET below (optionally narrowed to DEFINITIONS). Each job's
+# stdout/stderr goes straight into its own log file under harness_trajs/nanobot/.
 #
 # DATASET must be one of the dataset(s) the connected MCP server was started
 # with (~/.nanobot/config.json's tools.mcpServers entry runs
@@ -21,12 +21,10 @@ DEFINITIONS_DIR="$REPO_DIR/bench-trace/definitions"
 
 # Per-job workspace isolation: each job gets its own nanobot workspace under
 # JOB_WORKSPACES_DIR so memory/ and sessions/ never bleed between unrelated
-# kernel-optimization jobs. The shared/static parts (persona docs + skills,
-# incl. the nanobot-kernel-session skill this workflow depends on) are
-# symlinked in from GLOBAL_WORKSPACE rather than duplicated. Job workspaces
-# must live outside any git repo — nanobot's GitStore refuses to init a
-# memory-versioning repo when already nested inside one (see
-# nanobot/utils/gitstore.py::_is_inside_git_repo).
+# jobs. Shared/static parts (persona docs + skills) are copied in from
+# GLOBAL_WORKSPACE. Job workspaces must live outside any git repo — nanobot's
+# GitStore refuses to init a memory-versioning repo when already nested
+# inside one (see nanobot/utils/gitstore.py::_is_inside_git_repo).
 GLOBAL_WORKSPACE="${NANOBOT_WORKSPACE:-$HOME/.nanobot/workspace}"
 JOB_WORKSPACES_DIR="$HOME/.nanobot/job_workspaces"
 
@@ -40,7 +38,7 @@ make_job_workspace() {
   local job_ws="$JOB_WORKSPACES_DIR/$1"
   mkdir -p "$job_ws"
   local shared
-  # Copied (not symlinked) into the job workspace to fit sandboxing requirements
+  # Copied (not symlinked) to fit sandboxing requirements.
   for shared in AGENTS.md HEARTBEAT.md SOUL.md USER.md prompts skills; do
     if [ -e "$GLOBAL_WORKSPACE/$shared" ]; then
       rsync -a --delete --exclude='.git' "$GLOBAL_WORKSPACE/$shared" "$job_ws/"
@@ -49,9 +47,7 @@ make_job_workspace() {
   echo "$job_ws"
 }
 
-# Best-effort: a sync failure (or an unreachable/reclaimed instance) is
-# logged and swallowed, never fatal — losing the ability to sync one job's
-# results shouldn't abort the rest of the batch.
+# Best-effort: a sync failure never aborts the rest of the batch.
 sync_job_results() {
   local definition="$1"
   if [ ! -f "$EVAL_CONFIG" ]; then
@@ -84,66 +80,76 @@ print(json.load(open('$EVAL_CONFIG'))['instances']['$LABEL'].get('key_file', '~/
 
 # ---------------------------------------------------------------------------
 # Global knobs — override via env, e.g. `DATASET=simd-loop MIN_ITERATIONS=60 ISA=sve2 ./bench_nanobot_fleet.sh`
+#
+# DEFINITIONS: optional allow-list to scope the run to specific definitions
+# (e.g. recovering a failure set from a prior sweep) instead of the full
+# DATASET. Empty (the default) means every definition found for DATASET.
+# Accepts a JSON array, bare names or full "<dataset>_<isa>_<name>" log-file
+# stems (the dataset_isa_ prefix is stripped automatically), or
+# space-separated bare names:
+#   DEFINITIONS="gemm_bf16_n1408_k2048 gemm_bf16_n2048_k1024" ./bench_nanobot_fleet.sh
 # ---------------------------------------------------------------------------
 DATASET="${DATASET:-ncnn}"
-# Floor, not a cap — each job is instructed to keep iterating for at least
-# this many compile+evaluate cycles before it's allowed to submit (see
-# PROMPT_TEMPLATE below). It's a soft limit: nothing server-side enforces it,
-# the agent is just told not to submit early.
+# Floor, not a cap — nothing server-side enforces it, the agent is just told
+# not to submit early (see PROMPT_TEMPLATE below).
 MIN_ITERATIONS="${MIN_ITERATIONS:-40}"
 ISA="${ISA:-sve}"
-# Sandboxed config (restrict_to_workspace + bwrap) kept separate from the
-# interactive ~/.nanobot/config.json so this batch workflow doesn't change
-# behavior for normal `nanobot agent`/chat usage. Requires `bwrap` installed
-# (sudo apt-get install bubblewrap) — otherwise every exec call fails.
+DEFINITIONS="${DEFINITIONS:-}"
+# Sandboxed config (restrict_to_workspace + bwrap), kept separate from the
+# interactive ~/.nanobot/config.json. Requires `bwrap` installed (sudo
+# apt-get install bubblewrap) — otherwise every exec call fails.
 NANOBOT_CONFIG="$REPO_DIR/skills/nanobot/nanobot-kernel-session/config.json"
 # Defensive backstop against transient infra failures (dropped MCP
-# transport, connection errors, etc.) — not tied to a specific confirmed
-# nanobot failure signature the way bench_claude_fleet.sh's RETRIES is
-# (that one was diagnosed against a specific Claude Code CLI error;
-# nanobot's own LLM backend/error surface is different and untested against
-# that same fault). Each retry is a brand-new nanobot session, but that's
-# cheap: prior compile/evaluate results already live server-side in
-# bench-trace, and the new session picks up existing vN.cpp/trajectory.jsonl
-# resources instead of restarting from v1. Total attempts = RETRIES+1.
+# transport, connection errors). Each retry is a brand-new nanobot session,
+# but that's cheap: prior compile/evaluate results already live server-side
+# in bench-trace, and the new session picks up existing
+# vN.cpp/trajectory.jsonl instead of restarting from v1. Total attempts =
+# RETRIES+1.
 RETRIES="${RETRIES:-3}"
 
-# Sync each job's results back to the local checkout right after it finishes
-# (skills/launch/launch_session.py sync-results — pulls
-# agent-runs-mcp/<author>/<definition>/ from the remote instance), so
-# already-finished jobs' results survive even if a later job's connection
-# dies mid-batch (e.g. AWS reclaiming a spot instance — see
-# skills/README.md's "After the run: sync results back"). AUTHOR must match
-# whatever --author the MCP server this session connects to was launched
-# with (default "nanobot" everywhere in this repo). HOST/USER/KEY_FILE are
-# read from eval/eval_config.json, keyed by LABEL — must match whatever
-# --label the instance serving this DATASET+ISA was launched/provisioned
-# under (default f"{DATASET}-{ISA}", mirroring eval/provision.py's
-# default_label() — see its module docstring). Override LABEL explicitly if
-# you launched with a custom --label.
+# Sync each job's results back right after it finishes, so already-finished
+# jobs survive even if a later job's connection dies mid-batch (e.g. AWS
+# reclaiming a spot instance). AUTHOR must match whatever --author the MCP
+# server this session connects to was launched with (default "nanobot"
+# everywhere in this repo). HOST/USER/KEY_FILE are read from
+# eval/eval_config.json, keyed by LABEL — must match whatever --label the
+# instance serving this DATASET+ISA was launched/provisioned under (default
+# f"{DATASET}-{ISA}"). Override LABEL explicitly if you used a custom
+# --label.
 AUTHOR="${AUTHOR:-nanobot}"
-LOCAL_RESULTS_DIR="${LOCAL_RESULTS_DIR:-$REPO_DIR/agent-runs-nanobot}"
+LOCAL_RESULTS_DIR="${LOCAL_RESULTS_DIR:-$REPO_DIR/agent-runs-$AUTHOR}"
 EVAL_CONFIG="$REPO_DIR/eval/eval_config.json"
 LABEL="${LABEL:-${DATASET}-${ISA}}"
 
 PROMPT_TEMPLATE='Optimize the "%s" kernel definition (dataset: %s, baseline solution source: %s) in new ISA %s. You must spend at least %s compile+evaluate iterations exploring genuinely different optimization attempts before you are allowed to submit — do not submit early just because an attempt already looks good, keep iterating until you hit the floor. You may keep going past it if you are still finding improvements. Follow the nanobot-kernel-session skill workflow end to end.'
 
-# ---------------------------------------------------------------------------
 # Build JOBS: one "<definition_name>|<prompt>" entry per definition JSON
 # under DEFINITIONS_DIR whose baseline-solution dataset (or, for simd-loop
-# definitions, whose "simd-loop" tag) matches DATASET. baseline_author
-# mirrors the dataset/baseline_author table hand-maintained in SKILL.md §3.
-# ---------------------------------------------------------------------------
-mapfile -t JOBS < <(python3 - "$DATASET" "$MIN_ITERATIONS" "$DEFINITIONS_DIR" "$PROMPT_TEMPLATE" "$ISA" <<'PYEOF'
+# definitions, whose "simd-loop" tag) matches DATASET, narrowed to
+# DEFINITIONS if given. baseline_author mirrors the dataset/baseline_author
+# table hand-maintained in SKILL.md §3.
+mapfile -t JOBS < <(python3 - "$DATASET" "$MIN_ITERATIONS" "$DEFINITIONS_DIR" "$PROMPT_TEMPLATE" "$ISA" "$DEFINITIONS" <<'PYEOF'
 import json, sys
 from pathlib import Path
 
-dataset, min_iterations, definitions_dir, template, isa = sys.argv[1:6]
+dataset, min_iterations, definitions_dir, template, isa, definitions_filter = sys.argv[1:7]
 
 BASELINE_AUTHOR_BY_DATASET = {
     "ncnn": "baseline-ncnn-arm",
     "simd-loop": "reference",
     "llama.cpp": "baseline-llamacpp-arm",
+}
+
+definitions_filter = definitions_filter.strip()
+if definitions_filter.startswith("["):
+    raw_entries = json.loads(definitions_filter)
+else:
+    raw_entries = definitions_filter.split()
+
+log_stem_prefix = f"{dataset}_{isa}_"
+wanted = {
+    entry[len(log_stem_prefix):] if entry.startswith(log_stem_prefix) else entry
+    for entry in raw_entries
 }
 
 for path in sorted(Path(definitions_dir).rglob("*.json")):
@@ -155,6 +161,8 @@ for path in sorted(Path(definitions_dir).rglob("*.json")):
     if ds != dataset:
         continue
     name = d["name"]
+    if wanted and name not in wanted:
+        continue
     baseline_author = BASELINE_AUTHOR_BY_DATASET.get(ds, ds)
     prompt = template % (name, ds, baseline_author, isa, min_iterations)
     print(f"{name}|{prompt}")
@@ -162,14 +170,26 @@ PYEOF
 )
 
 if [ "${#JOBS[@]}" -eq 0 ]; then
-  echo "No definitions found for DATASET=$DATASET under $DEFINITIONS_DIR" >&2
+  echo "No definitions found for DATASET=$DATASET (DEFINITIONS=${DEFINITIONS:-<all>}) under $DEFINITIONS_DIR" >&2
   exit 1
+fi
+
+if [ -n "$DEFINITIONS" ]; then
+  requested_count=$(python3 -c '
+import json, sys
+s = sys.argv[1].strip()
+entries = json.loads(s) if s.startswith("[") else s.split()
+print(len(entries))
+' "$DEFINITIONS")
+  if [ "${#JOBS[@]}" -ne "$requested_count" ]; then
+    echo "WARNING: requested $requested_count definition(s) via DEFINITIONS, but only found ${#JOBS[@]} matching DATASET=$DATASET." >&2
+  fi
 fi
 
 mkdir -p "$LOG_DIR"
 cd "$NANOBOT_DIR"
 
-echo "Running ${#JOBS[@]} job(s) for DATASET=$DATASET, ISA=$ISA, MIN_ITERATIONS=$MIN_ITERATIONS"
+echo "Running ${#JOBS[@]} job(s) for DATASET=$DATASET, ISA=$ISA, MIN_ITERATIONS=$MIN_ITERATIONS (DEFINITIONS=${DEFINITIONS:-<all>})"
 
 for job in "${JOBS[@]}"; do
   name="${job%%|*}"
@@ -187,13 +207,13 @@ for job in "${JOBS[@]}"; do
     if [ "$rc" -eq 0 ]; then
       break
     fi
-    # Known benign case: nanobot's close_mcp() can crash on asyncio.CancelledError
-    # while tearing down two concurrently-connected MCP sessions (only reproduces
-    # when both NCNNKernelBench and LLAMACPPKernelBench are simultaneously
-    # reachable — i.e. running two datasets' fleets in parallel against two live
-    # instances). It happens AFTER the job's own work is done — evaluate() already
-    # auto-persisted the best version remotely — so it's safe to treat as a warning
-    # and move on (no retry needed) rather than letting `set -e` abort the whole batch.
+    # Known benign case: nanobot's close_mcp() can crash on
+    # asyncio.CancelledError while tearing down two concurrent MCP sessions
+    # (only when two datasets' fleets run in parallel against two live
+    # instances) — happens AFTER the job's own work is done and
+    # evaluate() has already auto-persisted the best version remotely, so
+    # treat as a warning and move on rather than letting `set -e` abort the
+    # whole batch.
     if grep -q "asyncio.exceptions.CancelledError" "$log_file" && grep -q "close_mcp" "$log_file"; then
       echo "  WARNING: job $name crashed during MCP cleanup after finishing (known nanobot close_mcp() CancelledError bug) — result may already be persisted remotely, continuing" >&2
       break
@@ -209,6 +229,5 @@ for job in "${JOBS[@]}"; do
   echo "=== [$(date '+%H:%M:%S')] job $name finished -> $log_file ==="
   sync_job_results "$name"
 done
-
 
 echo "All jobs done. Logs in $LOG_DIR"
