@@ -80,21 +80,27 @@ print(json.load(open('$EVAL_CONFIG'))['instances']['$LABEL'].get('key_file', '~/
 
 # ---------------------------------------------------------------------------
 # Global knobs — override via env, e.g. `DATASET=simd-loop MIN_ITERATIONS=60 ISA=sve2 ./bench_nanobot_fleet.sh`
-#
-# DEFINITIONS: optional allow-list to scope the run to specific definitions
-# (e.g. recovering a failure set from a prior sweep) instead of the full
-# DATASET. Empty (the default) means every definition found for DATASET.
-# Accepts a JSON array, bare names or full "<dataset>_<isa>_<name>" log-file
-# stems (the dataset_isa_ prefix is stripped automatically), or
-# space-separated bare names:
-#   DEFINITIONS="gemm_bf16_n1408_k2048 gemm_bf16_n2048_k1024" ./bench_nanobot_fleet.sh
 # ---------------------------------------------------------------------------
 DATASET="${DATASET:-ncnn}"
 # Floor, not a cap — nothing server-side enforces it, the agent is just told
 # not to submit early (see PROMPT_TEMPLATE below).
 MIN_ITERATIONS="${MIN_ITERATIONS:-40}"
 ISA="${ISA:-sve}"
-DEFINITIONS="${DEFINITIONS:-}"
+
+# DEFINITIONS: edit this list to scope the run to specific definitions (e.g.
+# recovering a failure set from a prior sweep) — leave the array empty to
+# run every definition found for DATASET instead. Paste bare names, or full
+# "<dataset>_<isa>_<name>" log-file stems straight out of
+# harness_trajs/nanobot/*.log filenames (the dataset_isa_ prefix is stripped
+# automatically). Set the DEFINITIONS env var to override this whole block
+# for a one-off run without editing the file, e.g.
+#   DEFINITIONS="gemm_bf16_n1408_k2048 gemm_bf16_n2048_k1024" ./bench_nanobot_fleet.sh
+if [ -z "${DEFINITIONS:-}" ]; then
+  DEFINITIONS='
+[
+]
+'
+fi
 # Sandboxed config (restrict_to_workspace + bwrap), kept separate from the
 # interactive ~/.nanobot/config.json. Requires `bwrap` installed (sudo
 # apt-get install bubblewrap) — otherwise every exec call fails.

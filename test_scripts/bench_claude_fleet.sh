@@ -3,12 +3,10 @@
 # definition, one at a time. Claude Code analogue of bench_nanobot_fleet.sh
 # (same JOBS discovery, same best-effort sync-results-after-each-job).
 #
-# Default: runs every definition found for DATASET. Pass DEFINITIONS to
-# scope the run to a fixed allow-list instead (e.g. recovering a specific
-# failure set without re-running everything). Accepts a JSON array,
-# space-separated bare names, or full "<dataset>_<isa>_<name>" log-file
-# stems (the dataset_isa_ prefix is stripped automatically):
-#   DEFINITIONS="conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0" ./bench_claude_fleet.sh
+# Default: runs every definition found for DATASET. Edit the DEFINITIONS
+# array below (see its own comment) to scope the run to a fixed allow-list
+# instead — e.g. recovering a specific failure set without re-running
+# everything — or set the DEFINITIONS env var for a one-off run.
 #
 # Prerequisite: an mcp_app session must already be up, launched with
 # --author matching AUTHOR below (submit() authorship is fixed server-side
@@ -91,9 +89,20 @@ LOCAL_RESULTS_DIR="${LOCAL_RESULTS_DIR:-$REPO_DIR/agent-runs-claude}"
 EVAL_CONFIG="$REPO_DIR/eval/eval_config.json"
 LABEL="${LABEL:-${DATASET}-${ISA}}"
 
-# DEFINITIONS: optional allow-list scoping the run — see header note. Empty
-# (the default) means every definition found for DATASET.
-DEFINITIONS="${DEFINITIONS:-}"
+# DEFINITIONS: edit this list to scope the run to specific definitions (e.g.
+# recovering a failure set from a prior sweep) — leave the array empty to
+# run every definition found for DATASET instead. Paste bare names, or full
+# "<dataset>_<isa>_<name>" log-file stems straight out of
+# harness_trajs/claude/*.log filenames (the dataset_isa_ prefix is stripped
+# automatically). Set the DEFINITIONS env var to override this whole block
+# for a one-off run without editing the file, e.g.
+#   DEFINITIONS="conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0" ./bench_claude_fleet.sh
+if [ -z "${DEFINITIONS:-}" ]; then
+  DEFINITIONS='
+[
+]
+'
+fi
 
 # Best-effort: a sync failure never aborts the rest of the batch. (Duplicated
 # from bench_nanobot_fleet.sh rather than sourced so each script stays a
