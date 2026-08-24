@@ -14,12 +14,12 @@ MODEL="${MODEL:-openrouter/anthropic/claude-sonnet-4-6}"
 # DATASET+ISA instance (see eval/run_benchmark.py's _label_for).
 
 # Edit this list — one definition name or op_type prefix per run.
-PROBLEMS=(
+DEFINITIONS=(
     # pooling_fp32_global_avg
     lstm_fp32_i322_h800
 )
 
-for problem in "${PROBLEMS[@]}"; do
+for problem in "${DEFINITIONS[@]}"; do
     echo "=== ${problem} ==="
     "$PYTHON" -m eval.run_benchmark \
         --problem "$problem" \
