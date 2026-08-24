@@ -1,17 +1,10 @@
 #!/usr/bin/env bash
-# Sequentially run one nanobot kernel-optimization session per definition,
-# one at a time. JOBS is generated (not hand-edited) from every definition
-# JSON under bench-trace/definitions/ whose baseline-solution dataset
-# matches DATASET below (optionally narrowed to DEFINITIONS). Each job's
-# stdout/stderr goes straight into its own log file under harness_trajs/nanobot/.
+# Runs one nanobot kernel-optimization session per definition, sequentially.
+# Each job's stdout/stderr goes to its own log under harness_trajs/nanobot/.
 #
-# DATASET must be one of the dataset(s) the connected MCP server was started
-# with (~/.nanobot/config.json's tools.mcpServers entry runs
-# `python3 -m mcp_app.server --dataset <dataset> [--dataset <dataset> ...]`,
-# possibly serving several at once via a dispatcher — see
-# mcp_app/agent_tools/dispatcher.py) — a job for a definition from a dataset
-# the server wasn't started with won't find its resources in that session.
-# See skills/nanobot/nanobot-kernel-session/SKILL.md.
+# DATASET must be a dataset the connected MCP server was started with
+# (~/.nanobot/config.json's mcpServers entry) — see
+# skills/nanobot/nanobot-kernel-session/SKILL.md.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,12 +12,9 @@ LOG_DIR="$REPO_DIR/harness_trajs/nanobot"
 NANOBOT_DIR="$HOME/l3/CPU-Kernel-Baseline/nanobot"
 DEFINITIONS_DIR="$REPO_DIR/bench-trace/definitions"
 
-# Per-job workspace isolation: each job gets its own nanobot workspace under
-# JOB_WORKSPACES_DIR so memory/ and sessions/ never bleed between unrelated
-# jobs. Shared/static parts (persona docs + skills) are copied in from
-# GLOBAL_WORKSPACE. Job workspaces must live outside any git repo — nanobot's
-# GitStore refuses to init a memory-versioning repo when already nested
-# inside one (see nanobot/utils/gitstore.py::_is_inside_git_repo).
+# Per-job workspace isolation under JOB_WORKSPACES_DIR, so memory/sessions
+# never bleed between jobs. Must live outside any git repo — nanobot's
+# GitStore refuses to init nested inside one.
 GLOBAL_WORKSPACE="${NANOBOT_WORKSPACE:-$HOME/.nanobot/workspace}"
 JOB_WORKSPACES_DIR="$HOME/.nanobot/job_workspaces"
 
@@ -82,46 +72,35 @@ print(json.load(open('$EVAL_CONFIG'))['instances']['$LABEL'].get('key_file', '~/
 # Global knobs — override via env, e.g. `DATASET=simd-loop MIN_ITERATIONS=60 ISA=sve2 ./bench_nanobot_fleet.sh`
 # ---------------------------------------------------------------------------
 DATASET="${DATASET:-ncnn}"
-# Floor, not a cap — nothing server-side enforces it, the agent is just told
-# not to submit early (see PROMPT_TEMPLATE below).
+# Floor, not a cap — the agent is just told not to submit early (see
+# PROMPT_TEMPLATE below).
 MIN_ITERATIONS="${MIN_ITERATIONS:-40}"
 ISA="${ISA:-sve}"
 
-# DEFINITIONS: edit this list to scope the run to specific definitions (e.g.
-# recovering a failure set from a prior sweep) — leave the array empty to
-# run every definition found for DATASET instead. Paste bare names, or full
-# "<dataset>_<isa>_<name>" log-file stems straight out of
-# harness_trajs/nanobot/*.log filenames (the dataset_isa_ prefix is stripped
-# automatically). Set the DEFINITIONS env var to override this whole block
-# for a one-off run without editing the file, e.g.
-#   DEFINITIONS="gemm_bf16_n1408_k2048 gemm_bf16_n2048_k1024" ./bench_nanobot_fleet.sh
+# Edit this list to run only specific definitions (paste bare names, or full
+# "<dataset>_<isa>_<name>" log-file stems) — leave empty to run every
+# definition found for DATASET. Override with the DEFINITIONS env var for a
+# one-off run without editing the file.
 if [ -z "${DEFINITIONS:-}" ]; then
   DEFINITIONS='
 [
 ]
 '
 fi
-# Sandboxed config (restrict_to_workspace + bwrap), kept separate from the
-# interactive ~/.nanobot/config.json. Requires `bwrap` installed (sudo
-# apt-get install bubblewrap) — otherwise every exec call fails.
+
+# Sandboxed config, separate from ~/.nanobot/config.json. Requires bwrap
+# (sudo apt-get install bubblewrap).
 NANOBOT_CONFIG="$REPO_DIR/skills/nanobot/nanobot-kernel-session/config.json"
-# Defensive backstop against transient infra failures (dropped MCP
-# transport, connection errors). Each retry is a brand-new nanobot session,
-# but that's cheap: prior compile/evaluate results already live server-side
-# in bench-trace, and the new session picks up existing
-# vN.cpp/trajectory.jsonl instead of restarting from v1. Total attempts =
-# RETRIES+1.
+# Retries transient infra failures (dropped MCP transport, connection
+# errors). Fresh session each retry — cheap, since compile/evaluate results
+# already persist server-side and the new session catches up from existing
+# vN.cpp/trajectory.jsonl. Total attempts = RETRIES+1.
 RETRIES="${RETRIES:-3}"
 
-# Sync each job's results back right after it finishes, so already-finished
-# jobs survive even if a later job's connection dies mid-batch (e.g. AWS
-# reclaiming a spot instance). AUTHOR must match whatever --author the MCP
-# server this session connects to was launched with (default "nanobot"
-# everywhere in this repo). HOST/USER/KEY_FILE are read from
-# eval/eval_config.json, keyed by LABEL — must match whatever --label the
-# instance serving this DATASET+ISA was launched/provisioned under (default
-# f"{DATASET}-{ISA}"). Override LABEL explicitly if you used a custom
-# --label.
+# Syncs each job's results back right after it finishes, so earlier jobs
+# survive a later one's connection dying mid-batch. AUTHOR must match the
+# MCP server's --author (default "nanobot"). LABEL must match the
+# instance's --label (default f"{DATASET}-{ISA}").
 AUTHOR="${AUTHOR:-nanobot}"
 LOCAL_RESULTS_DIR="${LOCAL_RESULTS_DIR:-$REPO_DIR/agent-runs-$AUTHOR}"
 EVAL_CONFIG="$REPO_DIR/eval/eval_config.json"
@@ -129,11 +108,9 @@ LABEL="${LABEL:-${DATASET}-${ISA}}"
 
 PROMPT_TEMPLATE='Optimize the "%s" kernel definition (dataset: %s, baseline solution source: %s) in new ISA %s. You must spend at least %s compile+evaluate iterations exploring genuinely different optimization attempts before you are allowed to submit — do not submit early just because an attempt already looks good, keep iterating until you hit the floor. You may keep going past it if you are still finding improvements. Follow the nanobot-kernel-session skill workflow end to end.'
 
-# Build JOBS: one "<definition_name>|<prompt>" entry per definition JSON
-# under DEFINITIONS_DIR whose baseline-solution dataset (or, for simd-loop
-# definitions, whose "simd-loop" tag) matches DATASET, narrowed to
-# DEFINITIONS if given. baseline_author mirrors the dataset/baseline_author
-# table hand-maintained in SKILL.md §3.
+# One "<definition_name>|<prompt>" per definition JSON matching DATASET
+# (narrowed to DEFINITIONS if given). Keep baseline_author in sync by hand
+# with bench_claude_fleet.sh / SKILL.md §3.
 mapfile -t JOBS < <(python3 - "$DATASET" "$MIN_ITERATIONS" "$DEFINITIONS_DIR" "$PROMPT_TEMPLATE" "$ISA" "$DEFINITIONS" <<'PYEOF'
 import json, sys
 from pathlib import Path
@@ -213,13 +190,9 @@ for job in "${JOBS[@]}"; do
     if [ "$rc" -eq 0 ]; then
       break
     fi
-    # Known benign case: nanobot's close_mcp() can crash on
-    # asyncio.CancelledError while tearing down two concurrent MCP sessions
-    # (only when two datasets' fleets run in parallel against two live
-    # instances) — happens AFTER the job's own work is done and
-    # evaluate() has already auto-persisted the best version remotely, so
-    # treat as a warning and move on rather than letting `set -e` abort the
-    # whole batch.
+    # Known benign nanobot bug: close_mcp() can crash on CancelledError
+    # after the job's own work (and evaluate()'s auto-persist) already
+    # finished — treat as success, not a retry.
     if grep -q "asyncio.exceptions.CancelledError" "$log_file" && grep -q "close_mcp" "$log_file"; then
       echo "  WARNING: job $name crashed during MCP cleanup after finishing (known nanobot close_mcp() CancelledError bug) — result may already be persisted remotely, continuing" >&2
       break
