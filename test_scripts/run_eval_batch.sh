@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Runs eval/run_benchmark.py for a fixed list of op_types, mirroring the
-# "arm-bench: run_benchmark" launch.json config (.vscode/launch.json) —
-# same python interpreter, dataset, ISA, and model, just looped over --problem.
+# Runs eval/run_benchmark.py (own harness) for a fixed list of definitions,
+# one --problem call each, reusing whatever instance is already up for
+# DATASET+ISA (no --provision/--teardown).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-PYTHON=/home/rthu/miniconda3/bin/python
-DATASET=ncnn
-ISA=sve
-MODEL=openrouter/anthropic/claude-sonnet-4-6
+PYTHON="${PYTHON:-/home/rthu/miniconda3/bin/python}"
+DATASET="${DATASET:-ncnn}"
+ISA="${ISA:-sve}"
+MODEL="${MODEL:-openrouter/anthropic/claude-sonnet-4-6}"
+# Set ARMBENCH_LABEL_SUFFIX to avoid colliding with another run on the same
+# DATASET+ISA instance (see eval/run_benchmark.py's _label_for).
+
+# Edit this list — one definition name or op_type prefix per run.
 PROBLEMS=(
     # pooling_fp32_global_avg
     lstm_fp32_i322_h800
