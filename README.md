@@ -24,9 +24,14 @@ INT8 Kernels available:
 
 Kernel definitions are extracted from real model architecture: qwen1.5-moe-a2.7b, olmoe-1b-7b, resnet50, mobilenetv3-large, deepspeech2
 
+kernel dataset (bench-trace):
+https://huggingface.co/datasets/arm-bench/arm-bench-trace
+
 ---
 
 ## Prerequisites
+
+Download kernel dataset to the main directory of your local repository, then run dependency installation:
 
 ```bash
 pip install -r requirements.txt
@@ -50,6 +55,32 @@ Both modes share the same `compile`/`evaluate`/`disassemble`/`submit` tool
 surface and the same local `bench/` library underneath — see
 [CLAUDE.md](CLAUDE.md)'s "What this repo is" section for how the three paths
 relate.
+
+---
+
+## Batch scripts (`test_scripts/`)
+
+You're recommend to test the kernel via Batch scripts 
+
+Shortcut scripts for running many kernels' optimization sessions back to
+back, one per definition, with per-job logging and best-effort result sync.
+Each script's own header comment has the full usage; this is just the map:
+
+| Script | Path | What it does |
+|---|---|---|
+| `bench_ownHarness_fleet.sh` | Path 1 | Loops `eval/run_benchmark.py --problem` over a fixed `DEFINITIONS` array you edit in the file |
+| `bench_claude_fleet.sh` | Path 2 (Claude Code) | Loops headless `claude -p` sessions against an already-running `mcp_app` session (`MCP_ENDPOINT` required) |
+| `bench_nanobot_fleet.sh` | Path 2 (nanobot) | Same idea via `nanobot agent`, one isolated job workspace per definition |
+| `run_driver_smoke.sh` | — | smoke-tests an `mcp_app` session's compile/evaluate/disassemble/submit tools against a couple of reference-scalar kernels per dataset |
+
+All scripts read global knobs (`DATASET`, `ISA`, `MODEL`, ...) as env vars
+with in-file defaults — override without editing, e.g.:
+```bash
+DATASET=llama.cpp ISA=sve2 ./test_scripts/bench_claude_fleet.sh
+```
+`bench_claude_fleet.sh`/`bench_nanobot_fleet.sh` also have a `DEFINITIONS`
+array you can edit to scope a run to specific kernels instead of every
+definition in `DATASET` — leave it empty for the full sweep.
 
 ---
 
@@ -101,30 +132,6 @@ and [`skills/README.md`](skills/README.md) for the full `launch`/`provision`/
 harness's own skill doc (e.g.
 [`skills/nanobot/nanobot-kernel-session/README.md`](skills/nanobot/nanobot-kernel-session/README.md))
 for wiring the printed endpoint into that harness's MCP config.
-
----
-
-## Batch scripts (`test_scripts/`)
-
-Shortcut scripts for running many kernels' optimization sessions back to
-back, one per definition, with per-job logging and best-effort result sync.
-Each script's own header comment has the full usage; this is just the map:
-
-| Script | Path | What it does |
-|---|---|---|
-| `bench_ownHarness_fleet.sh` | Path 1 | Loops `eval/run_benchmark.py --problem` over a fixed `DEFINITIONS` array you edit in the file |
-| `bench_claude_fleet.sh` | Path 2 (Claude Code) | Loops headless `claude -p` sessions against an already-running `mcp_app` session (`MCP_ENDPOINT` required) |
-| `bench_nanobot_fleet.sh` | Path 2 (nanobot) | Same idea via `nanobot agent`, one isolated job workspace per definition |
-| `run_driver_smoke.sh` | — | Not an optimization run — smoke-tests an `mcp_app` session's compile/evaluate/disassemble/submit tools against a couple of reference-scalar kernels per dataset |
-
-All scripts read global knobs (`DATASET`, `ISA`, `MODEL`, ...) as env vars
-with in-file defaults — override without editing, e.g.:
-```bash
-DATASET=llama.cpp ISA=sve2 ./test_scripts/bench_claude_fleet.sh
-```
-`bench_claude_fleet.sh`/`bench_nanobot_fleet.sh` also have a `DEFINITIONS`
-array you can edit to scope a run to specific kernels instead of every
-definition in `DATASET` — leave it empty for the full sweep.
 
 ---
 
