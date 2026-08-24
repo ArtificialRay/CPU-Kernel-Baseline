@@ -1,12 +1,5 @@
 """KernelSession ABC — per-dataset tool surface, backed by bench/ in-process.
 
-Adapted from eval/agent_tools/base.py's AgentTools, with the SSH abstraction
-dropped entirely: there is nothing to abstract over once compile/evaluate/
-disassemble always run in-process on the machine this code is actually
-running on (no `_run_remote`/`_run_remote_fire_forget`, no `handle` param).
-`read_code` is retired — reading previously-written vN.cpp/vN.s/trajectory.jsonl
-happens via MCP Resources instead (see mcp_app/resources.py).
-
 One instance per (instance, dataset) server process — NOT per definition.
 `compile()` takes `definition` as a per-call argument and can be called with
 many different definition names across the lifetime of one process; see
@@ -67,15 +60,13 @@ class KernelSessionLike(Protocol):
 def standard_tool_schemas() -> list[dict]:
     """The three standard agent tool schemas, identical across datasets.
 
-    Dataset-specific guidance (which function name/signature to implement)
-    used to be baked into this text per-dataset, but it's redundant with —
-    and less precise than — the `reference-scalar-kernel.cpp` resource
-    already written per definition at server startup (see
-    session.py::_write_reference_scalar_kernels): a working, correctly
-    signatured scalar reference the agent can just read. Keeping this text
-    dataset-agnostic is what lets one server process serve multiple datasets
-    (see agent_tools/dispatcher.py) without needing to pick whose wording to
-    show. No `read_code` entry — retired at the source (see module docstring).
+    Kept dataset-agnostic: the `reference-scalar-kernel.cpp` resource written
+    per definition at server startup (see
+    session.py::_write_reference_scalar_kernels) already tells the agent
+    which function name/signature to implement, more precisely than schema
+    text could. This is also what lets one server process serve multiple
+    datasets (see agent_tools/dispatcher.py) without needing to pick whose
+    wording to show.
     """
     return [
         {

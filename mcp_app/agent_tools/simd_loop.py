@@ -1,10 +1,9 @@
 """SIMDLoopKernelSession — KernelSession implementation for the simd-loop dataset.
 
-Adapted from eval/agent_tools/simd_loop.py: agent writes `kernel.cpp`
-containing `inner_<op_type>(...)` (op_type is `loop_NNN`). The fused harness
-files (`loop_NNN.h` + `loop_NNN.cpp`) are lifted from the baseline reference
-solution for the definition, so the agent only needs to write the inner loop
-kernel — not the harness boilerplate.
+Agent writes `kernel.cpp` containing `inner_<op_type>(...)` (op_type is
+`loop_NNN`). The fused harness files (`loop_NNN.h` + `loop_NNN.cpp`) are
+lifted from the baseline reference solution for the definition, so the agent
+only needs to write the inner loop kernel — not the harness boilerplate.
 
 Same contract shape as the ncnn dataset (`inner_<op_type>` behind a fused
 harness); the differences are the dataset enum, the baseline author to lift

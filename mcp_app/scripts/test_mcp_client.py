@@ -8,8 +8,8 @@ for one definition. Exposes both a callable API (used by mcp_app/smoke_test_driv
 and a standalone CLI for manual runs.
 
     # stdio mode: spawn the exact command a real MCP client (nanobot, or
-    # skills/nanobot/nanobot-kernel-session/scripts/launch_session.py's
-    # prepare_session(..., transport="stdio")'s output) would use.
+    # skills/launch/launch_session.py's prepare_session(..., transport="stdio")'s
+    # output) would use.
     python -m mcp_app.scripts.test_mcp_client --transport stdio --definition <name> \\
         --command ssh --spawn-args ubuntu@host "cd ~/arm-bench && python3 -m mcp_app.server ..."
 

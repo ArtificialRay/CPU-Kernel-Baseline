@@ -1,10 +1,7 @@
 """eval/mcp_client.py — MCP client bridge for eval/evaluator.py's litellm loop.
 
 This loop's tools are driven over a real MCP client of mcp_app/server.py —
-the same server nanobot/Claude Code drive — instead of a separate SSH-based
-tool system (the now-deleted eval/agent_tools/: AgentTools + remote_runner.py).
-One execution backend, not two hand-synced ones. See
-`.claude/plans/functional-yawning-knuth.md` for the migration this came out of.
+the same server nanobot/Claude Code drive.
 
 Two public entry points:
 - `connect(...)` — provisions/reuses an instance, starts mcp_app.server on
@@ -15,9 +12,8 @@ Two public entry points:
   designed to serve many definitions off one long-lived connection, so
   there's no per-definition session teardown/rebuild here).
 - `MCPKernelClient.tools_for(definition_name)` — a thin per-definition
-  facade (`MCPToolsForDefinition`) exposing `dispatch_tool_call`/`submit`/
-  `cleanup`, the interface `eval/evaluator.py::run_agentic_eval`'s turn
-  loop calls.
+  facade (`MCPToolsForDefinition`) exposing `dispatch_tool_call`/`cleanup`,
+  the interface `eval/evaluator.py::run_agentic_eval`'s turn loop calls.
 
 Tool surface presented to the model IS derived directly from
 `session.list_tools()` — compile/evaluate/disassemble's schemas (including
@@ -29,21 +25,9 @@ against this same server — `build_user_prompt()` tells it which
 `compile()` result. `dispatch_tool_call` is therefore a near-total
 passthrough: whatever the model calls, forward as-is. This also means any
 NEW tool mcp_app/server.py adds shows up here automatically, with zero
-eval/ code changes — the only two exceptions, and the reason this isn't a
-100% blind passthrough:
+eval/ code changes — the only exception:
 
-- `submit` is NOT exposed to the model at all (not in `tool_schemas()`),
-  matching mcp_app's own design exactly: `evaluate()` already
-  auto-persists on every new best, so there's nothing for the model to
-  explicitly submit. `MCPToolsForDefinition.submit()` still exists as a
-  plain Python method — `eval/evaluator.py`'s max-turns-exhausted fallback
-  calls it directly (never through `dispatch_tool_call`, never something
-  the model can trigger) purely to attach a better `explanation` string to
-  the trajectory than the generic "Auto submit by evaluate()" one; the
-  result was already durably persisted by then either way.
-- `read_code` has no such fallback (mcp_app genuinely retired the method,
-  not just its schema, and it was never a `list_tools()` entry to begin
-  with) — reimplemented here over MCP Resources (`list_resources`/
+- `read_code` is reimplemented here over MCP Resources (`list_resources`/
   `read_resource`), the same primitive mcp_app/resources.py serves to
   nanobot/Claude Code.
 """
@@ -102,10 +86,9 @@ def _free_local_port() -> int:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
-# Tool schema specifically for 'read_code', which is not a real mcp tool
-# Not a real MCP tool — never appears in session.list_tools() (mcp_app
-# retired read_code entirely, see module docstring) — reconstructed here as
-# a pseudo-tool wrapping list_resources()/read_resource().
+# Pseudo-tool: read_code never appears in session.list_tools() —
+# reconstructed here as a litellm-facing schema wrapping
+# list_resources()/read_resource().
 _READ_CODE_SCHEMA: dict = {"type": "function", "function": {
     "name": "read_code",
     "description": (
@@ -124,9 +107,7 @@ _READ_CODE_SCHEMA: dict = {"type": "function", "function": {
 
 def _tool_schemas_from_raw(raw_tools: list) -> list[dict]:
     """mcp.types.Tool list (from session.list_tools()) -> litellm
-    {"type": "function", ...} shape — forwarded as-is, `submit` excluded
-    (see module docstring on why neither of these is a stripping/rewriting
-    step)."""
+    {"type": "function", ...} shape."""
     schemas = [
         {"type": "function", "function": {
             "name": t.name, "description": t.description, "parameters": t.inputSchema,
@@ -265,7 +246,7 @@ class MCPKernelClient:
 
 class MCPToolsForDefinition:
     """Per-definition facade matching AgentTools' public interface
-    (dispatch_tool_call/submit/cleanup) exactly, so
+    (dispatch_tool_call/cleanup) exactly, so
     eval/evaluator.py::run_agentic_eval's turn loop needs no changes beyond
     its construction line. Backed by a shared MCPKernelClient — cleanup()
     is a no-op here on purpose; the shared session's real teardown
@@ -309,15 +290,6 @@ class MCPToolsForDefinition:
         read_result = self._client._read_resource(match.uri)
         content = read_result.contents[0].text
         return {"filename": filename, "content": content}
-
-    def submit(self, explanation: str = "") -> dict:
-        try:
-            return self._client._call_tool(
-                "submit", {"definition": self._definition_name, "explanation": explanation},
-                timeout=_TOOL_CALL_TIMEOUT_S,
-            )
-        except Exception as e:  # noqa: BLE001
-            return {"status": "RUNTIME_ERROR", "error": str(e)}
 
     def cleanup(self) -> None:
         pass  # see class docstring — real teardown is MCPKernelClient.close()

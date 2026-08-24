@@ -25,9 +25,8 @@ mcp_app/
                                #   also eagerly writes every definition's
                                #   reference-scalar-kernel.cpp at startup
     server.py                  # the MCP server process itself (--transport stdio|streamable-http)
-    resources.py                 # MCP Resources over a session's run_dir (read_code's
-                                 #   replacement — nested one dir per definition)
-    dataset_builds.json            # ncnn/llama.cpp native-lib build steps (own copy)
+    resources.py                 # MCP Resources over a session's run_dir —
+                                 #   nested one dir per definition
     smoke_test_driver.py            # sequential, non-nanobot smoke-test/verification driver
     scripts/
         _local_ssh.py                # smoke_test_driver.py's own SSH/rsync
@@ -40,7 +39,6 @@ mcp_app/
 # On the target instance, once the repo is synced there.
 python -m mcp_app.server --dataset <ncnn|simd-loop|llama.cpp> --author <tag> \
     --isa <neon|sve|sve2|sme2> --run-dir ~/arm-bench/agent-runs-mcp/<author> \
-    --transport stdio
 ```
 
 One process serves **every** definition in `--dataset` — `compile()` takes

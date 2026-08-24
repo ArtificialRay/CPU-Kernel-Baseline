@@ -1,10 +1,10 @@
 """
 eval/evaluator.py — Agentic LLM evaluation orchestrator for arm-bench.
 
-Runs an agent loop where the LLM iteratively uses compile/evaluate/disassemble/submit
+Runs an agent loop where the LLM iteratively uses compile/evaluate/disassemble
 tools against a real Graviton instance over MCP (eval/mcp_client.py — the same
-mcp_app/server.py nanobot/Claude Code drive), then persists the best solution
-to bench-trace/.
+mcp_app/server.py nanobot/Claude Code drive). There is no submit tool —
+evaluate() persists the best solution to bench-trace/ automatically.
 
 Compatible with any LiteLLM-supported model.
 """
@@ -112,7 +112,7 @@ def _compress_history(
     keep_full_turns: int = 2,
     version_history: list[dict] | None = None,
 ) -> list[dict]:
-    """Compress old turns for the AgentTools loop (compile/evaluate/disassemble/submit)."""
+    """Compress old turns for the AgentTools loop (compile/evaluate/disassemble)."""
     assistant_indices = [i for i, m in enumerate(messages) if m["role"] == "assistant"]
     if len(assistant_indices) <= keep_full_turns:
         return messages
@@ -155,7 +155,7 @@ def _compress_history(
             recap_parts.append(
                 f"Best so far: v{best['version']} "
                 f"(time_speedup={best_ts_str}). "
-                "Submit if you can't improve further."
+                "It's already persisted — keep iterating to try to beat it."
             )
         else:
             recap_parts.append(
@@ -179,9 +179,9 @@ def _compress_history(
             msg = copy.deepcopy(msg)
             if msg["role"] == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
-                    if tc["function"]["name"] in ("compile", "submit"):
+                    if tc["function"]["name"] == "compile":
                         if compile_success.get(tc["id"], True):
-                            try:  # role=="assistant" + tool_call=="compile" or "submit" + compile success
+                            try:  # role=="assistant" + tool_call=="compile" + compile success
                                 args = json.loads(tc["function"]["arguments"])
                                 code = args.get("code", "")
                                 if len(code) > 100:
@@ -219,9 +219,7 @@ def run_agentic_eval(
 ) -> dict:
     """Run one agentic optimization session, tools backed by mcp_app/server.py
     over a shared MCP session (eval/mcp_client.py) — the same server
-    nanobot/Claude Code drive. Iterates until the agent calls submit() or
-    max_turns is reached (triggering auto-submit of the best correct
-    version found).
+    nanobot/Claude Code drive.
 
     Args:
         definition: bench Definition object for the target op.
@@ -236,8 +234,7 @@ def run_agentic_eval(
             (e.g. "sve2", "portable") — drives the system prompt's
             isa_desc/isa_name via `_ISA_PROMPT_INFO` so the agent is never
             told a different ISA than what the server actually compiles
-            with. Not derived from instance type — see `_ISA_PROMPT_INFO`'s
-            comment for why that used to be a real bug.
+            with. Not derived from instance type.
         dataset: Dataset key, used for REFERENCE_SCALAR_AUTHORS lookup below
             (the MCP server itself already knows its own dataset).
         bench_cfg: Optional BenchmarkConfig override (baselines, perf counter settings).
@@ -484,40 +481,32 @@ def run_agentic_eval(
                                     "code": version_history[-1]["code"],
                                     "time_speedup": ts,
                                     "cycle_speedup": cs,
+                                    "correctness": result_dict.get("correctness", {}),
                                 }
 
                 reasoning_text = ""  # emit reasoning only on the first tool call per turn
 
-        # ── Submit the best version seen this session ───────────────────────────
+        # ── Report the best version seen this session ────────────────────────────
         # No model-facing submit tool (see AGENT_SYSTEM_PROMPT) — evaluate()
-        # already auto-persists on every new best, so this is purely to attach
-        # a real explanation to the trajectory instead of the generic one
-        # evaluate()'s own auto-submit writes.
+        # already auto-persists on every new best (mcp_app/agent_tools/base.py's
+        # evaluate() calls its own submit() internally, synchronously, whenever
+        # is_new_best), so best_version's data was already durably written
+        # server-side by the time we get here.
         if best_version and best_version.get("code"):
             if verbose:
                 ts = best_version.get("time_speedup", "?")
-                print(f"\n[Submit] max turns reached — submitting "
-                      f"v{best_version['version']} (time_speedup={ts})...")
-            try:
-                # submit() already auto-selects the best-cycle_speedup version;
-                # it takes only `explanation` (passing source_version raised
-                # TypeError -> auto-submit silently failed -> spurious NO_SUBMIT).
-                result = tools.submit(
-                    explanation=(
-                        f"[auto-submitted: v{best_version['version']} had best "
-                        f"time_speedup={best_version.get('time_speedup', '?')}]"
-                    ),
-                )
-                if result.get("status") == "PASSED":
-                    final_result = {
-                        **result,
-                        "timestamp": run_timestamp,
-                        "version_history": version_history,
-                        "auto_submitted": True,
-                    }
-            except Exception as e:
-                if verbose:
-                    print(f"  [auto-submit failed: {e}]")
+                print(f"\n[Result] max turns reached — best was "
+                      f"v{best_version['version']} (time_speedup={ts})")
+            final_result = {
+                "status": "PASSED",
+                "time_speedup": best_version.get("time_speedup"),
+                "cycle_speedup": best_version.get("cycle_speedup"),
+                "correctness": best_version.get("correctness", {}),
+                "explanation": f"[best of session: v{best_version['version']}]",
+                "timestamp": run_timestamp,
+                "version_history": version_history,
+                "auto_submitted": True,
+            }
 
         if final_result is None:
             if verbose:

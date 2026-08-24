@@ -1,12 +1,10 @@
-"""MCP Resources over a session's run_dir — the retired read_code tool's replacement.
+"""MCP Resources over a session's run_dir.
 
-Reading previously-written vN.cpp/vN.s/trajectory.jsonl/reference-scalar-kernel.cpp
-happens via the protocol's native Resources mechanism instead of a bespoke
-`read_code` tool — works identically regardless of transport or harness
-co-location, unlike returning a bare filesystem path (which compile()'s
-`source_file` and disassemble()'s `asm_file` responses still do too, as a
-convenience for co-located callers, but Resources are the protocol-correct
-read path).
+Reading vN.cpp/vN.s/trajectory.jsonl/reference-scalar-kernel.cpp happens via
+the protocol's native Resources mechanism — works identically regardless of
+transport or harness co-location, unlike a bare filesystem path (which
+compile()'s `source_file` and disassemble()'s `asm_file` responses also
+return, as a convenience for co-located callers).
 """
 
 from __future__ import annotations

@@ -1,7 +1,6 @@
 """resolve_tools — dataset-to-KernelSession dispatch.
 
-Same flat-dict-lookup pattern as eval/agent_tools/registry.py (not imported —
-adapted fresh). A 4th dataset added later needs only one new entry here.
+A 4th dataset added later needs only one new entry here.
 """
 
 from __future__ import annotations

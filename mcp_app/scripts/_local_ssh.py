@@ -1,13 +1,8 @@
 """Minimal SSH/rsync helpers used only by mcp_app/smoke_test_driver.py.
 
-Deliberately independent of skills/nanobot/nanobot-kernel-session/scripts/remote.py's
-RemoteTarget — mcp_app and skills/ never import from each other (see
-mcp_app/README.md). This is a handful of plain functions, not a reusable
-class, because smoke_test_driver.py is a single linear loop, not something
-that needs RemoteTarget's reusability.
-
-Style reference only: eval/provision.py's InstanceHandle has the same shape
-of ssh_cmd/rsync_to/rsync_from methods — never imported from here.
+mcp_app and skills/ never import from each other, so this doesn't reuse
+skills/launch/remote.py's RemoteTarget. A handful of plain functions, not a
+reusable class, because smoke_test_driver.py is a single linear loop.
 """
 
 from __future__ import annotations

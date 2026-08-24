@@ -2,12 +2,8 @@
 
 Zero imports from mcp_app or eval/ — this skill lives at the repo root as a
 sibling to mcp_app/, not nested inside it, and mcp_app/smoke_test_driver.py
-has its own independent, separately-duplicated equivalent
-(mcp_app/scripts/_local_ssh.py) rather than importing this file. See
-mcp_app/README.md's "Scope boundary" section for why.
-
-Style reference only (never imported): eval/remote.py's InstanceHandle has
-the same shape of ssh_cmd/rsync_to/rsync_from methods.
+has its own independent equivalent (mcp_app/scripts/_local_ssh.py) rather
+than importing this file.
 """
 
 from __future__ import annotations

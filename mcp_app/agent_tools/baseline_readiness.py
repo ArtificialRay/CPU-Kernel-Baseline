@@ -1,17 +1,8 @@
 """Per-definition baseline readiness — in-process, lazy, called from KernelSession.compile().
 
-Mirrors what skills/nanobot/nanobot-kernel-session/scripts/launch_session.py's
-former ensure_baseline_collected() did over SSH before the server started;
-here it runs in-process the first time a definition is compile()'d, since
-mcp_app already runs directly on the target instance (no SSH abstraction —
-see mcp_app/README.md). Calls bench.benchmark.Benchmark directly against the
-server's own already-loaded TraceSet (rather than shelling out to
-`bench.cli collect-baselines` as a subprocess) so the new trace is reflected
-immediately — no reload/synchronization gap between a subprocess's TraceSet
-and this process's.
-
-Third independent copy of this readiness check — see mcp_app/README.md's
-"Dataset readiness & baseline collection" section.
+Calls bench.benchmark.Benchmark directly against the server's own
+already-loaded TraceSet, so a newly collected baseline trace is reflected
+immediately with no reload/synchronization gap.
 """
 
 from __future__ import annotations
@@ -25,9 +16,7 @@ if TYPE_CHECKING:
     from bench.data.trace_set import TraceSet
 
 # From contracts.py — shared with eval/run_benchmark.py::_DATASET_BASELINE_AUTHOR
-# and mcp_app/smoke_test_driver.py::DATASET_REFERENCE. contracts.py lives at the
-# repo root, outside both eval/ and mcp_app/, so importing it doesn't violate
-# mcp_app/README.md's "zero coupling to eval/ or skills/" scope boundary.
+# and mcp_app/smoke_test_driver.py::DATASET_REFERENCE.
 DEFAULT_BASELINE_AUTHOR: dict[str, str] = BASELINE_AUTHORS
 
 
@@ -59,7 +48,7 @@ def ensure_baseline_collected(
     to compile/evaluate, this silently returns rather than raising —
     `evaluate()`/`submit()` for the agent's own kernel still work fine
     without a baseline; they just return `time_speedup`/`cycle_speedup` as
-    `None` (see mcp_app/README.md's "Dataset readiness & baseline collection").
+    `None`.
     Deliberately does not call `Benchmark.close()` — that would clear the
     process-wide `BuilderRegistry` build cache mid-session, which could
     delete build directories other already-compiled definitions still

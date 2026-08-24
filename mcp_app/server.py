@@ -1,19 +1,11 @@
 """mcp_app.server — the MCP server process: one per (instance, dataset) session.
 
-Registers compile/evaluate/disassemble/submit as MCP tools (no `read_code` —
-retired, see mcp_app/agent_tools/base.py) and the session's trajectory files
-as MCP Resources (mcp_app/resources.py), backed by mcp_app/agent_tools's
-in-process KernelSession (this process runs directly on the target instance).
-`compile` takes `definition` as a per-call argument — one server process can
-compile/evaluate/submit many definitions across the same dataset without
-restarting; see agent_tools/base.py's KernelSession.
-
-Built on the low-level `mcp.server.lowlevel.Server` rather than FastMCP:
-tool_schemas() already produces ready-made JSON Schema (no need to re-derive
-it from a typed function signature), and resource listing must be dynamic
-since vN.cpp/vN.s files appear mid-session as the agent compiles more
-versions — a data-driven list_tools/call_tool/list_resources/read_resource
-handler set maps onto both needs directly.
+Registers compile/evaluate/disassemble/submit as MCP tools and the session's
+trajectory files as MCP Resources (mcp_app/resources.py), backed by
+mcp_app/agent_tools's in-process KernelSession (this process runs directly on
+the target instance). `compile` takes `definition` as a per-call argument —
+one server process can compile/evaluate/submit many definitions across the
+same dataset without restarting; see agent_tools/base.py's KernelSession.
 
 Usage:
     python -m mcp_app.server --dataset ncnn --author test --isa sve2 \\
@@ -27,9 +19,8 @@ Two transports:
   normal case — server runs on a provisioned Graviton instance, harness
   runs wherever the user's agent lives). skills/launch/launch_session.py
   reaches this over an SSH local-port-forward rather than exposing the
-  port publicly, keeping the compile/evaluate tool surface (effectively
-  remote code execution) off the network — the transport and the
-  network-reachability question are orthogonal, see its docstring.
+  port publicly — the compile/evaluate tool surface is effectively remote
+  code execution.
 """
 
 from __future__ import annotations
