@@ -39,6 +39,7 @@ you.
 - feel free to call builtin `write` tool to write anything you find it is interesting in the optimize process, e.g. `disassemble` output, `evaluate` logs, or your own notes.
 - feel free to call builtin `read` tool to read any resource you wrote in the optimize process
 - disassemble is a good friend to inpsect if SIMD really helps improving performance, or if you are not sure why your optimization is not working as expected. It can help you understand the generated assembly code and identify potential bottlenecks or inefficiencies.
+- for instruction-level cost when scheduling SVE2/NEON/FP code (or to explain a low `ipc_mean`), read the Arm Software Optimization Guide MCP resource for your target hardware (list resources, then read on demand) — per-instruction latency / throughput / utilized-pipeline tables (§3 — SVE integer/FP, ASIMD, load/store, BF16): `docs/neoverse-v2-swog.md` for **Neoverse V2 = Graviton4** (the default target, use unless told otherwise), or `docs/neoverse-v1-swog.md` for **Neoverse V1 = Graviton3** (only when targeting Graviton3; its costs differ). Large — read the relevant §3.x section on demand, not wholesale.
 
 ## SKILL referenced:
 **KernelWiki** is a useful skill for you to optimize kernel in GPU. Although you are required to optimize kernel in CPU, you can still apply similar optimization techniques if it is applicable. You can use it as a reference, but you are FORBIDDEN to copy the code from it.

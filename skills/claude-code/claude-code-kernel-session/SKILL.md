@@ -44,6 +44,17 @@ it beats your previous best; see "Finish and report" below.
   helping, or for understanding why an optimization isn't working as
   expected — it shows you the generated assembly and can help you spot
   bottlenecks or inefficiencies.
+- For instruction-level cost when scheduling SVE2/NEON/FP code — or to
+  explain a low `ipc_mean` / an unexpectedly slow kernel — read the Arm
+  Software Optimization Guide for your **target hardware**, exposed as MCP
+  resources (list resources, then read on demand). Per-instruction **latency /
+  throughput / utilized-pipeline** tables live in §3 (SVE integer/FP, ASIMD,
+  load/store, BF16):
+  - `docs/neoverse-v2-swog.md` — **Neoverse V2 = Graviton4**, the default
+    target. Use this unless told otherwise.
+  - `docs/neoverse-v1-swog.md` — **Neoverse V1 = Graviton3**. Use ONLY when
+    the target is Graviton3; its instruction costs differ from V2.
+  These are large — read the relevant §3.x section on demand, not wholesale.
 
 # WORKFLOW
 
