@@ -7,6 +7,7 @@ Single chokepoint used by both server.py and the verification script
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -64,7 +65,31 @@ def build_tools(cfg: SessionConfig) -> KernelSession:
         instance_label=cfg.instance_label,
     )
     _write_reference_scalar_kernels(ts, cfg.dataset, cfg.run_dir)
+    _write_hardware_docs(cfg.run_dir)
     return tools
+
+
+# Arm Software Optimization Guides bundled with the server, exposed to every
+# session as read-on-demand MCP resources under `<run_dir>/docs/` (see
+# resources.py::_DOCS_DIRNAME). Static + dataset-independent, so written once at
+# run_dir root rather than per-definition.
+_HARDWARE_DOCS_SRC = Path(__file__).parent / "hardware_docs"
+DOCS_DIRNAME = "docs"
+
+
+def _write_hardware_docs(run_dir: Path) -> None:
+    """Copy the bundled Arm optimization guides into `run_dir/docs/*.md` so the
+    agent can read per-instruction latency/throughput tables via list_resources()
+    /read_resource() — the same MCP path as the kernel files. Best-effort."""
+    if not _HARDWARE_DOCS_SRC.is_dir():
+        return
+    dest = run_dir / DOCS_DIRNAME
+    dest.mkdir(parents=True, exist_ok=True)
+    for md in sorted(_HARDWARE_DOCS_SRC.glob("*.md")):
+        try:
+            shutil.copyfile(md, dest / md.name)
+        except OSError:
+            pass
 
 
 def _write_reference_scalar_kernels(ts: TraceSet, dataset: str, run_dir: Path) -> None:
