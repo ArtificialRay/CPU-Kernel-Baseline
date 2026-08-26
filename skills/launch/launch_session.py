@@ -224,7 +224,6 @@ def prepare_session(
     remote_root: str = "~/arm-bench",
     sync_repo: bool = True,
     local_repo_dir: Optional[str | Path] = None,
-    skip_preflight: bool = False,
     local_port: Optional[int] = None,
     remote_port: int = 8765,
     startup_timeout: int = 60,
@@ -259,9 +258,8 @@ def prepare_session(
             raise ValueError("local_repo_dir is required when sync_repo=True")
         target.rsync_to(local_repo_dir, remote_root, paths=RSYNC_ALLOWLIST)
 
-    if not skip_preflight:
-        for ds in datasets:
-            ensure_dataset_ready(target, ds)
+    for ds in datasets:
+        ensure_dataset_ready(target, ds)
 
     remote_cmd = _spawn_command(
         target, remote_root, datasets, author, baseline_author, isa,
@@ -388,7 +386,7 @@ def _cli_prepare(args: argparse.Namespace) -> None:
         target, args.dataset, args.author, args.isa,
         baseline_author=args.baseline_author,
         remote_root=args.remote_root, sync_repo=not args.no_sync,
-        local_repo_dir=args.local_repo_dir, skip_preflight=args.skip_preflight,
+        local_repo_dir=args.local_repo_dir,
         local_port=args.local_port, remote_port=args.remote_port,
     )
     try:
@@ -460,7 +458,6 @@ def _cli_launch(args: argparse.Namespace) -> None:
         baseline_author=args.baseline_author,
         remote_root=args.remote_root, sync_repo=not args.no_sync,
         local_repo_dir=args.local_repo_dir or str(REPO_ROOT),
-        skip_preflight=args.skip_preflight,
         local_port=args.local_port, remote_port=args.remote_port,
     )
     try:
@@ -504,9 +501,6 @@ def main(argv: list[str] | None = None) -> None:
                             "concurrent session, so the servers don't collide on 8765.")
     prep.add_argument("--local-repo-dir", help="Required unless --no-sync.")
     prep.add_argument("--no-sync", action="store_true")
-    prep.add_argument("--skip-preflight", action="store_true",
-                       help="Skip ensure_dataset_ready (use if you already know this "
-                            "instance's native-library build is ready).")
     prep.set_defaults(func=_cli_prepare)
 
     sync = sub.add_parser("sync-results")
@@ -587,9 +581,6 @@ def main(argv: list[str] | None = None) -> None:
                               "concurrent session, so the servers don't collide on 8765.")
     launch.add_argument("--no-sync", action="store_true",
                          help="Skip prepare_session's own rsync (provision already synced once).")
-    launch.add_argument("--skip-preflight", action="store_true",
-                         help="Skip ensure_dataset_ready (use if you already know this "
-                              "instance's native-library build is ready).")
     launch.set_defaults(func=_cli_launch)
 
     args = p.parse_args(argv)

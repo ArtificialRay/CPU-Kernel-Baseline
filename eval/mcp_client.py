@@ -304,7 +304,6 @@ def connect(
     baseline_author: Optional[str] = None,
     remote_root: str = "~/arm-bench",
     sync_repo: bool = True,
-    skip_preflight: bool = False,
 ) -> MCPKernelClient:
     """Start mcp_app.server on `handle`'s instance and open an MCP session
     against it — the eval/-side equivalent of what nanobot/Claude Code get
@@ -321,7 +320,6 @@ def connect(
         remote_root=remote_root,
         sync_repo=sync_repo,
         local_repo_dir=str(REPO_ROOT) if sync_repo else None,
-        skip_preflight=skip_preflight,
         local_port=_free_local_port(),
     )
     try:

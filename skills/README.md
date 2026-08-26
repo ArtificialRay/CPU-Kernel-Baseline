@@ -64,7 +64,6 @@ SSH local-port-forward (not exposed publicly), and prints the endpoint.
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
 | `--local-port` | no | random free port | pin the local tunnel port across relaunches, so a reused MCP client config doesn't need re-editing every time |
 | `--no-sync` | flag | off | skip the rsync step (repo already up to date on the instance) |
-| `--skip-preflight` | flag | off | skip the dataset-build check (only if you already know this exact instance's native library is built — this doesn't cover baseline collection, which happens lazily server-side once the agent starts compiling) |
 
 If you'd rather do the two steps separately (e.g. to provision once and
 `prepare-session` against it repeatedly), that composes the same way —
@@ -107,7 +106,6 @@ genuinely required unless you pass `--no-sync`.
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
 | `--local-port` | no | random free port | pin the local tunnel port across relaunches, so a reused MCP client config doesn't need re-editing every time |
 | `--no-sync` | flag | off | skip the rsync step (repo already up to date on the instance) — makes `--local-repo-dir` optional |
-| `--skip-preflight` | flag | off | skip the dataset-build check |
 
 What you do with the printed spawn command/endpoint — where it goes in your
 harness's config, what `tool_timeout`/`enabledTools` settings it needs — is
