@@ -10,13 +10,13 @@ PYTHON="${PYTHON:-/home/rthu/miniconda3/bin/python}"
 DATASET="${DATASET:-ncnn}"
 ISA="${ISA:-sve}"
 MODEL="${MODEL:-openrouter/anthropic/claude-sonnet-4-6}"
-# Set ARMBENCH_LABEL_SUFFIX to avoid colliding with another run on the same
-# DATASET+ISA instance (see eval/run_benchmark.py's _label_for).
+# Instance label is derived automatically from dataset+model+isa (see
+# eval/run_benchmark.py's _label_for/_author_from_model) — a different
+# MODEL or ISA here lands on its own instance without any extra flag.
 
 # Edit this list — one definition name or op_type prefix per run.
 DEFINITIONS=(
-    # pooling_fp32_global_avg
-    lstm_fp32_i322_h800
+    pooling_fp32_global_avg
 )
 
 for problem in "${DEFINITIONS[@]}"; do

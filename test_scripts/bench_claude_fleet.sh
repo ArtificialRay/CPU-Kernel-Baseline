@@ -3,9 +3,10 @@
 # sequentially. Claude Code analogue of bench_nanobot_fleet.sh.
 #
 # Prerequisite: an mcp_app session already up, launched with --author
-# matching AUTHOR below:
+# matching AUTHOR below (default "claude-code-<model>-<isa>" if MODEL is
+# set, else "claude-code-<isa>" — see AUTHOR below):
 #   python3 skills/launch/launch_session.py launch \
-#       --isa <isa> --dataset <dataset> --author claude-code --local-port <fixed-port>
+#       --isa <isa> --dataset <dataset> --author claude-code-<isa> --local-port <fixed-port>
 #   MCP_ENDPOINT=http://127.0.0.1:<port>/mcp DATASET=<dataset> ISA=<isa> \
 #       ./bench_claude_fleet.sh
 #
@@ -47,7 +48,7 @@ MAX_ITERATIONS="${MAX_ITERATIONS:-$((MIN_ITERATIONS + 10))}"
 MCP_ENDPOINT="${MCP_ENDPOINT:-}"
 if [ -z "$MCP_ENDPOINT" ]; then
   echo "MCP_ENDPOINT is required — launch a session first (skills/launch/launch_session.py" \
-       "launch --isa $ISA --dataset $DATASET --author claude-code --local-port <fixed-port>)" \
+       "launch --isa $ISA --dataset $DATASET --author claude-code-$ISA --local-port <fixed-port>)" \
        "and export the printed endpoint as MCP_ENDPOINT, e.g. http://127.0.0.1:<port>/mcp" >&2
   exit 1
 fi
@@ -59,10 +60,13 @@ MODEL="${MODEL:-}"                      # optional --model override; empty = CLI
 # trajectory.jsonl/vN.cpp. Total attempts = RETRIES+1.
 RETRIES="${RETRIES:-3}"
 
-AUTHOR="${AUTHOR:-claude-code}"   # must match the mcp_app server's --author
+# AUTHOR must match the mcp_app server's --author , naming in: f"{author}_{definition.name}"
+AUTHOR="${AUTHOR:-claude-code${MODEL:+-$(basename "$MODEL")}-${ISA}}"
 LOCAL_RESULTS_DIR="${LOCAL_RESULTS_DIR:-$REPO_DIR/agent-runs-claude}"
 EVAL_CONFIG="$REPO_DIR/eval/eval_config.json"
-LABEL="${LABEL:-${DATASET}-${ISA}}"
+# LABEL must match the instance's --label (default f"{DATASET}-{AUTHOR}" —
+# see skills/launch/launch_session.py's _label_for).
+LABEL="${LABEL:-${DATASET}-${AUTHOR}}"
 
 # Edit this list to run only specific definitions (paste bare names, or full
 # "<dataset>_<isa>_<name>" log-file stems) — leave empty to run every

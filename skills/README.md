@@ -58,13 +58,13 @@ SSH local-port-forward (not exposed publicly), and prints the endpoint.
 | `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` — pick by target hardware; drives the default instance type |
 | `--dataset` | yes | — | one of `ncnn`, `simd-loop`, `llama.cpp` — see the harness skill's own doc for the `baseline_author`/`isa` table |
 | `--instance` | no | derived from `--isa` | EC2 instance type override, e.g. `c8g.xlarge` |
-| `--author` | no | `nanobot` | tags every solution/trace this session writes; also names the session's `run_dir` (`agent-runs-mcp/<author>/`) |
+| `--author` | no | `nanobot` | tags every solution/trace this session writes (`f"{author}_{definition.name}"`); also names the session's `run_dir` (`agent-runs-mcp/<author>/`). |
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
+| `--label` | no | `f'{dataset(s)}-{author}'` | name identifying this instance |
 | `--local-repo-dir` | **no** | this checkout's own root (`REPO_ROOT`, computed from where `launch_session.py` itself lives — not your shell's cwd) | your local checkout of this repo, pushed to the instance by `prepare_session`'s rsync |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
 | `--local-port` | no | random free port | pin the local tunnel port across relaunches, so a reused MCP client config doesn't need re-editing every time |
 | `--no-sync` | flag | off | skip the rsync step (repo already up to date on the instance) |
-| `--skip-preflight` | flag | off | skip the dataset-build check (only if you already know this exact instance's native library is built — this doesn't cover baseline collection, which happens lazily server-side once the agent starts compiling) |
 
 If you'd rather do the two steps separately (e.g. to provision once and
 `prepare-session` against it repeatedly), that composes the same way —
@@ -84,6 +84,7 @@ python3 launch_session.py prepare-session \
 |---|---|---|---|
 | `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` — drives the default instance type |
 | `--instance` | no | derived from `--isa` | EC2 instance type override, e.g. `c8g.xlarge` |
+| `--label` | no | `f'{dataset(s)}-{isa}'` | name identifying this instance. `provision` has no `--author` (it's a bare infra command, not tied to any producer), so unlike `launch` its default doesn't fold author in |
 | `--local-repo-dir` | no | *(no effect here)* | accepted for parity with `launch`, but unused by standalone `provision` — `eval/provision.py` always rsyncs its own repo checkout during provisioning |
 | `--dataset` | no | `""` (skip) | build this dataset's native lib right after provisioning |
 
@@ -101,13 +102,12 @@ genuinely required unless you pass `--no-sync`.
 | `--key-file` | no | `~/.ssh/id_rsa` | |
 | `--dataset` | yes | — | one of `ncnn`, `simd-loop`, `llama.cpp` |
 | `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` |
-| `--author` | no | `nanobot` | tags every solution/trace this session writes; also names the session's `run_dir` (`agent-runs-mcp/<author>/`) |
+| `--author` | no | `nanobot` | tags every solution/trace this session writes; also names the session's `run_dir` (`agent-runs-mcp/<author>/`). Same isa-folding convention as `launch`'s `--author` above — this is what actually gets passed to `mcp_app.server --author` regardless of how the instance was obtained |
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
 | `--local-repo-dir` | **yes, unless `--no-sync`** | — | your local checkout of this repo, pushed to the instance |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
 | `--local-port` | no | random free port | pin the local tunnel port across relaunches, so a reused MCP client config doesn't need re-editing every time |
 | `--no-sync` | flag | off | skip the rsync step (repo already up to date on the instance) — makes `--local-repo-dir` optional |
-| `--skip-preflight` | flag | off | skip the dataset-build check |
 
 What you do with the printed spawn command/endpoint — where it goes in your
 harness's config, what `tool_timeout`/`enabledTools` settings it needs — is

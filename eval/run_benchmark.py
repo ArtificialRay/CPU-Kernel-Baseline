@@ -22,7 +22,7 @@ Usage:
 import argparse
 import base64
 import json
-import os
+import re
 import subprocess
 import sys
 import time
@@ -42,32 +42,23 @@ EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
 load_dotenv(REPO_ROOT / ".env")
 
-# label = f"{dataset}-{isa}" — mirrors eval/provision.py's default_label()
-# (dataset is always given at this module's call sites, so the full chain
-# there never needs to fall back). Not imported from eval/provision.py: that
-# module is a standalone script invoked only via subprocess (see its own
-# docstring) — kept in sync by hand, same tradeoff as ISA_INSTANCE_MAP used
-# to be before it moved to contracts.py.
-#
-# ARMBENCH_LABEL_SUFFIX appends a run identifier, e.g. "sonnet46-tcloop" ->
-# "ncnn-sve-sonnet46-tcloop". Needed because label is the *only* key mapping a
-# run to an instance (eval_config.json is label -> host, one host per label), so
-# two runs over the same dataset+isa otherwise resolve to the same box: they
-# then contend for its single-threaded benchmark (wrecking every timing) and
-# overwrite each other under agent-runs-mcp/<author>/<definition>/. Worse, a
-# --provision run tears that shared label down first, killing the other run's
-# instance mid-flight.
-#
-# dataset and isa stay in the label: provision.py keys instance *type* off it
-# (c7g vs c8g), and terraform tags the box kernel-testing-<label>.
-# Deliberately no timestamp by default -- provision.py reuses a reachable
-# instance under the same label, which is what you want when resuming a
-# half-finished sweep (a fresh llama.cpp box costs ~10min of ggml build). Add
-# one explicitly (…-tcloop-0812-1900) when you do want forced isolation.
-def _label_for(isa: str, dataset: str) -> str:
-    base = f"{dataset}-{isa}"
-    suffix = os.environ.get("ARMBENCH_LABEL_SUFFIX", "").strip().strip("-")
-    return f"{base}-{suffix}" if suffix else base
+# This path's harness is always the litellm tool-call loop (no other harness
+# runs through this module) — fixed id used as the first segment of `author`.
+_HARNESS_NAME = "tcloop"
+
+
+def _author_from_model(model: str, isa: str) -> str:
+    """
+    author = f"{_HARNESS_NAME}-{model}-{isa}". All three segments matter
+    """
+    model_short = model.split("/")[-1]
+    return f"{_HARNESS_NAME}-{model_short}-{isa}"
+
+
+# label = f"{dataset}-{author}"
+def _label_for(dataset: str, author: str) -> str:
+    raw = f"{dataset}-{author}"
+    return re.sub(r"[^a-z0-9.-]", "-", raw.lower()).strip("-.")
 
 
 def _read_config_instance(label: str) -> InstanceHandle | None:
@@ -87,11 +78,14 @@ def _read_config_instance(label: str) -> InstanceHandle | None:
     )
 
 
-def _provision(isa: str, dataset: str) -> InstanceHandle:
+def _provision(isa: str, dataset: str, author: str) -> InstanceHandle:
     """Subprocess-invoke the standalone eval/provision.py, then read the
     eval_config.json it wrote. Reuses a reachable instance under this
-    dataset+isa's label if one's already up; otherwise provisions a fresh one."""
-    label = _label_for(isa, dataset)
+    dataset+author's label if one's already up; otherwise provisions a fresh
+    one. isa/dataset are passed straight through to provision.py as separate
+    flags (instance-type selection, dataset build) — the label itself
+    encodes them via `author`, see _label_for's docstring."""
+    label = _label_for(dataset, author)
     subprocess.run(
         [sys.executable, str(PROVISION_SCRIPT), "--isa", isa, "--dataset", dataset,
          "--label", label],
@@ -105,8 +99,8 @@ def _provision(isa: str, dataset: str) -> InstanceHandle:
     return handle
 
 
-def _teardown(isa: str, dataset: str) -> None:
-    label = _label_for(isa, dataset)
+def _teardown(dataset: str, author: str) -> None:
+    label = _label_for(dataset, author)
     subprocess.run(
         [sys.executable, str(PROVISION_SCRIPT), "--teardown", "--label", label], check=True,
     )
@@ -115,11 +109,6 @@ def _teardown(isa: str, dataset: str) -> None:
 # (shared with mcp_app/agent_tools/baseline_readiness.py and
 # mcp_app/smoke_test_driver.py — see contracts.BASELINE_AUTHORS).
 _DATASET_BASELINE_AUTHOR: dict[str, str] = BASELINE_AUTHORS
-
-
-def _author_from_model(model: str) -> str:
-    """Derive a short author label from the model string."""
-    return model.split("/")[-1]
 
 
 def _defs_for_dataset(ts: TraceSet, dataset: str) -> list:
@@ -274,11 +263,15 @@ def main():
         ISA_INSTANCE_MAP["neon"] if isa == "portable" else "c8g.large"
     )
 
+    # Computed early (only depends on --model/isa, already resolved) since it
+    # now drives the instance label too — see _label_for's docstring.
+    author = _author_from_model(args.model, isa)
+
     try:
         if args.provision:
             # Force a genuinely new instance: teardown, then provision.
-            _teardown(isa, args.dataset)
-        handle = _provision(isa, args.dataset)
+            _teardown(args.dataset, author)
+        handle = _provision(isa, args.dataset, author)
     except (subprocess.CalledProcessError, RuntimeError) as e:
         print(f"[ERROR] {e}")
         return
@@ -313,7 +306,6 @@ def main():
     bench_cfg = BenchmarkConfig(baseline_author=baseline_author)
 
     # ── Run evaluations ───────────────────────────────────────────────────
-    author = _author_from_model(args.model)
     results: dict[str, dict] = {}
     RESULTS_DIR.mkdir(exist_ok=True)
 
@@ -396,14 +388,14 @@ def main():
     # ── Teardown ──────────────────────────────────────────────────────────
     if args.teardown:
         print("\n[teardown] Destroying instance...")
-        _teardown(isa, args.dataset)
+        _teardown(args.dataset, author)
     else:
-        handle = _read_config_instance(_label_for(isa, args.dataset))
+        handle = _read_config_instance(_label_for(args.dataset, author))
         if handle and handle.host:
             print(
                 f"\n[WARNING] Instance at {handle.host} is still running and accruing cost. "
                 f"Run with --teardown to destroy it after evaluation, "
-                f"or: python eval/provision.py --teardown --label {_label_for(isa, args.dataset)}"
+                f"or: python eval/provision.py --teardown --label {_label_for(args.dataset, author)}"
             )
 
 

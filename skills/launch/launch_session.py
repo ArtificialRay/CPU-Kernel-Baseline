@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import re
 import subprocess
 import sys
 import time
@@ -70,21 +71,19 @@ class ProvisionedInstance:
     instance_id: Optional[str] = None
 
 
-# label — see eval/provision.py's module docstring for the full rationale
-# (replaces the old tier-keyed "c7g"/"c8g" design, which could only ever
-# track one instance per ISA tier). `dataset` here can be a single string
-# (the `provision` subcommand) or a list (`launch`'s repeatable --dataset,
-# for dispatcher mode serving several datasets off one instance) — both
-# fold into the same default label.
+# label `dataset` here can be a single string
+# or a list (`launch`'s repeatable --dataset, for dispatcher mode serving
+# several datasets off one instance) — both fold into the same label.
 def _dataset_label_part(dataset) -> str:
     if isinstance(dataset, list):
         return "-".join(sorted(dataset))
     return dataset or ""
 
 
-def _label_for(isa: str, dataset) -> str:
-    ds_part = _dataset_label_part(dataset)
-    return f"{ds_part}-{isa}" if ds_part else isa
+# label = f"{dataset(s)}-{author}" 
+def _label_for(dataset, author: str) -> str:
+    raw = f"{_dataset_label_part(dataset)}-{author}"
+    return re.sub(r"[^a-z0-9.-]", "-", raw.lower()).strip("-.")
 
 
 def _read_config_instance(label: str) -> Optional[ProvisionedInstance]:
@@ -224,7 +223,6 @@ def prepare_session(
     remote_root: str = "~/arm-bench",
     sync_repo: bool = True,
     local_repo_dir: Optional[str | Path] = None,
-    skip_preflight: bool = False,
     local_port: Optional[int] = None,
     remote_port: int = 8765,
     startup_timeout: int = 60,
@@ -259,9 +257,8 @@ def prepare_session(
             raise ValueError("local_repo_dir is required when sync_repo=True")
         target.rsync_to(local_repo_dir, remote_root, paths=RSYNC_ALLOWLIST)
 
-    if not skip_preflight:
-        for ds in datasets:
-            ensure_dataset_ready(target, ds)
+    for ds in datasets:
+        ensure_dataset_ready(target, ds)
 
     remote_cmd = _spawn_command(
         target, remote_root, datasets, author, baseline_author, isa,
@@ -388,7 +385,7 @@ def _cli_prepare(args: argparse.Namespace) -> None:
         target, args.dataset, args.author, args.isa,
         baseline_author=args.baseline_author,
         remote_root=args.remote_root, sync_repo=not args.no_sync,
-        local_repo_dir=args.local_repo_dir, skip_preflight=args.skip_preflight,
+        local_repo_dir=args.local_repo_dir,
         local_port=args.local_port, remote_port=args.remote_port,
     )
     try:
@@ -429,7 +426,12 @@ def _resolve_instance(args: argparse.Namespace) -> ProvisionedInstance:
     """
     instance_type = args.instance or ISA_INSTANCE_MAP.get(args.isa, "c7g.large")
     provision_dataset = args.dataset[0] if len(args.dataset) == 1 else ""
-    label = args.label or _label_for(args.isa, args.dataset)
+    author = getattr(args, "author", None)
+    default_label = (
+        _label_for(args.dataset, author) if author is not None
+        else f"{_dataset_label_part(args.dataset)}-{args.isa}"
+    )
+    label = args.label or default_label
     return _provision(args.isa, instance_type, provision_dataset, label=label,
                        on_demand=args.on_demand)
 
@@ -460,7 +462,6 @@ def _cli_launch(args: argparse.Namespace) -> None:
         baseline_author=args.baseline_author,
         remote_root=args.remote_root, sync_repo=not args.no_sync,
         local_repo_dir=args.local_repo_dir or str(REPO_ROOT),
-        skip_preflight=args.skip_preflight,
         local_port=args.local_port, remote_port=args.remote_port,
     )
     try:
@@ -504,9 +505,6 @@ def main(argv: list[str] | None = None) -> None:
                             "concurrent session, so the servers don't collide on 8765.")
     prep.add_argument("--local-repo-dir", help="Required unless --no-sync.")
     prep.add_argument("--no-sync", action="store_true")
-    prep.add_argument("--skip-preflight", action="store_true",
-                       help="Skip ensure_dataset_ready (use if you already know this "
-                            "instance's native-library build is ready).")
     prep.set_defaults(func=_cli_prepare)
 
     sync = sub.add_parser("sync-results")
@@ -529,7 +527,8 @@ def main(argv: list[str] | None = None) -> None:
         sp.add_argument("--label", default=None,
                          help="Name identifying this instance — one per concurrently-desired "
                               "instance (see eval/provision.py's module docstring). Default: "
-                              "f'{dataset(s)}-{isa}'.")
+                              "f'{dataset(s)}-{author}' for `launch` (which has --author), "
+                              "f'{dataset(s)}-{isa}' for standalone `provision`.")
         sp.add_argument("--instance", default=None,
                          help="EC2 instance type override (e.g. c8g.xlarge). "
                               "Defaults to ISA_INSTANCE_MAP[isa].")
@@ -587,9 +586,6 @@ def main(argv: list[str] | None = None) -> None:
                               "concurrent session, so the servers don't collide on 8765.")
     launch.add_argument("--no-sync", action="store_true",
                          help="Skip prepare_session's own rsync (provision already synced once).")
-    launch.add_argument("--skip-preflight", action="store_true",
-                         help="Skip ensure_dataset_ready (use if you already know this "
-                              "instance's native-library build is ready).")
     launch.set_defaults(func=_cli_launch)
 
     args = p.parse_args(argv)

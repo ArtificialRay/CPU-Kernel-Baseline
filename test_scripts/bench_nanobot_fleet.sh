@@ -69,7 +69,7 @@ print(json.load(open('$EVAL_CONFIG'))['instances']['$LABEL'].get('key_file', '~/
 }
 
 # ---------------------------------------------------------------------------
-# Global knobs — override via env, e.g. `DATASET=simd-loop MIN_ITERATIONS=60 ISA=sve2 ./bench_nanobot_fleet.sh`
+# Global knobs — override via env, e.g. `DATASET=simd-loop MIN_ITERATIONS=60 ISA=sve2 MODEL=anthropic/claude-opus-4-8 ./bench_nanobot_fleet.sh`
 # ---------------------------------------------------------------------------
 DATASET="${DATASET:-ncnn}"
 # Floor, not a cap — the agent is just told not to submit early (see
@@ -90,21 +90,36 @@ fi
 
 # Sandboxed config, separate from ~/.nanobot/config.json. Requires bwrap
 # (sudo apt-get install bubblewrap).
-NANOBOT_CONFIG="$REPO_DIR/skills/nanobot/nanobot-kernel-session/config.json"
+NANOBOT_CONFIG_BASE="$REPO_DIR/skills/nanobot/nanobot-kernel-session/config.json"
 # Retries transient infra failures (dropped MCP transport, connection
 # errors). Fresh session each retry — cheap, since compile/evaluate results
 # already persist server-side and the new session catches up from existing
 # vN.cpp/trajectory.jsonl. Total attempts = RETRIES+1.
 RETRIES="${RETRIES:-3}"
 
+# Optional model override. 
+MODEL="${MODEL:-}"
+if [ -n "$MODEL" ]; then
+  NANOBOT_CONFIG="$(mktemp -t nanobot-fleet-config-XXXXXX.json)"
+  trap 'rm -f "$NANOBOT_CONFIG"' EXIT
+  python3 -c "
+import json, sys
+base_path, model, out_path = sys.argv[1:4]
+cfg = json.load(open(base_path))
+cfg['agents']['defaults']['model'] = model
+json.dump(cfg, open(out_path, 'w'))
+" "$NANOBOT_CONFIG_BASE" "$MODEL" "$NANOBOT_CONFIG"
+else
+  NANOBOT_CONFIG="$NANOBOT_CONFIG_BASE"
+fi
+
 # Syncs each job's results back right after it finishes, so earlier jobs
 # survive a later one's connection dying mid-batch. AUTHOR must match the
-# MCP server's --author (default "nanobot"). LABEL must match the
-# instance's --label (default f"{DATASET}-{ISA}").
-AUTHOR="${AUTHOR:-nanobot}"
+# MCP server's --author.
+AUTHOR="${AUTHOR:-nanobot${MODEL:+-$(basename "$MODEL")}-${ISA}}"
 LOCAL_RESULTS_DIR="${LOCAL_RESULTS_DIR:-$REPO_DIR/agent-runs-$AUTHOR}"
 EVAL_CONFIG="$REPO_DIR/eval/eval_config.json"
-LABEL="${LABEL:-${DATASET}-${ISA}}"
+LABEL="${LABEL:-${DATASET}-${AUTHOR}}"
 
 PROMPT_TEMPLATE='Optimize the "%s" kernel definition (dataset: %s, baseline solution source: %s) in new ISA %s. You must spend at least %s compile+evaluate iterations exploring genuinely different optimization attempts before you are allowed to submit — do not submit early just because an attempt already looks good, keep iterating until you hit the floor. You may keep going past it if you are still finding improvements. Follow the nanobot-kernel-session skill workflow end to end.'
 
