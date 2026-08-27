@@ -44,6 +44,12 @@ it beats your previous best; see "Finish and report" below.
   helping, or for understanding why an optimization isn't working as
   expected — it shows you the generated assembly and can help you spot
   bottlenecks or inefficiencies.
+- BEFORE hand-writing any SVE/SVE2 intrinsics, read `docs/sve-intrinsics-cheatsheet.md`.
+  It has the correct C **signatures** for the load / FMA / dot-product / matmul /
+  predicate families plus the two mistakes that cause most compile errors (SVE
+  types are sizeless → can't go in arrays/structs; the `_n` suffix puts the scalar
+  operand LAST). Reading it first avoids burning iterations on `no matching
+  function for call` / `sizeless type` errors.
 - For instruction-level cost when scheduling SVE2/NEON/FP code — or to
   explain a low `ipc_mean` / an unexpectedly slow kernel — read the Arm
   Software Optimization Guide for your **target hardware**, exposed as MCP
