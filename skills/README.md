@@ -58,8 +58,9 @@ SSH local-port-forward (not exposed publicly), and prints the endpoint.
 | `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` — pick by target hardware; drives the default instance type |
 | `--dataset` | yes | — | one of `ncnn`, `simd-loop`, `llama.cpp` — see the harness skill's own doc for the `baseline_author`/`isa` table |
 | `--instance` | no | derived from `--isa` | EC2 instance type override, e.g. `c8g.xlarge` |
-| `--author` | no | `nanobot` | tags every solution/trace this session writes; also names the session's `run_dir` (`agent-runs-mcp/<author>/`) |
+| `--author` | no | `f'nanobot-{isa}'` | tags every solution/trace this session writes (`f"{author}_{definition.name}"`); also names the session's `run_dir` (`agent-runs-mcp/<author>/`). isa is always folded into the default so two isa's don't clobber each other's solution files — nothing else disambiguates isa. |
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
+| `--label` | no | `f'{dataset(s)}-{author}'` | name identifying this instance — one per concurrently-desired instance (see `eval/provision.py`'s module docstring). Since `--author` already carries isa by default, this alone keeps different isa's on separate instances without extra flags |
 | `--local-repo-dir` | **no** | this checkout's own root (`REPO_ROOT`, computed from where `launch_session.py` itself lives — not your shell's cwd) | your local checkout of this repo, pushed to the instance by `prepare_session`'s rsync |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
 | `--local-port` | no | random free port | pin the local tunnel port across relaunches, so a reused MCP client config doesn't need re-editing every time |
@@ -83,6 +84,7 @@ python3 launch_session.py prepare-session \
 |---|---|---|---|
 | `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` — drives the default instance type |
 | `--instance` | no | derived from `--isa` | EC2 instance type override, e.g. `c8g.xlarge` |
+| `--label` | no | `f'{dataset(s)}-{isa}'` | name identifying this instance. `provision` has no `--author` (it's a bare infra command, not tied to any producer), so unlike `launch` its default doesn't fold author in |
 | `--local-repo-dir` | no | *(no effect here)* | accepted for parity with `launch`, but unused by standalone `provision` — `eval/provision.py` always rsyncs its own repo checkout during provisioning |
 | `--dataset` | no | `""` (skip) | build this dataset's native lib right after provisioning |
 
@@ -100,7 +102,7 @@ genuinely required unless you pass `--no-sync`.
 | `--key-file` | no | `~/.ssh/id_rsa` | |
 | `--dataset` | yes | — | one of `ncnn`, `simd-loop`, `llama.cpp` |
 | `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` |
-| `--author` | no | `nanobot` | tags every solution/trace this session writes; also names the session's `run_dir` (`agent-runs-mcp/<author>/`) |
+| `--author` | no | `f'nanobot-{isa}'` | tags every solution/trace this session writes; also names the session's `run_dir` (`agent-runs-mcp/<author>/`). |
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
 | `--local-repo-dir` | **yes, unless `--no-sync`** | — | your local checkout of this repo, pushed to the instance |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
@@ -132,7 +134,7 @@ python3 launch_session.py sync-results \
 | `--user` | no | `ubuntu` | |
 | `--key-file` | no | `~/.ssh/id_rsa` | |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
-| `--author` | no | `nanobot` | must match the `--author` the session was launched with |
+| `--author` | **yes** | — | must match the `--author` the session was actually launched with. No default here —  guessing a static default would silently sync from the wrong directory |
 | `--definition` | no | — (pulls everything this author touched) | sync only this definition's subdirectory |
 | `--local-results-dir` | yes | — | where to pull results down to |
 

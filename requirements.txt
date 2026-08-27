@@ -7,3 +7,4 @@ torch
 dotenv
 mcp==1.29.0
 pyyaml
+nanobot-ai==0.2.2

@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import re
 import subprocess
 import sys
 import time
@@ -82,9 +83,10 @@ def _dataset_label_part(dataset) -> str:
     return dataset or ""
 
 
-def _label_for(isa: str, dataset) -> str:
-    ds_part = _dataset_label_part(dataset)
-    return f"{ds_part}-{isa}" if ds_part else isa
+# label = f"{dataset(s)}-{author}" — `author` 
+def _label_for(dataset, author: str) -> str:
+    raw = f"{_dataset_label_part(dataset)}-{author}"
+    return re.sub(r"[^a-z0-9.-]", "-", raw.lower()).strip("-.")
 
 
 def _read_config_instance(label: str) -> Optional[ProvisionedInstance]:
@@ -381,6 +383,7 @@ def sync_results(
 
 
 def _cli_prepare(args: argparse.Namespace) -> None:
+    args.author = args.author or f"nanobot-{args.isa}"
     target = RemoteTarget(host=args.host, user=args.user, key_file=args.key_file)
     info = prepare_session(
         target, args.dataset, args.author, args.isa,
@@ -427,7 +430,12 @@ def _resolve_instance(args: argparse.Namespace) -> ProvisionedInstance:
     """
     instance_type = args.instance or ISA_INSTANCE_MAP.get(args.isa, "c7g.large")
     provision_dataset = args.dataset[0] if len(args.dataset) == 1 else ""
-    label = args.label or _label_for(args.isa, args.dataset)
+    author = getattr(args, "author", None)
+    default_label = (
+        _label_for(args.dataset, author) if author is not None
+        else f"{_dataset_label_part(args.dataset)}-{args.isa}"
+    )
+    label = args.label or default_label
     return _provision(args.isa, instance_type, provision_dataset, label=label,
                        on_demand=args.on_demand)
 
@@ -451,6 +459,7 @@ def _cli_launch(args: argparse.Namespace) -> None:
     session on it — provisioning + `prepare_session` in one call. Always
     re-syncs the repo via prepare_session (cheap, delta-only) so a reused
     instance can't silently run stale code."""
+    args.author = args.author or f"nanobot-{args.isa}"
     instance = _resolve_instance(args)
     target = instance.target
     info = prepare_session(
@@ -487,7 +496,12 @@ def main(argv: list[str] | None = None) -> None:
                             "datasets over one connection (see "
                             "mcp_app/agent_tools/dispatcher.py). A single --dataset "
                             "behaves exactly as before.")
-    prep.add_argument("--author", default="nanobot")
+    prep.add_argument("--author", default=None,
+                       help="Tags every solution/trace this session writes; also names the "
+                            "session's run_dir. Default: f'nanobot-{isa}' — isa is always "
+                            "folded in so two isa's sharing this default don't clobber each "
+                            "other's solution files (Solution naming is "
+                            "f'{author}_{definition.name}', nothing else disambiguates isa).")
     prep.add_argument("--baseline-author", default=None,
                        help="Override only — the server auto-derives this from --dataset.")
     prep.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
@@ -508,7 +522,12 @@ def main(argv: list[str] | None = None) -> None:
     sync.add_argument("--user", default="ubuntu")
     sync.add_argument("--key-file", default="~/.ssh/id_rsa")
     sync.add_argument("--remote-root", default="~/arm-bench")
-    sync.add_argument("--author", default="nanobot")
+    sync.add_argument("--author", required=True,
+                       help="Must match the --author the session was actually launched with. "
+                            "No default here — unlike `launch`/`prepare-session`, this "
+                            "subcommand has no --isa to derive one from, and their own default "
+                            "now varies per isa (f'nanobot-{isa}'), so guessing a static "
+                            "default would silently sync from the wrong directory.")
     sync.add_argument("--definition", default=None,
                        help="Sync only this definition's subdirectory. Omit to sync everything "
                             "this author's session touched.")
@@ -523,7 +542,8 @@ def main(argv: list[str] | None = None) -> None:
         sp.add_argument("--label", default=None,
                          help="Name identifying this instance — one per concurrently-desired "
                               "instance (see eval/provision.py's module docstring). Default: "
-                              "f'{dataset(s)}-{isa}'.")
+                              "f'{dataset(s)}-{author}' for `launch` (which has --author), "
+                              "f'{dataset(s)}-{isa}' for standalone `provision`.")
         sp.add_argument("--instance", default=None,
                          help="EC2 instance type override (e.g. c8g.xlarge). "
                               "Defaults to ISA_INSTANCE_MAP[isa].")
@@ -567,7 +587,12 @@ def main(argv: list[str] | None = None) -> None:
                               "datasets over one connection (see "
                               "mcp_app/agent_tools/dispatcher.py). A single --dataset "
                               "behaves exactly as before.")
-    launch.add_argument("--author", default="nanobot")
+    launch.add_argument("--author", default=None,
+                         help="Tags every solution/trace this session writes; also names the "
+                              "session's run_dir. Default: f'nanobot-{isa}' — isa is always "
+                              "folded in so two isa's sharing this default don't clobber each "
+                              "other's solution files (Solution naming is "
+                              "f'{author}_{definition.name}', nothing else disambiguates isa).")
     launch.add_argument("--baseline-author", default=None,
                          help="Override only — the server auto-derives this from --dataset.")
     launch.add_argument("--remote-root", default="~/arm-bench")
