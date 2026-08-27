@@ -60,6 +60,21 @@ def _truncate_repr(obj: Any, limit: int) -> str:
     return f"{text[:limit]}... ({len(text) - limit} more chars truncated)"
 
 
+def _elog(msg: str) -> None:
+    """Write a diagnostic to stderr, swallowing I/O errors.
+
+    If the server's stderr consumer goes away (closed terminal, a dead tmux
+    session whose pipe we inherited, a rotated log fd), a bare
+    ``print(..., file=sys.stderr)`` raises ``BrokenPipeError``. In ``_call_tool``
+    that write is the *first* thing every tool call does, so an unguarded write
+    turns a dead stderr into "every compile/evaluate fails with [Errno 32]
+    Broken pipe while resource reads keep working" — a baffling partial outage.
+    Diagnostics must never be able to fail a tool call, so swallow the error.
+    """
+    with contextlib.suppress(BrokenPipeError, OSError):
+        print(msg, file=sys.stderr, flush=True)
+
+
 def build_server(tools: KernelSessionLike) -> Server:
     server: Server = Server("armbench-kernel-session")
 
@@ -79,8 +94,7 @@ def build_server(tools: KernelSessionLike) -> Server:
         # Run the (synchronous, potentially long-running) dispatch off the event
         # loop so pings can still go out while it's in flight — dispatch_tool_call
         # itself stays untouched, it doesn't need to know about sessions/pings.
-        print(f"[mcp_app.server] tool call: {name}({_truncate_repr(arguments, ARG_LOG_TRUNCATE_CHARS)})",
-              file=sys.stderr, flush=True)
+        _elog(f"[mcp_app.server] tool call: {name}({_truncate_repr(arguments, ARG_LOG_TRUNCATE_CHARS)})")
         started = time.monotonic()
         session = server.request_context.session
         task = asyncio.ensure_future(
@@ -90,13 +104,13 @@ def build_server(tools: KernelSessionLike) -> Server:
             done, _ = await asyncio.wait({task}, timeout=TOOL_CALL_PING_INTERVAL_S)
             if task in done:
                 break
-            print(f"[mcp_app.server] tool '{name}' still running "
-                  f"({time.monotonic() - started:.0f}s elapsed)...", file=sys.stderr, flush=True)
+            _elog(f"[mcp_app.server] tool '{name}' still running "
+                  f"({time.monotonic() - started:.0f}s elapsed)...")
             with contextlib.suppress(Exception):
                 await session.send_ping()
         result = task.result()
-        print(f"[mcp_app.server] tool '{name}' done in {time.monotonic() - started:.1f}s: "
-              f"{_truncate_repr(result, RESULT_LOG_TRUNCATE_CHARS)}", file=sys.stderr, flush=True)
+        _elog(f"[mcp_app.server] tool '{name}' done in {time.monotonic() - started:.1f}s: "
+              f"{_truncate_repr(result, RESULT_LOG_TRUNCATE_CHARS)}")
         # Resource-visibility bookkeeping only (see resources_mod / KernelSession
         # .note_session_definition) — never consulted by dispatch_tool_call's own
         # definition-match guard, so this can't affect tool-call correctness.
