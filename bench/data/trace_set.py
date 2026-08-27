@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .definition import Definition
-from .json_utils import append_jsonl_file, load_json_file, load_jsonl_file
+from .json_utils import append_jsonl_file, load_json_file, load_jsonl_file, save_jsonl_file
 from .solution import Solution
 from .trace import EvaluationStatus, Trace
 from .workload import Workload
@@ -280,7 +280,18 @@ class TraceSet:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def add_traces(self, traces: List[Trace]) -> None:
-        """Add traces to memory and append to disk (per definition's op_type)."""
+        """Add traces to memory and persist to disk (per definition's op_type).
+
+        The on-disk trace file accumulates traces from *multiple* solutions
+        (baseline, reference-scalar, agent candidates), so we can't blindly
+        overwrite it. But we also must not blindly append: re-collecting the
+        same solution (e.g. re-running collect-baselines) would then stack a
+        second copy of that solution's traces, silently doubling the workloads
+        and polluting any geomean computed over the file. So we replace
+        on disk any trace with the same (solution, workload) as an incoming one,
+        keeping every *other* solution's traces intact — making a re-collect
+        idempotent per solution.
+        """
         buckets: Dict[Path, List[Trace]] = defaultdict(list)
         for t in traces:
             if t.definition not in self.definitions:
@@ -295,8 +306,24 @@ class TraceSet:
             buckets[path].append(t)
 
         if self.root is not None:
-            for path, ts in buckets.items():
-                append_jsonl_file(ts, path)
+            for path, new in buckets.items():
+                self._persist_traces_replacing(path, new)
+
+    @staticmethod
+    def _persist_traces_replacing(path: Path, new: List[Trace]) -> None:
+        """Write `new` to `path`, dropping any existing on-disk trace that shares
+        a (solution, workload uuid) with an incoming trace (so a re-collect of one
+        solution replaces its own stale entries rather than appending duplicates),
+        while preserving every other solution's traces."""
+        incoming = {(t.solution, t.workload.uuid) for t in new}
+        kept: List[Trace] = []
+        if path.exists():
+            kept = [
+                t for t in load_jsonl_file(Trace, path)
+                if (t.solution, t.workload.uuid) not in incoming
+            ]
+        # save_jsonl_file mkdirs + overwrites; kept+new == new for a fresh file.
+        save_jsonl_file(kept + new, path)
 
     def add_workload_traces(self, workloads: List[Workload], def_name: str) -> None:
         """Register workload points for a definition (no benchmark run involved yet)."""
