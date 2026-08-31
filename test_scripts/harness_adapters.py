@@ -9,6 +9,7 @@ retry quirks.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -72,6 +73,12 @@ class HarnessAdapter:
 
     def prepare_workspace(self, job: Job) -> AbstractContextManager[Optional[Path]]:
         return nullcontext(None)
+
+    def cleanup_workspace(self, job: Job) -> None:
+        """Remove whatever prepare_workspace() created for `job`, if
+        anything — called once per job after the whole batch finishes,
+        regardless of that job's (or any other job's) success/failure."""
+        pass
 
 
 class ClaudeCodeAdapter(HarnessAdapter):
@@ -203,6 +210,9 @@ class NanobotAdapter(HarnessAdapter):
                     check=True,
                 )
         yield job_ws
+
+    def cleanup_workspace(self, job: Job) -> None:
+        shutil.rmtree(NANOBOT_JOB_WORKSPACES_DIR / job.name, ignore_errors=True)
 
     def cleanup(self) -> None:
         self.config_path.unlink(missing_ok=True)

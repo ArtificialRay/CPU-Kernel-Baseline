@@ -128,7 +128,24 @@ def build_jobs(
     return jobs
 
 
-def _run_fleet(args: argparse.Namespace) -> None:
+def _trajectory_complete(local_results_dir: Path, job_name: str) -> bool:
+    """A job's local trajectory.jsonl exists and has a "submit" turn — the
+    terminal marker TrajectoryWriter always emits when submit() is called
+    (mcp_app/agent_tools/base.py), on both the PASSED and COMPILE_ERROR
+    paths. Used to gate whether it's safe to close the MCP server/tunnel —
+    if this is False for any job, its results may not have made it to
+    local disk yet (or the job never got far enough to submit)."""
+    traj_path = local_results_dir / job_name / "trajectory.jsonl"
+    if not traj_path.exists():
+        return False
+    try:
+        with traj_path.open() as fh:
+            return any(json.loads(line).get("tool") == "submit" for line in fh if line.strip())
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
+def run_fleet(args: argparse.Namespace) -> None:
     isa, dataset = args.isa, args.dataset
     author = args.author or compute_author(args.harness, args.model, isa)
     label = args.label or launch_session._label_for(dataset, author)
@@ -146,6 +163,8 @@ def _run_fleet(args: argparse.Namespace) -> None:
         local_repo_dir=str(REPO_ROOT), local_port=local_port,
         remote_port=args.remote_port,
     )
+    ran_jobs: list[Job] = []
+    should_stop_tunnel = True
     try:
         adapter: HarnessAdapter
         if args.harness == "claude-code":
@@ -169,7 +188,7 @@ def _run_fleet(args: argparse.Namespace) -> None:
 
         log_dir = REPO_ROOT / "harness_trajs" / args.harness / author
         log_dir.mkdir(parents=True, exist_ok=True)
-        local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{args.harness}"))
+        local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
         local_results_dir.mkdir(parents=True, exist_ok=True)
 
         print(
@@ -178,6 +197,7 @@ def _run_fleet(args: argparse.Namespace) -> None:
         )
 
         for job in jobs:
+            ran_jobs.append(job)
             log_path = log_dir / f"{dataset}_{isa}_{job.name}.log"
             attempt = 0
             while True:
@@ -201,16 +221,29 @@ def _run_fleet(args: argparse.Namespace) -> None:
                 log_path.rename(log_path.with_suffix(log_path.suffix + f".attempt{attempt + 1}"))
                 attempt += 1
             print(f"=== [{time.strftime('%H:%M:%S')}] job {job.name} finished -> {log_path} ===")
-            _sync_job_results(label, author, job.name, local_results_dir)
+            sync_job_results(label, author, job.name, local_results_dir)
 
         print(f"All jobs done. Logs in {log_dir}")
         if hasattr(adapter, "cleanup"):
             adapter.cleanup()
+
+        incomplete = [j.name for j in jobs if not _trajectory_complete(local_results_dir, j.name)]
+        if incomplete:
+            should_stop_tunnel = False
+            print(
+                f"WARNING: no confirmed-complete local trajectory (no 'submit' turn found) "
+                f"for: {incomplete} — leaving the MCP server/SSH tunnel running so results "
+                f"aren't lost. Re-run sync-results for these once ready, then stop the tunnel "
+                f"manually.", file=sys.stderr,
+            )
     finally:
-        stop_tunnel(prepared)
+        for job in ran_jobs:
+            adapter.cleanup_workspace(job)
+        if should_stop_tunnel:
+            stop_tunnel(prepared)
 
 
-def _sync_job_results(label: str, author: str, definition: str, local_results_dir: Path) -> None:
+def sync_job_results(label: str, author: str, definition: str, local_results_dir: Path) -> None:
     """Best-effort: a sync failure never aborts the rest of the batch."""
     if not EVAL_CONFIG_PATH.exists():
         print(f"  WARNING: {EVAL_CONFIG_PATH} not found — skipping sync-results for "
@@ -239,7 +272,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--dataset", required=True, choices=["ncnn", "simd-loop", "llama.cpp"])
     p.add_argument("--isa", default="sve", choices=["neon", "sve", "sve2", "sme2"])
     p.add_argument("--model", default=None,
-                   help="Optional model override. claude-code: passed as --model to the CLI "
+                   help="model override. claude-code: passed as --model to the CLI "
                         "(empty = CLI default). nanobot: patched into a temp copy of "
                         "agents.defaults.model (nanobot's CLI has no --model flag).")
     p.add_argument("--min-iterations", type=int, default=40,
@@ -263,7 +296,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                    help="Default: agent-runs-<harness>/ under the repo root.")
     p.add_argument("--max-budget-usd", default=None, help="claude-code only: hard $ ceiling per job.")
     args = p.parse_args(argv)
-    _run_fleet(args)
+    run_fleet(args)
 
 
 if __name__ == "__main__":
