@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -222,6 +224,7 @@ def run_fleet(args: argparse.Namespace) -> None:
                 attempt += 1
             print(f"=== [{time.strftime('%H:%M:%S')}] job {job.name} finished -> {log_path} ===")
             sync_job_results(label, author, job.name, local_results_dir)
+            _wandb_log_job(job.name, dataset, isa, args, author, log_path, local_results_dir)
 
         print(f"All jobs done. Logs in {log_dir}")
         if hasattr(adapter, "cleanup"):
@@ -250,6 +253,34 @@ def run_fleet(args: argparse.Namespace) -> None:
             adapter.cleanup_workspace(job)
         if should_stop_tunnel:
             stop_tunnel(prepared)
+
+
+def _wandb_log_job(name, dataset, isa, args, author, log_path, local_results_dir) -> None:
+    """Optional Weights & Biases logging (off unless WANDB=1). Parses the just-
+    synced trajectory + this job's session log into one W&B run per definition
+    via analysis/wandb_log_run.py. Harness-agnostic: nanobot/own-harness runs
+    simply get no cost/token fields (the logger degrades gracefully). Uses
+    WANDB_PYTHON (default: this interpreter), which needs `pip install wandb`;
+    if it's missing the logger no-ops. Never aborts the batch."""
+    if os.environ.get("WANDB", "0") != "1":
+        return
+    py = os.environ.get("WANDB_PYTHON", sys.executable)
+    group = os.environ.get("WANDB_GROUP") or f"{args.harness}-{isa}-{time.strftime('%Y%m%d')}"
+    cmd = [
+        py, str(REPO_ROOT / "analysis" / "wandb_log_run.py"),
+        "--name", name, "--dataset", dataset, "--isa", isa,
+        "--model", args.model or "unknown", "--author", author,
+        "--log-file", str(log_path), "--results-dir", str(local_results_dir),
+        "--project", os.environ.get("WANDB_PROJECT", "arm-bench-kernels"),
+        "--group", group,
+    ]
+    entity = os.environ.get("WANDB_ENTITY")
+    if entity:
+        cmd += ["--entity", entity]
+    try:
+        subprocess.run(cmd, check=False)
+    except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
+        print(f"  WARNING: wandb logging failed for {name} (non-fatal): {e}", file=sys.stderr)
 
 
 def sync_job_results(label: str, author: str, definition: str, local_results_dir: Path) -> None:
