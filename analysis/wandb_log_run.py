@@ -30,8 +30,10 @@ import json
 import math
 import os
 import re
+import statistics
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 # SIMD / optimization idioms we detect in the agent's kernels (what did it do?).
@@ -138,10 +140,25 @@ def parse_trajectory(path: Path):
     return rows, ver_best, compile_status, eval_status, ver_err
 
 
+def _parse_ts(s):
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
 def parse_session_log(path: Path):
+    """Returns (summary dict, per-turn latency rows).
+
+    Turn latency comes from the stream-json event timestamps: a "turn" spans
+    one MCP tool_use to the next, and the time in between is split into
+    tool_s (delta ending in a tool_result event = remote compile/evaluate
+    execution) and llm_s (delta ending in an assistant event = model
+    thinking/generation). This is what tells slow-model apart from slow-eval."""
     cost = turns = dur_ms = None
     retries = compile_errors = 0
     tok_in = tok_out = tok_cache_r = tok_cache_c = 0
+    events = []  # (kind: "llm"|"tool", when, mcp_tool_short_name_or_"")
     for line in path.read_text(errors="ignore").splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -162,18 +179,45 @@ def parse_session_log(path: Path):
             tok_out += u.get("output_tokens", 0) or 0
             tok_cache_r += u.get("cache_read_input_tokens", 0) or 0
             tok_cache_c += u.get("cache_creation_input_tokens", 0) or 0
-        for c in (((d.get("message") or {}).get("content")) or []):
+        when = _parse_ts(d.get("timestamp"))
+        content = ((d.get("message") or {}).get("content")) or []
+        if when is not None and d.get("type") == "assistant":
+            mcp = next((c.get("name", "") for c in content
+                        if isinstance(c, dict) and c.get("type") == "tool_use"
+                        and str(c.get("name", "")).startswith("mcp__")), "")
+            events.append(("llm", when, mcp.split("__")[-1] if mcp else ""))
+        for c in content:
             if isinstance(c, dict) and c.get("type") == "tool_result":
+                if when is not None:
+                    events.append(("tool", when, ""))
                 t = c.get("content")
                 if isinstance(t, str) and "kernel.cpp" in t and "error" in t.lower():
                     compile_errors += 1
+    # fold event deltas into per-turn rows (turn boundary = each MCP tool_use)
+    turn_rows, acc = [], {"llm": 0.0, "tool": 0.0}
+    prev_when = prev_boundary = None
+    prev_tool = ""
+    for kind, when, mcp_tool in events:
+        if prev_when is not None:
+            delta = (when - prev_when).total_seconds()
+            if 0 <= delta < 7200:
+                acc[kind] += delta
+        prev_when = when
+        if kind == "llm" and mcp_tool:
+            if prev_boundary is not None:
+                turn_rows.append({
+                    "tool": prev_tool,
+                    "llm_s": round(acc["llm"], 1), "tool_s": round(acc["tool"], 1),
+                    "total_s": round((when - prev_boundary).total_seconds(), 1),
+                })
+            prev_boundary, prev_tool, acc = when, mcp_tool, {"llm": 0.0, "tool": 0.0}
     return {
         "cost_usd": cost, "num_turns": turns,
         "wall_time_s": round(dur_ms / 1000.0, 1) if dur_ms else None,
         "api_retries": retries, "session_compile_errors": compile_errors,
         "tokens_input": tok_in, "tokens_output": tok_out,
         "tokens_cache_read": tok_cache_r, "tokens_cache_created": tok_cache_c,
-    }
+    }, turn_rows
 
 
 def detect_techniques(text: str):
@@ -232,7 +276,8 @@ def main() -> int:
     traj = Path(args.trajectory) if args.trajectory else _locate_trajectory(args.results_dir, args.name)
     rows, ver_best, compile_status, eval_status, ver_err = (
         parse_trajectory(traj) if traj and traj.exists() else ([], {}, [], [], {}))
-    sess = parse_session_log(Path(args.log_file)) if args.log_file and Path(args.log_file).exists() else {}
+    sess, turn_rows = (parse_session_log(Path(args.log_file))
+                       if args.log_file and Path(args.log_file).exists() else ({}, []))
     if not rows and not sess:
         print(f"[wandb_log_run] no data for {args.name} — skipping", file=sys.stderr)
         return 0
@@ -256,6 +301,22 @@ def main() -> int:
         wandb.log({"iteration": i, "marginal_gain": round(r["best_so_far"] - prev, 5),
                    **{k: v for k, v in r.items() if v is not None and k not in ("status", "version")}},
                   step=i)
+
+    # ── per-turn latency curve (own x-axis so it doesn't fight the eval steps) ─
+    if turn_rows:
+        run.define_metric("turn/idx")
+        run.define_metric("turn/*", step_metric="turn/idx")
+        for i, t in enumerate(turn_rows, 1):
+            wandb.log({"turn/idx": i, "turn/total_s": t["total_s"],
+                       "turn/llm_s": t["llm_s"], "turn/tool_s": t["tool_s"]})
+        totals = [t["total_s"] for t in turn_rows]
+        run.summary.update({
+            "sec_per_turn_mean": round(sum(totals) / len(totals), 1),
+            "sec_per_turn_median": round(statistics.median(totals), 1),
+            "sec_per_turn_max": round(max(totals), 1),
+            "llm_time_s": round(sum(t["llm_s"] for t in turn_rows), 1),
+            "tool_time_s": round(sum(t["tool_s"] for t in turn_rows), 1),
+        })
 
     # ── derived summary ───────────────────────────────────────────────────────
     speeds = [r["time_speedup"] for r in rows]
