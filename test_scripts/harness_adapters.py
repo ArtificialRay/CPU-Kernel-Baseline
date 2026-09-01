@@ -52,6 +52,20 @@ class Job:
     prompt: str
 
 
+def _strip_marked_block(text: str, begin_marker: str, end_marker: str) -> str:
+    """Remove everything from the line containing begin_marker through the end
+    of the line containing end_marker (inclusive). Returns text unchanged if
+    either marker is missing."""
+    start = text.find(begin_marker)
+    end = text.find(end_marker)
+    if start == -1 or end == -1 or end < start:
+        return text
+    end = end + len(end_marker)
+    if end < len(text) and text[end] == "\n":
+        end += 1
+    return text[:start] + text[end:]
+
+
 def _run_and_tee(cmd: list[str], *, log_path: Path, cwd: Optional[Path] = None) -> int:
     """Run `cmd`, streaming its combined stdout/stderr live to the terminal
     while also writing it to log_path (bash's `tee` idiom, ported)."""
@@ -119,7 +133,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
     )
 
     def __init__(self, *, model: Optional[str], max_budget_usd: Optional[str],
-                 doc_nudge: bool = False):
+                 doc_nudge: bool = False, with_docs: bool = True):
         self.model = model
         self.max_budget_usd = max_budget_usd
         self.doc_nudge = doc_nudge
@@ -128,6 +142,12 @@ class ClaudeCodeAdapter(HarnessAdapter):
         if subprocess.run(["which", "claude"], capture_output=True).returncode != 0:
             raise RuntimeError("claude CLI not found on PATH — install Claude Code first.")
         self.system_prompt = CLAUDE_SKILL_FILE.read_text()
+        if not with_docs:
+            # No-docs ablation arm: the docs/ resources are absent server-side
+            # (ARMBENCH_EXPOSE_DOCS=0), so strip SKILL.md's hardware-docs block
+            # too — otherwise the agent chases 404s on docs/*.md.
+            self.system_prompt = _strip_marked_block(
+                self.system_prompt, "<!-- HW-DOCS:BEGIN", "<!-- HW-DOCS:END -->")
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         with tempfile.NamedTemporaryFile(

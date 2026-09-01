@@ -44,6 +44,8 @@ it beats your previous best; see "Finish and report" below.
   helping, or for understanding why an optimization isn't working as
   expected — it shows you the generated assembly and can help you spot
   bottlenecks or inefficiencies.
+<!-- HW-DOCS:BEGIN — stripped for the no-docs ablation arm (bench_fleet.py
+     without --with-docs); the docs/ resources are absent there too. -->
 - For instruction-level cost when scheduling SVE2/NEON/FP code — or to
   explain a low `ipc_mean` / an unexpectedly slow kernel — read the Arm
   Software Optimization Guide for your **target hardware**, exposed as MCP
@@ -55,6 +57,7 @@ it beats your previous best; see "Finish and report" below.
   - `docs/neoverse-v1-swog.md` — **Neoverse V1 = Graviton3**. Use ONLY when
     the target is Graviton3; its instruction costs differ from V2.
   These are large — read the relevant §3.x section on demand, not wholesale.
+<!-- HW-DOCS:END -->
 
 # WORKFLOW
 

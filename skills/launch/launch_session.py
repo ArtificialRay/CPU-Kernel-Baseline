@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import os
 import re
 import subprocess
 import sys
@@ -163,8 +164,12 @@ def _spawn_command(
     mcp_app/agent_tools/dispatcher.py."""
     run_dir = f"{remote_root}/agent-runs-mcp/{author}"
     dataset_flags = " ".join(f"--dataset {ds}" for ds in datasets)
+    # Forward the docs-ablation gate to the remote server if set locally (see
+    # mcp_app/session.py — "0" hides the Arm optimization-guide resources).
+    expose_docs = os.environ.get("ARMBENCH_EXPOSE_DOCS")
+    env_prefix = f"ARMBENCH_EXPOSE_DOCS={expose_docs} " if expose_docs is not None else ""
     cmd = (
-        f"cd {remote_root} && python3 -m mcp_app.server {dataset_flags} "
+        f"cd {remote_root} && {env_prefix}python3 -m mcp_app.server {dataset_flags} "
         f"--author {author} --isa {isa} --run-dir {run_dir} "
         f"--transport streamable-http --bind-host 127.0.0.1 --port {port}"
     )

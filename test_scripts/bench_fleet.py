@@ -147,6 +147,15 @@ def run_fleet(args: argparse.Namespace) -> None:
     label = args.label or launch_session._label_for(dataset, author)
     max_iterations = args.max_iterations or (args.min_iterations + 10)
 
+    # Docs ablation gate: launch_session._spawn_command forwards this env var to
+    # the remote mcp_app server; "0" means the Arm optimization-guide resources
+    # are never written (and any stale copies are removed). Set explicitly both
+    # ways so a bench_fleet run's docs state never depends on inherited env.
+    # --doc-nudge alone keeps docs exposed (a nudge toward absent docs would
+    # just make the agent chase 404s).
+    docs_exposed = args.with_docs or args.doc_nudge
+    os.environ["ARMBENCH_EXPOSE_DOCS"] = "1" if docs_exposed else "0"
+
     instance_type = args.instance or ISA_INSTANCE_MAP.get(isa, "c7g.large")
     instance = launch_session._provision(
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
@@ -165,7 +174,8 @@ def run_fleet(args: argparse.Namespace) -> None:
         adapter: HarnessAdapter
         if args.harness == "claude-code":
             adapter = ClaudeCodeAdapter(model=args.model, max_budget_usd=args.max_budget_usd,
-                                        doc_nudge=args.doc_nudge)
+                                        doc_nudge=args.doc_nudge or args.with_docs,
+                                        with_docs=docs_exposed)
         elif args.harness == "nanobot":
             adapter = NanobotAdapter(dataset=dataset, model=args.model, local_port=local_port)
         elif args.harness == "own":
@@ -337,10 +347,17 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--local-results-dir", default=None,
                    help="Default: agent-runs-<author>/ under the repo root.")
     p.add_argument("--max-budget-usd", default=None, help="claude-code only: hard $ ceiling per job.")
+    p.add_argument("--with-docs", action="store_true",
+                   help="Docs-ablation treatment arm: expose the Arm Software Optimization "
+                        "Guides as MCP resources on the server AND (claude-code) append a "
+                        "strong read-the-docs-first nudge to each job prompt. DEFAULT OFF = "
+                        "control arm: the docs are absent server-side and SKILL.md's "
+                        "hardware-docs section is stripped, so agents have no documentation "
+                        "at all. Use distinct --author per arm.")
     p.add_argument("--doc-nudge", action="store_true",
-                   help="claude-code only: append a strong nudge to read the Arm Software "
-                        "Optimization Guide (MCP resource) before optimizing. OFF by default; "
-                        "the treatment arm of the docs-vs-no-docs ablation.")
+                   help="claude-code only: docs exposed as usual + the strong read-the-docs "
+                        "nudge appended (implied by --with-docs). Alone, this is the "
+                        "nudge-vs-mild-mention ablation; it never hides docs.")
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
                         "remote instance (not bench-trace/traces/ — that data's already in "

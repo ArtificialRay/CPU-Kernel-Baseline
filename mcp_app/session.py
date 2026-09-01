@@ -7,6 +7,7 @@ Single chokepoint used by both server.py and the verification script
 
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,7 +66,14 @@ def build_tools(cfg: SessionConfig) -> KernelSession:
         instance_label=cfg.instance_label,
     )
     _write_reference_scalar_kernels(ts, cfg.dataset, cfg.run_dir)
-    _write_hardware_docs(cfg.run_dir)
+    # ARMBENCH_EXPOSE_DOCS=0 hides the Arm optimization guides entirely (the
+    # no-docs control arm of the docs ablation — see bench_fleet.py --with-docs).
+    # Unset/any other value keeps today's behavior. On "0" we also remove any
+    # docs/ left in a reused run_dir so the control arm can't read stale copies.
+    if os.environ.get("ARMBENCH_EXPOSE_DOCS", "1") != "0":
+        _write_hardware_docs(cfg.run_dir)
+    else:
+        shutil.rmtree(cfg.run_dir / DOCS_DIRNAME, ignore_errors=True)
     return tools
 
 
