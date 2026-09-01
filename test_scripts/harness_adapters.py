@@ -117,7 +117,14 @@ class ClaudeCodeAdapter(HarnessAdapter):
             "w", prefix="claude-fleet-mcp-", suffix=".json", delete=False
         ) as mcp_config_fh:
             json.dump(
-                {"mcpServers": {"cpu-kernel-baseline": {"type": "http", "url": endpoint}}},
+                # timeout: the CLI's default per-server MCP timeout is 300s of
+                # silence, but a slow candidate kernel can legitimately take
+                # 500s+ to evaluate (perf runs it at full length however slow it
+                # is). At 300s the client aborts, the agent gets an error
+                # instead of a result, and the still-busy server piles up
+                # aborted calls. 15 min covers the slowest evals we've seen.
+                {"mcpServers": {"cpu-kernel-baseline": {
+                    "type": "http", "url": endpoint, "timeout": 900000}}},
                 mcp_config_fh,
             )
             mcp_config_path = Path(mcp_config_fh.name)
