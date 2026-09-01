@@ -65,3 +65,4 @@ arm-bench/
 # Claude Code project settings (keep skills/ but not local config)
 .claude/settings.json
 .claude/settings.local.json
+wandb/
