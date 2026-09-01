@@ -103,9 +103,26 @@ class ClaudeCodeAdapter(HarnessAdapter):
     )
     template_args = 6
 
-    def __init__(self, *, model: Optional[str], max_budget_usd: Optional[str]):
+    # Ablation knob: a strong, explicit per-job nudge to read the Arm Software
+    # Optimization Guide (exposed as MCP resources) BEFORE optimizing. The
+    # SKILL.md system prompt already mentions the docs mildly; this makes it an
+    # unmissable first step so we can measure whether it changes results. OFF by
+    # default — appended to the task prompt only when doc_nudge=True.
+    DOC_NUDGE = (
+        " IMPORTANT — before writing or compiling ANY kernel, FIRST call list_resources() "
+        "and read the Arm Neoverse Software Optimization Guide for the target hardware in "
+        "full (docs/neoverse-v2-swog.md for Graviton4/SVE2; docs/neoverse-v1-swog.md for "
+        "Graviton3/SVE). Ground every optimization decision — instruction selection, vector "
+        "width, unroll factor, and scheduling — in its per-instruction latency/throughput "
+        "tables, and briefly note which guidance you applied. Do not begin optimizing until "
+        "you have read it."
+    )
+
+    def __init__(self, *, model: Optional[str], max_budget_usd: Optional[str],
+                 doc_nudge: bool = False):
         self.model = model
         self.max_budget_usd = max_budget_usd
+        self.doc_nudge = doc_nudge
         if not CLAUDE_SKILL_FILE.exists():
             raise RuntimeError(f"SKILL_FILE not found: {CLAUDE_SKILL_FILE}")
         if subprocess.run(["which", "claude"], capture_output=True).returncode != 0:
@@ -137,7 +154,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 cmd += ["--model", self.model]
             if self.max_budget_usd:
                 cmd += ["--max-budget-usd", self.max_budget_usd]
-            cmd.append(job.prompt)
+            cmd.append(job.prompt + (self.DOC_NUDGE if self.doc_nudge else ""))
             return _run_and_tee(cmd, log_path=log_path)
         finally:
             mcp_config_path.unlink(missing_ok=True)

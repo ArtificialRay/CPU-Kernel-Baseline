@@ -164,7 +164,8 @@ def run_fleet(args: argparse.Namespace) -> None:
     try:
         adapter: HarnessAdapter
         if args.harness == "claude-code":
-            adapter = ClaudeCodeAdapter(model=args.model, max_budget_usd=args.max_budget_usd)
+            adapter = ClaudeCodeAdapter(model=args.model, max_budget_usd=args.max_budget_usd,
+                                        doc_nudge=args.doc_nudge)
         elif args.harness == "nanobot":
             adapter = NanobotAdapter(dataset=dataset, model=args.model, local_port=local_port)
         elif args.harness == "own":
@@ -336,6 +337,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--local-results-dir", default=None,
                    help="Default: agent-runs-<author>/ under the repo root.")
     p.add_argument("--max-budget-usd", default=None, help="claude-code only: hard $ ceiling per job.")
+    p.add_argument("--doc-nudge", action="store_true",
+                   help="claude-code only: append a strong nudge to read the Arm Software "
+                        "Optimization Guide (MCP resource) before optimizing. OFF by default; "
+                        "the treatment arm of the docs-vs-no-docs ablation.")
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
                         "remote instance (not bench-trace/traces/ — that data's already in "
