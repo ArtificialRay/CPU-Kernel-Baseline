@@ -49,27 +49,59 @@ pkill -f "sweep_ncnn_llama.sh" 2>/dev/null || true
 pkill -f "bench_fleet.py"      2>/dev/null || true
 sleep 2
 
+# Global plan: ALL incomplete defs across BOTH datasets in one cost-sorted
+# order, batched into consecutive-same-dataset chunks (bench_fleet is one
+# dataset per invocation; a chunk switch costs ~1-2 min of session setup).
+# Cheap llama defs interleave with cheap ncnn defs instead of waiting hours.
+plan () {  # -> lines: "<dataset> <def> <def> ..."
+  "$PY" - "$RESULTS" <<'PYEOF'
+import json,sys,glob,re,math
+from pathlib import Path
+results=Path(sys.argv[1])
+items=[]
+for p in glob.glob('bench-trace/definitions/**/*.json',recursive=True):
+    d=json.load(open(p)); t=d.get('tags',[])
+    x=next((s.split(':',1)[1] for s in t if s.startswith('baseline-solution:')),None)
+    if x is None and 'simd-loop' in t: x='simd-loop'
+    if x in ('ncnn','llama.cpp'): items.append((x,d['name']))
+def done(n):
+    tp=results/n/'trajectory.jsonl'
+    if not tp.exists(): return False
+    try: return any(json.loads(l).get('tool')=='submit' for l in open(tp) if l.strip())
+    except Exception: return False
+def cost(n): return math.prod(max(int(x),1) for x in re.findall(r'\d+',n)) or 1
+inc=sorted([(ds,n) for ds,n in items if not done(n)], key=lambda t:(cost(t[1]),t[1]))
+chunks=[]
+for ds,n in inc:
+    if chunks and chunks[-1][0]==ds: chunks[-1][1].append(n)
+    else: chunks.append((ds,[n]))
+for ds,ns in chunks: print(ds+' '+' '.join(ns))
+PYEOF
+}
+
 declare -A PREV
 for round in $(seq 1 "$MAX_ROUNDS"); do
-  ANY=0
+  PLAN=$(plan)
+  if [ -z "$PLAN" ]; then echo "@@@ ALL COMPLETE at round $round"; break; fi
+  # stall detection per dataset: same incomplete count as last round -> fresh box
   for DS in $DATASETS; do
-    MISS=$(incomplete "$DS"); N=$(echo $MISS | wc -w | tr -d ' ')
-    if [ "$N" -eq 0 ]; then
-      echo "@@@ [$(date +%H:%M:%S)] ROUND $round $DS: all complete"
-      continue
-    fi
-    ANY=1
-    LB="$DS-$AUTHOR"
-    if [ "${PREV[$DS]:-}" = "$N" ]; then
+    N=$(echo "$PLAN" | awk -v ds="$DS" '$1==ds {print NF-1}' | paste -sd+ - | bc)
+    N=${N:-0}
+    if [ "$N" -gt 0 ] && [ "${PREV[$DS]:-}" = "$N" ]; then
+      LB="$DS-$AUTHOR"
       echo "@@@ [$(date +%H:%M:%S)] ROUND $round $DS STALLED at $N — tearing down $LB to force a fresh box"
       "$PY" eval/provision.py --teardown --label "$LB" >/dev/null 2>&1 || true
     fi
     PREV[$DS]="$N"
-    echo "@@@ [$(date +%H:%M:%S)] ROUND $round $DS incomplete=$N: $MISS"
-    "$PY" -u test_scripts/bench_fleet.py --harness claude-code --dataset "$DS" --isa sve2 \
-      --model sonnet --author "$AUTHOR" --min-iterations "$MIN_ITERS" --definitions "$MISS" || true
   done
-  [ "$ANY" -eq 0 ] && { echo "@@@ ALL COMPLETE at round $round"; break; }
+  echo "@@@ [$(date +%H:%M:%S)] ROUND $round plan ($(echo "$PLAN" | wc -l | tr -d ' ') chunks):"
+  echo "$PLAN" | sed 's/^/@@@   chunk: /'
+  while IFS= read -r line; do
+    DS=${line%% *}; DEFS=${line#* }
+    echo "@@@ [$(date +%H:%M:%S)] chunk $DS ($(echo $DEFS | wc -w | tr -d ' ') defs)"
+    "$PY" -u test_scripts/bench_fleet.py --harness claude-code --dataset "$DS" --isa sve2 \
+      --model sonnet --author "$AUTHOR" --min-iterations "$MIN_ITERS" --definitions "$DEFS" || true
+  done <<< "$PLAN"
 done
 
 for DS in $DATASETS; do
