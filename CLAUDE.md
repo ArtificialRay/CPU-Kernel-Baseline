@@ -11,13 +11,18 @@ and — as of the eval/mcp_client.py migration — the same `mcp_app/server.py` 
 execution surface for every agent-driven path:
 
 - **Path 1 — In-repo litellm agent loop** (`eval/`): a self-contained litellm
-  agent loop (`eval/run_benchmark.py`) drives compile/evaluate/disassemble/submit
-  as an MCP client of `mcp_app/server.py` (`eval/mcp_client.py`), started on a
-  provisioned Graviton instance over an SSH-tunneled MCP session — the same
-  server nanobot/Claude Code drive in Path 3, just with this repo's own litellm
-  loop as the client instead of an external harness. (Previously had its own
-  independent SSH-based tool system, `eval/agent_tools/` — retired; see
-  `eval/mcp_client.py`'s module docstring.)
+  agent loop (`eval/evaluator.py::run_agentic_eval`) drives compile/evaluate/
+  disassemble/submit as an MCP client of `mcp_app/server.py` (`eval/mcp_client.py`),
+  started on a provisioned Graviton instance over an SSH-tunneled MCP session —
+  the same server nanobot/Claude Code drive in Path 3, just with this repo's
+  own litellm loop as the client instead of an external harness. Driven via
+  `test_scripts/bench_fleet.py --harness own` — the same batch-fleet entry
+  point Path 3's harnesses use (`OwnHarnessAdapter` in
+  `test_scripts/harness_adapters.py` calls `run_agentic_eval` in-process,
+  no external CLI subprocess). (Previously had its own independent
+  SSH-based tool system, `eval/agent_tools/`, then its own standalone CLI,
+  `eval/run_benchmark.py` — both retired once bench_fleet.py covered the
+  same ground; see `eval/mcp_client.py`'s module docstring.)
 - **Path 2 — Local `bench/` harness**: compiles solutions into `.so` files with
   clang++ locally, dlopens them, runs correctness + timing without SSH or any
   agent loop. Works on any machine; produces real SVE2 numbers on Graviton.
@@ -206,10 +211,11 @@ bench-trace/                    # On-disk warehouse (TraceSet root) — .gitigno
 
 eval/                           # In-repo litellm agent loop (Path 1)
   provision.py                  # Terraform lifecycle for Graviton EC2 instances
-  run_benchmark.py              # LLM agent loop (litellm) + MCP session lifecycle
   evaluator.py                  # run_agentic_eval turn loop (prompts, retries, history compression)
-  mcp_client.py                 # MCP client bridge — drives mcp_app/server.py's
-                                 #   compile/evaluate/disassemble/submit, same as Path 3
+  mcp_client.py                 # MCP client bridge — attach()es to an already-running
+                                 #   mcp_app/server.py session (compile/evaluate/disassemble/submit),
+                                 #   same server Path 3 drives; provisioning/tunnel lifecycle is the
+                                 #   caller's (test_scripts/bench_fleet.py's) job, not this module's
   remote.py                     # InstanceHandle — SSH/rsync to a provisioned instance
   eval_config.json              # SSH connection info — copy from .example
 
@@ -231,6 +237,14 @@ skills/                         # Harness-agnostic session launch
   launch/launch_session.py      # provision/prepare-session/sync-results/status/teardown
   nanobot/nanobot-kernel-session/
     SKILL.md, README.md
+
+test_scripts/                   # Batch-fleet entry point, shared across all three paths
+  bench_fleet.py                 # `--harness {claude-code,nanobot,own}` — compute author/label
+                                 #   once, provision, prepare_session, retry/log/sync loop over
+                                 #   every definition matching --dataset
+  harness_adapters.py           # Per-harness HarnessAdapter (ClaudeCodeAdapter/NanobotAdapter/
+                                 #   OwnHarnessAdapter) — what's genuinely harness-specific: how
+                                 #   each is invoked, how it connects to the MCP endpoint
 
 scripts/
   gen_definitions.py            # Regenerate ncnn definitions+workloads from test files
@@ -257,10 +271,12 @@ python eval/provision.py --teardown
 
 ### In-repo litellm agent loop (Path 1 — requires Graviton instance)
 ```bash
-# Single definition
-python eval/run_benchmark.py --problem loop_001 --isa sve2 --model anthropic/claude-opus-4-6
-# All definitions, automatic provision+teardown
-python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-6 --provision --teardown
+python3 test_scripts/bench_fleet.py --harness own \
+    --dataset ncnn --isa sve2 --model anthropic/claude-opus-4-6
+# Narrow to specific definitions (space-separated or a JSON array); empty --definitions = every
+# definition matching --dataset
+python3 test_scripts/bench_fleet.py --harness own \
+    --dataset ncnn --isa sve2 --model anthropic/claude-opus-4-6 --definitions loop_001
 ```
 
 ### Local iterative LLM agent (Path 2 — run on target machine for real timing)

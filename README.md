@@ -42,10 +42,10 @@ Provisioning and remote runs need an AWS account with Terraform configured
 
 ## Two ways to run an agent against this benchmark
 
-- **Own harness** — this repo's own litellm agent loop (`eval/run_benchmark.py`)
-  drives the session end-to-end: provisions a Graviton instance, starts
-  `mcp_app/server.py` on it, and runs a self-contained tool-call loop against
-  it. No external agent harness needed.
+- **Own harness** — this repo's own litellm agent loop (`eval/evaluator.py`),
+  driven via `test_scripts/bench_fleet.py --harness own`: provisions a
+  Graviton instance, starts `mcp_app/server.py` on it, and runs a
+  self-contained tool-call loop against it. No external agent harness needed.
 - **MCP server for an external harness** — start `mcp_app/server.py` directly
   (or via `skills/launch/`) and point an external agent harness (nanobot,
   Claude Code, ...) at it. This repo never drives the model in this mode; the
@@ -58,45 +58,53 @@ relate.
 
 ---
 
-## Batch scripts (`test_scripts/`)
+## Batch driver (`test_scripts/bench_fleet.py`)
 
-You're recommend to test the kernel via Batch scripts 
+One parametrized entry point for driving a batch kernel-optimization run
+against any of this repo's harnesses — provisions/reuses an instance, starts
+an `mcp_app` session, runs every matching definition through the chosen
+harness with per-job retry/logging, syncs results back, then closes the
+session once every job's local trajectory is confirmed complete.
 
-Shortcut scripts for running many kernels' optimization sessions back to
-back, one per definition, with per-job logging and best-effort result sync.
-Each script's own header comment has the full usage; this is just the map:
-
-| Script | Path | What it does |
-|---|---|---|
-| `bench_ownHarness_fleet.sh` | Path 1 | Loops `eval/run_benchmark.py --problem` over a fixed `DEFINITIONS` array you edit in the file |
-| `bench_claude_fleet.sh` | Path 2 (Claude Code) | Loops headless `claude -p` sessions against an already-running `mcp_app` session (`MCP_ENDPOINT` required) |
-| `bench_nanobot_fleet.sh` | Path 2 (nanobot) | Same idea via `nanobot agent`, one isolated job workspace per definition |
-| `run_driver_smoke.sh` | — | smoke-tests an `mcp_app` session's compile/evaluate/disassemble/submit tools against a couple of reference-scalar kernels per dataset |
-
-All scripts read global knobs (`DATASET`, `ISA`, `MODEL`, ...) as env vars
-with in-file defaults — override without editing, e.g.:
 ```bash
-DATASET=llama.cpp ISA=sve2 ./test_scripts/bench_claude_fleet.sh
+python3 test_scripts/bench_fleet.py --harness claude-code \
+    --dataset ncnn --isa sve2 --model anthropic/claude-opus-4-8
+python3 test_scripts/bench_fleet.py --harness nanobot \
+    --dataset ncnn --isa sve --definitions "conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1"
+python3 test_scripts/bench_fleet.py --harness own \
+    --dataset ncnn --isa sve2 --model anthropic/claude-opus-4-8
 ```
-`bench_claude_fleet.sh`/`bench_nanobot_fleet.sh` also have a `DEFINITIONS`
-array you can edit to scope a run to specific kernels instead of every
-definition in `DATASET` — leave it empty for the full sweep.
+
+`--harness` selects `claude-code` / `nanobot` / `own` (Path 1 — this repo's
+own litellm loop, in-process, no external CLI); each harness's own
+`HarnessAdapter` lives in `test_scripts/harness_adapters.py`. Run
+`python3 test_scripts/bench_fleet.py --help` for the full flag reference
+(`--definitions`, `--min-iterations`/`--max-iterations`, `--retries`,
+`--sync-solutions`, `--on-demand`, ...).
+
+`test_scripts/run_driver_smoke.sh` is a separate, narrower smoke-test:
+compile/evaluate/disassemble/submit against a couple of reference-scalar
+kernels per dataset, no LLM involved.
 
 ---
 
 ## Path 1: own harness (`eval/`)
 
 ```bash
-python eval/run_benchmark.py --problem <op_type> --dataset <dataset> --model <model>
+python3 test_scripts/bench_fleet.py --harness own \
+    --dataset <dataset> --isa <isa> --model <model>
 ```
 
-`run_benchmark.py` provisions/reuses an instance, syncs the repo, starts an
-MCP session against `mcp_app/server.py` on it (`eval/mcp_client.py`), and runs
-the litellm agent loop until the model stops or `--max-turns` is hit.
+`bench_fleet.py --harness own` provisions/reuses an instance, syncs the
+repo, starts an MCP session against `mcp_app/server.py` on it
+(`eval/mcp_client.py::attach()`), and runs the litellm agent loop
+(`eval/evaluator.py::run_agentic_eval`) in-process for every definition
+matching `--dataset` (narrow with `--definitions`) until the model stops or
+`--max-iterations` is hit.
 
-See [`eval/README.md`](eval/README.md) for the full flag reference, more
-usage examples, `eval/provision.py`'s standalone provisioning commands, and
-where results/traces end up.
+See [`eval/README.md`](eval/README.md) for `eval/evaluator.py`'s agent-loop
+details, `eval/provision.py`'s standalone provisioning commands, and where
+results/traces end up.
 
 ---
 

@@ -4,16 +4,20 @@ This loop's tools are driven over a real MCP client of mcp_app/server.py —
 the same server nanobot/Claude Code drive.
 
 Two public entry points:
-- `connect(...)` — provisions/reuses an instance, starts mcp_app.server on
-  it via skills/launch/launch_session.py, opens an MCP ClientSession over
-  the resulting SSH-tunneled streamable-http endpoint, and returns an
-  `MCPKernelClient`. One of these lives for the whole eval/run_benchmark.py
-  run (potentially many definitions — mcp_app's KernelSession is explicitly
-  designed to serve many definitions off one long-lived connection, so
-  there's no per-definition session teardown/rebuild here).
+- `attach(endpoint, ...)` — opens an MCP ClientSession over an
+  already-running mcp_app.server's SSH-tunneled streamable-http endpoint
+  and returns an `MCPKernelClient`. Provisioning the instance and starting
+  that server (skills/launch/launch_session.py's `prepare_session()`) is
+  the caller's job (test_scripts/bench_fleet.py's shared driver, which owns
+  that lifecycle identically for every harness) — `attach()` only does the
+  genuinely own-harness-specific part: opening the session itself. One
+  MCPKernelClient lives for a whole batch of definitions (potentially many
+  — mcp_app's KernelSession is explicitly designed to serve many
+  definitions off one long-lived connection, so there's no per-definition
+  session teardown/rebuild here).
 - `MCPKernelClient.tools_for(definition_name)` — a thin per-definition
-  facade (`MCPToolsForDefinition`) exposing `dispatch_tool_call`/`cleanup`,
-  the interface `eval/evaluator.py::run_agentic_eval`'s turn loop calls.
+  facade exposing `dispatch_tool_call`/`cleanup`, the interface 
+  `eval/evaluator.py::run_agentic_eval`'s turn loop calls.
 
 Tool surface presented to the model IS derived directly from
 `session.list_tools()` — compile/evaluate/disassemble's schemas (including
@@ -35,19 +39,14 @@ eval/ code changes — the only exception:
 from __future__ import annotations
 
 import asyncio
-import socket
 import threading
-from pathlib import Path
 from typing import Any, Callable, Coroutine, Optional
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from contracts import MCP_CLIENT_DEFAULTS
-from eval.remote import InstanceHandle
-from skills.launch.launch_session import RemoteTarget, prepare_session, stop_tunnel, sync_results
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from skills.launch.launch_session import RemoteTarget, sync_results
 
 # Generous per-call timeouts — evaluate() runs a full compile+timed-repeat
 # pass and can legitimately take minutes; mcp_app/server.py pings the MCP
@@ -69,22 +68,6 @@ _TOOL_TIMEOUTS_S: dict[str, float] = {
     "disassemble": _DISASSEMBLE_TIMEOUT_S,
 }
 
-
-def remote_target_from_instance_handle(handle: InstanceHandle) -> RemoteTarget:
-    """eval/'s InstanceHandle and skills/launch/remote.py's RemoteTarget are
-    separately-duplicated, same-shaped classes (see both modules' own
-    docstrings on why) — this is the one place that bridges them, since
-    connecting to mcp_app.server needs a RemoteTarget."""
-    return RemoteTarget(host=handle.host, user=handle.user, key_file=handle.key_file)
-
-
-def _free_local_port() -> int:
-    """Pick an ephemeral free port for the SSH -L tunnel's local side. Small
-    bind-then-close race (something else could grab it before `ssh -L`
-    binds) is the standard accepted tradeoff for this idiom."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 # Pseudo-tool: read_code never appears in session.list_tools() —
 # reconstructed here as a litellm-facing schema wrapping
@@ -192,12 +175,11 @@ def _call_tool_result_to_dict(result: Any) -> dict:
 
 class MCPKernelClient:
     """One MCP session shared across every definition in a run. Construct
-    via `connect()`, not directly."""
+    via `attach()`, not directly."""
 
-    def __init__(self, session_thread: _SessionThread, *, prepared: dict, target: RemoteTarget,
+    def __init__(self, session_thread: _SessionThread, *, target: RemoteTarget,
                  author: str, remote_root: str) -> None:
         self._session = session_thread
-        self._prepared = prepared
         self._target = target
         self._author = author
         self._remote_root = remote_root
@@ -240,8 +222,11 @@ class MCPKernelClient:
         )
 
     def close(self) -> None:
+        """Closes the MCP ClientSession only. The SSH tunnel/remote
+        mcp_app.server process is owned by whoever called `attach()` (its
+        docstring), not by this client — that caller's own `stop_tunnel()`
+        call handles it."""
         self._session.close()
-        stop_tunnel(self._prepared)
 
 
 class MCPToolsForDefinition:
@@ -295,39 +280,18 @@ class MCPToolsForDefinition:
         pass  # see class docstring — real teardown is MCPKernelClient.close()
 
 
-def connect(
-    handle: InstanceHandle,
-    dataset: str,
-    author: str,
-    isa: str,
+def attach(
+    endpoint: str,
     *,
-    baseline_author: Optional[str] = None,
-    remote_root: str = "~/arm-bench",
-    sync_repo: bool = True,
+    author: str,
+    remote_root: str,
+    target: RemoteTarget,
 ) -> MCPKernelClient:
-    """Start mcp_app.server on `handle`'s instance and open an MCP session
-    against it — the eval/-side equivalent of what nanobot/Claude Code get
-    from `skills/launch/launch_session.py`'s `launch`/`prepare-session` CLI,
-    called here as a library instead of a subprocess so the endpoint comes
-    back as a plain Python value (see that module's own docstring on why
-    it's safe to import despite its "zero imports from eval/" boundary —
-    that boundary is about its own imports, not about being imported).
+    """Open an MCP ClientSession against an already-running mcp_app.server
+    at `endpoint`
     """
-    target = remote_target_from_instance_handle(handle)
-    prepared = prepare_session(
-        target, dataset, author, isa,
-        baseline_author=baseline_author,
-        remote_root=remote_root,
-        sync_repo=sync_repo,
-        local_repo_dir=str(REPO_ROOT) if sync_repo else None,
-        local_port=_free_local_port(),
-    )
-    try:
-        session_thread = _SessionThread(prepared["endpoint"])
-    except BaseException:
-        stop_tunnel(prepared)
-        raise
-    return MCPKernelClient(session_thread, prepared=prepared, target=target, author=author, remote_root=remote_root)
+    session_thread = _SessionThread(endpoint)
+    return MCPKernelClient(session_thread, target=target, author=author, remote_root=remote_root)
 
 
-__all__ = ["MCPKernelClient", "MCPToolsForDefinition", "connect", "remote_target_from_instance_handle"]
+__all__ = ["MCPKernelClient", "MCPToolsForDefinition", "attach"]

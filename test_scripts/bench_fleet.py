@@ -31,21 +31,15 @@ sys.path.insert(0, str(REPO_ROOT))
 # imports its public functions.
 import skills.launch.launch_session as launch_session
 from skills.launch.launch_session import RemoteTarget, prepare_session, stop_tunnel, sync_results
-from contracts import ISA_INSTANCE_MAP
+from contracts import BASELINE_AUTHORS, ISA_INSTANCE_MAP
 
 # harness_adapters.py lives alongside this script — Python puts a directly
 # run script's own directory on sys.path[0] automatically (same idiom
 # skills/launch/launch_session.py uses for its sibling remote.py).
-from harness_adapters import HarnessAdapter, ClaudeCodeAdapter, NanobotAdapter, Job
+from harness_adapters import HarnessAdapter, ClaudeCodeAdapter, NanobotAdapter, OwnHarnessAdapter, Job
 
 DEFINITIONS_DIR = REPO_ROOT / "bench-trace" / "definitions"
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
-
-BASELINE_AUTHOR_BY_DATASET = {
-    "ncnn": "baseline-ncnn-arm",
-    "simd-loop": "reference",
-    "llama.cpp": "baseline-llamacpp-arm",
-}
 
 
 def _free_local_port() -> int:
@@ -114,7 +108,7 @@ def build_jobs(
         name = d["name"]
         if wanted and name not in wanted:
             continue
-        baseline_author = BASELINE_AUTHOR_BY_DATASET.get(ds, ds)
+        baseline_author = BASELINE_AUTHORS.get(ds, ds)
         args = (name, ds, baseline_author, isa, min_iterations, max_iterations)
         prompt = prompt_template % args[:template_args]
         jobs.append(Job(name=name, prompt=prompt))
@@ -171,6 +165,12 @@ def run_fleet(args: argparse.Namespace) -> None:
             adapter = ClaudeCodeAdapter(model=args.model, max_budget_usd=args.max_budget_usd)
         elif args.harness == "nanobot":
             adapter = NanobotAdapter(dataset=dataset, model=args.model, local_port=local_port)
+        elif args.harness == "own":
+            adapter = OwnHarnessAdapter(
+                endpoint=prepared["endpoint"], author=author, remote_root=args.remote_root,
+                target=instance.target, dataset=dataset, isa=isa, model=args.model,
+                max_turns=max_iterations,
+            )
         else:
             raise ValueError(f"Unknown --harness {args.harness!r}")
 
@@ -227,6 +227,15 @@ def run_fleet(args: argparse.Namespace) -> None:
         if hasattr(adapter, "cleanup"):
             adapter.cleanup()
 
+        if args.sync_solutions:
+            print(f"Syncing bench-trace/solutions/ back from {instance.target.host}...")
+            try:
+                instance.target.rsync_from(
+                    f"{args.remote_root}/bench-trace/solutions/", REPO_ROOT / "bench-trace" / "solutions",
+                )
+            except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
+                print(f"  WARNING: sync-solutions failed: {e}", file=sys.stderr)
+
         incomplete = [j.name for j in jobs if not _trajectory_complete(local_results_dir, j.name)]
         if incomplete:
             should_stop_tunnel = False
@@ -268,13 +277,14 @@ def sync_job_results(label: str, author: str, definition: str, local_results_dir
 
 def main(argv: Optional[list[str]] = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--harness", required=True, choices=["claude-code", "nanobot"])
+    p.add_argument("--harness", required=True, choices=["claude-code", "nanobot", "own"])
     p.add_argument("--dataset", required=True, choices=["ncnn", "simd-loop", "llama.cpp"])
     p.add_argument("--isa", default="sve", choices=["neon", "sve", "sve2", "sme2"])
     p.add_argument("--model", default=None,
                    help="model override. claude-code: passed as --model to the CLI "
                         "(empty = CLI default). nanobot: patched into a temp copy of "
-                        "agents.defaults.model (nanobot's CLI has no --model flag).")
+                        "agents.defaults.model (nanobot's CLI has no --model flag). own: "
+                        "litellm model string, required (e.g. anthropic/claude-opus-4-8).")
     p.add_argument("--min-iterations", type=int, default=40,
                    help="Floor, not a cap — the model is told not to submit early.")
     p.add_argument("--max-iterations", type=int, default=None,
@@ -293,8 +303,13 @@ def main(argv: Optional[list[str]] = None) -> None:
                    help="Provision on-demand instead of spot (only affects a freshly "
                         "provisioned instance).")
     p.add_argument("--local-results-dir", default=None,
-                   help="Default: agent-runs-<harness>/ under the repo root.")
+                   help="Default: agent-runs-<author>/ under the repo root.")
     p.add_argument("--max-budget-usd", default=None, help="claude-code only: hard $ ceiling per job.")
+    p.add_argument("--sync-solutions", action="store_true",
+                   help="After all jobs finish, also pull bench-trace/solutions/ back from the "
+                        "remote instance (not bench-trace/traces/ — that data's already in "
+                        "agent-runs-<author>/). Off by default; every harness writes solutions "
+                        "to the remote bench-trace regardless of this flag.")
     args = p.parse_args(argv)
     run_fleet(args)
 

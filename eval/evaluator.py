@@ -64,8 +64,8 @@ Key rules:
 """
 
 # isa string -> (isa_desc, isa_name) shown to the agent in the system prompt.
-# Keyed by the SAME `isa` string passed to eval/mcp_client.py::connect() (and
-# from there, mcp_app.server's --isa) 
+# Keyed by the SAME `isa` string the caller's mcp_app.server session was
+# started with (its --isa flag)
 _ISA_PROMPT_INFO: dict[str, tuple[str, str]] = {
     "neon":     ("Arm Neoverse V1 (AWS Graviton3, NEON 128-bit)", "NEON"),
     "sve":      ("Graviton3 with SVE (SVE1, 256-bit)", "SVE"),
@@ -226,12 +226,12 @@ def run_agentic_eval(
         trace_set: TraceSet used for solution persistence and baseline lookup.
         author: Solution author label (e.g. "claude-opus-4-8").
         model: LiteLLM model string (e.g. "anthropic/claude-opus-4-8").
-        mcp_client: Shared MCP session (eval/mcp_client.py::connect()) —
+        mcp_client: Shared MCP session (eval/mcp_client.py::attach()) —
             one MCPKernelClient is meant to be shared across every
             definition in a run (see its own docstring), so it's passed in
             already connected, not built here.
-        isa: The SAME isa string passed to `mcp_client`'s `connect()` call
-            (e.g. "sve2", "portable") — drives the system prompt's
+        isa: The SAME isa string the mcp_app.server session was started
+            with (e.g. "sve2", "portable") — drives the system prompt's
             isa_desc/isa_name via `_ISA_PROMPT_INFO` so the agent is never
             told a different ISA than what the server actually compiles
             with. Not derived from instance type.
@@ -263,14 +263,7 @@ def run_agentic_eval(
     notepad: list[str] = []
 
     baseline_author = bench_cfg.baseline_author if bench_cfg else "reference-scalar"
-    # Agent's starting kernel + correctness anchor (NOT the speedup baseline, which
-    # is baseline_author). simd-loop's scalar author is "reference"; ncnn/llama.cpp
-    # use "reference-scalar" — see contracts.REFERENCE_SCALAR_AUTHORS. (Previously
-    # `== "ncnn" or "llama.cpp"` — a truthiness bug that forced "reference-scalar"
-    # for every dataset, including simd-loop.)
     ref_author = REFERENCE_SCALAR_AUTHORS.get(dataset, "reference-scalar")
-    # Starter code shown to the agent = the baseline solution for this dataset
-    # (author varies: reference-scalar/reference/baseline-llamacpp-arm).
     ref_solution = trace_set.get_baseline_solution(definition.name, ref_author)
 
     isa_desc, isa_name = _ISA_PROMPT_INFO.get(isa, (isa or "AArch64", "SVE2"))
@@ -487,11 +480,6 @@ def run_agentic_eval(
                 reasoning_text = ""  # emit reasoning only on the first tool call per turn
 
         # ── Report the best version seen this session ────────────────────────────
-        # No model-facing submit tool (see AGENT_SYSTEM_PROMPT) — evaluate()
-        # already auto-persists on every new best (mcp_app/agent_tools/base.py's
-        # evaluate() calls its own submit() internally, synchronously, whenever
-        # is_new_best), so best_version's data was already durably written
-        # server-side by the time we get here.
         if best_version and best_version.get("code"):
             if verbose:
                 ts = best_version.get("time_speedup", "?")
