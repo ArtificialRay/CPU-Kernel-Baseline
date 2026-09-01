@@ -49,6 +49,28 @@ pkill -f "sweep_ncnn_llama.sh" 2>/dev/null || true
 pkill -f "bench_fleet.py"      2>/dev/null || true
 sleep 2
 
+# A hard-killed run leaves its remote mcp_app.server holding port 8765 on the
+# box; the next session's server then can't bind and every job fast-fails
+# ("MCP server unavailable", ~6s, best=None). Sweep our labels' boxes and kill
+# stale servers before planning. Best-effort — box may not exist yet.
+clean_stale_servers () {
+  for DS in $DATASETS; do
+    HOST=$("$PY" -c "
+import json,sys
+try:
+    c=json.load(open('eval/eval_config.json'))
+    print(c.get('instances',{}).get('$DS-$AUTHOR',{}).get('host',''))
+except Exception: print('')
+" 2>/dev/null)
+    if [ -n "$HOST" ]; then
+      echo "@@@ [$(date +%H:%M:%S)] clearing stale mcp_app.server on $DS box $HOST"
+      ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+        "ubuntu@$HOST" "pkill -f 'mcp_app.server' || true" 2>/dev/null || true
+    fi
+  done
+}
+clean_stale_servers
+
 # Global plan: ALL incomplete defs across BOTH datasets in one cost-sorted
 # order, batched into consecutive-same-dataset chunks (bench_fleet is one
 # dataset per invocation; a chunk switch costs ~1-2 min of session setup).
