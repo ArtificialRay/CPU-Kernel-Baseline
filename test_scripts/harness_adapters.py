@@ -9,6 +9,7 @@ retry quirks.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 NANOBOT_CONFIG_BASE = REPO_ROOT / "skills" / "nanobot" / "nanobot-kernel-session" / "config.json"
 CLAUDE_SKILL_FILE = REPO_ROOT / "skills" / "claude-code" / "claude-code-kernel-session" / "SKILL.md"
+NANOBOT_RUNNER = Path(__file__).resolve().parent / "nanobot_run.py"
 NANOBOT_WORKSPACE = Path.home() / ".nanobot" / "workspace"
 NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
 
@@ -63,6 +65,7 @@ class TurnRow:
     total_s: float
     llm_s: float = 0.0
     tool_s: float = 0.0
+    tool: str = ""   # the MCP tool that ended the turn, when known
 
 
 @dataclass
@@ -82,6 +85,9 @@ class SessionMetrics:
     tokens_cache_read: int = 0
     tokens_cache_created: int = 0
     turn_rows: list[TurnRow] = field(default_factory=list)
+    harness: Optional[str] = None        # which adapter produced this
+    cost_source: Optional[str] = None    # "harness" (reported) | "litellm" (per-call) | None (unknown → logger estimates)
+    harness_status: Optional[str] = None  # harness's own terminal status/stop reason, if it has one
 
 
 def _find(d: Any, key: str) -> Any:
@@ -108,6 +114,32 @@ def _parse_ts(s: Optional[str]):
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return None
+
+
+def usage_sidecar_path(log_path: Path) -> Path:
+    """Where a job's harness-side usage/timing sidecar lives: next to the job
+    log, `<stem>.usage.json`. Written by test_scripts/nanobot_run.py, read
+    by parse_nanobot_session_log()."""
+    return log_path.with_suffix(".usage.json")
+
+
+def parse_session_log_auto(log_path: Path, harness: str = "") -> SessionMetrics:
+    """Manual-backfill helper (analysis/wandb_log_run.py's CLI): parse a job
+    log with the given harness's parser, or sniff the format when `harness`
+    is empty — stream-json (claude-code), a JSON result dict (own), or
+    nanobot's runtime text log. bench_fleet.py never needs this: it asks the
+    adapter that ran the job."""
+    if not log_path.exists():
+        return SessionMetrics()
+    if harness not in ("claude-code", "nanobot", "own"):
+        head = log_path.read_text(errors="ignore").lstrip()[:200]
+        if head.startswith("{"):
+            harness = "claude-code" if '"type"' in head.split("\n", 1)[0] else "own"
+        else:
+            harness = "nanobot"
+    return {"claude-code": parse_claude_code_session_log,
+            "nanobot": parse_nanobot_session_log,
+            "own": parse_own_result_log}[harness](log_path)
 
 
 def _run_and_tee(cmd: list[str], *, log_path: Path, cwd: Optional[Path] = None) -> int:
@@ -212,79 +244,196 @@ class ClaudeCodeAdapter(HarnessAdapter):
             mcp_config_path.unlink(missing_ok=True)
 
     def parse_session_metrics(self, log_path: Path) -> SessionMetrics:
-        """session metrics logging from JSON event per line at command: `claude -p --output-format stream-json --verbose` 
-        including:
-            cost_usd, num_turns,
-            wall_time_s,api_retries, session_compile_errors,
-            tokens_input, tokens_output,
-            tokens_cache_read, tokens_cache_created,
-            turn_rows
-       """
-        if not log_path.exists():
-            return SessionMetrics()
-        cost = turns = dur_ms = None
-        retries = compile_errors = 0
-        tok_in = tok_out = tok_cache_r = tok_cache_c = 0
-        events: list[tuple[str, datetime, str]] = []  # (kind: "llm"|"tool", when, mcp_tool_name)
-        for line in log_path.read_text(errors="ignore").splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if d.get("subtype") == "api_retry":
-                retries += 1
-            if d.get("type") == "result":
-                cost = d.get("total_cost_usd", cost)
-                turns = d.get("num_turns", turns)
-                dur_ms = d.get("duration_ms", dur_ms)
-            u = _find(d, "usage")
-            if isinstance(u, dict):
-                tok_in += u.get("input_tokens", 0) or 0
-                tok_out += u.get("output_tokens", 0) or 0
-                tok_cache_r += u.get("cache_read_input_tokens", 0) or 0
-                tok_cache_c += u.get("cache_creation_input_tokens", 0) or 0
-            when = _parse_ts(d.get("timestamp"))
-            content = ((d.get("message") or {}).get("content")) or []
-            if when is not None and d.get("type") == "assistant":
-                mcp = next((c.get("name", "") for c in content
-                            if isinstance(c, dict) and c.get("type") == "tool_use"
-                            and str(c.get("name", "")).startswith("mcp__")), "")
-                events.append(("llm", when, mcp.split("__")[-1] if mcp else ""))
-            for c in content:
-                if isinstance(c, dict) and c.get("type") == "tool_result":
-                    if when is not None:
-                        events.append(("tool", when, ""))
-                    t = c.get("content")
-                    if isinstance(t, str) and "kernel.cpp" in t and "error" in t.lower():
-                        compile_errors += 1
-        # fold event deltas into per-turn rows (turn boundary = each MCP tool_use)
-        turn_rows: list[TurnRow] = []
-        acc = {"llm": 0.0, "tool": 0.0}
-        prev_when = prev_boundary = None
-        for kind, when, mcp_tool in events:
-            if prev_when is not None:
-                delta = (when - prev_when).total_seconds()
-                if 0 <= delta < 7200:
-                    acc[kind] += delta
-            prev_when = when
-            if kind == "llm" and mcp_tool:
-                if prev_boundary is not None:
-                    turn_rows.append(TurnRow(
-                        total_s=round((when - prev_boundary).total_seconds(), 1),
-                        llm_s=round(acc["llm"], 1), tool_s=round(acc["tool"], 1),
-                    ))
-                prev_boundary, acc = when, {"llm": 0.0, "tool": 0.0}
-        return SessionMetrics(
-            cost_usd=cost, num_turns=turns,
-            wall_time_s=round(dur_ms / 1000.0, 1) if dur_ms else None,
-            api_retries=retries, session_compile_errors=compile_errors,
-            tokens_input=tok_in, tokens_output=tok_out,
-            tokens_cache_read=tok_cache_r, tokens_cache_created=tok_cache_c,
-            turn_rows=turn_rows,
-        )
+        """session metrics logging from JSON event per line at command: `claude -p --output-format stream-json --verbose`
+        including: cost_usd, num_turns, wall_time_s, api_retries, session_compile_errors,
+        tokens_input/output, tokens_cache_read/created, turn_rows."""
+        return parse_claude_code_session_log(log_path)
+
+
+def parse_claude_code_session_log(log_path: Path) -> SessionMetrics:
+    """`claude -p --output-format stream-json --verbose` writes one JSON
+    event per line. Turn latency comes from event timestamps: a "turn"
+    spans one MCP tool_use to the next, and the time in between splits
+    into tool_s (delta ending in a tool_result event = remote
+    compile/evaluate execution) and llm_s (delta ending in an assistant
+    event = model thinking/generation) — this is what tells a slow
+    model apart from a slow eval. Module-level (not a method) so
+    analysis/wandb_log_run.py's manual-backfill CLI can call it without
+    constructing a full ClaudeCodeAdapter (which checks for the `claude`
+    CLI on PATH). Moved here from wandb_log_run.py's old parse_session_log()."""
+    if not log_path.exists():
+        return SessionMetrics()
+    cost = turns = dur_ms = None
+    retries = compile_errors = 0
+    tok_in = tok_out = tok_cache_r = tok_cache_c = 0
+    events: list[tuple[str, datetime, str]] = []  # (kind: "llm"|"tool", when, mcp_tool_name)
+    for line in log_path.read_text(errors="ignore").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if d.get("subtype") == "api_retry":
+            retries += 1
+        if d.get("type") == "result":
+            cost = d.get("total_cost_usd", cost)
+            turns = d.get("num_turns", turns)
+            dur_ms = d.get("duration_ms", dur_ms)
+        u = _find(d, "usage")
+        if isinstance(u, dict):
+            tok_in += u.get("input_tokens", 0) or 0
+            tok_out += u.get("output_tokens", 0) or 0
+            tok_cache_r += u.get("cache_read_input_tokens", 0) or 0
+            tok_cache_c += u.get("cache_creation_input_tokens", 0) or 0
+        when = _parse_ts(d.get("timestamp"))
+        content = ((d.get("message") or {}).get("content")) or []
+        if when is not None and d.get("type") == "assistant":
+            mcp = next((c.get("name", "") for c in content
+                        if isinstance(c, dict) and c.get("type") == "tool_use"
+                        and str(c.get("name", "")).startswith("mcp__")), "")
+            events.append(("llm", when, mcp.split("__")[-1] if mcp else ""))
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "tool_result":
+                if when is not None:
+                    events.append(("tool", when, ""))
+                t = c.get("content")
+                if isinstance(t, str) and "kernel.cpp" in t and "error" in t.lower():
+                    compile_errors += 1
+    # fold event deltas into per-turn rows (turn boundary = each MCP tool_use)
+    turn_rows: list[TurnRow] = []
+    acc = {"llm": 0.0, "tool": 0.0}
+    prev_when = prev_boundary = None
+    for kind, when, mcp_tool in events:
+        if prev_when is not None:
+            delta = (when - prev_when).total_seconds()
+            if 0 <= delta < 7200:
+                acc[kind] += delta
+        prev_when = when
+        if kind == "llm" and mcp_tool:
+            if prev_boundary is not None:
+                turn_rows.append(TurnRow(
+                    total_s=round((when - prev_boundary).total_seconds(), 1),
+                    llm_s=round(acc["llm"], 1), tool_s=round(acc["tool"], 1),
+                ))
+            prev_boundary, acc = when, {"llm": 0.0, "tool": 0.0}
+    return SessionMetrics(
+        cost_usd=cost, num_turns=turns,
+        wall_time_s=round(dur_ms / 1000.0, 1) if dur_ms else None,
+        api_retries=retries, session_compile_errors=compile_errors,
+        tokens_input=tok_in, tokens_output=tok_out,
+        tokens_cache_read=tok_cache_r, tokens_cache_created=tok_cache_c,
+        turn_rows=turn_rows,
+        harness="claude-code", cost_source="harness" if cost is not None else None,
+    )
+
+
+_NANOBOT_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+
+
+def parse_nanobot_session_log(log_path: Path) -> SessionMetrics:
+    """nanobot: the `--logs` runtime log (what NanobotAdapter tees) carries
+    timestamps, one "Tool call:" line per tool call, and transient-error
+    warnings — enough for turn count, retries and wall time. Tokens and
+    per-iteration timing come from the `<stem>.usage.json` sidecar that
+    test_scripts/nanobot_run.py writes via a nanobot SDK hook (the CLI
+    persists usage nowhere). Cost is NOT reported by nanobot — cost_usd stays
+    None and analysis/wandb_log_run.py estimates it from the token counts."""
+    if not log_path.exists():
+        return SessionMetrics()
+    first = last = None
+    tool_calls = retries = 0
+    for line in log_path.read_text(errors="ignore").splitlines():
+        m = _NANOBOT_TS.match(line)
+        if m:
+            when = _parse_ts(m.group(1).replace(" ", "T"))
+            first = first or when
+            last = when or last
+        if "| Tool call:" in line:
+            tool_calls += 1
+        if "LLM transient error" in line or "LLM stream stalled" in line:
+            retries += 1
+    sm = SessionMetrics(
+        harness="nanobot", num_turns=tool_calls or None, api_retries=retries,
+        wall_time_s=round((last - first).total_seconds(), 1) if first and last else None,
+    )
+    sidecar = usage_sidecar_path(log_path)
+    if not sidecar.exists():
+        return sm
+    try:
+        u = json.loads(sidecar.read_text())
+    except json.JSONDecodeError:
+        return sm
+    tot = u.get("usage") or {}
+    sm.tokens_input = int(tot.get("prompt_tokens") or 0)
+    sm.tokens_output = int(tot.get("completion_tokens") or 0)
+    sm.tokens_cache_read = int(tot.get("cache_read_tokens") or tot.get("cache_read_input_tokens") or 0)
+    sm.tokens_cache_created = int(tot.get("cache_write_tokens") or tot.get("cache_creation_input_tokens") or 0)
+    iterations = u.get("iterations") or []
+    sm.num_turns = len(iterations) or sm.num_turns
+    sm.wall_time_s = u.get("wall_time_s") or sm.wall_time_s
+    sm.harness_status = u.get("stop_reason")
+    for it in iterations:
+        total, llm = it.get("total_s"), it.get("llm_s")
+        if total is None:
+            continue
+        llm = total if llm is None else llm
+        tools = [t.split("_")[-1] if "mcp" in t else t for t in (it.get("tools") or [])]
+        sm.turn_rows.append(TurnRow(total_s=round(total, 1), llm_s=round(llm, 1),
+                                    tool_s=round(max(total - llm, 0.0), 1),
+                                    tool=tools[0] if tools else ""))
+    return sm
+
+
+def parse_own_result_log(log_path: Path) -> SessionMetrics:
+    """own harness: the job log IS run_agentic_eval()'s result JSON, whose
+    "session" block (eval/evaluator.py) is written in SessionMetrics' own
+    field names — tokens (incl. cache), litellm per-call cost, retries,
+    per-turn timing."""
+    if not log_path.exists():
+        return SessionMetrics()
+    try:
+        d = json.loads(log_path.read_text(errors="ignore"))
+    except json.JSONDecodeError:
+        return SessionMetrics()
+    s = d.get("session") or {}
+    sm = SessionMetrics(
+        harness="own", harness_status=d.get("status"),
+        cost_usd=s.get("cost_usd"), cost_source=s.get("cost_source"),
+        num_turns=s.get("num_turns"), wall_time_s=s.get("wall_time_s"),
+        api_retries=int(s.get("api_retries") or 0),
+        tokens_input=int(s.get("tokens_input") or 0), tokens_output=int(s.get("tokens_output") or 0),
+        tokens_cache_read=int(s.get("tokens_cache_read") or 0),
+        tokens_cache_created=int(s.get("tokens_cache_created") or 0),
+    )
+    for t in s.get("turns", []):
+        if t.get("total_s") is None:
+            continue
+        sm.turn_rows.append(TurnRow(total_s=t["total_s"], llm_s=t.get("llm_s") or 0.0,
+                                    tool_s=t.get("tool_s") or 0.0, tool=t.get("tool", "")))
+    return sm
+
+
+def _nanobot_python() -> str:
+    """The interpreter that owns the `nanobot` on PATH (its console-script
+    shebang), so nanobot_run.py drives the exact same nanobot install the CLI
+    would have — the runner env pins 0.2.2 while PATH may carry a newer one."""
+    exe = shutil.which("nanobot")
+    if exe:
+        try:
+            first = Path(exe).open("rb").readline().decode(errors="ignore").strip()
+        except OSError:
+            first = ""
+        if first.startswith("#!"):
+            parts = first[2:].split()
+            if parts and parts[0].endswith("/env") and len(parts) > 1:
+                found = shutil.which(parts[1])
+                if found:
+                    return found
+            elif parts and Path(parts[0]).exists():
+                return parts[0]
+    return sys.executable
 
 
 class NanobotAdapter(HarnessAdapter):
@@ -318,6 +467,7 @@ class NanobotAdapter(HarnessAdapter):
                 f"(only {sorted(NANOBOT_SERVER_NAME_BY_DATASET)} are wired today)."
             )
         self.model = model
+        self.python = _nanobot_python()
         # Always generate a patched temp config — even with no --model
         # override, the mcpServers URL's port must match this run's actual
         # local_port (nanobot's own MCP client only ever reads it from
@@ -334,13 +484,20 @@ class NanobotAdapter(HarnessAdapter):
         self.config_path = Path(fh.name)
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
+        """Same single-message run `nanobot agent --logs -m ...` would do, via
+        test_scripts/nanobot_run.py so per-iteration token usage/timing is
+        captured to the job's usage sidecar (the CLI persists it nowhere)."""
         session = time.strftime("%Y%m%d-%H%M%S")
         with self.prepare_workspace(job) as workspace:
             cmd = [
-                "nanobot", "agent", "--logs", "-m", job.prompt,
+                self.python, str(NANOBOT_RUNNER), "--logs", "-m", job.prompt,
                 "-w", str(workspace), "-c", str(self.config_path), "--session", session,
+                "--usage-out", str(usage_sidecar_path(log_path)),
             ]
             return _run_and_tee(cmd, log_path=log_path)
+
+    def parse_session_metrics(self, log_path: Path) -> SessionMetrics:
+        return parse_nanobot_session_log(log_path)
 
     def is_benign_failure(self, log_path: Path) -> bool:
         """Known benign nanobot bug: close_mcp() can crash on
@@ -427,6 +584,9 @@ class OwnHarnessAdapter(HarnessAdapter):
             }
         log_path.write_text(json.dumps(result, indent=2))
         return 0 if result.get("status") == "PASSED" else 1
+
+    def parse_session_metrics(self, log_path: Path) -> SessionMetrics:
+        return parse_own_result_log(log_path)
 
     def cleanup(self) -> None:
         self.mcp_client.close()

@@ -15,6 +15,7 @@ compile call. It is used only for file naming — it is NOT a solution identity
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -63,9 +64,24 @@ class TrajectoryWriter:
         asm_file: Optional[str] = None,
         metrics: Optional[dict] = None,
         solution_ref: Optional[str] = None,
+        elapsed_s: Optional[float] = None,
     ) -> None:
-        """Append one line to trajectory.jsonl immediately (flush after write)."""
-        record: dict[str, Any] = {"turn": turn, "tool": tool}
+        """Append one line to trajectory.jsonl immediately (flush after write).
+
+        Every row is stamped with `ts` (UTC ISO-8601, server clock) and, when
+        the caller measured it, `elapsed_s` (wall seconds the tool itself
+        took). Together they give a harness-agnostic per-turn timeline:
+        ts[i] - ts[i-1] is the whole turn (model thinking + tool), elapsed_s
+        is the tool's share — the same numbers for claude-code, nanobot and
+        the in-repo loop, without parsing any harness's own log format
+        (analysis/wandb_log_run.py reads them).
+        """
+        record: dict[str, Any] = {
+            "turn": turn, "tool": tool,
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        }
+        if elapsed_s is not None:
+            record["elapsed_s"] = round(elapsed_s, 3)
         if reasoning:
             record["reasoning"] = reasoning
         if source_file is not None:

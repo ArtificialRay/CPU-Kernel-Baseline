@@ -7,11 +7,15 @@ below means and where to find it on the W&B run page.
 
 Parses two artifacts into one rich W&B run per definition:
   - the trajectory (`trajectory.jsonl`, written by mcp_app's TrajectoryWriter
-    — same format regardless of which harness drove the session)
+    — same format regardless of which harness drove the session; its rows
+    are server-stamped with `ts` + `elapsed_s`, which is where the per-turn
+    latency curve comes from for every harness alike)
   - a SessionMetrics object (test_scripts/harness_adapters.py) — harness-
-    specific session telemetry (cost, tokens, turn latency), already parsed
+    specific session telemetry (cost, tokens, retries), already parsed
     by the calling HarnessAdapter before this module ever sees it. This
-    module has no harness-format knowledge of its own.
+    module has no harness-format knowledge of its own. Cost a harness
+    doesn't report is estimated here from its token counts (litellm pricing
+    table) and flagged via `cost_source`.
 
   per-evaluate (the metric curve = the spaghetti line):
     time/cycle speedup, best-so-far, ipc, cache-misses, max abs/rel error, status
@@ -39,6 +43,8 @@ import re
 import statistics
 import sys
 from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -90,13 +96,16 @@ def parse_trajectory(path: Path):
     EVERY evaluate row's status here, not just the ones carrying a speedup.
 
     Returns (perf rows, per-version best speedup, ordered compile statuses,
-             ordered evaluate statuses, per-version worst (abs, rel) error).
+             ordered evaluate statuses, per-version worst (abs, rel) error,
+             timeline of (tool, ts, elapsed_s) for EVERY row — ts/elapsed_s are
+             None in trajectories written before the server stamped them).
     """
     rows = []
     ver_best = {}          # "vN" -> best speedup seen for it
     compile_status = []    # ordered compile statuses (for error taxonomy)
     eval_status = []       # ordered statuses of EVERY evaluate row (all modes)
     ver_err = {}           # "vN" -> (worst max_abs_error, worst max_rel_error)
+    timeline = []          # (tool, ts datetime|None, elapsed_s|None) per row
     cur_ver = None
     best = 0.0
     for line in path.read_text().splitlines():
@@ -108,6 +117,7 @@ def parse_trajectory(path: Path):
         except json.JSONDecodeError:
             continue
         m = d.get("metrics") or {}
+        timeline.append((d.get("tool") or "", _parse_ts(d.get("ts")), d.get("elapsed_s")))
         if d.get("tool") == "compile":
             if m.get("version") is not None:
                 cur_ver = f"v{m['version']}"
@@ -143,7 +153,69 @@ def parse_trajectory(path: Path):
             "max_rel_error": ve[1],
             "status": m.get("status"),
         })
-    return rows, ver_best, compile_status, eval_status, ver_err
+    return rows, ver_best, compile_status, eval_status, ver_err, timeline
+
+
+def _parse_ts(s):
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+@dataclass
+class _TrajTurn:
+    """Duck-types harness_adapters.TurnRow (same attributes) without importing
+    that module's heavy dependency chain here."""
+    total_s: float
+    llm_s: float
+    tool_s: float
+    tool: str = ""
+
+
+def turn_rows_from_trajectory(timeline) -> list:
+    """Per-turn latency from the server-stamped trajectory — one clock and one
+    definition of "a turn" for every harness. A turn = one tool call:
+    total_s runs from the previous tool's row to this one (model thinking +
+    transport + this tool), tool_s is this tool's own wall time (elapsed_s),
+    llm_s the remainder. Empty for pre-timestamp trajectories, in which case
+    log_run_to_wandb() falls back to the harness's own SessionMetrics.turn_rows."""
+    out, prev = [], None
+    for tool, ts, elapsed in timeline:
+        if ts is None:
+            continue
+        if prev is not None:
+            total = (ts - prev).total_seconds()
+            if 0 <= total < 7200:
+                tool_s = float(elapsed or 0.0)
+                out.append(_TrajTurn(total_s=round(total, 1), tool_s=round(tool_s, 1),
+                                     llm_s=round(max(total - tool_s, 0.0), 1), tool=tool))
+        prev = ts
+    return out
+
+
+def estimate_cost(model: str, tok_in: int, tok_out: int) -> Optional[float]:
+    """Best-effort $ from litellm's pricing table, for harnesses that don't
+    report cost (nanobot; own when litellm couldn't price a call). Cache
+    discounts are ignored, so it's an upper-bound-ish estimate — logged with
+    cost_source='litellm-estimate'. None if litellm is missing or the model
+    is unpriced (openrouter/ prefixes are stripped; bare model names tried)."""
+    if not model or not (tok_in or tok_out):
+        return None
+    try:
+        import litellm
+    except ImportError:
+        return None
+    m = re.sub(r"^openrouter/", "", model)
+    for cand in (m, m.split("/")[-1]):
+        try:
+            pi, po = litellm.cost_per_token(model=cand, prompt_tokens=tok_in or 0,
+                                            completion_tokens=tok_out or 0)
+        except Exception:  # noqa: BLE001 — unknown model → try the next spelling
+            continue
+        if pi or po:
+            return round(pi + po, 4)
+    return None
 
 
 def detect_techniques(text: str):
@@ -199,21 +271,27 @@ def log_run_to_wandb(
         return
 
     traj = trajectory_path
-    rows, ver_best, compile_status, eval_status, ver_err = (
-        parse_trajectory(traj) if traj and traj.exists() else ([], {}, [], [], {}))
-    turn_rows = session.turn_rows
+    rows, ver_best, compile_status, eval_status, ver_err, timeline = (
+        parse_trajectory(traj) if traj and traj.exists() else ([], {}, [], [], {}, []))
+    # per-turn latency: prefer the server-stamped trajectory (same clock, same
+    # turn definition for every harness); older trajectories fall back to what
+    # the harness's own log could tell us.
+    turn_rows = turn_rows_from_trajectory(timeline)
+    turn_timing_source = "trajectory" if turn_rows else ("harness-log" if session.turn_rows else None)
+    turn_rows = turn_rows or session.turn_rows
     if not rows and not turn_rows and session.cost_usd is None:
         print(f"[wandb_log_run] no data for {name} — skipping", file=sys.stderr)
         return
+    harness = getattr(session, "harness", None) or "unknown"
 
     op_type = name.split("_")[0]
     run = wandb.init(
         project=project, entity=entity, group=group,
         name=name, reinit=True,
-        tags=[model, dataset, isa, author, op_type],
+        tags=[model, dataset, isa, author, op_type, harness],
         config={
             "definition": name, "dataset": dataset, "op_type": op_type,
-            "isa": isa, "model": model, "author": author,
+            "isa": isa, "model": model, "author": author, "harness": harness,
             "instance_type": os.environ.get("WANDB_INSTANCE_TYPE", "unknown"),
             "baseline_kernel_sha": baseline_hash(dataset, name),
         },
@@ -257,10 +335,19 @@ def log_run_to_wandb(
     ctax = Counter(compile_status)
     worst_abs = max((e[0] for e in ver_err.values() if e[0] is not None), default=None)
     worst_rel = max((e[1] for e in ver_err.values() if e[1] is not None), default=None)
-    cost = session.cost_usd
+    cost, cost_source = session.cost_usd, getattr(session, "cost_source", None)
+    if cost is not None and cost_source is None:
+        cost_source = "harness"
+    elif cost is None:
+        cost = estimate_cost(model, session.tokens_input, session.tokens_output)
+        cost_source = "litellm-estimate" if cost is not None else None
 
     session_fields = {
-        "cost_usd": session.cost_usd, "num_turns": session.num_turns,
+        "harness": harness, "harness_status": getattr(session, "harness_status", None),
+        "cost_usd": cost, "cost_source": cost_source,
+        "n_tool_calls": len(timeline) or None,     # every server tool call, all harnesses
+        "turn_timing_source": turn_timing_source,
+        "num_turns": session.num_turns,
         "wall_time_s": session.wall_time_s, "api_retries": session.api_retries,
         "session_compile_errors": session.session_compile_errors,
         "tokens_input": session.tokens_input, "tokens_output": session.tokens_output,
@@ -291,6 +378,24 @@ def log_run_to_wandb(
     })
 
     # ── winning kernel + techniques-per-version + artifact ────────────────────
+    # wandb.Table lazily imports pandas (+ its tz deps); if that env is
+    # incomplete the curve + summary above must still survive, so this block
+    # only ever degrades, never aborts the run.
+    try:
+        _log_kernels(run, name, traj, ver_best)
+    except Exception as e:  # noqa: BLE001
+        print(f"[wandb_log_run] kernels table/artifact skipped for {name}: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    run.finish()
+    print(f"[wandb_log_run] logged {name} ({harness}): best={best} evals={len(rows)} "
+          f"weak_baseline={base_vs_scalar is not None and base_vs_scalar < 2.0} "
+          f"cost={cost} ({cost_source}) tokens_out={session.tokens_output} "
+          f"turn_timing={turn_timing_source}")
+
+
+def _log_kernels(run, name: str, traj: Optional[Path], ver_best: dict) -> None:
+    import wandb
     if traj and traj.exists():
         best_cpp, best_sp, ver = find_best_kernel(traj, ver_best)
         cpps = sorted(traj.parent.glob("v*.cpp"),
@@ -316,24 +421,20 @@ def log_run_to_wandb(
             art.add_file(str(traj), name="trajectory.jsonl")
             run.log_artifact(art, aliases=["best", ver] if ver else ["best"])
 
-    run.finish()
-    print(f"[wandb_log_run] logged {name}: best={best} evals={len(rows)} "
-          f"weak_baseline={base_vs_scalar is not None and base_vs_scalar < 2.0} "
-          f"cost={cost} tokens_out={session.tokens_output}")
-
 
 def _cli_main() -> int:
     """Thin manual-backfill entry point: `python analysis/wandb_log_run.py
     --name ... --log-file ... --results-dir ...` re-logs one already-finished
-    claude-code job. Not used by bench_fleet.py (which calls
-    log_run_to_wandb() directly with an already-parsed SessionMetrics from
-    whichever HarnessAdapter ran the job) — this is for manually re-running
-    or debugging the W&B logging for one definition after the fact."""
+    job of any harness (--harness, or sniffed from the log's format). Not
+    used by bench_fleet.py (which calls log_run_to_wandb() directly with an
+    already-parsed SessionMetrics from whichever HarnessAdapter ran the job)
+    — this is for manually re-running or debugging the W&B logging for one
+    definition after the fact."""
     import argparse
 
     repo_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(repo_root))
-    from test_scripts.harness_adapters import SessionMetrics, parse_claude_code_session_log
+    from test_scripts.harness_adapters import SessionMetrics, parse_session_log_auto
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--name", required=True)
@@ -341,7 +442,9 @@ def _cli_main() -> int:
     p.add_argument("--isa", required=True)
     p.add_argument("--model", default="unknown")
     p.add_argument("--author", default="unknown")
-    p.add_argument("--log-file", default="", help="claude-code stream-json session log.")
+    p.add_argument("--harness", default="", choices=["", "claude-code", "nanobot", "own"],
+                   help="Parser for --log-file. Empty = sniff the log's format.")
+    p.add_argument("--log-file", default="", help="The job log bench_fleet tee'd for this definition.")
     p.add_argument("--results-dir", default="")
     p.add_argument("--trajectory", default="")
     p.add_argument("--project", default="arm-bench-kernels")
@@ -350,7 +453,7 @@ def _cli_main() -> int:
     args = p.parse_args()
 
     traj = Path(args.trajectory) if args.trajectory else _locate_trajectory(args.results_dir, args.name)
-    session = (parse_claude_code_session_log(Path(args.log_file))
+    session = (parse_session_log_auto(Path(args.log_file), args.harness)
                if args.log_file and Path(args.log_file).exists()
                else SessionMetrics())
     log_run_to_wandb(

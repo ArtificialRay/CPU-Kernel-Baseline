@@ -107,6 +107,32 @@ def build_user_prompt(definition, ref_solution) -> str:
     return "\n".join(parts)
 
 
+def _accumulate_usage(session: dict, response) -> None:
+    """Fold one litellm response's token usage + cost into `session`.
+
+    Token fields mirror the claude-code stream-json ones W&B already logs
+    (tokens_input/output/cache_read/cache_created) so the three harnesses
+    land in the same columns. Cost comes from litellm's pricing table; the
+    first model it can't price flips cost_usd to None so the logger falls
+    back to its own token-based estimate instead of under-reporting."""
+    u = getattr(response, "usage", None)
+    if u is not None:
+        d = u.model_dump() if hasattr(u, "model_dump") else dict(u)
+        details = d.get("prompt_tokens_details") or {}
+        session["tokens_input"] += int(d.get("prompt_tokens") or 0)
+        session["tokens_output"] += int(d.get("completion_tokens") or 0)
+        session["tokens_cache_read"] += int(
+            d.get("cache_read_input_tokens") or details.get("cached_tokens") or 0)
+        session["tokens_cache_created"] += int(
+            d.get("cache_creation_input_tokens") or details.get("cache_creation_tokens") or 0)
+    if session["cost_usd"] is not None:
+        try:
+            session["cost_usd"] += float(litellm.completion_cost(completion_response=response) or 0.0)
+        except Exception:  # noqa: BLE001 — unknown pricing → estimated downstream
+            session["cost_usd"] = None
+            session["cost_source"] = None
+
+
 def _compress_history(
     messages: list[dict],
     keep_full_turns: int = 2,
@@ -242,7 +268,10 @@ def run_agentic_eval(
         verbose: Print turn-by-turn progress.
 
     Returns:
-        dict with keys: status, time_speedup, cycle_speedup, timestamp, version_history
+        dict with keys: status, time_speedup, cycle_speedup, timestamp,
+        version_history, session (tokens / cost / retries / per-turn latency —
+        the same fields analysis/wandb_log_run.py reads off claude-code's
+        stream-json log, so --harness own runs get the same W&B columns)
     """
     tools = mcp_client.tools_for(definition.name)
     schemas = mcp_client.tool_schemas()
@@ -300,6 +329,18 @@ def run_agentic_eval(
     version_history: list[dict] = []
     best_version: dict | None = None
 
+    # ── session metrics: what the claude-code CLI reports for free, tracked
+    # here by hand (see _accumulate_usage) ──────────────────────────────────
+    t_run0 = time.monotonic()
+    session: dict = {
+        "harness": "own", "model": model,
+        "tokens_input": 0, "tokens_output": 0,
+        "tokens_cache_read": 0, "tokens_cache_created": 0,
+        "cost_usd": 0.0, "cost_source": "litellm",
+        "api_retries": 0, "num_turns": 0, "wall_time_s": None,
+        "turns": [],   # per turn: {tool, llm_s, tool_s, total_s}
+    }
+
     if verbose:
         print(f"\n{'='*60}")
         print(f"Definition: {definition.name} | Model: {model}")
@@ -327,17 +368,20 @@ def run_agentic_eval(
             if not any(m in model for m in AGENT_LOOP_DEFAULTS["models_without_temperature"]):
                 completion_kwargs["temperature"] = AGENT_LOOP_DEFAULTS["temperature"]
 
+            t_turn0 = time.monotonic()
             for _retry in range(AGENT_LOOP_DEFAULTS["retry_max_attempts"]):
                 try:
                     response = litellm.completion(**completion_kwargs)
                     break
                 except litellm.RateLimitError as e:
+                    session["api_retries"] += 1
                     wait = AGENT_LOOP_DEFAULTS["retry_base_wait_s"] * (2 ** _retry)
                     if verbose:
                         print(f"  [rate limit] sleeping {wait}s: {e}")
                     time.sleep(wait)
                 except (litellm.InternalServerError, litellm.APIConnectionError,
                         litellm.ServiceUnavailableError, litellm.Timeout) as e:
+                    session["api_retries"] += 1
                     wait = AGENT_LOOP_DEFAULTS["retry_base_wait_s"] * (2 ** _retry)
                     if verbose:
                         print(f"  [server error] sleeping {wait}s: {type(e).__name__}: {e}")
@@ -351,6 +395,11 @@ def run_agentic_eval(
                     raise
             else:
                 raise RuntimeError("Exceeded retry budget for rate/server errors")
+
+            llm_s = time.monotonic() - t_turn0   # model latency incl. retries/backoff
+            tool_s = 0.0
+            session["num_turns"] += 1
+            _accumulate_usage(session, response)
 
             msg = response.choices[0].message
             dumped = msg.model_dump()
@@ -374,6 +423,8 @@ def run_agentic_eval(
                 if verbose:
                     print(f"  Agent (no tool call): {msg.content}")
                     print("  [warning] expected a tool call — continuing loop")
+                session["turns"].append({"tool": "", "llm_s": round(llm_s, 1), "tool_s": 0.0,
+                                         "total_s": round(llm_s, 1)})
                 continue
 
             reasoning_text = msg.content or ""
@@ -406,7 +457,9 @@ def run_agentic_eval(
                     notepad.append(str(fn_args.get("note", ""))[:2000])
                     result_dict = {"status": "OK", "notes_saved": len(notepad)}
                 else:
+                    t_tool0 = time.monotonic()
                     result_dict = tools.dispatch_tool_call(fn_name, fn_args)
+                    tool_s += time.monotonic() - t_tool0
 
                 if verbose:
                     if fn_name == "compile":
@@ -479,6 +532,12 @@ def run_agentic_eval(
 
                 reasoning_text = ""  # emit reasoning only on the first tool call per turn
 
+            session["turns"].append({
+                "tool": msg.tool_calls[0].function.name,
+                "llm_s": round(llm_s, 1), "tool_s": round(tool_s, 1),
+                "total_s": round(time.monotonic() - t_turn0, 1),
+            })
+
         # ── Report the best version seen this session ────────────────────────────
         if best_version and best_version.get("code"):
             if verbose:
@@ -508,8 +567,16 @@ def run_agentic_eval(
     finally:
         tools.cleanup()
 
+    session["wall_time_s"] = round(time.monotonic() - t_run0, 1)
+    if session["cost_usd"] is not None:
+        session["cost_usd"] = round(session["cost_usd"], 4)
+    final_result["session"] = session
+
     if verbose:
-        summary = {k: v for k, v in final_result.items() if k != "version_history"}
+        summary = {k: v for k, v in final_result.items() if k not in ("version_history", "session")}
         print(f"\n[Final Result]\n{json.dumps(summary, indent=2)}")
+        print(f"[Session] turns={session['num_turns']} cost={session['cost_usd']} "
+              f"tokens_in={session['tokens_input']} tokens_out={session['tokens_output']} "
+              f"retries={session['api_retries']} wall={session['wall_time_s']}s")
 
     return final_result

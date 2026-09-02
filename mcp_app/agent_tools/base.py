@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional, Protocol
@@ -206,6 +207,9 @@ class KernelSession(ABC):
         self._run_dir = run_dir
         self._isa = isa
         self._instance_label = instance_label
+        # monotonic start of the tool call currently being dispatched (see
+        # dispatch_tool_call / _elapsed) — feeds trajectory rows' elapsed_s.
+        self._turn_t0: Optional[float] = None
 
         # definition name -> {definition, trajectory, turn, last_compile, best_compile}
         self._definitions: dict[str, dict] = {}
@@ -356,6 +360,7 @@ class KernelSession(ABC):
         if rejection is not None:
             state["trajectory"].write_turn(
                 turn=state["turn"],
+                elapsed_s=self._elapsed(),
                 tool="compile",
                 metrics={"status": "REJECTED", "matched_pattern": rejection},
             )
@@ -371,6 +376,7 @@ class KernelSession(ABC):
         if result.get("status") != "OK":
             state["trajectory"].write_turn(
                 turn=state["turn"],
+                elapsed_s=self._elapsed(),
                 tool="compile",
                 metrics={"status": result.get("status", "COMPILE_ERROR")},
             )
@@ -397,6 +403,7 @@ class KernelSession(ABC):
 
         state["trajectory"].write_turn(
             turn=state["turn"],
+            elapsed_s=self._elapsed(),
             tool="compile",
             source_file=source_file,
             metrics={"status": "OK", "version": version},
@@ -484,6 +491,7 @@ class KernelSession(ABC):
 
         state["trajectory"].write_turn(
             turn=state["turn"],
+            elapsed_s=self._elapsed(),
             tool="evaluate",
             metrics=metrics,
         )
@@ -534,6 +542,7 @@ class KernelSession(ABC):
 
         state["trajectory"].write_turn(
             turn=state["turn"],
+            elapsed_s=self._elapsed(),
             tool="disassemble",
             asm_file=asm_file,
             metrics={"symbol": symbol, "lines": result["asm"].count("\n") if "asm" in result else 0},
@@ -562,7 +571,8 @@ class KernelSession(ABC):
         best = state["best_compile"]
         if best is None:
             state["trajectory"].write_turn(
-                turn=state["turn"], tool="submit",
+                turn=state["turn"],
+                elapsed_s=self._elapsed(), tool="submit",
                 metrics={"status": "COMPILE_ERROR"},
             )
             return {"status": "COMPILE_ERROR", "error": "nothing evaluated yet — call evaluate() first"}
@@ -590,6 +600,7 @@ class KernelSession(ABC):
 
         state["trajectory"].write_turn(
             turn=state["turn"],
+            elapsed_s=self._elapsed(),
             tool="submit",
             reasoning=explanation,
             source_file=f"v{best['version']}.cpp",
@@ -609,14 +620,27 @@ class KernelSession(ABC):
         }
 
     def dispatch_tool_call(self, name: str, args: dict) -> dict:
-        """Route a tool name to its method; return error dict on unknown name."""
+        """Route a tool name to its method; return error dict on unknown name.
+
+        Every agent path (mcp_app/server.py's MCP tools, and through it the
+        in-repo loop, nanobot and claude-code) enters here, so this is where
+        a tool call's wall time is measured — the trajectory row each tool
+        writes picks it up via _elapsed()."""
         method = getattr(self, name, None)
         if method is None or name.startswith("_"):
             return {"error": f"unknown tool: {name!r}"}
+        self._turn_t0 = time.monotonic()
         try:
             return method(**args)
         except Exception as e:
             return {"error": str(e)}
+        finally:
+            self._turn_t0 = None
+
+    def _elapsed(self) -> Optional[float]:
+        """Seconds since dispatch_tool_call() started the current tool, or
+        None when a tool method was called directly (tests, REPL)."""
+        return None if self._turn_t0 is None else time.monotonic() - self._turn_t0
 
     def cleanup(self) -> None:
         """Close every definition's trajectory writer; remove every cached build dir.

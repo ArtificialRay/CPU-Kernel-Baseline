@@ -24,10 +24,11 @@ columns you add to the **Runs Table** — they do *not* appear as charts).
 
 Every field's source is either the trajectory (`trajectory.jsonl`, written
 by `mcp_app`'s `TrajectoryWriter` — identical format regardless of which
-harness drove the session) or a `SessionMetrics` object that the
-**HarnessAdapter** which ran the job (`test_scripts/harness_adapters.py`)
-parsed from its own log format. `wandb_log_run.py` has no harness-specific
-parsing of its own — it only knows the `SessionMetrics`/`TurnRow` shape.
+harness drove the session, and server-stamped per row with `ts` + `elapsed_s`)
+or a `SessionMetrics` object that the **HarnessAdapter** which ran the job
+(`test_scripts/harness_adapters.py`) parsed from its own log format.
+`wandb_log_run.py` has no harness-specific parsing of its own — it only knows
+the `SessionMetrics`/`TurnRow` shape.
 
 ### Charts — per-evaluate curve (from trajectory, all harnesses)
 
@@ -43,23 +44,24 @@ One point per perf-eval call, x-axis = `iteration`.
 | `cache_misses` | cache-miss counter mean |
 | `max_abs_error` / `max_rel_error` | this version's worst correctness-check error |
 
-### Charts — `turn/*` group (from `SessionMetrics.turn_rows`, harness-dependent)
+### Charts — `turn/*` group (from the trajectory, all harnesses)
 
-Own x-axis (`turn/idx`), one point per agent turn (one MCP tool_use to the next).
+Own x-axis (`turn/idx`), one point per agent turn (one server tool call to
+the next).
 
 | field | meaning |
 |---|---|
-| `turn/total_s` | wall time for this turn |
-| `turn/llm_s` | portion spent on model thinking/generation |
-| `turn/tool_s` | portion spent on remote compile/evaluate execution |
+| `turn/total_s` | wall time from the previous tool call's row to this one (model thinking + transport + this tool) |
+| `turn/llm_s` | `total_s - tool_s` — the model's share |
+| `turn/tool_s` | this tool's own execution time (`elapsed_s`, timed in `KernelSession.dispatch_tool_call`) |
 
-Only populated by harnesses whose log format has enough structure to split
-a turn into sub-deltas. Today: **claude-code only** — its stream-json log
-has separate assistant/tool_result timestamped events to diff. A harness
-that can only tell "a turn happened" but not "the LLM part vs the tool
-part" would report `total_s` with `llm_s=tool_s=0.0` (see `TurnRow`'s
-docstring in `harness_adapters.py`); a harness with no turn boundaries at
-all reports an empty `turn_rows`, and this whole chart group is absent.
+The trajectory is the preferred source because it is the same clock and the
+same definition of "a turn" for every harness (`turn_timing_source =
+"trajectory"` in the summary). For trajectories written before the server
+stamped rows, the logger falls back to the harness's own
+`SessionMetrics.turn_rows` (`turn_timing_source = "harness-log"`): claude-code
+splits its stream-json event timestamps, nanobot uses the per-iteration
+timing in its usage sidecar, own uses the timing its loop recorded.
 
 ### Overview / Runs Table — run summary (from trajectory, all harnesses)
 
@@ -89,18 +91,26 @@ trajectory (not just perf-mode ones), so it's accurate regardless of harness.
 
 | field | meaning | claude-code | nanobot | own |
 |---|---|:---:|:---:|:---:|
-| `cost_usd` | total $ spent (harness-reported) | ✅ | ❌ | ❌ |
-| `num_turns` | total agent turns | ✅ | ❌ | ❌ |
-| `wall_time_s` | total job wall-clock time | ✅ | ❌ | ❌ |
-| `api_retries` | LLM API retries (rate limit/timeout) | ✅ | ❌ | ❌ |
+| `harness` | which adapter ran the job (also a run tag + config field) | ✅ | ✅ | ✅ |
+| `cost_usd` / `cost_source` | total $ spent; `harness` = reported by the CLI, `litellm` = summed per call by our loop, `litellm-estimate` = computed by the logger from the token counts (cache discounts ignored) | ✅ harness | ✅ litellm-estimate | ✅ litellm |
+| `num_turns` | agent turns as the harness counts them (claude-code: CLI `num_turns`; nanobot: iterations; own: model calls) | ✅ | ✅ | ✅ |
+| `n_tool_calls` | server tool calls in the trajectory — the harness-independent turn count | ✅ | ✅ | ✅ |
+| `wall_time_s` | total job wall-clock time | ✅ | ✅ | ✅ |
+| `api_retries` | LLM API retries (rate limit/timeout/transient) | ✅ | ✅ | ✅ |
 | `session_compile_errors` | compile-error mentions detected in the conversation text (heuristic, distinct from `n_compile_error` which comes from the trajectory) | ✅ | ❌ | ❌ |
-| `tokens_input`/`tokens_output`/`tokens_cache_read`/`tokens_cache_created` | token usage | ✅ | ❌ | ❌ |
-| `sec_per_turn_mean`/`median`/`max`, `llm_time_s`, `tool_time_s` | derived from `turn_rows` | ✅ | ❌ | ❌ |
+| `tokens_input`/`tokens_output`/`tokens_cache_read`/`tokens_cache_created` | token usage (nanobot: cache fields only if its provider reports them) | ✅ | ✅ | ✅ |
+| `harness_status` | the harness's own terminal status (nanobot stop reason / own result status) | ❌ | ✅ | ✅ |
+| `turn_timing_source` | `trajectory` or `harness-log`, see the `turn/*` section | ✅ | ✅ | ✅ |
+| `sec_per_turn_mean`/`median`/`max`, `llm_time_s`, `tool_time_s` | derived from the turn rows | ✅ | ✅ | ✅ |
 
-A ❌ here isn't a bug — it means that harness's `HarnessAdapter.parse_session_metrics()`
-hasn't been taught to extract that field yet (or the harness's own log/output
-doesn't carry it in a form we can read). Fields it can't populate are simply
-absent from the run, not zero. See the note below on extending this per harness.
+Where each harness gets its session fields: claude-code parses the CLI's
+stream-json log; nanobot parses its `--logs` runtime log plus the
+`<log stem>.usage.json` sidecar that `test_scripts/nanobot_run.py` writes
+from a nanobot SDK usage hook (the nanobot CLI persists usage nowhere, which
+is why the adapter runs that script instead of `nanobot agent`); own reads
+the `session` block `eval/evaluator.py::run_agentic_eval` puts in its result
+JSON. A ❌ means the harness's log/output doesn't carry that field in a form
+we can read; such fields are simply absent from the run, not zero.
 
 ### Config (from `bench_fleet.py`, all harnesses)
 
@@ -122,7 +132,11 @@ absent from the run, not zero. See the note below on extending this per harness.
 `HarnessAdapter.parse_session_metrics(log_path) -> SessionMetrics` defaults
 to an all-empty `SessionMetrics()`. To report real data for a harness,
 override it on that harness's adapter class in
-`test_scripts/harness_adapters.py` — see `ClaudeCodeAdapter`'s override
-(delegates to the module-level `parse_claude_code_session_log()`) for the
-pattern. `wandb_log_run.py` never needs to change: it only consumes the
-`SessionMetrics`/`TurnRow` shape, not any harness's raw log format.
+`test_scripts/harness_adapters.py` — see the three existing overrides
+(each delegates to a module-level `parse_*` function so the manual-backfill
+CLI can use it without constructing an adapter). Set `harness` on the
+returned object, and leave `cost_usd` at None if the harness doesn't report
+cost — the logger estimates it from tokens. `wandb_log_run.py` never needs
+to change: it only consumes the `SessionMetrics`/`TurnRow` shape, not any
+harness's raw log format. Per-turn latency needs nothing from the harness at
+all — it comes from the server-stamped trajectory.
