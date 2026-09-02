@@ -118,12 +118,17 @@ for round in $(seq 1 "$MAX_ROUNDS"); do
   done
   echo "@@@ [$(date +%H:%M:%S)] ROUND $round plan ($(echo "$PLAN" | wc -l | tr -d ' ') chunks):"
   echo "$PLAN" | sed 's/^/@@@   chunk: /'
-  while IFS= read -r line; do
+  # Read the plan on FD 3, NOT stdin: bench_fleet -> ssh reads stdin and would
+  # otherwise swallow the rest of the here-string, so only the first chunk ever
+  # ran (llama chunks + heavy ncnn chunks silently skipped). Also give
+  # bench_fleet its own </dev/null stdin as belt-and-suspenders.
+  while IFS= read -r line <&3; do
     DS=${line%% *}; DEFS=${line#* }
     echo "@@@ [$(date +%H:%M:%S)] chunk $DS ($(echo $DEFS | wc -w | tr -d ' ') defs)"
     "$PY" -u test_scripts/bench_fleet.py --harness claude-code --dataset "$DS" --isa sve2 \
-      --model sonnet --author "$AUTHOR" --min-iterations "$MIN_ITERS" --definitions "$DEFS" || true
-  done <<< "$PLAN"
+      --model sonnet --author "$AUTHOR" --min-iterations "$MIN_ITERS" --definitions "$DEFS" \
+      </dev/null || true
+  done 3<<< "$PLAN"
 done
 
 for DS in $DATASETS; do
