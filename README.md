@@ -107,7 +107,7 @@ kernels per dataset, no LLM involved.
 ## Run the benchmark with supported harness
 
 | Harness | `--harness` value | Requires |
-|---|---|---|---|---|
+|---|---|---|
 | Claude Code | `claude-code` | `claude` CLI on PATH |
 | nanobot | `nanobot` | `nanobot` CLI on PATH + a bootstrapped `~/.nanobot/workspace` |
 | This repo's own loop | `own` | none (no external CLI) |
