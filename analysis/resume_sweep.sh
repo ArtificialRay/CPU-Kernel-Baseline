@@ -92,11 +92,23 @@ def done(n):
     try: return any(json.loads(l).get('tool')=='submit' for l in open(tp) if l.strip())
     except Exception: return False
 def cost(n): return math.prod(max(int(x),1) for x in re.findall(r'\d+',n)) or 1
-inc=sorted([(ds,n) for ds,n in items if not done(n)], key=lambda t:(cost(t[1]),t[1]))
+# Round-robin CAP-sized batches from each dataset, each sorted cheapest-first.
+# Pure global cost-sort front-loads all cheap ncnn (poolings cost~1) and pushes
+# llama's cheapest (rms_norm cost 2048) hours back — bad when we want to verify
+# BOTH harness paths early. Alternating 3-def batches puts llama in chunk 2.
+# A switch only costs ~1-2 min (box reused per label).
+from collections import defaultdict
+CAP=3
+byds=defaultdict(list)
+for ds,n in sorted([(d,x) for d,x in items if not done(x)], key=lambda t:(cost(t[1]),t[1])):
+    byds[ds].append(n)
+order=[d for d in ('ncnn','llama.cpp') if byds[d]]
+idx={d:0 for d in order}
 chunks=[]
-for ds,n in inc:
-    if chunks and chunks[-1][0]==ds: chunks[-1][1].append(n)
-    else: chunks.append((ds,[n]))
+while any(idx[d]<len(byds[d]) for d in order):
+    for d in order:
+        batch=byds[d][idx[d]:idx[d]+CAP]
+        if batch: chunks.append((d,batch)); idx[d]+=len(batch)
 for ds,ns in chunks: print(ds+' '+' '.join(ns))
 PYEOF
 }
