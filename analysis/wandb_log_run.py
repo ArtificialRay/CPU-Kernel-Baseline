@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Log one claude-code fleet job to Weights & Biases (comprehensive).
+"""Log one fleet job to Weights & Biases (comprehensive).
 
-Driven by `claude -p`, the agent loop runs inside the CLI (a black box), so we
-can't auto-trace individual LLM calls (that needs the SDK + Weave). Instead we
-parse the two artifacts the CLI DOES emit — the trajectory (`trajectory.jsonl`)
-and the stream-json session log — into one rich W&B run per definition:
+Imported directly by test_scripts/bench_fleet.py (log_run_to_wandb()) —
+not invoked as a subprocess. See analysis/README.md for what every field
+below means and where to find it on the W&B run page.
+
+Parses two artifacts into one rich W&B run per definition:
+  - the trajectory (`trajectory.jsonl`, written by mcp_app's TrajectoryWriter
+    — same format regardless of which harness drove the session)
+  - a SessionMetrics object (test_scripts/harness_adapters.py) — harness-
+    specific session telemetry (cost, tokens, turn latency), already parsed
+    by the calling HarnessAdapter before this module ever sees it. This
+    module has no harness-format knowledge of its own.
 
   per-evaluate (the metric curve = the spaghetti line):
     time/cycle speedup, best-so-far, ipc, cache-misses, max abs/rel error, status
@@ -19,11 +26,10 @@ and the stream-json session log — into one rich W&B run per definition:
 
 One W&B run per definition; group all defs of a sweep under one `group` and tag
 by model/dataset/isa/author so every teammate's runs merge into one shared
-project. No-ops safely if wandb isn't installed or files are missing.
+project. No-ops safely if wandb isn't installed, or if there's nothing to log.
 """
 from __future__ import annotations
 
-import argparse
 import glob
 import hashlib
 import json
@@ -33,8 +39,8 @@ import re
 import statistics
 import sys
 from collections import Counter
-from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 # SIMD / optimization idioms we detect in the agent's kernels (what did it do?).
 TECHNIQUES = {
@@ -140,86 +146,6 @@ def parse_trajectory(path: Path):
     return rows, ver_best, compile_status, eval_status, ver_err
 
 
-def _parse_ts(s):
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-
-
-def parse_session_log(path: Path):
-    """Returns (summary dict, per-turn latency rows).
-
-    Turn latency comes from the stream-json event timestamps: a "turn" spans
-    one MCP tool_use to the next, and the time in between is split into
-    tool_s (delta ending in a tool_result event = remote compile/evaluate
-    execution) and llm_s (delta ending in an assistant event = model
-    thinking/generation). This is what tells slow-model apart from slow-eval."""
-    cost = turns = dur_ms = None
-    retries = compile_errors = 0
-    tok_in = tok_out = tok_cache_r = tok_cache_c = 0
-    events = []  # (kind: "llm"|"tool", when, mcp_tool_short_name_or_"")
-    for line in path.read_text(errors="ignore").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if d.get("subtype") == "api_retry":
-            retries += 1
-        if d.get("type") == "result":
-            cost = d.get("total_cost_usd", cost)
-            turns = d.get("num_turns", turns)
-            dur_ms = d.get("duration_ms", dur_ms)
-        u = _find(d, "usage")
-        if isinstance(u, dict):
-            tok_in += u.get("input_tokens", 0) or 0
-            tok_out += u.get("output_tokens", 0) or 0
-            tok_cache_r += u.get("cache_read_input_tokens", 0) or 0
-            tok_cache_c += u.get("cache_creation_input_tokens", 0) or 0
-        when = _parse_ts(d.get("timestamp"))
-        content = ((d.get("message") or {}).get("content")) or []
-        if when is not None and d.get("type") == "assistant":
-            mcp = next((c.get("name", "") for c in content
-                        if isinstance(c, dict) and c.get("type") == "tool_use"
-                        and str(c.get("name", "")).startswith("mcp__")), "")
-            events.append(("llm", when, mcp.split("__")[-1] if mcp else ""))
-        for c in content:
-            if isinstance(c, dict) and c.get("type") == "tool_result":
-                if when is not None:
-                    events.append(("tool", when, ""))
-                t = c.get("content")
-                if isinstance(t, str) and "kernel.cpp" in t and "error" in t.lower():
-                    compile_errors += 1
-    # fold event deltas into per-turn rows (turn boundary = each MCP tool_use)
-    turn_rows, acc = [], {"llm": 0.0, "tool": 0.0}
-    prev_when = prev_boundary = None
-    prev_tool = ""
-    for kind, when, mcp_tool in events:
-        if prev_when is not None:
-            delta = (when - prev_when).total_seconds()
-            if 0 <= delta < 7200:
-                acc[kind] += delta
-        prev_when = when
-        if kind == "llm" and mcp_tool:
-            if prev_boundary is not None:
-                turn_rows.append({
-                    "tool": prev_tool,
-                    "llm_s": round(acc["llm"], 1), "tool_s": round(acc["tool"], 1),
-                    "total_s": round((when - prev_boundary).total_seconds(), 1),
-                })
-            prev_boundary, prev_tool, acc = when, mcp_tool, {"llm": 0.0, "tool": 0.0}
-    return {
-        "cost_usd": cost, "num_turns": turns,
-        "wall_time_s": round(dur_ms / 1000.0, 1) if dur_ms else None,
-        "api_retries": retries, "session_compile_errors": compile_errors,
-        "tokens_input": tok_in, "tokens_output": tok_out,
-        "tokens_cache_read": tok_cache_r, "tokens_cache_created": tok_cache_c,
-    }, turn_rows
-
-
 def detect_techniques(text: str):
     return sorted(k for k, pat in TECHNIQUES.items() if re.search(pat, text))
 
@@ -252,46 +178,44 @@ def find_best_kernel(traj: Path, ver_best: dict):
     return (cpps[-1], None, cpps[-1].stem) if cpps else (None, None, None)
 
 
-def main() -> int:
-    p = argparse.ArgumentParser()
-    p.add_argument("--name", required=True)
-    p.add_argument("--dataset", required=True)
-    p.add_argument("--isa", required=True)
-    p.add_argument("--model", default="unknown")
-    p.add_argument("--author", default="unknown")
-    p.add_argument("--log-file", default="")
-    p.add_argument("--results-dir", default="")
-    p.add_argument("--trajectory", default="")
-    p.add_argument("--project", default="arm-bench-kernels")
-    p.add_argument("--entity", default=None)
-    p.add_argument("--group", default=None)
-    args = p.parse_args()
-
+def log_run_to_wandb(
+    *, name: str, dataset: str, isa: str, model: str, author: str,
+    trajectory_path: Optional[Path],
+    session,  # test_scripts.harness_adapters.SessionMetrics
+    project: str = "arm-bench-kernels",
+    entity: Optional[str] = None,
+    group: Optional[str] = None,
+) -> None:
+    """Log one definition's run to W&B. `session` carries whatever
+    session-level telemetry the calling HarnessAdapter could extract from
+    its own log format — fields it couldn't extract are left at their
+    SessionMetrics defaults (None/0/empty) and simply don't appear in the
+    summary. Never raises: the caller (bench_fleet.py) wraps this in a
+    try/except so a wandb hiccup never aborts the batch."""
     try:
         import wandb
     except ImportError:
         print("[wandb_log_run] wandb not installed — skipping", file=sys.stderr)
-        return 0
+        return
 
-    traj = Path(args.trajectory) if args.trajectory else _locate_trajectory(args.results_dir, args.name)
+    traj = trajectory_path
     rows, ver_best, compile_status, eval_status, ver_err = (
         parse_trajectory(traj) if traj and traj.exists() else ([], {}, [], [], {}))
-    sess, turn_rows = (parse_session_log(Path(args.log_file))
-                       if args.log_file and Path(args.log_file).exists() else ({}, []))
-    if not rows and not sess:
-        print(f"[wandb_log_run] no data for {args.name} — skipping", file=sys.stderr)
-        return 0
+    turn_rows = session.turn_rows
+    if not rows and not turn_rows and session.cost_usd is None:
+        print(f"[wandb_log_run] no data for {name} — skipping", file=sys.stderr)
+        return
 
-    op_type = args.name.split("_")[0]
+    op_type = name.split("_")[0]
     run = wandb.init(
-        project=args.project, entity=args.entity, group=args.group,
-        name=args.name, reinit=True,
-        tags=[args.model, args.dataset, args.isa, args.author, op_type],
+        project=project, entity=entity, group=group,
+        name=name, reinit=True,
+        tags=[model, dataset, isa, author, op_type],
         config={
-            "definition": args.name, "dataset": args.dataset, "op_type": op_type,
-            "isa": args.isa, "model": args.model, "author": args.author,
+            "definition": name, "dataset": dataset, "op_type": op_type,
+            "isa": isa, "model": model, "author": author,
             "instance_type": os.environ.get("WANDB_INSTANCE_TYPE", "unknown"),
-            "baseline_kernel_sha": baseline_hash(args.dataset, args.name),
+            "baseline_kernel_sha": baseline_hash(dataset, name),
         },
     )
 
@@ -307,15 +231,15 @@ def main() -> int:
         run.define_metric("turn/idx")
         run.define_metric("turn/*", step_metric="turn/idx")
         for i, t in enumerate(turn_rows, 1):
-            wandb.log({"turn/idx": i, "turn/total_s": t["total_s"],
-                       "turn/llm_s": t["llm_s"], "turn/tool_s": t["tool_s"]})
-        totals = [t["total_s"] for t in turn_rows]
+            wandb.log({"turn/idx": i, "turn/total_s": t.total_s,
+                       "turn/llm_s": t.llm_s, "turn/tool_s": t.tool_s})
+        totals = [t.total_s for t in turn_rows]
         run.summary.update({
             "sec_per_turn_mean": round(sum(totals) / len(totals), 1),
             "sec_per_turn_median": round(statistics.median(totals), 1),
             "sec_per_turn_max": round(max(totals), 1),
-            "llm_time_s": round(sum(t["llm_s"] for t in turn_rows), 1),
-            "tool_time_s": round(sum(t["tool_s"] for t in turn_rows), 1),
+            "llm_time_s": round(sum(t.llm_s for t in turn_rows), 1),
+            "tool_time_s": round(sum(t.tool_s for t in turn_rows), 1),
         })
 
     # ── derived summary ───────────────────────────────────────────────────────
@@ -333,8 +257,16 @@ def main() -> int:
     ctax = Counter(compile_status)
     worst_abs = max((e[0] for e in ver_err.values() if e[0] is not None), default=None)
     worst_rel = max((e[1] for e in ver_err.values() if e[1] is not None), default=None)
-    cost = sess.get("cost_usd")
+    cost = session.cost_usd
 
+    session_fields = {
+        "cost_usd": session.cost_usd, "num_turns": session.num_turns,
+        "wall_time_s": session.wall_time_s, "api_retries": session.api_retries,
+        "session_compile_errors": session.session_compile_errors,
+        "tokens_input": session.tokens_input, "tokens_output": session.tokens_output,
+        "tokens_cache_read": session.tokens_cache_read,
+        "tokens_cache_created": session.tokens_cache_created,
+    }
     run.summary.update({
         "best_speedup": best,
         "best_version_iteration": best_idx,
@@ -355,7 +287,7 @@ def main() -> int:
         "worst_max_rel_error": worst_rel,
         "cost_per_speedup": round(cost / best, 4) if (cost and best) else None,
         "cost_per_eval": round(cost / len(rows), 4) if (cost and rows) else None,
-        **{k: v for k, v in sess.items() if v is not None},
+        **{k: v for k, v in session_fields.items() if v is not None},
     })
 
     # ── winning kernel + techniques-per-version + artifact ────────────────────
@@ -374,7 +306,7 @@ def main() -> int:
                 tech_tbl.add_data(v, ver_best.get(v), ", ".join(detect_techniques(cpp.read_text())),
                                   cpp.read_text())
             run.log({"kernels": tech_tbl})
-            art = wandb.Artifact(f"{args.name}-kernels", type="kernel",
+            art = wandb.Artifact(f"{name}-kernels", type="kernel",
                                  metadata={"best_version": ver, "best_speedup": best_sp,
                                            "techniques": techs})
             for cpp in cpps:
@@ -385,11 +317,49 @@ def main() -> int:
             run.log_artifact(art, aliases=["best", ver] if ver else ["best"])
 
     run.finish()
-    print(f"[wandb_log_run] logged {args.name}: best={best} evals={len(rows)} "
+    print(f"[wandb_log_run] logged {name}: best={best} evals={len(rows)} "
           f"weak_baseline={base_vs_scalar is not None and base_vs_scalar < 2.0} "
-          f"cost={cost} tokens_out={sess.get('tokens_output')}")
+          f"cost={cost} tokens_out={session.tokens_output}")
+
+
+def _cli_main() -> int:
+    """Thin manual-backfill entry point: `python analysis/wandb_log_run.py
+    --name ... --log-file ... --results-dir ...` re-logs one already-finished
+    claude-code job. Not used by bench_fleet.py (which calls
+    log_run_to_wandb() directly with an already-parsed SessionMetrics from
+    whichever HarnessAdapter ran the job) — this is for manually re-running
+    or debugging the W&B logging for one definition after the fact."""
+    import argparse
+
+    repo_root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(repo_root))
+    from test_scripts.harness_adapters import SessionMetrics, parse_claude_code_session_log
+
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--name", required=True)
+    p.add_argument("--dataset", required=True)
+    p.add_argument("--isa", required=True)
+    p.add_argument("--model", default="unknown")
+    p.add_argument("--author", default="unknown")
+    p.add_argument("--log-file", default="", help="claude-code stream-json session log.")
+    p.add_argument("--results-dir", default="")
+    p.add_argument("--trajectory", default="")
+    p.add_argument("--project", default="arm-bench-kernels")
+    p.add_argument("--entity", default=None)
+    p.add_argument("--group", default=None)
+    args = p.parse_args()
+
+    traj = Path(args.trajectory) if args.trajectory else _locate_trajectory(args.results_dir, args.name)
+    session = (parse_claude_code_session_log(Path(args.log_file))
+               if args.log_file and Path(args.log_file).exists()
+               else SessionMetrics())
+    log_run_to_wandb(
+        name=args.name, dataset=args.dataset, isa=args.isa, model=args.model, author=args.author,
+        trajectory_path=traj, session=session,
+        project=args.project, entity=args.entity, group=args.group,
+    )
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_cli_main())
