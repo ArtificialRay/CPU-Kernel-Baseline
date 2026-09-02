@@ -15,9 +15,10 @@ import sys
 import tempfile
 import time
 from contextlib import AbstractContextManager, contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from bench.config import BenchmarkConfig
 from bench.data.trace_set import TraceSet
@@ -52,18 +53,61 @@ class Job:
     prompt: str
 
 
-def _strip_marked_block(text: str, begin_marker: str, end_marker: str) -> str:
-    """Remove everything from the line containing begin_marker through the end
-    of the line containing end_marker (inclusive). Returns text unchanged if
-    either marker is missing."""
-    start = text.find(begin_marker)
-    end = text.find(end_marker)
-    if start == -1 or end == -1 or end < start:
-        return text
-    end = end + len(end_marker)
-    if end < len(text) and text[end] == "\n":
-        end += 1
-    return text[:start] + text[end:]
+@dataclass
+class TurnRow:
+    """One turn = one MCP tool_use to the next. `llm_s`/`tool_s` split the
+    delta into model-thinking vs remote-compile/evaluate time when the
+    harness's log format distinguishes them; harnesses that can't tell them
+    apart (no separate 'tool result received' event) leave both at 0.0 and
+    report only `total_s`."""
+    total_s: float
+    llm_s: float = 0.0
+    tool_s: float = 0.0
+
+
+@dataclass
+class SessionMetrics:
+    """Harness-reported session-level telemetry for one job, normalized
+    across harnesses so analysis/wandb_log_run.py never has to know which
+    harness produced them. Every field defaults to "unknown" (None/0/empty)
+    — a harness that can't report a given field just leaves it at that
+    default; consumers must treat absence as "not available", not "zero"."""
+    cost_usd: Optional[float] = None
+    num_turns: Optional[int] = None
+    wall_time_s: Optional[float] = None
+    api_retries: int = 0
+    session_compile_errors: int = 0
+    tokens_input: int = 0
+    tokens_output: int = 0
+    tokens_cache_read: int = 0
+    tokens_cache_created: int = 0
+    turn_rows: list[TurnRow] = field(default_factory=list)
+
+
+def _find(d: Any, key: str) -> Any:
+    """Recursive first-match lookup — same idiom as wandb_log_run.py's
+    helper of the same name, kept local here since it's a generic ~10-line
+    utility, not worth cross-importing between the two modules for."""
+    if isinstance(d, dict):
+        if d.get(key) is not None:
+            return d[key]
+        for v in d.values():
+            r = _find(v, key)
+            if r is not None:
+                return r
+    elif isinstance(d, list):
+        for v in d:
+            r = _find(v, key)
+            if r is not None:
+                return r
+    return None
+
+
+def _parse_ts(s: Optional[str]):
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
 
 
 def _run_and_tee(cmd: list[str], *, log_path: Path, cwd: Optional[Path] = None) -> int:
@@ -95,6 +139,15 @@ class HarnessAdapter:
     def is_benign_failure(self, log_path: Path) -> bool:
         return False
 
+    def parse_session_metrics(self, log_path: Path) -> SessionMetrics:
+        """Extract whatever session-level telemetry (cost, tokens, turn
+        latency, ...) this harness's log format actually exposes. Default:
+        none — a harness whose log doesn't carry structured per-job
+        telemetry just returns the all-unknown default, and callers (e.g.
+        analysis/wandb_log_run.py) degrade gracefully rather than treating
+        that as an error."""
+        return SessionMetrics()
+
     def prepare_workspace(self, job: Job) -> AbstractContextManager[Optional[Path]]:
         return nullcontext(None)
 
@@ -117,44 +170,28 @@ class ClaudeCodeAdapter(HarnessAdapter):
     )
     template_args = 6
 
-    # Ablation knob: a strong, explicit per-job nudge to read the Arm Software
-    # Optimization Guide (exposed as MCP resources) BEFORE optimizing. The
-    # SKILL.md system prompt already mentions the docs mildly; this makes it an
-    # unmissable first step so we can measure whether it changes results. OFF by
-    # default — appended to the task prompt only when doc_nudge=True.
-    DOC_NUDGE = (
-        " IMPORTANT — before writing or compiling ANY kernel, FIRST call list_resources() "
-        "and read the Arm Neoverse Software Optimization Guide for the target hardware in "
-        "full (docs/neoverse-v2-swog.md for Graviton4/SVE2; docs/neoverse-v1-swog.md for "
-        "Graviton3/SVE). Ground every optimization decision — instruction selection, vector "
-        "width, unroll factor, and scheduling — in its per-instruction latency/throughput "
-        "tables, and briefly note which guidance you applied. Do not begin optimizing until "
-        "you have read it."
-    )
-
-    def __init__(self, *, model: Optional[str], max_budget_usd: Optional[str],
-                 doc_nudge: bool = False, with_docs: bool = True):
+    def __init__(self, *, model: Optional[str], max_budget_usd: Optional[str]):
         self.model = model
         self.max_budget_usd = max_budget_usd
-        self.doc_nudge = doc_nudge
         if not CLAUDE_SKILL_FILE.exists():
             raise RuntimeError(f"SKILL_FILE not found: {CLAUDE_SKILL_FILE}")
         if subprocess.run(["which", "claude"], capture_output=True).returncode != 0:
             raise RuntimeError("claude CLI not found on PATH — install Claude Code first.")
         self.system_prompt = CLAUDE_SKILL_FILE.read_text()
-        if not with_docs:
-            # No-docs ablation arm: the docs/ resources are absent server-side
-            # (ARMBENCH_EXPOSE_DOCS=0), so strip SKILL.md's hardware-docs block
-            # too — otherwise the agent chases 404s on docs/*.md.
-            self.system_prompt = _strip_marked_block(
-                self.system_prompt, "<!-- HW-DOCS:BEGIN", "<!-- HW-DOCS:END -->")
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         with tempfile.NamedTemporaryFile(
             "w", prefix="claude-fleet-mcp-", suffix=".json", delete=False
         ) as mcp_config_fh:
             json.dump(
-                {"mcpServers": {"cpu-kernel-baseline": {"type": "http", "url": endpoint}}},
+                # timeout: the CLI's default per-server MCP timeout is 300s of
+                # silence, but a slow candidate kernel can legitimately take
+                # 500s+ to evaluate (perf runs it at full length however slow it
+                # is). At 300s the client aborts, the agent gets an error
+                # instead of a result, and the still-busy server piles up
+                # aborted calls. 15 min covers the slowest evals we've seen.
+                {"mcpServers": {"cpu-kernel-baseline": {
+                    "type": "http", "url": endpoint, "timeout": 900000}}},
                 mcp_config_fh,
             )
             mcp_config_path = Path(mcp_config_fh.name)
@@ -174,10 +211,91 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 cmd += ["--model", self.model]
             if self.max_budget_usd:
                 cmd += ["--max-budget-usd", self.max_budget_usd]
-            cmd.append(job.prompt + (self.DOC_NUDGE if self.doc_nudge else ""))
+            cmd.append(job.prompt)
             return _run_and_tee(cmd, log_path=log_path)
         finally:
             mcp_config_path.unlink(missing_ok=True)
+
+    def parse_session_metrics(self, log_path: Path) -> SessionMetrics:
+        return parse_claude_code_session_log(log_path)
+
+
+def parse_claude_code_session_log(log_path: Path) -> SessionMetrics:
+    """`claude -p --output-format stream-json --verbose` writes one JSON
+    event per line. Turn latency comes from event timestamps: a "turn"
+    spans one MCP tool_use to the next, and the time in between splits
+    into tool_s (delta ending in a tool_result event = remote
+    compile/evaluate execution) and llm_s (delta ending in an assistant
+    event = model thinking/generation) — this is what tells a slow
+    model apart from a slow eval. Module-level (not a method) so
+    analysis/wandb_log_run.py's manual-backfill CLI can call it without
+    constructing a full ClaudeCodeAdapter (which checks for the `claude`
+    CLI on PATH). Moved here from wandb_log_run.py's old parse_session_log()."""
+    if not log_path.exists():
+        return SessionMetrics()
+    cost = turns = dur_ms = None
+    retries = compile_errors = 0
+    tok_in = tok_out = tok_cache_r = tok_cache_c = 0
+    events: list[tuple[str, datetime, str]] = []  # (kind: "llm"|"tool", when, mcp_tool_name)
+    for line in log_path.read_text(errors="ignore").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if d.get("subtype") == "api_retry":
+            retries += 1
+        if d.get("type") == "result":
+            cost = d.get("total_cost_usd", cost)
+            turns = d.get("num_turns", turns)
+            dur_ms = d.get("duration_ms", dur_ms)
+        u = _find(d, "usage")
+        if isinstance(u, dict):
+            tok_in += u.get("input_tokens", 0) or 0
+            tok_out += u.get("output_tokens", 0) or 0
+            tok_cache_r += u.get("cache_read_input_tokens", 0) or 0
+            tok_cache_c += u.get("cache_creation_input_tokens", 0) or 0
+        when = _parse_ts(d.get("timestamp"))
+        content = ((d.get("message") or {}).get("content")) or []
+        if when is not None and d.get("type") == "assistant":
+            mcp = next((c.get("name", "") for c in content
+                        if isinstance(c, dict) and c.get("type") == "tool_use"
+                        and str(c.get("name", "")).startswith("mcp__")), "")
+            events.append(("llm", when, mcp.split("__")[-1] if mcp else ""))
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "tool_result":
+                if when is not None:
+                    events.append(("tool", when, ""))
+                t = c.get("content")
+                if isinstance(t, str) and "kernel.cpp" in t and "error" in t.lower():
+                    compile_errors += 1
+    # fold event deltas into per-turn rows (turn boundary = each MCP tool_use)
+    turn_rows: list[TurnRow] = []
+    acc = {"llm": 0.0, "tool": 0.0}
+    prev_when = prev_boundary = None
+    for kind, when, mcp_tool in events:
+        if prev_when is not None:
+            delta = (when - prev_when).total_seconds()
+            if 0 <= delta < 7200:
+                acc[kind] += delta
+        prev_when = when
+        if kind == "llm" and mcp_tool:
+            if prev_boundary is not None:
+                turn_rows.append(TurnRow(
+                    total_s=round((when - prev_boundary).total_seconds(), 1),
+                    llm_s=round(acc["llm"], 1), tool_s=round(acc["tool"], 1),
+                ))
+            prev_boundary, acc = when, {"llm": 0.0, "tool": 0.0}
+    return SessionMetrics(
+        cost_usd=cost, num_turns=turns,
+        wall_time_s=round(dur_ms / 1000.0, 1) if dur_ms else None,
+        api_retries=retries, session_compile_errors=compile_errors,
+        tokens_input=tok_in, tokens_output=tok_out,
+        tokens_cache_read=tok_cache_r, tokens_cache_created=tok_cache_c,
+        turn_rows=turn_rows,
+    )
 
 
 class NanobotAdapter(HarnessAdapter):

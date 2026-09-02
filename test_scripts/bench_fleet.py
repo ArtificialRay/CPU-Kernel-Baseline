@@ -17,7 +17,6 @@ import json
 import os
 import re
 import socket
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -25,6 +24,8 @@ from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+import analysis.wandb_log_run as wandb_log_run
 
 # Reaching into skills/launch/launch_session.py's private helpers
 # (_provision, _label_for) as well as its public ones is deliberate here —
@@ -147,15 +148,6 @@ def run_fleet(args: argparse.Namespace) -> None:
     label = args.label or launch_session._label_for(dataset, author)
     max_iterations = args.max_iterations or (args.min_iterations + 10)
 
-    # Docs ablation gate: launch_session._spawn_command forwards this env var to
-    # the remote mcp_app server; "0" means the Arm optimization-guide resources
-    # are never written (and any stale copies are removed). Set explicitly both
-    # ways so a bench_fleet run's docs state never depends on inherited env.
-    # --doc-nudge alone keeps docs exposed (a nudge toward absent docs would
-    # just make the agent chase 404s).
-    docs_exposed = args.with_docs or args.doc_nudge
-    os.environ["ARMBENCH_EXPOSE_DOCS"] = "1" if docs_exposed else "0"
-
     instance_type = args.instance or ISA_INSTANCE_MAP.get(isa, "c7g.large")
     instance = launch_session._provision(
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
@@ -173,9 +165,7 @@ def run_fleet(args: argparse.Namespace) -> None:
     try:
         adapter: HarnessAdapter
         if args.harness == "claude-code":
-            adapter = ClaudeCodeAdapter(model=args.model, max_budget_usd=args.max_budget_usd,
-                                        doc_nudge=args.doc_nudge or args.with_docs,
-                                        with_docs=docs_exposed)
+            adapter = ClaudeCodeAdapter(model=args.model, max_budget_usd=args.max_budget_usd)
         elif args.harness == "nanobot":
             adapter = NanobotAdapter(dataset=dataset, model=args.model, local_port=local_port)
         elif args.harness == "own":
@@ -235,7 +225,7 @@ def run_fleet(args: argparse.Namespace) -> None:
                 attempt += 1
             print(f"=== [{time.strftime('%H:%M:%S')}] job {job.name} finished -> {log_path} ===")
             sync_job_results(label, author, job.name, local_results_dir)
-            _wandb_log_job(job.name, dataset, isa, args, author, log_path, local_results_dir)
+            _wandb_log_job(adapter, job.name, dataset, isa, args, author, log_path, local_results_dir)
 
         print(f"All jobs done. Logs in {log_dir}")
         if hasattr(adapter, "cleanup"):
@@ -266,30 +256,27 @@ def run_fleet(args: argparse.Namespace) -> None:
             stop_tunnel(prepared)
 
 
-def _wandb_log_job(name, dataset, isa, args, author, log_path, local_results_dir) -> None:
-    """Optional Weights & Biases logging (off unless WANDB=1). Parses the just-
-    synced trajectory + this job's session log into one W&B run per definition
-    via analysis/wandb_log_run.py. Harness-agnostic: nanobot/own-harness runs
-    simply get no cost/token fields (the logger degrades gracefully). Uses
-    WANDB_PYTHON (default: this interpreter), which needs `pip install wandb`;
-    if it's missing the logger no-ops. Never aborts the batch."""
+def _wandb_log_job(adapter, name, dataset, isa, args, author, log_path, local_results_dir) -> None:
+    """Optional Weights & Biases logging (off unless WANDB=1). Asks `adapter`
+    (whichever HarnessAdapter ran this job) to parse its own log format into
+    a SessionMetrics, then hands that plus the just-synced trajectory to
+    analysis/wandb_log_run.py — imported directly, not shelled out to.
+    Harness-agnostic: nanobot/own-harness adapters that can't extract a given
+    field just leave it at SessionMetrics' default, and the logger degrades
+    gracefully rather than erroring. Needs `pip install wandb`; if it's
+    missing, log_run_to_wandb() no-ops. Never aborts the batch."""
     if os.environ.get("WANDB", "0") != "1":
         return
-    py = os.environ.get("WANDB_PYTHON", sys.executable)
-    group = os.environ.get("WANDB_GROUP") or f"{args.harness}-{isa}-{time.strftime('%Y%m%d')}"
-    cmd = [
-        py, str(REPO_ROOT / "analysis" / "wandb_log_run.py"),
-        "--name", name, "--dataset", dataset, "--isa", isa,
-        "--model", args.model or "unknown", "--author", author,
-        "--log-file", str(log_path), "--results-dir", str(local_results_dir),
-        "--project", os.environ.get("WANDB_PROJECT", "arm-bench-kernels"),
-        "--group", group,
-    ]
-    entity = os.environ.get("WANDB_ENTITY")
-    if entity:
-        cmd += ["--entity", entity]
     try:
-        subprocess.run(cmd, check=False)
+        session = adapter.parse_session_metrics(log_path)
+        wandb_log_run.log_run_to_wandb(
+            name=name, dataset=dataset, isa=isa, model=args.model or "unknown", author=author,
+            trajectory_path=wandb_log_run._locate_trajectory(str(local_results_dir), name),
+            session=session,
+            project=os.environ.get("WANDB_PROJECT", "arm-bench-kernels"),
+            entity=os.environ.get("WANDB_ENTITY"),
+            group=os.environ.get("WANDB_GROUP") or f"{args.harness}-{isa}-{time.strftime('%Y%m%d')}",
+        )
     except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
         print(f"  WARNING: wandb logging failed for {name} (non-fatal): {e}", file=sys.stderr)
 
@@ -347,17 +334,6 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--local-results-dir", default=None,
                    help="Default: agent-runs-<author>/ under the repo root.")
     p.add_argument("--max-budget-usd", default=None, help="claude-code only: hard $ ceiling per job.")
-    p.add_argument("--with-docs", action="store_true",
-                   help="Docs-ablation treatment arm: expose the Arm Software Optimization "
-                        "Guides as MCP resources on the server AND (claude-code) append a "
-                        "strong read-the-docs-first nudge to each job prompt. DEFAULT OFF = "
-                        "control arm: the docs are absent server-side and SKILL.md's "
-                        "hardware-docs section is stripped, so agents have no documentation "
-                        "at all. Use distinct --author per arm.")
-    p.add_argument("--doc-nudge", action="store_true",
-                   help="claude-code only: docs exposed as usual + the strong read-the-docs "
-                        "nudge appended (implied by --with-docs). Alone, this is the "
-                        "nudge-vs-mild-mention ablation; it never hides docs.")
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
                         "remote instance (not bench-trace/traces/ — that data's already in "
