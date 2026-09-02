@@ -83,15 +83,18 @@ session once every job's local trajectory is confirmed complete.
 ```bash
 python3 test_scripts/bench_fleet.py --harness claude-code \
     --dataset ncnn --isa sve2 --model anthropic/claude-opus-4-8
+```
+
+Use `--definitions` to control what kernel you'd like agent to optimize, you can add one or multiple kernels if you wish. If `--definitions` is not parsed, the entrypoint will run all definitions in that dataset
+
+```bash
 python3 test_scripts/bench_fleet.py --harness nanobot \
     --dataset ncnn --isa sve --definitions "conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1"
 python3 test_scripts/bench_fleet.py --harness own \
-    --dataset ncnn --isa sve2 --model anthropic/claude-opus-4-8
+    --dataset llama.cpp --isa sve2 --definitions ["gemm_q4_k_m_n2048_k1408","gemm_q4_k_m_n2048_k2048","gemm_q8_0_n1024_k2048","gemm_q8_0_n1408_k2048","gemm_q8_0_n2048_k1024"]
 ```
 
-`--harness` selects `claude-code` / `nanobot` / `own` (Path 1 — this repo's
-own litellm loop, in-process, no external CLI); each harness's own
-`HarnessAdapter` lives in `test_scripts/harness_adapters.py`. Run
+Each harness's own `HarnessAdapter` lives in `test_scripts/harness_adapters.py`. Run
 `python3 test_scripts/bench_fleet.py --help` for the full flag reference
 (`--definitions`, `--min-iterations`/`--max-iterations`, `--retries`,
 `--sync-solutions`, `--on-demand`, ...).
@@ -102,6 +105,12 @@ kernels per dataset, no LLM involved.
 
 ---
 ## Run the benchmark with supported harness
+
+| Harness | `--harness` value | Requires |
+|---|---|---|---|---|
+| Claude Code | `claude-code` | `claude` CLI on PATH |
+| nanobot | `nanobot` | `nanobot` CLI on PATH + a bootstrapped `~/.nanobot/workspace` |
+| This repo's own loop | `own` | none (no external CLI) |
 
 ### Supported harness (claude-code / nanobot / own)
 
@@ -153,7 +162,6 @@ and [`skills/README.md`](skills/README.md) for the full `launch`/`provision`/
 
 To enable your agent know how to use MCP tools, please refer to harness's own skill doc (e.g. [`skills/nanobot/nanobot-kernel-session/SKILL.md`](skills/nanobot/nanobot-kernel-session/SKILL.md)) and the harness's MCP config wiring guideline (e.g. [`skills/nanobot/nanobot-kernel-session/README.md`](skills/nanobot/nanobot-kernel-session/README.md))
 for wiring the printed endpoint into that harness's MCP config.
-
 
 
 ---
