@@ -184,12 +184,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
             "w", prefix="claude-fleet-mcp-", suffix=".json", delete=False
         ) as mcp_config_fh:
             json.dump(
-                # timeout: the CLI's default per-server MCP timeout is 300s of
-                # silence, but a slow candidate kernel can legitimately take
-                # 500s+ to evaluate (perf runs it at full length however slow it
-                # is). At 300s the client aborts, the agent gets an error
-                # instead of a result, and the still-busy server piles up
-                # aborted calls. 15 min covers the slowest evals we've seen.
+                # timeout: extend tool timeout for claude code to 15 min
                 {"mcpServers": {"cpu-kernel-baseline": {
                     "type": "http", "url": endpoint, "timeout": 900000}}},
                 mcp_config_fh,
@@ -217,85 +212,79 @@ class ClaudeCodeAdapter(HarnessAdapter):
             mcp_config_path.unlink(missing_ok=True)
 
     def parse_session_metrics(self, log_path: Path) -> SessionMetrics:
-        return parse_claude_code_session_log(log_path)
-
-
-def parse_claude_code_session_log(log_path: Path) -> SessionMetrics:
-    """`claude -p --output-format stream-json --verbose` writes one JSON
-    event per line. Turn latency comes from event timestamps: a "turn"
-    spans one MCP tool_use to the next, and the time in between splits
-    into tool_s (delta ending in a tool_result event = remote
-    compile/evaluate execution) and llm_s (delta ending in an assistant
-    event = model thinking/generation) — this is what tells a slow
-    model apart from a slow eval. Module-level (not a method) so
-    analysis/wandb_log_run.py's manual-backfill CLI can call it without
-    constructing a full ClaudeCodeAdapter (which checks for the `claude`
-    CLI on PATH). Moved here from wandb_log_run.py's old parse_session_log()."""
-    if not log_path.exists():
-        return SessionMetrics()
-    cost = turns = dur_ms = None
-    retries = compile_errors = 0
-    tok_in = tok_out = tok_cache_r = tok_cache_c = 0
-    events: list[tuple[str, datetime, str]] = []  # (kind: "llm"|"tool", when, mcp_tool_name)
-    for line in log_path.read_text(errors="ignore").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if d.get("subtype") == "api_retry":
-            retries += 1
-        if d.get("type") == "result":
-            cost = d.get("total_cost_usd", cost)
-            turns = d.get("num_turns", turns)
-            dur_ms = d.get("duration_ms", dur_ms)
-        u = _find(d, "usage")
-        if isinstance(u, dict):
-            tok_in += u.get("input_tokens", 0) or 0
-            tok_out += u.get("output_tokens", 0) or 0
-            tok_cache_r += u.get("cache_read_input_tokens", 0) or 0
-            tok_cache_c += u.get("cache_creation_input_tokens", 0) or 0
-        when = _parse_ts(d.get("timestamp"))
-        content = ((d.get("message") or {}).get("content")) or []
-        if when is not None and d.get("type") == "assistant":
-            mcp = next((c.get("name", "") for c in content
-                        if isinstance(c, dict) and c.get("type") == "tool_use"
-                        and str(c.get("name", "")).startswith("mcp__")), "")
-            events.append(("llm", when, mcp.split("__")[-1] if mcp else ""))
-        for c in content:
-            if isinstance(c, dict) and c.get("type") == "tool_result":
-                if when is not None:
-                    events.append(("tool", when, ""))
-                t = c.get("content")
-                if isinstance(t, str) and "kernel.cpp" in t and "error" in t.lower():
-                    compile_errors += 1
-    # fold event deltas into per-turn rows (turn boundary = each MCP tool_use)
-    turn_rows: list[TurnRow] = []
-    acc = {"llm": 0.0, "tool": 0.0}
-    prev_when = prev_boundary = None
-    for kind, when, mcp_tool in events:
-        if prev_when is not None:
-            delta = (when - prev_when).total_seconds()
-            if 0 <= delta < 7200:
-                acc[kind] += delta
-        prev_when = when
-        if kind == "llm" and mcp_tool:
-            if prev_boundary is not None:
-                turn_rows.append(TurnRow(
-                    total_s=round((when - prev_boundary).total_seconds(), 1),
-                    llm_s=round(acc["llm"], 1), tool_s=round(acc["tool"], 1),
-                ))
-            prev_boundary, acc = when, {"llm": 0.0, "tool": 0.0}
-    return SessionMetrics(
-        cost_usd=cost, num_turns=turns,
-        wall_time_s=round(dur_ms / 1000.0, 1) if dur_ms else None,
-        api_retries=retries, session_compile_errors=compile_errors,
-        tokens_input=tok_in, tokens_output=tok_out,
-        tokens_cache_read=tok_cache_r, tokens_cache_created=tok_cache_c,
-        turn_rows=turn_rows,
-    )
+        """session metrics logging from JSON event per line at command: `claude -p --output-format stream-json --verbose` 
+        including:
+            cost_usd, num_turns,
+            wall_time_s,api_retries, session_compile_errors,
+            tokens_input, tokens_output,
+            tokens_cache_read, tokens_cache_created,
+            turn_rows
+       """
+        if not log_path.exists():
+            return SessionMetrics()
+        cost = turns = dur_ms = None
+        retries = compile_errors = 0
+        tok_in = tok_out = tok_cache_r = tok_cache_c = 0
+        events: list[tuple[str, datetime, str]] = []  # (kind: "llm"|"tool", when, mcp_tool_name)
+        for line in log_path.read_text(errors="ignore").splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if d.get("subtype") == "api_retry":
+                retries += 1
+            if d.get("type") == "result":
+                cost = d.get("total_cost_usd", cost)
+                turns = d.get("num_turns", turns)
+                dur_ms = d.get("duration_ms", dur_ms)
+            u = _find(d, "usage")
+            if isinstance(u, dict):
+                tok_in += u.get("input_tokens", 0) or 0
+                tok_out += u.get("output_tokens", 0) or 0
+                tok_cache_r += u.get("cache_read_input_tokens", 0) or 0
+                tok_cache_c += u.get("cache_creation_input_tokens", 0) or 0
+            when = _parse_ts(d.get("timestamp"))
+            content = ((d.get("message") or {}).get("content")) or []
+            if when is not None and d.get("type") == "assistant":
+                mcp = next((c.get("name", "") for c in content
+                            if isinstance(c, dict) and c.get("type") == "tool_use"
+                            and str(c.get("name", "")).startswith("mcp__")), "")
+                events.append(("llm", when, mcp.split("__")[-1] if mcp else ""))
+            for c in content:
+                if isinstance(c, dict) and c.get("type") == "tool_result":
+                    if when is not None:
+                        events.append(("tool", when, ""))
+                    t = c.get("content")
+                    if isinstance(t, str) and "kernel.cpp" in t and "error" in t.lower():
+                        compile_errors += 1
+        # fold event deltas into per-turn rows (turn boundary = each MCP tool_use)
+        turn_rows: list[TurnRow] = []
+        acc = {"llm": 0.0, "tool": 0.0}
+        prev_when = prev_boundary = None
+        for kind, when, mcp_tool in events:
+            if prev_when is not None:
+                delta = (when - prev_when).total_seconds()
+                if 0 <= delta < 7200:
+                    acc[kind] += delta
+            prev_when = when
+            if kind == "llm" and mcp_tool:
+                if prev_boundary is not None:
+                    turn_rows.append(TurnRow(
+                        total_s=round((when - prev_boundary).total_seconds(), 1),
+                        llm_s=round(acc["llm"], 1), tool_s=round(acc["tool"], 1),
+                    ))
+                prev_boundary, acc = when, {"llm": 0.0, "tool": 0.0}
+        return SessionMetrics(
+            cost_usd=cost, num_turns=turns,
+            wall_time_s=round(dur_ms / 1000.0, 1) if dur_ms else None,
+            api_retries=retries, session_compile_errors=compile_errors,
+            tokens_input=tok_in, tokens_output=tok_out,
+            tokens_cache_read=tok_cache_r, tokens_cache_created=tok_cache_c,
+            turn_rows=turn_rows,
+        )
 
 
 class NanobotAdapter(HarnessAdapter):
