@@ -336,8 +336,7 @@ def teardown(label: str | None = None):
         raise RuntimeError(f"terraform destroy failed for label={label!r}")
     if EVAL_CONFIG_PATH.exists():
         config = json.loads(EVAL_CONFIG_PATH.read_text())
-        if label in config.get("instances", {}):
-            config["instances"][label]["host"] = ""
+        config.get("instances", {}).pop(label, None)
         EVAL_CONFIG_PATH.write_text(json.dumps(config, indent=2))
     print(f"[teardown] label={label!r} terminated.")
 
