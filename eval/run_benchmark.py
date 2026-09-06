@@ -35,6 +35,7 @@ from bench.data.trace_set import TraceSet
 from contracts import BASELINE_AUTHORS, ISA_INSTANCE_MAP
 from eval.evaluator import run_agentic_eval
 from eval.remote import InstanceHandle
+from skills.launch.launch_session import RSYNC_ALLOWLIST
 REPO_ROOT = Path(__file__).parent.parent
 BENCH_TRACE = REPO_ROOT / "bench-trace"
 RESULTS_DIR = REPO_ROOT / "results"
@@ -166,8 +167,12 @@ def _ensure_baselines(
         "            try:\n"
         "                for line in f.open():\n"
         "                    line = line.strip()\n"
-        "                    if line and json.loads(line).get('solution', '').startswith(auth):\n"
-        "                        found = True; break\n"
+        "                    if line:\n"
+        "                        record = json.loads(line)\n"
+        "                        evaluation = record.get('evaluation') or {}\n"
+        "                        if (record.get('solution', '').startswith(auth)\n"
+        "                                and evaluation.get('status') == 'PASSED'):\n"
+        "                            found = True; break\n"
         "            except Exception:\n"
         "                pass\n"
         "            if found: break\n"
@@ -198,14 +203,18 @@ def _ensure_baselines(
         rc, out, err = handle.run(
             f"cd ~/arm-bench && python3 -m bench.cli collect-baselines "
             f"--baseline-author {baseline_author} --definition {d.name}",
-            timeout=600,
+            timeout=1500,
         )
         if verbose:
             if rc == 0:
                 print("OK")
             else:
                 combined = "\n".join(filter(None, [out.strip(), err.strip()]))
-                print(f"WARNING: {combined}")
+                print(f"FAILED: {combined}")
+        if rc != 0:
+            raise RuntimeError(
+                f"Baseline collection failed for {d.name}; refusing to start the agent."
+            )
 
 
 def main():
@@ -302,6 +311,10 @@ def main():
     print(f"Running {len(problem_defs)} definition(s) "
           f"(dataset: {args.dataset}, model: {args.model}, instance: {instance_type})")
 
+    # Sync first so a later --delete sync cannot remove newly collected traces.
+    print(f"[sync] Syncing benchmark inputs to {handle.host} before baseline collection...")
+    handle.rsync_to(str(REPO_ROOT), "~/arm-bench", paths=RSYNC_ALLOWLIST)
+
     # ── Lazy baseline collection ──────────────────────────────────────────
     baseline_author = _DATASET_BASELINE_AUTHOR.get(args.dataset, "reference-scalar")
     if not args.skip_baselines:
@@ -325,6 +338,7 @@ def main():
     print(f"\n[mcp] starting mcp_app.server on {handle.host} and connecting...")
     mcp_client = mcp_client_mod.connect(
         handle, args.dataset, author, isa, baseline_author=baseline_author,
+        sync_repo=False,
     )
 
     try:
