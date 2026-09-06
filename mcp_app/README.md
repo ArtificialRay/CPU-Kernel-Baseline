@@ -28,7 +28,7 @@ mcp_app/
     resources.py                 # MCP Resources over a session's run_dir —
                                  #   nested one dir per definition
     smoke_test_driver.py            # sequential, non-nanobot smoke-test/verification driver
-    scripts/
+    scripts/                       # scripts specifically for mcp server smoke test
         _local_ssh.py                # smoke_test_driver.py's own SSH/rsync
         test_mcp_client.py            # plain MCP client for manual/smoke-test runs
 ```

@@ -17,7 +17,8 @@ from bench.data.solution import Solution, SourceFile, SolutionSpec, SupportedDat
 from contracts import AGENT_KERNEL_FILENAME
 
 from . import isa
-from .base import KernelSession, standard_tool_schemas
+from .base import KernelSession
+from .schemas import standard_tool_schemas
 
 
 class LlamaCppKernelSession(KernelSession):
