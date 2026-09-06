@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import socket
 import subprocess
@@ -171,16 +170,31 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
     fresh subprocess per (dataset, chunk) instead of calling this directly,
     so each round/chunk gets its own process (see _run_chunk_subprocess's
     docstring for why)."""
+    adapter: HarnessAdapter
+    model = args.model
+    local_port = _free_local_port()
+    if args.harness == "claude-code":
+        adapter = ClaudeCodeAdapter(model=args.model, max_budget_usd=args.max_budget_usd)
+    elif args.harness == "nanobot":
+        adapter = NanobotAdapter(dataset=dataset, model=args.model, local_port=local_port)
+        if model is None:
+            model = adapter.model
+    elif args.harness == "own":
+        adapter = OwnHarnessAdapter(
+            endpoint=prepared["endpoint"], author=author, remote_root=args.remote_root,
+            target=instance.target, dataset=dataset, isa=isa, model=args.model,
+            max_turns=max_iterations,
+        )
+    else:
+        raise ValueError(f"Unknown --harness {args.harness!r}")
     isa = args.isa
-    author = args.author or compute_author(args.harness, args.model, isa)
+    author = args.author or compute_author(args.harness, model, isa)
     label = args.label or launch_session._label_for(dataset, author)
     max_iterations = args.max_iterations or (args.min_iterations + 10)
-
     instance_type = args.instance or ISA_INSTANCE_MAP.get(isa, "c7g.large")
     instance = launch_session._provision(
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
     )
-    local_port = _free_local_port()
 
     prepared = prepare_session(
         instance.target, dataset, author, isa,
@@ -191,20 +205,6 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
     ran_jobs: list[Job] = []
     should_stop_tunnel = True
     try:
-        adapter: HarnessAdapter
-        if args.harness == "claude-code":
-            adapter = ClaudeCodeAdapter(model=args.model, max_budget_usd=args.max_budget_usd)
-        elif args.harness == "nanobot":
-            adapter = NanobotAdapter(dataset=dataset, model=args.model, local_port=local_port)
-        elif args.harness == "own":
-            adapter = OwnHarnessAdapter(
-                endpoint=prepared["endpoint"], author=author, remote_root=args.remote_root,
-                target=instance.target, dataset=dataset, isa=isa, model=args.model,
-                max_turns=max_iterations,
-            )
-        else:
-            raise ValueError(f"Unknown --harness {args.harness!r}")
-
         jobs = build_jobs(
             dataset, isa, args.definitions, args.min_iterations, max_iterations,
             adapter.prompt_template, adapter.template_args,
@@ -253,7 +253,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
                 attempt += 1
             print(f"=== [{time.strftime('%H:%M:%S')}] job {job.name} finished -> {log_path} ===")
             sync_job_results(label, author, job.name, local_results_dir)
-            _wandb_log_job(adapter, job.name, dataset, isa, args, author, log_path, local_results_dir)
+            wandb_log_job(adapter, job.name, dataset, isa, args, author, log_path, local_results_dir)
 
         print(f"All jobs done. Logs in {log_dir}")
         if hasattr(adapter, "cleanup"):
@@ -321,6 +321,14 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         cmd += ["--max-budget-usd", args.max_budget_usd]
     if args.sync_solutions:
         cmd.append("--sync-solutions")
+    if args.wandb:
+        cmd += ["--wandb", "--wandb-project", args.wandb_project]
+        if args.wandb_entity:
+            cmd += ["--wandb-entity", args.wandb_entity]
+        # explicit group (not just the default formula) so every chunk/round
+        # in this sweep lands in the same W&B group even if a caller passed
+        # a custom --wandb-group.
+        cmd += ["--wandb-group", args.wandb_group or f"{args.harness}-{args.isa}-{time.strftime('%Y%m%d')}"]
     print(f"=== [{time.strftime('%H:%M:%S')}] chunk: {dataset} ({len(definitions)} def(s)) ===")
     subprocess.run(cmd, check=False)
 
@@ -402,16 +410,12 @@ def run_until_complete(args: argparse.Namespace) -> None:
     )
 
 
-def _wandb_log_job(adapter, name, dataset, isa, args, author, log_path, local_results_dir) -> None:
-    """Optional Weights & Biases logging (off unless WANDB=1). Asks `adapter`
+def wandb_log_job(adapter, name, dataset, isa, args, author, log_path, local_results_dir) -> None:
+    """Optional Weights & Biases logging (off unless --wandb). Asks `adapter`
     (whichever HarnessAdapter ran this job) to parse its own log format into
     a SessionMetrics, then hands that plus the just-synced trajectory to
-    analysis/wandb_log_run.py — imported directly, not shelled out to.
-    Harness-agnostic: nanobot/own-harness adapters that can't extract a given
-    field just leave it at SessionMetrics' default, and the logger degrades
-    gracefully rather than erroring. Needs `pip install wandb`; if it's
-    missing, log_run_to_wandb() no-ops. Never aborts the batch."""
-    if os.environ.get("WANDB", "0") != "1":
+    analysis/wandb_log_run.py """
+    if not args.wandb:
         return
     try:
         session = adapter.parse_session_metrics(log_path)
@@ -419,9 +423,9 @@ def _wandb_log_job(adapter, name, dataset, isa, args, author, log_path, local_re
             name=name, dataset=dataset, isa=isa, model=args.model or "unknown", author=author,
             trajectory_path=wandb_log_run._locate_trajectory(str(local_results_dir), name),
             session=session,
-            project=os.environ.get("WANDB_PROJECT", "arm-bench-kernels"),
-            entity=os.environ.get("WANDB_ENTITY"),
-            group=os.environ.get("WANDB_GROUP") or f"{args.harness}-{isa}-{time.strftime('%Y%m%d')}",
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            group=args.wandb_group or f"{args.harness}-{isa}-{time.strftime('%Y%m%d')}",
         )
     except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
         print(f"  WARNING: wandb logging failed for {name} (non-fatal): {e}", file=sys.stderr)
@@ -500,6 +504,14 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--batch-size", type=int, default=3,
                    help="--until-complete with multiple --dataset values only: round-robin "
                         "chunk size per dataset per round.")
+    p.add_argument("--wandb", action="store_true",
+                   help="Log every job to Weights & Biases (needs `pip install wandb`). Off by "
+                        "default.")
+    p.add_argument("--wandb-project", default="arm-bench-kernels")
+    p.add_argument("--wandb-entity", default=None, help="Default: your wandb default entity.")
+    p.add_argument("--wandb-group", default=None,
+                   help="Default: '{harness}-{isa}-{today's date}', so one sweep's jobs land in "
+                        "one group.")
     args = p.parse_args(argv)
 
     if not args.until_complete:

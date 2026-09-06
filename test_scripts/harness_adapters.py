@@ -317,7 +317,6 @@ class NanobotAdapter(HarnessAdapter):
                 f"nanobot's config.json has no mcpServers entry for dataset={dataset!r} "
                 f"(only {sorted(NANOBOT_SERVER_NAME_BY_DATASET)} are wired today)."
             )
-        self.model = model
         # Always generate a patched temp config — even with no --model
         # override, the mcpServers URL's port must match this run's actual
         # local_port (nanobot's own MCP client only ever reads it from
@@ -325,6 +324,9 @@ class NanobotAdapter(HarnessAdapter):
         cfg = json.loads(NANOBOT_CONFIG_BASE.read_text())
         if model:
             cfg["agents"]["defaults"]["model"] = model
+            self.model = model
+        else:
+            self.model = cfg["agents"]["defaults"]["model"] 
         cfg["tools"]["mcpServers"][server_name]["url"] = f"http://127.0.0.1:{local_port}/mcp"
         fh = tempfile.NamedTemporaryFile(
             "w", prefix="nanobot-fleet-config-", suffix=".json", delete=False
