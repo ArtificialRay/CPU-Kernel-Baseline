@@ -28,6 +28,7 @@ you.
   `compile()`'d — if it doesn't match, you get back `{"status":
   "DEF_CHECK_FAILED"}` instead of it silently acting on the wrong one.
 - If you are targeted to optimize one or more definition in one specific ISA, DO NOT fall back to use another ISA (e.g. `sve2` → `sve`) unless the prompt explicitly allows it.
+- If the target ISA is `portable`, your kernel must NOT use any hand-written NEON/SVE intrinsics, `arm_neon.h`/`arm_sve.h`, or SIMD vector types (e.g. `float32x4_t`) . Please optimize via plain C/C++ 
 
 ### NEVER USE OPENMP PARALLELIZATION
 - Kernel implementation that use OpenMp will be rejected by the evaluator

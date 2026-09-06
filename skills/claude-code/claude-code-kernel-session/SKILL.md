@@ -27,6 +27,7 @@ it beats your previous best; see "Finish and report" below.
 - If you are targeted to optimize a definition in one specific ISA, do NOT
   fall back to another ISA (e.g. `sve2` -> `sve`) unless explicitly told
   you can.
+- If the target ISA is `portable`, your kernel must NOT use any hand-written NEON/SVE intrinsics, `arm_neon.h`/`arm_sve.h`, or SIMD vector types (e.g. `float32x4_t`) . Please optimize via plain C/C++ 
 
 ### NEVER USE OPENMP PARALLELIZATION
 - Kernel implementations that use OpenMP will be rejected by the evaluator.

@@ -460,7 +460,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--dataset", required=True, nargs="+", choices=["ncnn", "simd-loop", "llama.cpp"],
                    help="One or more datasets (space-separated). More than one requires "
                         "--until-complete, which interleaves them round-robin.")
-    p.add_argument("--isa", default="sve", choices=["neon", "sve", "sve2", "sme2"])
+    p.add_argument("--isa", default="sve", choices=["neon", "sve", "sve2", "sme2", "portable"])
     p.add_argument("--model", default=None,
                    help="model override. claude-code: passed as --model to the CLI "
                         "(empty = CLI default). nanobot: patched into a temp copy of "
@@ -518,6 +518,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         if len(args.dataset) != 1:
             p.error("multiple --dataset values require --until-complete")
         run_fleet(args, args.dataset[0])
+        print(f"=== [{time.strftime('%H:%M:%S')}] Teardown all living mcp server...")
+        launch_session._teardown()
         return
     if args.label and len(args.dataset) > 1:
         p.error("--label can't be fixed across multiple --dataset values under --until-complete "

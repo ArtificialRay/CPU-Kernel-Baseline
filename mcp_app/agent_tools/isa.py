@@ -38,9 +38,6 @@ _ISA_MARCH: dict[str, tuple[str, list[str], list[str]]] = {
 _ISA_MARCH["portable"] = (ISA_TABLE["neon"].march, list(ISA_TABLE["neon"].features), ["aarch64"])
 
 # isa name -> /proc/cpuinfo "Features" tokens that must ALL be present.
-# TODO: exact token names for Graviton3 (sve) vs. Graviton4 (sve2) should be
-# confirmed against real hardware; this only affects the precision of the
-# safety check below, never the compiled output.
 _ISA_CPUINFO_TOKENS: dict[str, list[str]] = {
     "portable": ["asimd"],
     "neon": ["asimd"],
