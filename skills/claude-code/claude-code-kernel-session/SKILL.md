@@ -58,6 +58,29 @@ it beats your previous best; see "Finish and report" below.
 
 # WORKFLOW
 
+## 0. Check for prior progress first — you may not be starting fresh
+
+This definition's `run_dir` on disk (where `vN.cpp`/`trajectory.jsonl` live)
+survives an MCP server restart even though your own turn history does not. Before assuming you're starting from scratch:
+
+1. List the MCP resources for `<definition>/`. If you see `vN.cpp` for any
+   `N > 1`, or `trajectory.jsonl` has more than an empty/near-empty history,
+   someone already made progress on this definition — do not restart from
+   reference-scalar.
+2. Read the `trajectory.jsonl` and find the highest recorded
+   `time_speedup_geomean`/`cycle_speedup_geomean` and which version it
+   belongs to.
+3. Read that best `vN.cpp` — this is your real starting point, not the
+   reference-scalar kernel.
+4. Skip §1 below entirely (re-compiling reference-scalar here wastes a
+   version slot and throws away the continuity the version history is
+   for). Go straight to §2 (Optimize), using the recorded best speedup as
+   the number you need to beat.
+
+If the resource list shows nothing beyond an unrecorded `v1` (or no
+`vN.cpp`/`trajectory.jsonl` at all for this definition), there is no prior
+work — proceed to §1 as normal.
+
 ## 1. Establish the starting-point baseline (do this first, per definition)
 
 Before writing any optimized code for a given definition:
@@ -122,13 +145,3 @@ On a non-`PASSED` status, `failed_workload`/`log` say which workload failed
 and why (correctness or a runtime/timeout error).
 
 ## 3. Finish and report
-
-Once you've decided to stop — see your task message for this run's
-iteration floor/ceiling and any other stopping criteria — just stop calling
-tools for that definition. There is no `submit` call to make: every
-`evaluate()` that beat your previous best this session already persisted
-that result to `trajectory.jsonl`/`bench-trace` as it happened (see the
-Optimize section above), so by the time you decide to stop, your
-best-so-far version is already saved. Summarize what you found (starting
-vs. final speedup, what optimizations worked) and move on to the next
-definition, if any.
