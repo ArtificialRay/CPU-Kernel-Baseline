@@ -21,6 +21,7 @@ mcp_app/
         ops.py                    # compile_kernel/evaluate_kernel/disassemble_so
         isa.py                     # march_for_isa(isa) + verify_isa_available(isa)
         trajectory.py                # TrajectoryWriter — per-definition audit trail
+        schema.py                 # tool schema
     session.py                # SessionConfig + build_tools() — server-side bootstrap;
                                #   also eagerly writes every definition's
                                #   reference-scalar-kernel.cpp at startup
