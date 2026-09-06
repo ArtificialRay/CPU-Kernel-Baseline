@@ -142,10 +142,7 @@ class HarnessAdapter:
     def parse_session_metrics(self, log_path: Path) -> SessionMetrics:
         """Extract whatever session-level telemetry (cost, tokens, turn
         latency, ...) this harness's log format actually exposes. Default:
-        none — a harness whose log doesn't carry structured per-job
-        telemetry just returns the all-unknown default, and callers (e.g.
-        analysis/wandb_log_run.py) degrade gracefully rather than treating
-        that as an error."""
+        none """
         return SessionMetrics()
 
     def prepare_workspace(self, job: Job) -> AbstractContextManager[Optional[Path]]:
