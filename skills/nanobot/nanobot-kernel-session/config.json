@@ -3,20 +3,20 @@
     "defaults": {
       "workspace": "~/.nanobot/workspace",
       "modelPreset": null,
-      "model": "anthropic/claude-sonnet-4-6",
-      "provider": "openrouter",
-      "maxTokens": 8192,
+      "model": "gpt-5.6-luna",
+      "provider": "openai",
+      "maxTokens": 12288,
       "contextWindowTokens": 200000,
       "contextBlockLimit": null,
       "temperature": 0.1,
       "fallbackModels": [],
-      "maxToolIterations": 20,
+      "maxToolIterations": 100,
       "maxConcurrentSubagents": 1,
       "failOnToolError": true,
       "maxToolResultChars": 16000,
       "providerRetryMode": "standard",
       "toolHintMaxLength": 40,
-      "reasoningEffort": null,
+      "reasoningEffort": "xhigh",
       "timezone": "UTC",
       "botName": "nanobot",
       "botIcon": "🐈",
@@ -307,9 +307,9 @@
       "thinkingStyle": null
     },
     "openai": {
-      "apiKey": null,
-      "apiBase": null,
-      "apiType": "auto",
+      "apiKey": "",
+      "apiBase": "",
+      "apiType": "responses",
       "extraHeaders": null,
       "extraBody": null,
       "extraQuery": null,
@@ -317,8 +317,8 @@
       "thinkingStyle": null
     },
     "openrouter": {
-      "apiKey": null,
-      "apiBase": null,
+      "apiKey": "",
+      "apiBase": "",
       "apiType": "auto",
       "extraHeaders": null,
       "extraBody": null,
@@ -685,7 +685,7 @@
   },
   "tools": {
     "web": {
-      "enable": true,
+      "enable": false,
       "proxy": null,
       "userAgent": null,
       "search": {
@@ -700,7 +700,7 @@
       }
     },
     "exec": {
-      "enable": true,
+      "enable": false,
       "timeout": 60,
       "pathPrepend": "",
       "pathAppend": "",
@@ -735,10 +735,20 @@
     "webuiAllowLocalServiceAccess": true,
     "webuiAllowRemotePackageInstall": false,
     "mcpServers": {
-      "ArmKernelBench": {
+      "LLAMACPPKernelBench": {
         "type": "streamableHttp",
         "url": "http://127.0.0.1:8888/mcp",
-        "toolTimeout": 1500
+        "toolTimeout": 900
+      },
+      "NCNNKernelBench": {
+        "type": "streamableHttp",
+        "url": "http://127.0.0.1:9001/mcp",
+        "toolTimeout": 900
+      },
+      "SIMDLoopKernelBench": {
+        "type": "streamableHttp",
+        "url": "http://127.0.0.1:9002/mcp",
+        "toolTimeout": 900
       }
     },
     "ssrfWhitelist": ["127.0.0.0/8"]

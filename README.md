@@ -163,6 +163,12 @@ and [`skills/README.md`](skills/README.md) for the full `launch`/`provision`/
 To enable your agent know how to use MCP tools, please refer to harness's own skill doc (e.g. [`skills/nanobot/nanobot-kernel-session/SKILL.md`](skills/nanobot/nanobot-kernel-session/SKILL.md)) and the harness's MCP config wiring guideline (e.g. [`skills/nanobot/nanobot-kernel-session/README.md`](skills/nanobot/nanobot-kernel-session/README.md))
 for wiring the printed endpoint into that harness's MCP config.
 
+Always remember to teardown MCP server after your session:
+```bash
+python3 skills/launch/launch_session.py teardown
+```
+use `--label` to specify the exact instance you want to terminate at eval/eval_config.json, otherwise, it will terminate all living instances
+
 
 ---
 

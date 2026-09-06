@@ -132,6 +132,7 @@ class HarnessAdapter:
     name: str
     prompt_template: str
     template_args: int  # 5 or 6 — see bench_fleet.py::build_jobs' docstring
+    model:str
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         raise NotImplementedError
