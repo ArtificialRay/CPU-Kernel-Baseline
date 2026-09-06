@@ -134,6 +134,13 @@ class HarnessAdapter:
     template_args: int  # 5 or 6 — see bench_fleet.py::build_jobs' docstring
     model:str
 
+    @classmethod
+    def default_model(cls) -> Optional[str]:
+        """The model this harness resolves to when no --model override is
+        given
+        """
+        return None
+
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         raise NotImplementedError
 
@@ -297,6 +304,10 @@ class NanobotAdapter(HarnessAdapter):
     )
     template_args = 5
 
+    @classmethod
+    def default_model(cls) -> Optional[str]:
+        return json.loads(NANOBOT_CONFIG_BASE.read_text())["agents"]["defaults"]["model"]
+
     def __init__(self, *, dataset: str, model: Optional[str], local_port: int):
         if subprocess.run(["which", "nanobot"], capture_output=True).returncode != 0:
             raise RuntimeError(
@@ -324,7 +335,7 @@ class NanobotAdapter(HarnessAdapter):
             cfg["agents"]["defaults"]["model"] = model
             self.model = model
         else:
-            self.model = cfg["agents"]["defaults"]["model"] 
+            self.model = cfg["agents"]["defaults"]["model"]
         cfg["tools"]["mcpServers"][server_name]["url"] = f"http://127.0.0.1:{local_port}/mcp"
         fh = tempfile.NamedTemporaryFile(
             "w", prefix="nanobot-fleet-config-", suffix=".json", delete=False
