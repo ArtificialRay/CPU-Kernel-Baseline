@@ -738,7 +738,7 @@
       "ArmKernelBench": {
         "type": "streamableHttp",
         "url": "http://127.0.0.1:8888/mcp",
-        "toolTimeout": 900
+        "toolTimeout": 1500
       }
     },
     "ssrfWhitelist": ["127.0.0.0/8"]
