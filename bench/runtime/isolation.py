@@ -26,8 +26,8 @@ import resource
 import signal
 from typing import Any, Callable, Optional, Tuple
 
-DEFAULT_ISOLATION_TIMEOUT_S = 750.0
-"""Comfortably under the MCP client's 900s toolTimeout
+DEFAULT_ISOLATION_TIMEOUT_S = 1200.0
+"""Comfortably under the MCP client's 1500s toolTimeout
 (skills/nanobot/nanobot-kernel-session/config.json) so an agent gets a clean
 structured result before the client's own wait expires."""
 

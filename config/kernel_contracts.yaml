@@ -166,7 +166,7 @@ tool_call_loop:
   # look dead (server.py's TOOL_CALL_PING_INTERVAL_S).
   mcp_client:
     connect_timeout_s: 60
-    tool_call_timeout_s: 900
+    tool_call_timeout_s: 1500
     resource_call_timeout_s: 60
-    compile_timeout_s: 180
+    compile_timeout_s: 1500
     disassemble_timeout_s: 60
