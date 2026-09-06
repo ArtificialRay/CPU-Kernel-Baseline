@@ -408,6 +408,9 @@ def run_until_complete(args: argparse.Namespace) -> None:
         f"=== [{time.strftime('%H:%M:%S')}] giving up after {args.max_rounds} round(s) "
         f"— still incomplete: {still_incomplete} ===", file=sys.stderr,
     )
+    print(
+            f"=== [{time.strftime('%H:%M:%S')}] Teardown all living mcp server...")
+    launch_session._teardown()
 
 
 def wandb_log_job(adapter, name, dataset, isa, args, author, log_path, local_results_dir) -> None:
