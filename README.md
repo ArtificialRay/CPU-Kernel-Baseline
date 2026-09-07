@@ -138,6 +138,8 @@ repo, starts an MCP session against `mcp_app/server.py` on it
 matching `--dataset` (narrow with `--definitions`) until the model stops or
 `--max-iterations` is hit.
 
+**--model** is a required argument for own harness as there are no default model provided for own harness
+
 See [`eval/README.md`](eval/README.md) for `eval/evaluator.py`'s agent-loop
 details, `eval/provision.py`'s standalone provisioning commands, and where
 results/traces end up.

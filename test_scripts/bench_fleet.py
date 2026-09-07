@@ -314,6 +314,8 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         # instance 
         "--skip-final-teardown",
     ]
+    if args.model:
+        cmd += ["--model", args.model]
     if args.max_iterations:
         cmd += ["--max-iterations", str(args.max_iterations)]
     if args.instance:
