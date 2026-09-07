@@ -134,6 +134,7 @@ def parse_trajectory(path: Path):
         ve = ver_err.get(cur_ver, (None, None))
         rows.append({
             "version": cur_ver,
+            "turn": d.get("turn"),
             "time_speedup": sp,
             "best_so_far": best,
             "cycle_speedup": _find(d, "cycle_speedup_geomean"),
@@ -220,11 +221,14 @@ def log_run_to_wandb(
     )
 
     # ── per-evaluate curve ────────────────────────────────────────────────────
+    # step is the record's total tool-call index for this definition,
+    # compile/disassemble/submit included, which is different to `i`: number of evaluate
+    # tool call with speedup provided
     for i, r in enumerate(rows, 1):
         prev = rows[i - 2]["best_so_far"] if i > 1 else 0.0
         wandb.log({"iteration": i, "marginal_gain": round(r["best_so_far"] - prev, 5),
-                   **{k: v for k, v in r.items() if v is not None and k not in ("status", "version")}},
-                  step=i)
+                   **{k: v for k, v in r.items() if v is not None and k not in ("status", "version", "turn")}},
+                  step=r["turn"])
 
     # ── per-turn latency curve (own x-axis so it doesn't fight the eval steps) ─
     if turn_rows:
