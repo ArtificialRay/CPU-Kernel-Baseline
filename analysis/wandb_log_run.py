@@ -333,7 +333,10 @@ def _cli_main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(repo_root))
-    from test_scripts.harness_adapters import SessionMetrics, parse_claude_code_session_log
+    # parse_claude_code_session_log() was folded into
+    # ClaudeCodeAdapter.parse_session_metrics() when harness_adapters.py grew
+    # per-harness classes; this entry point still imported the old free function.
+    from test_scripts.harness_adapters import SessionMetrics, ClaudeCodeAdapter
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--name", required=True)
@@ -350,9 +353,14 @@ def _cli_main() -> int:
     args = p.parse_args()
 
     traj = Path(args.trajectory) if args.trajectory else _locate_trajectory(args.results_dir, args.name)
-    session = (parse_claude_code_session_log(Path(args.log_file))
-               if args.log_file and Path(args.log_file).exists()
-               else SessionMetrics())
+    if args.log_file and Path(args.log_file).exists():
+        # parse_session_metrics() only reads the log, so skip __init__'s
+        # environment checks (a `claude` binary on PATH, SKILL.md present) —
+        # backfilling a finished run must not require the harness installed.
+        adapter = ClaudeCodeAdapter.__new__(ClaudeCodeAdapter)
+        session = adapter.parse_session_metrics(Path(args.log_file))
+    else:
+        session = SessionMetrics()
     log_run_to_wandb(
         name=args.name, dataset=args.dataset, isa=args.isa, model=args.model, author=args.author,
         trajectory_path=traj, session=session,
