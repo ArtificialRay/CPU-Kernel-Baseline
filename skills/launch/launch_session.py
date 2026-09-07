@@ -129,19 +129,14 @@ def _provision(
     return instance
 
 
-def is_server_alive(label: str, remote_port: int, *, timeout: int = 15) -> bool:
-    """True iff `label`'s provisioned instance is reachable over SSH and has
-    a live mcp_app.server process bound to `remote_port`. False both when no
-    instance is recorded yet for `label` and on any SSH/connection failure —
-    either way there's nothing confirmed-alive to keep."""
+def is_instance_reachable(label: str, *, timeout: int = 15) -> bool:
+    """True iff `label`'s provisioned instance still answers over SSH.
+    Use to detect if I need to restart an instance for this new agent session"""
     instance = _read_config_instance(label)
     if instance is None:
         return False
     try:
-        rc, _, _ = instance.target.run(
-            f"pgrep -f 'mcp_app[.]server.*--port {remote_port}' >/dev/null 2>&1",
-            timeout=timeout,
-        )
+        rc, _, _ = instance.target.run("true", timeout=timeout)
     except subprocess.TimeoutExpired:
         return False
     return rc == 0
@@ -283,6 +278,11 @@ def prepare_session(
     for ds in datasets:
         ensure_dataset_ready(target, ds)
 
+    # A previous session on this instance may not have torn down cleanly
+    # (Ctrl+C interrupted mid-cleanup, kill -9, a hard crash), before start a new server, 
+    # gracefully stop current server session at remote instance
+    _graceful_stop_remote_server(target, remote_port)
+
     remote_cmd = _spawn_command(
         target, remote_root, datasets, author, baseline_author, isa,
         port=remote_port, max_iterations=max_iterations,
@@ -310,13 +310,32 @@ def prepare_session(
 
 
 def _kill_remote_port(target: RemoteTarget, remote_port: int) -> None:
-    """Explicitly kill whatever's bound to remote_port on target, synchronously.
-    """
+    """Immediately SIGKILL whatever's bound to remote_port on target"""
     target.run(
         f"fuser -k {remote_port}/tcp 2>/dev/null || "
         f"pkill -f 'mcp_app.server.*--port {remote_port}' 2>/dev/null || true",
         timeout=15,
     )
+
+
+def _graceful_stop_remote_server(
+    target: RemoteTarget, remote_port: int, *, grace_seconds: int = 30,
+) -> None:
+    """Ask whatever mcp_app.server is bound to remote_port to shut down, and
+    give it grace_seconds to actually exit before force-killing it.
+
+    This function will send a SIGTERM first, as server process may still in
+    the progress of compile/evaluate tool call, after that, send a SIGKILL
+    """
+    pattern = f"mcp_app[.]server.*--port {remote_port}"
+    script = (
+        f"pkill -TERM -f '{pattern}' 2>/dev/null; "
+        f"for i in $(seq 1 {grace_seconds}); do "
+        f"pgrep -f '{pattern}' >/dev/null 2>&1 || exit 0; sleep 1; "
+        f"done; "
+        f"fuser -k {remote_port}/tcp 2>/dev/null || pkill -KILL -f '{pattern}' 2>/dev/null || true"
+    )
+    target.run(script, timeout=grace_seconds + 15)
 
 
 def _probe_ready(port: int) -> bool:
@@ -362,7 +381,7 @@ def stop_tunnel(prepared: dict) -> None:
     target: Optional[RemoteTarget] = prepared.get("_target")
     remote_port = prepared.get("_remote_port")
     if target is not None and remote_port is not None:
-        _kill_remote_port(target, remote_port)
+        _graceful_stop_remote_server(target, remote_port)
 
 
 def sync_results(

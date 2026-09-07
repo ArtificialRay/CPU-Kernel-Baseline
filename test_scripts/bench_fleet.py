@@ -205,7 +205,6 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
             max_turns=max_iterations,
         )
     ran_jobs: list[Job] = []
-    should_stop_tunnel = True
     try:
         jobs = build_jobs(
             dataset, isa, args.definitions, args.min_iterations, max_iterations,
@@ -275,19 +274,17 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
             if not _trajectory_complete(local_results_dir, j.name, args.min_iterations)
         ]
         if incomplete:
-            should_stop_tunnel = False
             print(
                 f"WARNING: no confirmed-complete local trajectory (no 'submit' turn, or fewer "
                 f"than --min-iterations {args.min_iterations} exploration tool calls before it) "
-                f"for: {incomplete} — leaving the MCP server/SSH tunnel running so results "
-                f"aren't lost. Re-run sync-results for these once ready, then stop the tunnel "
-                f"manually.", file=sys.stderr,
+                f"for: {incomplete} — stopping the session anyway; a rerun resumes each from its "
+                f"last checkpointed version (see mcp_app/agent_tools/trajectory.py). Results already "
+                f"synced above reflect progress up to that point.", file=sys.stderr,
             )
     finally:
         for job in ran_jobs:
             adapter.cleanup_workspace(job)
-        if should_stop_tunnel:
-            stop_tunnel(prepared)
+        stop_tunnel(prepared)
 
 
 def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: list[str], author: str) -> None:
@@ -344,11 +341,10 @@ def run_until_complete(args: argparse.Namespace) -> None:
     """Keep resuming across every --dataset — interleaved round-robin,
     cost-sorted within each dataset — until every matching definition has a
     confirmed-complete local trajectory (a "submit" turn) or --max-rounds is
-    hit. 
+    hit.
     Per-dataset stall detection: zero progress in a round only triggers
-    a health probe (launch_session.is_server_alive); its instance is torn
-    down only if that probe finds the remote mcp_app.server actually
-    crashed, not merely slow. 
+    a health probe (launch_session.is_instance_reachable) then distinguish if
+    one instance is reachable, if not, start a fresh box
     Generalized to any --harness/model."""
     datasets = args.dataset
     # Resolve --model up front
@@ -381,17 +377,17 @@ def run_until_complete(args: argparse.Namespace) -> None:
         )
 
         # stall detection: same incomplete count as last round only triggers
-        # a health probe — an alive-but-slow server is left running, and
-        # only a confirmed-crashed one gets torn down for a fresh box.
+        # a health probe — an unreachable instance gets torn down for a
+        # fresh box, a reachable one is left alone (just slow).
         for ds in datasets:
             n = len(per_ds_incomplete[ds])
             if n > 0 and prev_incomplete_count[ds] == n:
                 label = launch_session._label_for(ds, author)
-                if launch_session.is_server_alive(label, args.remote_port):
-                    print(f"  STALLED but {label}'s mcp_app.server is still alive "
+                if launch_session.is_instance_reachable(label):
+                    print(f"  STALLED but {label}'s instance is still reachable "
                           f"(still {n} incomplete) — leaving it running", file=sys.stderr)
                 else:
-                    print(f"  CRASHED: {label}'s mcp_app.server isn't responding "
+                    print(f"  UNREACHABLE: {label}'s instance isn't responding "
                           f"(still {n} incomplete) — tearing down to force a fresh box", file=sys.stderr)
                     try:
                         launch_session._teardown(label)
