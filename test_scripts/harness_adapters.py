@@ -9,6 +9,7 @@ retry quirks.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -32,7 +33,17 @@ from dotenv import load_dotenv
 load_dotenv()
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-NANOBOT_CONFIG_BASE = REPO_ROOT / "skills" / "nanobot" / "nanobot-kernel-session" / "config.json"
+# Overridable so a run can supply its own base config. `--model` alone is not
+# enough to switch models across providers: the adapter overrides only
+# agents.defaults.model, leaving agents.defaults.provider (and that
+# provider's apiKey) pointing at whatever the checked-in config uses, which
+# fails with "No API key configured for provider '<other>'".
+NANOBOT_CONFIG_BASE = Path(
+    os.environ.get(
+        "NANOBOT_CONFIG_BASE",
+        REPO_ROOT / "skills" / "nanobot" / "nanobot-kernel-session" / "config.json",
+    )
+)
 CLAUDE_SKILL_FILE = REPO_ROOT / "skills" / "claude-code" / "claude-code-kernel-session" / "SKILL.md"
 NANOBOT_WORKSPACE = Path.home() / ".nanobot" / "workspace"
 NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
