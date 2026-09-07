@@ -129,6 +129,24 @@ def _provision(
     return instance
 
 
+def is_server_alive(label: str, remote_port: int, *, timeout: int = 15) -> bool:
+    """True iff `label`'s provisioned instance is reachable over SSH and has
+    a live mcp_app.server process bound to `remote_port`. False both when no
+    instance is recorded yet for `label` and on any SSH/connection failure —
+    either way there's nothing confirmed-alive to keep."""
+    instance = _read_config_instance(label)
+    if instance is None:
+        return False
+    try:
+        rc, _, _ = instance.target.run(
+            f"pgrep -f 'mcp_app[.]server.*--port {remote_port}' >/dev/null 2>&1",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return rc == 0
+
+
 def _teardown(label: Optional[str] = None) -> None:
     """`label` given: destroy just that one instance. Omitted: tear down
     every label eval/provision.py knows about (old "destroy everything"
@@ -417,18 +435,12 @@ def _cli_sync(args: argparse.Namespace) -> None:
 
 def _resolve_instance(args: argparse.Namespace) -> ProvisionedInstance:
     """Reuse an already-up-and-reachable instance for --isa if one's up,
-    otherwise provision a fresh one — via eval/provision.py's own
-    reuse-if-reachable default (see its module docstring). Note:
-    eval/provision.py always rsyncs its own repo checkout during
-    provisioning, so `--local-repo-dir` has no effect on that initial sync;
-    `_cli_launch` re-syncs via `prepare_session()` afterward, which does
-    respect it.
+    otherwise provision a fresh one 
 
     eval/provision.py's own `--dataset` only builds one dataset's native lib
     at provision time. With more than one --dataset requested here, skip
     that step (pass "") and rely on prepare_session's own per-dataset
-    ensure_dataset_ready loop right after — slower on a cold instance's very
-    first multi-dataset launch, correct thereafter, no eval/ changes needed.
+    ensure_dataset_ready loop right after 
     """
     instance_type = args.instance or ISA_INSTANCE_MAP.get(args.isa, "c7g.large")
     provision_dataset = args.dataset[0] if len(args.dataset) == 1 else ""

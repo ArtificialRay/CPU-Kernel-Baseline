@@ -208,9 +208,15 @@ def log_run_to_wandb(
         return
 
     op_type = name.split("_")[0]
+    # Stable across repeated logging of the same (group, author, dataset,
+    # isa, definition) — e.g. re-synced across --until-complete rounds — so
+    # wandb.init(resume="allow") reattaches to and overwrites that one run
+    # instead of creating a fresh one every time.
+    run_id = hashlib.sha1(f"{group or ''}:{author}:{dataset}:{isa}:{name}".encode()).hexdigest()[:16]
     run = wandb.init(
         project=project, entity=entity, group=group,
-        name=name, reinit=True,
+        id=run_id, resume="allow", reinit=True, allow_val_change=True,
+        name=name,
         tags=[model, dataset, isa, author, op_type],
         config={
             "definition": name, "dataset": dataset, "op_type": op_type,

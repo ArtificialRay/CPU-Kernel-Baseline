@@ -306,6 +306,11 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         "--author", author,
         "--remote-root", args.remote_root, "--remote-port", str(args.remote_port),
         "--definitions", json.dumps(definitions),
+        # This is a single-pass invocation of this same script (see this
+        # function's own docstring) — without this flag it would hit
+        # main()'s unconditional post-run teardown and destroy every
+        # instance 
+        "--skip-final-teardown",
     ]
     if args.max_iterations:
         cmd += ["--max-iterations", str(args.max_iterations)]
@@ -335,11 +340,12 @@ def run_until_complete(args: argparse.Namespace) -> None:
     """Keep resuming across every --dataset — interleaved round-robin,
     cost-sorted within each dataset — until every matching definition has a
     confirmed-complete local trajectory (a "submit" turn) or --max-rounds is
-    hit. Per-dataset stall detection: if a dataset makes zero progress in a
-    round (its incomplete count doesn't shrink), its instance is torn down
-    so the next round provisions a fresh one instead of retrying against a
-    box that's stuck. Ported from analysis/resume_sweep.sh's plan()/
-    incomplete()/stall-detection loop, generalized to any --harness/model."""
+    hit. 
+    Per-dataset stall detection: zero progress in a round only triggers
+    a health probe (launch_session.is_server_alive); its instance is torn
+    down only if that probe finds the remote mcp_app.server actually
+    crashed, not merely slow. 
+    Generalized to any --harness/model."""
     datasets = args.dataset
     # Resolve --model up front
     model = args.model or ADAPTER_CLASSES[args.harness].default_model()
@@ -370,19 +376,23 @@ def run_until_complete(args: argparse.Namespace) -> None:
             + ", ".join(f"{ds}={len(v)} incomplete" for ds, v in per_ds_incomplete.items())
         )
 
-        # stall detection: same incomplete count as last round -> fresh box
+        # stall detection: same incomplete count as last round only triggers
+        # a health probe — an alive-but-slow server is left running, and
+        # only a confirmed-crashed one gets torn down for a fresh box.
         for ds in datasets:
             n = len(per_ds_incomplete[ds])
             if n > 0 and prev_incomplete_count[ds] == n:
                 label = launch_session._label_for(ds, author)
-                print(
-                    f"  STALLED: {ds} made no progress last round (still {n} incomplete) "
-                    f"— tearing down {label} to force a fresh box", file=sys.stderr,
-                )
-                try:
-                    launch_session._teardown(label)
-                except Exception as e:  # noqa: BLE001 — best-effort, next round just re-provisions
-                    print(f"  WARNING: teardown failed for {label}: {e}", file=sys.stderr)
+                if launch_session.is_server_alive(label, args.remote_port):
+                    print(f"  STALLED but {label}'s mcp_app.server is still alive "
+                          f"(still {n} incomplete) — leaving it running", file=sys.stderr)
+                else:
+                    print(f"  CRASHED: {label}'s mcp_app.server isn't responding "
+                          f"(still {n} incomplete) — tearing down to force a fresh box", file=sys.stderr)
+                    try:
+                        launch_session._teardown(label)
+                    except Exception as e:  # noqa: BLE001 — best-effort, next round just re-provisions
+                        print(f"  WARNING: teardown failed for {label}: {e}", file=sys.stderr)
             prev_incomplete_count[ds] = n
 
         # round-robin --batch-size-sized chunks across datasets (each already
@@ -515,14 +525,16 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--wandb-group", default=None,
                    help="Default: '{harness}-{isa}-{today's date}', so one sweep's jobs land in "
                         "one group.")
+    p.add_argument("--skip-final-teardown", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(argv)
 
     if not args.until_complete:
         if len(args.dataset) != 1:
             p.error("multiple --dataset values require --until-complete")
         run_fleet(args, args.dataset[0])
-        print(f"=== [{time.strftime('%H:%M:%S')}] Teardown all living mcp server...")
-        launch_session._teardown()
+        if not args.skip_final_teardown:
+            print(f"=== [{time.strftime('%H:%M:%S')}] Teardown all living mcp server...")
+            launch_session._teardown()
         return
     if args.label and len(args.dataset) > 1:
         p.error("--label can't be fixed across multiple --dataset values under --until-complete "
