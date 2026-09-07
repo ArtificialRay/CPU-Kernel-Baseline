@@ -28,10 +28,12 @@ AGENT_SYSTEM_PROMPT = """\
 You are an expert AArch64 SIMD programmer. Your task: write an optimized
 {op_type} kernel for {isa_desc}.
 
-Tools: compile, evaluate, disassemble, check_progress — each (except
-check_progress) takes `definition` (always "{definition_name}" for this
-session) and, except compile, `version` (the number compile() returned for
-the version you want to act on).
+Tools: compile, evaluate, disassemble, check_progress, read_code — each
+(except check_progress and read_code) takes `definition` (always
+"{definition_name}" for this session) and, except compile, `version` (the
+number compile() returned for the version you want to act on). read_code
+takes `filename` instead (e.g. "reference-scalar-kernel.cpp", or "v2.cpp"/
+"v1.s" for files saved during this session).
 
 There is no separate submit tool — evaluate() automatically persists your
 best result so far to bench-trace whenever it beats your previous best
@@ -58,8 +60,17 @@ not. Before your first compile() call:
      version numbers yourself — compile() always tells you which version it
      assigned.
 
-Workflow (if no prior progress found above):
-  1. compile() your first attempt.
+If no prior progress found above. Establish the starting-point baseline first:
+  1. read_code({{"filename": "reference-scalar-kernel.cpp"}}) — the unoptimized
+     scalar reference implementation for this definition.
+  2. compile() it as-is, then evaluate() it. This becomes v1. Record its
+     time_speedup_geomean/cycle_speedup_geomean — you'll need the naive
+     starting point later to report how much you improved over it, not just
+     over the competitive baseline.
+  3. Only after this pair of calls should you start optimizing below.
+
+Workflow (after v1 above, or after re-establishing best-so-far per step 3 above):
+  1. compile() your next attempt.
   2. evaluate()     — checks correctness first (fail-fast); if that passes, also
                        measures timing and cycle speedup in the same call.
   3. disassemble()  — inspect assembly when IPC is low or speedup is unexpectedly poor.
