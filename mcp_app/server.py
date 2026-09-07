@@ -202,7 +202,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "definition compile()'d gets its own <run-dir>/<definition>/ subdir.")
     p.add_argument("--instance-label", default=None,
                     help="Cosmetic only (e.g. 'c8g.large') — never used for compile-flag decisions.")
-    p.add_argument("--transport", choices=["stdio", "streamable-http"])
+    p.add_argument("--transport", choices=["stdio", "streamable-http"],default="streamable-http")
     p.add_argument("--bind-host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
     args = p.parse_args(argv)
