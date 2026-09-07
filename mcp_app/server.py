@@ -61,15 +61,13 @@ def _truncate_repr(obj: Any, limit: int) -> str:
 
 
 def _elog(msg: str) -> None:
-    """Write a diagnostic to stderr, swallowing I/O errors.
+    """Print to stderr, but never let a dead stderr pipe fail the caller.
 
-    If the server's stderr consumer goes away (closed terminal, a dead tmux
-    session whose pipe we inherited, a rotated log fd), a bare
-    ``print(..., file=sys.stderr)`` raises ``BrokenPipeError``. In ``_call_tool``
-    that write is the *first* thing every tool call does, so an unguarded write
-    turns a dead stderr into "every compile/evaluate fails with [Errno 32]
-    Broken pipe while resource reads keep working" — a baffling partial outage.
-    Diagnostics must never be able to fail a tool call, so swallow the error.
+    A bare ``print(..., file=sys.stderr)`` raises ``BrokenPipeError`` if
+    stderr's consumer is gone (closed terminal, dead tmux, rotated log fd).
+    ``_call_tool`` logs on every tool call, so an unguarded print would crash
+    every compile/evaluate with "[Errno 32] Broken pipe" whenever that
+    happens. Logging must never be able to fail a tool call.
     """
     with contextlib.suppress(BrokenPipeError, OSError):
         print(msg, file=sys.stderr, flush=True)
