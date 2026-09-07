@@ -72,14 +72,27 @@ def compare(
     ref = reference.astype(np.float64)
     eps = min(abs_tol, 1e-12)
 
+    # NaN/Inf in `ref` means the golden reference itself is undefined there
+    # will be directly reported to agent and agent may end the optimization
+    ref_finite = np.isfinite(ref)
+    if not ref_finite.any():
+        return CorrectnessResult(
+            passed=False,
+            max_absolute_error=float("nan"),
+            max_relative_error=float("nan"),
+            matched_ratio=0.0,
+            fail_reason="reference is invalid, you can early stop the optimization as there is not valid baseline",
+        )
+
+    got_non_finite = ~np.isfinite(got)
     abs_err = np.abs(got - ref)
     rel_err = abs_err / np.maximum(np.abs(ref), eps)
-    fail_mask = (abs_err > abs_tol) & (rel_err > rel_tol)
+    fail_mask = ref_finite & (got_non_finite | ((abs_err > abs_tol) & (rel_err > rel_tol)))
 
-    max_abs = float(abs_err.max()) if abs_err.size else 0.0
-    max_rel = float(rel_err.max()) if rel_err.size else 0.0
+    max_abs = float(abs_err[ref_finite].max()) if ref_finite.any() else 0.0
+    max_rel = float(rel_err[ref_finite].max()) if ref_finite.any() else 0.0
 
-    n_total = fail_mask.size or 1
+    n_total = int(ref_finite.sum()) or 1
     n_fail = int(fail_mask.sum())
     matched = 1.0 - n_fail / n_total
 

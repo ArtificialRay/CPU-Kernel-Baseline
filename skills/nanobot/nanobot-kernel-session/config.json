@@ -5,7 +5,7 @@
       "modelPreset": null,
       "model": "gpt-5.6-luna",
       "provider": "openai",
-      "maxTokens": 12288,
+      "maxTokens": 32768,
       "contextWindowTokens": 200000,
       "contextBlockLimit": null,
       "temperature": 0.1,
