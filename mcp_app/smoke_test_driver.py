@@ -50,7 +50,18 @@ DATASET_BUILDS: dict = json.loads((REPO_ROOT / "config" / "dataset_builds.json")
 # Allow-list, not a deny-list — see _local_ssh.rsync_to's docstring.
 # TODO: fold into an env var (shared with the separately-duplicated copies in
 # eval/provision.py and skills/launch/launch_session.py).
-RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
+# NOTE: bench-trace is listed by sub-directory, not whole. definitions/,
+# solutions/ and workloads/ are read-only inputs and must be pushed;
+# traces/ is a run *artifact* the remote generates itself. Pushing traces/
+# ships baselines measured on OTHER machines to this one, and since a
+# baseline is an absolute min_ns/cycles — and get_baseline_min_ns() takes
+# min() across matching traces without consulting
+# evaluation.environment.hardware — a foreign trace silently becomes the
+# speedup denominator. This is the same input-vs-artifact split the
+# rsync_to() docstring already draws for results/ and agent-runs/;
+# traces/ just happened to sit inside an otherwise-input directory.
+RSYNC_ALLOWLIST = ["bench", "bench-trace/definitions", "bench-trace/solutions",
+                    "bench-trace/workloads", "mcp_app", "requirements.txt"]
 
 # baseline_author from contracts.BASELINE_AUTHORS (shared with eval/run_benchmark.py
 # and mcp_app/agent_tools/baseline_readiness.py); isa_hint is display-only, local to

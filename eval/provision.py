@@ -54,7 +54,18 @@ EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see InstanceHandle.rsync_to's docstring.
 # TODO: fold into an env var
-RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt","config","contracts.py"]
+# NOTE: bench-trace is listed by sub-directory, not whole. definitions/,
+# solutions/ and workloads/ are read-only inputs and must be pushed;
+# traces/ is a run *artifact* the remote generates itself. Pushing traces/
+# ships baselines measured on OTHER machines to this one, and since a
+# baseline is an absolute min_ns/cycles — and get_baseline_min_ns() takes
+# min() across matching traces without consulting
+# evaluation.environment.hardware — a foreign trace silently becomes the
+# speedup denominator. This is the same input-vs-artifact split the
+# rsync_to() docstring already draws for results/ and agent-runs/;
+# traces/ just happened to sit inside an otherwise-input directory.
+RSYNC_ALLOWLIST = ["bench", "bench-trace/definitions", "bench-trace/solutions",
+                    "bench-trace/workloads", "mcp_app", "requirements.txt","config","contracts.py"]
 DATASET_BUILDS_PATH = REPO_ROOT / "config" / "dataset_builds.json"
 
 # Must stay shell/HCL/JSON-key/AWS-tag safe — flows into a `terraform -target`
