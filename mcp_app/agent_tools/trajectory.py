@@ -7,9 +7,11 @@ Layout under `agent-runs-mcp/<def_name>/`:
     v1.s               — full asm for version 1 (written when disassemble is called)
     v3.s               — full asm for version 3 (etc.; gap is fine if not disassembled)
 
-The version counter is internal to TrajectoryWriter and is bumped on each
-compile call. It is used only for file naming — it is NOT a solution identity
-(that lives in solution.hash()).
+The version/turn counters are internal to TrajectoryWriter, seeded from
+whatever's already in trajectory.jsonl on construction (see
+`_scan_resume_state`) so a new process picking up an existing run_dir continues numbering 
+instead of colliding with files an earlier session already wrote. Convenient for kernel 
+checkpoint restart
 """
 
 from __future__ import annotations
@@ -25,10 +27,37 @@ class TrajectoryWriter:
     def __init__(self, run_dir: Path) -> None:
         self._dir = run_dir
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._fh = (run_dir / "trajectory.jsonl").open("a", encoding="utf-8")
-        self._version = 0  # bumped on each compile; used for v{n}.cpp / v{n}.s naming
+        traj_path = run_dir / "trajectory.jsonl"
+        self._version, self._last_turn = self._scan_resume_state(traj_path)
+        self._fh = traj_path.open("a", encoding="utf-8")
 
-    # ── version / file management ─────────────────────────────────────────────
+    @staticmethod
+    def read_records(traj_path: Path) -> list[dict]:
+        """Parse every line of an existing trajectory.jsonl into dicts (empty
+        list if the file doesn't exist yet). Shared by `_scan_resume_state`
+        and `KernelSession.check_progress` (base.py) so both read the same
+        file the same way instead of duplicating the parse loop."""
+        if not traj_path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in traj_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    @classmethod
+    def _scan_resume_state(cls, traj_path: Path) -> tuple[int, int]:
+        """(max compile version, max turn) already recorded — 0/0 if there's
+        no prior trajectory.jsonl for this definition."""
+        max_version = 0
+        max_turn = 0
+        for rec in cls.read_records(traj_path):
+            max_turn = max(max_turn, rec.get("turn") or 0)
+            if rec.get("tool") == "compile":
+                max_version = max(max_version, rec.get("metrics", {}).get("version") or 0)
+        return max_version, max_turn
+
+    # ── version / turn / file management ────────────────────────────────────
 
     def next_version(self) -> int:
         """Bump and return the current compile version number."""
@@ -38,6 +67,13 @@ class TrajectoryWriter:
     @property
     def current_version(self) -> int:
         return self._version
+
+    @property
+    def last_turn(self) -> int:
+        """Highest turn number already recorded (0 if this definition has no
+        prior trajectory) — the turn counter a resuming KernelSession should
+        continue incrementing from, not restart at 0."""
+        return self._last_turn
 
     def write_source(self, code: str, version: int) -> str:
         """Write source to v{version}.cpp; return the filename."""

@@ -57,123 +57,6 @@ class KernelSessionLike(Protocol):
     def cleanup(self) -> None: ...
 
 
-def standard_tool_schemas() -> list[dict]:
-    """The three standard agent tool schemas, identical across datasets.
-
-    Kept dataset-agnostic: the `reference-scalar-kernel.cpp` resource written
-    per definition at server startup (see
-    session.py::_write_reference_scalar_kernels) already tells the agent
-    which function name/signature to implement, more precisely than schema
-    text could. This is also what lets one server process serve multiple
-    datasets (see agent_tools/dispatcher.py) without needing to pick whose
-    wording to show.
-    """
-    return [
-        {
-            "name": "compile",
-            "description": (
-                "Compile your kernel.cpp for the given definition. The harness/binding "
-                "files are provided automatically — you only write the kernel. "
-                "You can call this with different `definition` values across the "
-                "session; each definition keeps its own compile/evaluate history. "
-                "Returns {\"status\": \"OK\", \"definition\": ..., \"version\": N} on "
-                "success — pass both `definition` and `version` back into evaluate()/"
-                "disassemble() to confirm you're acting on this exact compile, not one "
-                "from another definition or a later recompile. Or "
-                "{\"status\": \"COMPILE_ERROR\", \"error\": \"...\"} on failure."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "definition": {
-                        "type": "string",
-                        "description": (
-                            "Name of the bench-trace definition to compile against "
-                            "(e.g. 'conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0'). Must "
-                            "belong to this server's dataset."
-                        ),
-                    },
-                    "code": {
-                        "type": "string",
-                        "description": (
-                            "Full C++ source for kernel.cpp. Before writing this, read "
-                            "the `reference-scalar-kernel.cpp` resource for this "
-                            "definition — it's a working scalar reference implementation "
-                            "showing the exact function name and signature you must "
-                            "implement (naming convention varies by dataset, e.g. "
-                            "`inner_<op_type>` vs `armbench_llamacpp_<op_type>(...)`). "
-                            "Replace its body with an optimized SIMD version; keep the "
-                            "same signature. Harness/binding files are provided "
-                            "automatically."
-                        ),
-                    },
-                },
-                "required": ["definition", "code"],
-            },
-        },
-        {
-            "name": "evaluate",
-            "description": (
-                "Run the compiled kernel identified by (`definition`, `version`) "
-                "against all workloads: checks correctness (fail-fast on the first "
-                "failing workload) and, if that passes, measures wall-time/cycle "
-                "counts in the same pass — always both, one call. Both args are "
-                "required and must match your own last compile() call for that "
-                "definition exactly — errors instead of silently evaluating a "
-                "different definition's compile, or a version that's since been "
-                "superseded by another compile() (e.g. from a concurrent call in "
-                "the same turn). "
-                "Whenever this beats the best cycle speedup seen so far this "
-                "session, it's immediately persisted to bench-trace — that result "
-                "already counts even if you never call submit(). "
-                "Returns {\"status\": \"PASSED\", \"correctness\": {...}, "
-                "\"performance\": {...}} or {\"status\": \"<error>\", "
-                "\"failed_workload\": \"...\", \"log\": \"...\"}."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "definition": {
-                        "type": "string",
-                        "description": "Must match the `definition` from your last compile() call.",
-                    },
-                    "version": {
-                        "type": "integer",
-                        "description": "Must match the `version` from your last compile() call.",
-                    },
-                },
-                "required": ["definition", "version"],
-            },
-        },
-        {
-            "name": "disassemble",
-            "description": (
-                "Disassemble the compiled .so identified by (`definition`, `version`) "
-                "(up to 300 lines of AArch64 assembly). Defaults to this definition's "
-                "own kernel entry symbol (the function you implemented); pass `fn` to "
-                "inspect a different symbol. `definition`/`version` are required and "
-                "validated the same way as evaluate()'s — see its description."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "definition": {
-                        "type": "string",
-                        "description": "Must match the `definition` from your last compile() call.",
-                    },
-                    "version": {
-                        "type": "integer",
-                        "description": "Must match the `version` from your last compile() call.",
-                    },
-                    "fn": {
-                        "type": "string",
-                        "description": "Symbol to disassemble. Omit to use this definition's own kernel entry symbol.",
-                    },
-                },
-                "required": ["definition", "version"],
-            },
-        },
-    ]
 
 
 class KernelSession(ABC):
@@ -253,10 +136,11 @@ class KernelSession(ABC):
                 f"— this server was started with --dataset {self.dataset!r}."
             )
 
+        trajectory = TrajectoryWriter(self._run_dir / definition_name)
         state = {
             "definition": definition,
-            "trajectory": TrajectoryWriter(self._run_dir / definition_name),
-            "turn": 0,
+            "trajectory": trajectory,
+            "turn": trajectory.last_turn,  # resumes from disk if this definition has prior history
             "last_compile": None,   # {so_path, solution, version, source_file}
             "best_compile": None,   # last_compile snapshot at highest cycle_speedup_geomean
         }
@@ -337,6 +221,42 @@ class KernelSession(ABC):
             if re.search(pattern, code):
                 return pattern
         return None
+
+    def check_progress(self, definition: str) -> dict:
+        """Read run_dir/<definition>/trajectory.jsonl directly off disk, bypassing
+        self._definitions / session_definitions entirely.
+
+        Lets an agent notice prior progress from an earlier session against
+        the same run_dir (e.g. after an MCP server restart) *before* its
+        first compile() — at which point resources.py's session-scoping
+        would otherwise hide that history from it.
+
+        This is safe to expose regardless of resource-visibility scoping
+        (see mcp_app/resources.py) because `definition` is a required,
+        explicit argument the caller already named — same shape as compile()/
+        evaluate()/disassemble() — so it can never be used to browse an
+        unrelated definition's history the way list_resources() could.
+
+        Only reports the best-so-far *submitted* version
+        """
+        traj_path = self._run_dir / definition / "trajectory.jsonl"
+        best_submit: Optional[dict] = None
+        for rec in TrajectoryWriter.read_records(traj_path):
+            if rec.get("tool") == "submit":
+                best_submit = rec  # last one wins — submit() only fires on strictly-better
+
+        if best_submit is None:
+            return {"has_prior_progress": False}
+
+        source_file = best_submit.get("source_file") or ""
+        best_version = int(source_file.removeprefix("v").removesuffix(".cpp") or 0)
+        code_path = self._run_dir / definition / source_file
+        return {
+            "has_prior_progress": True,
+            "best_version": best_version,
+            "best_metrics": best_submit.get("metrics", {}),
+            "best_code": code_path.read_text(encoding="utf-8") if code_path.exists() else None,
+        }
 
     def compile(self, definition: str, code: str) -> dict:
         """Compile agent code in-process for `definition`; store so_path for evaluate/disassemble."""
@@ -673,5 +593,5 @@ class KernelSession(ABC):
 
 __all__ = [
     "KernelSession", "KernelSessionLike", "ASM_TRUNCATE_LINES",
-    "REFERENCE_SCALAR_FILENAME", "standard_tool_schemas",
+    "REFERENCE_SCALAR_FILENAME",
 ]

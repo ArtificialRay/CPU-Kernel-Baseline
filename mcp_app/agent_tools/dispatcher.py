@@ -12,7 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .base import KernelSession, standard_tool_schemas
+from .base import KernelSession
+from .schemas import standard_tool_schemas
 
 
 class DispatcherKernelSession:
@@ -45,6 +46,9 @@ class DispatcherKernelSession:
         )
 
     # ── shared tool implementations — same signatures as KernelSession's ──
+
+    def check_progress(self, definition: str) -> dict:
+        return self._session_for(definition).check_progress(definition)
 
     def compile(self, definition: str, code: str) -> dict:
         return self._session_for(definition).compile(definition, code)

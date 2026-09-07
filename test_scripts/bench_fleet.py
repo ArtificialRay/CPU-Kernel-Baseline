@@ -307,8 +307,6 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         "--remote-root", args.remote_root, "--remote-port", str(args.remote_port),
         "--definitions", json.dumps(definitions),
     ]
-    if args.model:
-        cmd += ["--model", args.model]
     if args.max_iterations:
         cmd += ["--max-iterations", str(args.max_iterations)]
     if args.instance:
@@ -343,7 +341,9 @@ def run_until_complete(args: argparse.Namespace) -> None:
     box that's stuck. Ported from analysis/resume_sweep.sh's plan()/
     incomplete()/stall-detection loop, generalized to any --harness/model."""
     datasets = args.dataset
-    author = args.author or compute_author(args.harness, args.model, args.isa)
+    # Resolve --model up front
+    model = args.model or ADAPTER_CLASSES[args.harness].default_model()
+    author = args.author or compute_author(args.harness, model, args.isa)
     local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
     prev_incomplete_count: dict[str, Optional[int]] = {ds: None for ds in datasets}
     adapter_cls = ADAPTER_CLASSES[args.harness]
