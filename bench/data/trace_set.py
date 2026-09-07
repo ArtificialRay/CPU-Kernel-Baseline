@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .definition import Definition
-from .json_utils import append_jsonl_file, load_json_file, load_jsonl_file
+from .json_utils import append_jsonl_file, load_json_file, load_jsonl_file, save_jsonl_file
 from .solution import Solution
 from .trace import EvaluationStatus, Trace
 from .workload import Workload
@@ -280,7 +280,11 @@ class TraceSet:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def add_traces(self, traces: List[Trace]) -> None:
-        """Add traces to memory and append to disk (per definition's op_type)."""
+        """Add traces to memory and persist to disk (per definition's op_type).
+
+        For some cases that user want to add solution traces(mostly baseline solution traces) more than one, will replace 
+        old traces with the latest baseline solution traces
+        """
         buckets: Dict[Path, List[Trace]] = defaultdict(list)
         for t in traces:
             if t.definition not in self.definitions:
@@ -295,8 +299,16 @@ class TraceSet:
             buckets[path].append(t)
 
         if self.root is not None:
-            for path, ts in buckets.items():
-                append_jsonl_file(ts, path)
+            for path, new in buckets.items():
+                incoming = {(t.solution, t.workload.uuid) for t in new}
+                kept: List[Trace] = []
+                if path.exists():
+                    kept = [
+                        t for t in load_jsonl_file(Trace, path)
+                        if (t.solution, t.workload.uuid) not in incoming
+                    ]
+                # save_jsonl_file mkdirs + overwrites; kept+new == new for a fresh file.
+                save_jsonl_file(kept + new, path)
 
     def add_workload_traces(self, workloads: List[Workload], def_name: str) -> None:
         """Register workload points for a definition (no benchmark run involved yet)."""
