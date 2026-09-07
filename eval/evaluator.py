@@ -316,11 +316,11 @@ def run_agentic_eval(
         definition_name=definition.name,
     )
     user_msg = build_user_prompt(definition, ref_solution)
-    if os.environ.get("ARMBENCH_PUSH_ITER", "").strip() == "1":
-        user_msg += ("\n\nIMPORTANT: Keep going until you have compiled AND measured "
-                     "(evaluate()) at least 5 GENUINELY DIFFERENT implementations "
-                     "and can no longer beat your best measured time_speedup. Each new version "
-                     "must try a distinct strategy — not a small tweak of the previous one.")
+    # max_turns is already a hard ceiling, so there's no budget risk in
+    # always nudging against early stopping 
+    user_msg += ("\n\nIMPORTANT: Try multiple genuinely different implementations — "
+                 "not just small tweaks of your previous version — and keep iterating "
+                 "as long as you can still beat your best measured time_speedup.")
 
     messages: list[dict] = [
         {"role": "system", "content": system},
