@@ -179,13 +179,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
         adapter = NanobotAdapter(dataset=dataset, model=args.model, local_port=local_port)
         if model is None:
             model = adapter.model
-    elif args.harness == "own":
-        adapter = OwnHarnessAdapter(
-            endpoint=prepared["endpoint"], author=author, remote_root=args.remote_root,
-            target=instance.target, dataset=dataset, isa=isa, model=args.model,
-            max_turns=max_iterations,
-        )
-    else:
+    elif args.harness != "own":
         raise ValueError(f"Unknown --harness {args.harness!r}")
     isa = args.isa
     author = args.author or compute_author(args.harness, model, isa)
@@ -202,6 +196,14 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
         local_repo_dir=str(REPO_ROOT), local_port=local_port,
         remote_port=args.remote_port, max_iterations=max_iterations,
     )
+    # "own" needs the just-established MCP endpoint/target, unlike
+    # claude-code/nanobot above — construct it here instead.
+    if args.harness == "own":
+        adapter = OwnHarnessAdapter(
+            endpoint=prepared["endpoint"], author=author, remote_root=args.remote_root,
+            target=instance.target, dataset=dataset, isa=isa, model=args.model,
+            max_turns=max_iterations,
+        )
     ran_jobs: list[Job] = []
     should_stop_tunnel = True
     try:
