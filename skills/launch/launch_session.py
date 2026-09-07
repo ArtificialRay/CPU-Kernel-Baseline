@@ -154,6 +154,7 @@ def _status() -> None:
 def _spawn_command(
     target: RemoteTarget, remote_root: str, datasets: list[str],
     author: str, baseline_author: Optional[str], isa: str, *, port: int,
+    max_iterations: Optional[int] = None,
 ) -> str:
     """Remote command for a persistent streamable-http-mode mcp_app.server
     (see prepare_session's docstring for why this is the only mode this
@@ -170,6 +171,8 @@ def _spawn_command(
     )
     if baseline_author:
         cmd += f" --baseline-author {baseline_author}"
+    if max_iterations is not None:
+        cmd += f" --max-iterations {max_iterations}"
     return cmd
 
 
@@ -229,24 +232,23 @@ def prepare_session(
     local_port: Optional[int] = None,
     remote_port: int = 8765,
     startup_timeout: int = 60,
+    max_iterations: Optional[int] = None,
 ) -> dict:
     """Get an mcp_app session ready to be driven by a real MCP client.
 
-    `dataset` accepts either a single dataset string (today's behavior,
-    unchanged) or a list of more than one — the remote mcp_app.server then
-    starts in dispatcher mode, serving all of them over one connection (see
-    mcp_app/agent_tools/dispatcher.py). `baseline_author` is a single-dataset
-    override only — omit it and the server auto-derives it from `dataset`
-    (mcp_app/agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR); it
-    can't be combined with more than one dataset, since one override can't
-    correctly apply to more than one dataset's baseline.
+    `dataset` may be a single string or a list — a list starts the remote
+    mcp_app.server in dispatcher mode (agent_tools/dispatcher.py).
+    `baseline_author` overrides the per-dataset auto-derived default
+    (agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR) and only
+    applies with a single dataset. `max_iterations`, if given, becomes the
+    server's hard --max-iterations ceiling (mcp_app/server.py); None leaves
+    it unlimited.
 
-    Always use streamable-http: establishes an SSH local-port-forward +
-    starts the remote server, returns {"transport": "streamable-http",
-    "endpoint": "http://127.0.0.1:<port>/mcp", "_tunnel_proc": <Popen>} —
-    call stop_tunnel() on the result when done. The SSH tunnel (not the
-    server's own transport) is what keeps the compile/evaluate tool surface
-    off the public network — see mcp_app/server.py's module docstring.
+    Always streamable-http: opens an SSH local-port-forward and starts the
+    remote server, returning {"transport": "streamable-http", "endpoint":
+    "http://127.0.0.1:<port>/mcp", "_tunnel_proc": <Popen>} — call
+    stop_tunnel() on the result when done. The SSH tunnel keeps the
+    compile/evaluate tool surface off the public network.
     """
     datasets = [dataset] if isinstance(dataset, str) else list(dict.fromkeys(dataset))
     if len(datasets) > 1 and baseline_author is not None:
@@ -265,7 +267,7 @@ def prepare_session(
 
     remote_cmd = _spawn_command(
         target, remote_root, datasets, author, baseline_author, isa,
-        port=remote_port,
+        port=remote_port, max_iterations=max_iterations,
     )
     ssh_cmd = [
         "ssh", "-L", f"{local_port}:127.0.0.1:{remote_port}",

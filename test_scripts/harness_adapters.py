@@ -299,10 +299,13 @@ class NanobotAdapter(HarnessAdapter):
         'in new ISA %s. You must spend at least %s compile+evaluate iterations exploring '
         'genuinely different optimization attempts before you are allowed to submit — do not '
         'submit early just because an attempt already looks good, keep iterating until you '
-        'hit the floor. You may keep going past it if you are still finding improvements. '
-        'Follow the nanobot-kernel-session skill workflow end to end.'
+        'hit the floor. You may keep going past it if you are still finding improvements, but '
+        'do not exceed %s tool calls total — once you approach that ceiling, stop iterating '
+        'and submit your best version immediately, since every iteration spends real model API '
+        'budget and the server will start rejecting further compile/evaluate/disassemble calls '
+        'once you hit it. Follow the nanobot-kernel-session skill workflow end to end.'
     )
-    template_args = 5
+    template_args = 6
 
     @classmethod
     def default_model(cls) -> Optional[str]:

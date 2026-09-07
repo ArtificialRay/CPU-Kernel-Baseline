@@ -200,7 +200,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
         instance.target, dataset, author, isa,
         remote_root=args.remote_root, sync_repo=True,
         local_repo_dir=str(REPO_ROOT), local_port=local_port,
-        remote_port=args.remote_port,
+        remote_port=args.remote_port, max_iterations=max_iterations,
     )
     ran_jobs: list[Job] = []
     should_stop_tunnel = True
@@ -469,7 +469,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--min-iterations", type=int, default=40,
                    help="Floor, not a cap — the model is told not to submit early.")
     p.add_argument("--max-iterations", type=int, default=None,
-                   help="Soft ceiling (claude-code only). Default: --min-iterations + 10.")
+                   help="Ceiling, baked into every harness's prompt as a soft budget and "
+                        "into the MCP server as a hard --max-iterations cap (mcp_app/server.py) "
+                        "that rejects further compile/evaluate/disassemble calls once hit. "
+                        "Default: --min-iterations + 10.")
     p.add_argument("--definitions", default="",
                    help="JSON array or space-separated definition names to narrow the run "
                         "to. Empty = every definition matching --dataset.")
