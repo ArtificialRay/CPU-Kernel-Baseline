@@ -102,17 +102,6 @@ def _cost_proxy(name: str) -> int:
 def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root: str) -> None:
     """Sync the repo, then collect + verify baseline traces BEFORE the MCP
     server starts.
-
-    Order matters twice over. `prepare_session(sync_repo=True)` rsyncs
-    `bench-trace` with `--delete`, so anything collected before it is wiped;
-    and `mcp_app.server` reads TraceSet into memory at startup and never
-    reloads, so anything collected after it is invisible to the session.
-    Without this step the only remaining path is the lazy fallback in
-    `mcp_app/agent_tools/base.py::compile` -> `ensure_baseline_collected`,
-    which is best-effort and returns SILENTLY on failure — the run then
-    reports PASSED with `time_speedup: None` and the whole batch is void.
-
-    Mirrors `eval/run_benchmark.py::_ensure_baselines` on the tcloop path.
     """
     baseline_author = BASELINE_AUTHORS.get(dataset, dataset)
     target = instance.target
@@ -339,7 +328,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
                 attempt += 1
             print(f"=== [{time.strftime('%H:%M:%S')}] job {job.name} finished -> {log_path} ===")
             sync_job_results(label, author, job.name, local_results_dir)
-            wandb_log_job(adapter, job.name, dataset, isa, args, author, log_path, local_results_dir)
+            wandb_log_job(job.name, dataset, isa, args, author, local_results_dir)
 
         print(f"All jobs done. Logs in {log_dir}")
         if hasattr(adapter, "cleanup"):
@@ -496,19 +485,15 @@ def run_until_complete(args: argparse.Namespace) -> None:
     )
 
 
-def wandb_log_job(adapter, name, dataset, isa, args, author, log_path, local_results_dir) -> None:
-    """Optional Weights & Biases logging (off unless --wandb). Asks `adapter`
-    (whichever HarnessAdapter ran this job) to parse its own log format into
-    a SessionMetrics, then hands that plus the just-synced trajectory to
-    analysis/wandb_log_run.py """
+def wandb_log_job(name, dataset, isa, args, author, local_results_dir) -> None:
+    """Optional Weights & Biases logging (off unless --wandb). Hands the
+    just-synced trajectory to analysis/wandb_log_run.py."""
     if not args.wandb:
         return
     try:
-        session = adapter.parse_session_metrics(log_path)
         wandb_log_run.log_run_to_wandb(
             name=name, dataset=dataset, isa=isa, model=args.model or "unknown", author=author,
             trajectory_path=wandb_log_run._locate_trajectory(str(local_results_dir), name),
-            session=session,
             project=args.wandb_project,
             entity=args.wandb_entity,
             group=args.wandb_group or f"{args.harness}-{isa}-{time.strftime('%Y%m%d')}",
