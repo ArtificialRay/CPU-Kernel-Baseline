@@ -506,7 +506,6 @@ class KernelSession(ABC):
         if mismatch is not None:
             return mismatch
         state = self._definitions[self._active_definition]
-        state["turn"] += 1
 
         best = state["best_compile"]
         if best is None:
