@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import os
 import re
 import subprocess
 import sys
@@ -34,6 +35,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
+
+load_dotenv()
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 # This module's own directory, so `from remote import RemoteTarget` below
@@ -54,20 +58,12 @@ PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see RemoteTarget.rsync_to's docstring.
-# TODO: fold into an env var (shared with the separately-duplicated copies in
-# eval/provision.py and mcp_app/smoke_test_driver.py).
-# NOTE: bench-trace is listed by sub-directory, not whole. definitions/,
-# solutions/ and workloads/ are read-only inputs and must be pushed;
-# traces/ is a run *artifact* the remote generates itself. Pushing traces/
-# ships baselines measured on OTHER machines to this one, and since a
-# baseline is an absolute min_ns/cycles — and get_baseline_min_ns() takes
-# min() across matching traces without consulting
-# evaluation.environment.hardware — a foreign trace silently becomes the
-# speedup denominator. This is the same input-vs-artifact split the
-# rsync_to() docstring already draws for results/ and agent-runs/;
-# traces/ just happened to sit inside an otherwise-input directory.
-RSYNC_ALLOWLIST = ["bench", "bench-trace/definitions", "bench-trace/solutions",
-                    "bench-trace/workloads", "mcp_app", "requirements.txt"]
+# NOTE: bench-trace is listed by sub-directory, not whole. traces/ is not included
+# as archive traces may pollute speedup geomean calculation
+# Set in .env (comma-separated) — see .env.example.
+RSYNC_ALLOWLIST = [p.strip() for p in os.environ.get("RSYNC_ALLOWLIST", "").split(",") if p.strip()]
+if not RSYNC_ALLOWLIST:
+    raise RuntimeError("RSYNC_ALLOWLIST is unset or empty — set it in .env (see .env.example).")
 
 # Shared with eval/provision.py and mcp_app/smoke_test_driver.py — lives at
 # the repo root (like contracts.py/config/kernel_contracts.yaml) so none of

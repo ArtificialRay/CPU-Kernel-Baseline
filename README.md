@@ -54,6 +54,15 @@ pip install -r requirements.txt
 Provisioning and remote runs need an AWS account with Terraform configured
 (`terraform/`) and an SSH key. See `eval/eval_config.json.example`.
 
+## Configuration
+
+| Config | Purpose |
+|---|---|
+| `config/kernel_contracts.yaml` | Kernel evaluation parameters: op-type correctness/timing overrides, disallowed source patterns, ISA→march mapping, baseline authors |
+| `config/dataset_builds.json` | Step-by-step clone/build of each dataset's native lib (ncnn, ggml) on a remote instance |
+| `.env` (copy from `.env.example`) | System parameters: harness config paths, API keys, `RSYNC_ALLOWLIST` |
+| `skills/<harness>/<harness>-kernel-session/config.json` | Per-harness config (e.g. nanobot's model/provider + MCP server wiring) |
+
 ## Two ways to run an agent against this benchmark
 
 - **MCP server for an external harness** — start `mcp_app/server.py` directly

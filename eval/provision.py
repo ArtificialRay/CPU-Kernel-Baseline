@@ -42,30 +42,27 @@ import sys
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from contracts import ISA_INSTANCE_MAP
 from eval.remote import InstanceHandle
 
+load_dotenv()
 REPO_ROOT = Path(__file__).parent.parent
 TERRAFORM_DIR = REPO_ROOT / "terraform"
 EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see InstanceHandle.rsync_to's docstring.
-# TODO: fold into an env var
-# NOTE: bench-trace is listed by sub-directory, not whole. definitions/,
-# solutions/ and workloads/ are read-only inputs and must be pushed;
-# traces/ is a run *artifact* the remote generates itself. Pushing traces/
-# ships baselines measured on OTHER machines to this one, and since a
-# baseline is an absolute min_ns/cycles — and get_baseline_min_ns() takes
-# min() across matching traces without consulting
-# evaluation.environment.hardware — a foreign trace silently becomes the
-# speedup denominator. This is the same input-vs-artifact split the
-# rsync_to() docstring already draws for results/ and agent-runs/;
-# traces/ just happened to sit inside an otherwise-input directory.
-RSYNC_ALLOWLIST = ["bench", "bench-trace/definitions", "bench-trace/solutions",
-                    "bench-trace/workloads", "mcp_app", "requirements.txt","config","contracts.py"]
+# NOTE: bench-trace is listed by sub-directory, not whole. traces/ is not included
+# as archive traces may pollute speedup geomean calculation
+# Set in .env (comma-separated) — see .env.example.
+RSYNC_ALLOWLIST = [p.strip() for p in os.environ.get("RSYNC_ALLOWLIST", "").split(",") if p.strip()]
+if not RSYNC_ALLOWLIST:
+    raise RuntimeError("RSYNC_ALLOWLIST is unset or empty — set it in .env (see .env.example).")
+
 DATASET_BUILDS_PATH = REPO_ROOT / "config" / "dataset_builds.json"
 
 # Must stay shell/HCL/JSON-key/AWS-tag safe — flows into a `terraform -target`

@@ -258,9 +258,12 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
 
     # Build the job list first: ensure_baselines() needs the definition names,
     # and it has to run between the repo sync and the MCP server start.
+    # Use the class (not `adapter`) — for --harness own, adapter isn't
+    # constructed until prepare_session() below hands it an MCP endpoint.
+    adapter_cls = ADAPTER_CLASSES[args.harness]
     jobs = build_jobs(
         dataset, isa, args.definitions, args.min_iterations, max_iterations,
-        adapter.prompt_template, adapter.template_args,
+        adapter_cls.prompt_template, adapter_cls.template_args,
     )
     if jobs:
         ensure_baselines(
