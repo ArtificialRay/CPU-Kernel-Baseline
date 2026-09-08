@@ -96,6 +96,13 @@ resource "aws_instance" "labeled" {
   key_name               = aws_key_pair.kernel_testing.key_name
   vpc_security_group_ids = [aws_security_group.kernel_testing.id]
 
+  # An in-guest `shutdown -h` terminates (not stops) the instance, so the
+  # provisioning watchdog (eval/provision.py) and per-job re-arms
+  # (bench_fleet.py --watchdog-minutes) can't leave a stopped box + EBS
+  # volume billing after the driver dies. One-time spot instances already
+  # behave this way; this makes --on-demand boxes match.
+  instance_initiated_shutdown_behavior = "terminate"
+
   # Installs clang-18 + llvm-objdump and creates ~/arm-bench
   user_data = base64encode(file("${path.module}/setup.sh"))
 

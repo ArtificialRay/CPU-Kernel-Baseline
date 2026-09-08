@@ -209,6 +209,15 @@ def _install_deps(handle: InstanceHandle) -> None:
             "sudo sysctl -w kernel.perf_event_paranoid=1",
             10,
         ),
+        (
+            # Cost guard: a fresh box self-terminates in 3h unless a driver
+            # keeps re-arming (skills/launch/launch_session.py::arm_watchdog,
+            # called by bench_fleet.py before every job). Covers the dataset
+            # build below plus the first jobs; bounds an orphaned box's bill.
+            "shutdown watchdog (3h, re-armed per job)",
+            "sudo shutdown -h +180 'arm-bench watchdog'",
+            10,
+        ),
     ]
     for label, cmd, timeout in steps:
         print(f"[provision] Installing {label}...")

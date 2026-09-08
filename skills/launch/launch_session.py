@@ -140,6 +140,25 @@ def _teardown(label: Optional[str] = None) -> None:
     subprocess.run(cmd, check=True)
 
 
+def arm_watchdog(target: RemoteTarget, minutes: int) -> None:
+    """(Re)schedule a self-shutdown on the box `minutes` from now, replacing
+    any pending one. With terraform's instance_initiated_shutdown_behavior =
+    "terminate" (and for one-time spot instances regardless), the halt
+    terminates the instance — so a box orphaned by a dead tunnel, a closed
+    lid, or a killed driver can cost at most `minutes` of billing. Callers
+    re-arm before every job; a normal run keeps pushing the deadline out.
+    minutes <= 0 cancels the pending shutdown instead. Best-effort: never
+    raises (a failed re-arm just leaves the previous deadline in place)."""
+    cancel = "sudo shutdown -c >/dev/null 2>&1; "
+    cmd = cancel if minutes <= 0 else cancel + f"sudo shutdown -h +{int(minutes)} 'arm-bench watchdog'"
+    try:
+        rc, _, err = target.run(cmd, timeout=30)
+        if rc != 0:
+            print(f"  WARNING: watchdog arm failed on {target.host}: {err[:200]}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — never let the guard abort a run
+        print(f"  WARNING: watchdog arm failed on {target.host}: {e}", file=sys.stderr)
+
+
 def _status() -> None:
     config = json.loads(EVAL_CONFIG_PATH.read_text()) if EVAL_CONFIG_PATH.exists() else {}
     if not config.get("instances"):

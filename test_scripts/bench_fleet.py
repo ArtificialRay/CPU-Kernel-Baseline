@@ -195,6 +195,8 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
     instance = launch_session._provision(
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
     )
+    if args.watchdog_minutes > 0:
+        launch_session.arm_watchdog(instance.target, args.watchdog_minutes)
 
     prepared = prepare_session(
         instance.target, dataset, author, isa,
@@ -234,6 +236,8 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
             while True:
                 print(f"=== [{time.strftime('%H:%M:%S')}] starting job: {job.name} "
                       f"(attempt {attempt + 1}/{args.retries + 1}) ===")
+                if args.watchdog_minutes > 0:
+                    launch_session.arm_watchdog(instance.target, args.watchdog_minutes)
                 rc = adapter.run_job(job, endpoint=prepared["endpoint"], author=author, log_path=log_path)
                 if rc == 0:
                     break
@@ -311,6 +315,7 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         cmd += ["--max-iterations", str(args.max_iterations)]
     if args.instance:
         cmd += ["--instance", args.instance]
+    cmd += ["--watchdog-minutes", str(args.watchdog_minutes)]
     if args.on_demand:
         cmd.append("--on-demand")
     if args.local_results_dir:
@@ -363,6 +368,14 @@ def run_until_complete(args: argparse.Namespace) -> None:
         }
         if not any(per_ds_incomplete.values()):
             print(f"=== [{time.strftime('%H:%M:%S')}] ALL COMPLETE at round {round_num} ===")
+            # Nothing left to run: tear the boxes down now rather than
+            # leaving them to the watchdog's trailing window.
+            for ds in datasets:
+                label = launch_session._label_for(ds, author)
+                try:
+                    launch_session._teardown(label)
+                except Exception as e:  # noqa: BLE001 — watchdog still bounds the cost
+                    print(f"  WARNING: teardown failed for {label}: {e}", file=sys.stderr)
             return
 
         print(
@@ -485,6 +498,12 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "provisioned instance).")
     p.add_argument("--local-results-dir", default=None,
                    help="Default: agent-runs-<author>/ under the repo root.")
+    p.add_argument("--watchdog-minutes", type=int, default=120,
+                   help="Cost guard: the box self-terminates this many minutes after the "
+                        "last (re)arm. Armed after provisioning and again before every job "
+                        "attempt, so a live run keeps pushing the deadline out while an "
+                        "orphaned box (dead tunnel, killed driver, closed lid) dies on its "
+                        "own. 0 disables.")
     p.add_argument("--max-budget-usd", default=None, help="claude-code only: hard $ ceiling per job.")
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
