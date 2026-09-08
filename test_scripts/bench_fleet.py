@@ -444,7 +444,7 @@ def run_until_complete(args: argparse.Namespace) -> None:
                 key=lambda n: (_cost_proxy(n), n),
             )
             for ds in datasets
-        }
+        } # filter all definition that has completed before by searching on local trajcetory directory
         if not any(per_ds_incomplete.values()):
             print(f"=== [{time.strftime('%H:%M:%S')}] ALL COMPLETE at round {round_num} ===")
             return

@@ -331,6 +331,7 @@ def run_agentic_eval(
     final_result: dict | None = None
     version_history: list[dict] = []
     best_version: dict | None = None
+    hit_iteration_cap = False
 
     if verbose:
         print(f"\n{'='*60}")
@@ -440,6 +441,11 @@ def run_agentic_eval(
                 else:
                     result_dict = tools.dispatch_tool_call(fn_name, fn_args)
 
+                if result_dict.get("status") == "MAX_ITERATIONS_EXCEEDED":
+                    # This definition's server-side call budget is already
+                    # exhausted, should exit tool call loop immediately
+                    hit_iteration_cap = True
+
                 if verbose:
                     if fn_name == "compile":
                         status = result_dict.get("status", "?")
@@ -510,6 +516,12 @@ def run_agentic_eval(
                                 }
 
                 reasoning_text = ""  # emit reasoning only on the first tool call per turn
+
+                if hit_iteration_cap:
+                    break
+
+            if hit_iteration_cap:
+                break
 
         # ── Report the best version seen this session ────────────────────────────
         if best_version and best_version.get("code"):
