@@ -56,7 +56,18 @@ PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
 # Allow-list, not a deny-list — see RemoteTarget.rsync_to's docstring.
 # TODO: fold into an env var (shared with the separately-duplicated copies in
 # eval/provision.py and mcp_app/smoke_test_driver.py).
-RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
+# NOTE: bench-trace is listed by sub-directory, not whole. definitions/,
+# solutions/ and workloads/ are read-only inputs and must be pushed;
+# traces/ is a run *artifact* the remote generates itself. Pushing traces/
+# ships baselines measured on OTHER machines to this one, and since a
+# baseline is an absolute min_ns/cycles — and get_baseline_min_ns() takes
+# min() across matching traces without consulting
+# evaluation.environment.hardware — a foreign trace silently becomes the
+# speedup denominator. This is the same input-vs-artifact split the
+# rsync_to() docstring already draws for results/ and agent-runs/;
+# traces/ just happened to sit inside an otherwise-input directory.
+RSYNC_ALLOWLIST = ["bench", "bench-trace/definitions", "bench-trace/solutions",
+                    "bench-trace/workloads", "mcp_app", "requirements.txt"]
 
 # Shared with eval/provision.py and mcp_app/smoke_test_driver.py — lives at
 # the repo root (like contracts.py/config/kernel_contracts.yaml) so none of

@@ -112,6 +112,13 @@ kernels per dataset, no LLM involved.
 | nanobot | `nanobot` | `nanobot` CLI on PATH + a bootstrapped `~/.nanobot/workspace` |
 | This repo's own loop | `own` | none (no external CLI) |
 
+`--harness nanobot` reads its base config from
+`skills/nanobot/nanobot-kernel-session/config.json` by default. Passing
+`--model` alone only overrides `agents.defaults.model` — the provider (and
+its API key) still comes from that checked-in config, so switching to a
+model from a different provider needs its own base config. Set
+`NANOBOT_CONFIG_BASE` in `.env` (see `.env.example`) to point at one instead.
+
 ### Supported harness (claude-code / nanobot / own)
 
 If your harness already has a `HarnessAdapter`

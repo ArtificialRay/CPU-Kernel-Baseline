@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import re
 import socket
@@ -96,6 +97,71 @@ def _cost_proxy(name: str) -> int:
     for x in re.findall(r"\d+", name):
         prod *= max(int(x), 1)
     return prod
+
+
+def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root: str) -> None:
+    """Sync the repo, then collect + verify baseline traces BEFORE the MCP
+    server starts.
+    """
+    baseline_author = BASELINE_AUTHORS.get(dataset, dataset)
+    target = instance.target
+
+    print(f"[sync] Syncing benchmark inputs to {target.host} before baseline collection...")
+    target.rsync_to(str(REPO_ROOT), remote_root, paths=launch_session.RSYNC_ALLOWLIST)
+
+    missing = [d for d in definitions if not _has_passed_baseline(target, d, baseline_author, remote_root)]
+    if not missing:
+        print(f"[baselines] All {len(definitions)} baseline trace(s) present.")
+        return
+
+    print(f"[baselines] {len(missing)}/{len(definitions)} definition(s) missing baseline "
+          f"traces — collecting (author={baseline_author!r})...")
+    for i, name in enumerate(missing):
+        print(f"  [{i + 1}/{len(missing)}] {name} ...", end=" ", flush=True)
+        rc, out, err = target.run(
+            f"cd {remote_root} && python3 -m bench.cli collect-baselines "
+            f"--baseline-author {baseline_author} --definition {name}",
+            timeout=1500,
+        )
+        print("OK" if rc == 0 else "FAILED")
+        if rc != 0:
+            combined = "\n".join(filter(None, [out.strip(), err.strip()]))
+            raise RuntimeError(
+                f"Baseline collection failed for {name}; refusing to start the agent "
+                f"(speedup would come back None).\n{combined}"
+            )
+
+    still_missing = [d for d in missing if not _has_passed_baseline(target, d, baseline_author, remote_root)]
+    if still_missing:
+        raise RuntimeError(
+            f"collect-baselines reported success but no PASSED baseline trace exists for: "
+            f"{', '.join(still_missing)}"
+        )
+
+
+def _has_passed_baseline(target, definition: str, baseline_author: str, remote_root: str) -> bool:
+    """True when `definition` already has a PASSED trace for `baseline_author`
+    on this host. Host-specific on purpose: baselines are absolute timings, so
+    one is only valid on the machine that measured it."""
+    check = (
+        "import json,sys\n"
+        "from pathlib import Path\n"
+        f"td = Path({remote_root!r}).expanduser() / 'bench-trace' / 'traces'\n"
+        f"for f in td.rglob({definition!r} + '.jsonl'):\n"
+        "    for line in f.open():\n"
+        "        line = line.strip()\n"
+        "        if not line:\n"
+        "            continue\n"
+        "        r = json.loads(line)\n"
+        f"        sol = r.get('solution','')\n"
+        f"        ev = r.get('evaluation') or {{}}\n"
+        f"        if sol.startswith({baseline_author!r}) and ev.get('status') == 'PASSED':\n"
+        "            sys.exit(0)\n"
+        "sys.exit(1)\n"
+    )
+    b64 = base64.b64encode(check.encode()).decode()
+    rc, _, _ = target.run(f"echo {b64!r} | base64 -d | python3", timeout=60)
+    return rc == 0
 
 
 def build_jobs(
@@ -190,9 +256,22 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
     )
 
+    # Build the job list first: ensure_baselines() needs the definition names,
+    # and it has to run between the repo sync and the MCP server start.
+    jobs = build_jobs(
+        dataset, isa, args.definitions, args.min_iterations, max_iterations,
+        adapter.prompt_template, adapter.template_args,
+    )
+    if jobs:
+        ensure_baselines(
+            instance, dataset, [j.name for j in jobs], args.remote_root,
+        )
+
+    # sync_repo=False: ensure_baselines() already synced, and re-syncing here
+    # would rsync --delete the baselines it just collected.
     prepared = prepare_session(
         instance.target, dataset, author, isa,
-        remote_root=args.remote_root, sync_repo=True,
+        remote_root=args.remote_root, sync_repo=False,
         local_repo_dir=str(REPO_ROOT), local_port=local_port,
         remote_port=args.remote_port, max_iterations=max_iterations,
     )
@@ -206,10 +285,6 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
         )
     ran_jobs: list[Job] = []
     try:
-        jobs = build_jobs(
-            dataset, isa, args.definitions, args.min_iterations, max_iterations,
-            adapter.prompt_template, adapter.template_args,
-        )
         if not jobs:
             print(
                 f"No definitions found for --dataset {dataset} "
@@ -254,7 +329,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
                 attempt += 1
             print(f"=== [{time.strftime('%H:%M:%S')}] job {job.name} finished -> {log_path} ===")
             sync_job_results(label, author, job.name, local_results_dir)
-            wandb_log_job(adapter, job.name, dataset, isa, args, author, log_path, local_results_dir)
+            wandb_log_job(job.name, dataset, isa, args, author, local_results_dir)
 
         print(f"All jobs done. Logs in {log_dir}")
         if hasattr(adapter, "cleanup"):
@@ -420,19 +495,15 @@ def run_until_complete(args: argparse.Namespace) -> None:
     )
 
 
-def wandb_log_job(adapter, name, dataset, isa, args, author, log_path, local_results_dir) -> None:
-    """Optional Weights & Biases logging (off unless --wandb). Asks `adapter`
-    (whichever HarnessAdapter ran this job) to parse its own log format into
-    a SessionMetrics, then hands that plus the just-synced trajectory to
-    analysis/wandb_log_run.py """
+def wandb_log_job(name, dataset, isa, args, author, local_results_dir) -> None:
+    """Optional Weights & Biases logging (off unless --wandb). Hands the
+    just-synced trajectory to analysis/wandb_log_run.py."""
     if not args.wandb:
         return
     try:
-        session = adapter.parse_session_metrics(log_path)
         wandb_log_run.log_run_to_wandb(
             name=name, dataset=dataset, isa=isa, model=args.model or "unknown", author=author,
             trajectory_path=wandb_log_run._locate_trajectory(str(local_results_dir), name),
-            session=session,
             project=args.wandb_project,
             entity=args.wandb_entity,
             group=args.wandb_group or f"{args.harness}-{isa}-{time.strftime('%Y%m%d')}",

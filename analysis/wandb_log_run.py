@@ -5,21 +5,16 @@ Imported directly by test_scripts/bench_fleet.py (log_run_to_wandb()) —
 not invoked as a subprocess. See analysis/README.md for what every field
 below means and where to find it on the W&B run page.
 
-Parses two artifacts into one rich W&B run per definition:
-  - the trajectory (`trajectory.jsonl`, written by mcp_app's TrajectoryWriter
-    — same format regardless of which harness drove the session)
-  - a SessionMetrics object (test_scripts/harness_adapters.py) — harness-
-    specific session telemetry (cost, tokens, turn latency), already parsed
-    by the calling HarnessAdapter before this module ever sees it. This
-    module has no harness-format knowledge of its own.
+Parses the trajectory (`trajectory.jsonl`, written by mcp_app's
+TrajectoryWriter — same format regardless of which harness drove the
+session) into one rich W&B run per definition:
 
   per-evaluate (the metric curve = the spaghetti line):
     time/cycle speedup, best-so-far, ipc, cache-misses, max abs/rel error, status
   run summary:
     best_speedup, best_version + iteration it was found, starting (v1/scalar)
     speedup, weak-baseline signal (baseline-vs-scalar), iters-to-1x,
-    iters-to-plateau, error taxonomy, cost, tokens, retries, wall-time,
-    cost-per-speedup, cost-per-iteration, baseline hash
+    iters-to-plateau, error taxonomy, baseline hash
   tables/artifacts:
     winning kernel (browsable) + techniques used per version, and a versioned
     'kernel' artifact bundling every vN.cpp (+ vN.s if disassembled) + trajectory
@@ -36,7 +31,6 @@ import json
 import math
 import os
 import re
-import statistics
 import sys
 from collections import Counter
 from pathlib import Path
@@ -182,17 +176,13 @@ def find_best_kernel(traj: Path, ver_best: dict):
 def log_run_to_wandb(
     *, name: str, dataset: str, isa: str, model: str, author: str,
     trajectory_path: Optional[Path],
-    session,  # test_scripts.harness_adapters.SessionMetrics
     project: str = "arm-bench-kernels",
     entity: Optional[str] = None,
     group: Optional[str] = None,
 ) -> None:
-    """Log one definition's run to W&B. `session` carries whatever
-    session-level telemetry the calling HarnessAdapter could extract from
-    its own log format — fields it couldn't extract are left at their
-    SessionMetrics defaults (None/0/empty) and simply don't appear in the
-    summary. Never raises: the caller (bench_fleet.py) wraps this in a
-    try/except so a wandb hiccup never aborts the batch."""
+    """Log one definition's run to W&B. Never raises: the caller
+    (bench_fleet.py) wraps this in a try/except so a wandb hiccup never
+    aborts the batch."""
     try:
         import wandb
     except ImportError:
@@ -202,8 +192,7 @@ def log_run_to_wandb(
     traj = trajectory_path
     rows, ver_best, compile_status, eval_status, ver_err = (
         parse_trajectory(traj) if traj and traj.exists() else ([], {}, [], [], {}))
-    turn_rows = session.turn_rows
-    if not rows and not turn_rows and session.cost_usd is None:
+    if not rows:
         print(f"[wandb_log_run] no data for {name} — skipping", file=sys.stderr)
         return
 
@@ -236,22 +225,6 @@ def log_run_to_wandb(
                    **{k: v for k, v in r.items() if v is not None and k not in ("status", "version", "turn")}},
                   step=r["turn"])
 
-    # ── per-turn latency curve (own x-axis so it doesn't fight the eval steps) ─
-    if turn_rows:
-        run.define_metric("turn/idx")
-        run.define_metric("turn/*", step_metric="turn/idx")
-        for i, t in enumerate(turn_rows, 1):
-            wandb.log({"turn/idx": i, "turn/total_s": t.total_s,
-                       "turn/llm_s": t.llm_s, "turn/tool_s": t.tool_s})
-        totals = [t.total_s for t in turn_rows]
-        run.summary.update({
-            "sec_per_turn_mean": round(sum(totals) / len(totals), 1),
-            "sec_per_turn_median": round(statistics.median(totals), 1),
-            "sec_per_turn_max": round(max(totals), 1),
-            "llm_time_s": round(sum(t.llm_s for t in turn_rows), 1),
-            "tool_time_s": round(sum(t.tool_s for t in turn_rows), 1),
-        })
-
     # ── derived summary ───────────────────────────────────────────────────────
     speeds = [r["time_speedup"] for r in rows]
     best = max(speeds) if speeds else None
@@ -267,16 +240,7 @@ def log_run_to_wandb(
     ctax = Counter(compile_status)
     worst_abs = max((e[0] for e in ver_err.values() if e[0] is not None), default=None)
     worst_rel = max((e[1] for e in ver_err.values() if e[1] is not None), default=None)
-    cost = session.cost_usd
 
-    session_fields = {
-        "cost_usd": session.cost_usd, "num_turns": session.num_turns,
-        "wall_time_s": session.wall_time_s, "api_retries": session.api_retries,
-        "session_compile_errors": session.session_compile_errors,
-        "tokens_input": session.tokens_input, "tokens_output": session.tokens_output,
-        "tokens_cache_read": session.tokens_cache_read,
-        "tokens_cache_created": session.tokens_cache_created,
-    }
     run.summary.update({
         "best_speedup": best,
         "best_version_iteration": best_idx,
@@ -295,9 +259,6 @@ def log_run_to_wandb(
         "n_compile_error": ctax.get("COMPILE_ERROR", 0),
         "worst_max_abs_error": worst_abs,
         "worst_max_rel_error": worst_rel,
-        "cost_per_speedup": round(cost / best, 4) if (cost and best) else None,
-        "cost_per_eval": round(cost / len(rows), 4) if (cost and rows) else None,
-        **{k: v for k, v in session_fields.items() if v is not None},
     })
 
     # ── winning kernel + techniques-per-version + artifact ────────────────────
@@ -328,22 +289,16 @@ def log_run_to_wandb(
 
     run.finish()
     print(f"[wandb_log_run] logged {name}: best={best} evals={len(rows)} "
-          f"weak_baseline={base_vs_scalar is not None and base_vs_scalar < 2.0} "
-          f"cost={cost} tokens_out={session.tokens_output}")
+          f"weak_baseline={base_vs_scalar is not None and base_vs_scalar < 2.0}")
 
 
 def _cli_main() -> int:
     """Thin manual-backfill entry point: `python analysis/wandb_log_run.py
-    --name ... --log-file ... --results-dir ...` re-logs one already-finished
-    claude-code job. Not used by bench_fleet.py (which calls
-    log_run_to_wandb() directly with an already-parsed SessionMetrics from
-    whichever HarnessAdapter ran the job) — this is for manually re-running
-    or debugging the W&B logging for one definition after the fact."""
+    --name ... --results-dir ...` re-logs one already-finished job. Not used
+    by bench_fleet.py (which calls log_run_to_wandb() directly) — this is
+    for manually re-running or debugging the W&B logging for one definition
+    after the fact."""
     import argparse
-
-    repo_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(repo_root))
-    from test_scripts.harness_adapters import SessionMetrics, parse_claude_code_session_log
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--name", required=True)
@@ -351,7 +306,6 @@ def _cli_main() -> int:
     p.add_argument("--isa", required=True)
     p.add_argument("--model", default="unknown")
     p.add_argument("--author", default="unknown")
-    p.add_argument("--log-file", default="", help="claude-code stream-json session log.")
     p.add_argument("--results-dir", default="")
     p.add_argument("--trajectory", default="")
     p.add_argument("--project", default="arm-bench-kernels")
@@ -360,12 +314,9 @@ def _cli_main() -> int:
     args = p.parse_args()
 
     traj = Path(args.trajectory) if args.trajectory else _locate_trajectory(args.results_dir, args.name)
-    session = (parse_claude_code_session_log(Path(args.log_file))
-               if args.log_file and Path(args.log_file).exists()
-               else SessionMetrics())
     log_run_to_wandb(
         name=args.name, dataset=args.dataset, isa=args.isa, model=args.model, author=args.author,
-        trajectory_path=traj, session=session,
+        trajectory_path=traj,
         project=args.project, entity=args.entity, group=args.group,
     )
     return 0
