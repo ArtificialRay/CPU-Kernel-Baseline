@@ -615,8 +615,9 @@ def main(argv: Optional[list[str]] = None) -> None:
                  "— each dataset needs its own instance label; omit --label and let it be "
                  "computed per dataset.")
     run_until_complete(args)
-    print(f"=== [{time.strftime('%H:%M:%S')}] Teardown all living mcp server...")
-    launch_session._teardown()
+    if not args.skip_final_teardown:
+        print(f"=== [{time.strftime('%H:%M:%S')}] Teardown all living mcp server...")
+        launch_session._teardown()
 
 
 if __name__ == "__main__":

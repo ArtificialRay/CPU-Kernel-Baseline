@@ -34,6 +34,7 @@ Usage:
 """
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -343,9 +344,7 @@ def teardown(label: str | None = None):
     if result.returncode != 0:
         raise RuntimeError(f"terraform destroy failed for label={label!r}")
     if EVAL_CONFIG_PATH.exists():
-        config = json.loads(EVAL_CONFIG_PATH.read_text())
-        config.get("instances", {}).pop(label, None)
-        EVAL_CONFIG_PATH.write_text(json.dumps(config, indent=2))
+        _update_config(lambda config: config.get("instances", {}).pop(label, None))
     print(f"[teardown] label={label!r} terminated.")
 
 
@@ -419,19 +418,36 @@ def _is_reachable(handle: InstanceHandle) -> bool:
         return False
 
 
-def _save_config(handle: InstanceHandle, label: str):
-    config = {}
-    if EVAL_CONFIG_PATH.exists():
-        config = json.loads(EVAL_CONFIG_PATH.read_text())
+def _update_config(mutate):
+    """Read-modify-write eval_config.json under an exclusive file lock, so
+    concurrent bench_fleet.py processes (one per label) can't clobber each
+    other's writes with a stale read (each process only touches its own
+    label's key"""
+    EVAL_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    EVAL_CONFIG_PATH.touch(exist_ok=True)
+    with open(EVAL_CONFIG_PATH, "r+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            text = f.read()
+            config = json.loads(text) if text.strip() else {}
+            mutate(config)
+            f.seek(0)
+            f.truncate()
+            f.write(json.dumps(config, indent=2))
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
-    config.setdefault("instances", {})
-    config["instances"][label] = {
-        "host": handle.host,
-        "user": handle.user,
-        "key_file": handle.key_file,
-        "instance_type": handle.instance_type,
-    }
-    EVAL_CONFIG_PATH.write_text(json.dumps(config, indent=2))
+
+def _save_config(handle: InstanceHandle, label: str):
+    def mutate(config):
+        config.setdefault("instances", {})
+        config["instances"][label] = {
+            "host": handle.host,
+            "user": handle.user,
+            "key_file": handle.key_file,
+            "instance_type": handle.instance_type,
+        }
+    _update_config(mutate)
 
 
 def status():
