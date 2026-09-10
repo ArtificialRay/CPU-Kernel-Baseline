@@ -229,7 +229,14 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
             f"--isa {isa}, author={author}, label={label}"
         )
 
+        skipped_for_deadline: list[str] = []
         for job in jobs:
+            if args.deadline_epoch and time.time() >= args.deadline_epoch:
+                # Time budget reached: never start a new job past the deadline
+                # (a running one is always allowed to finish — killing it would
+                # waste its LLM spend and leave an unusable trajectory).
+                skipped_for_deadline.append(job.name)
+                continue
             ran_jobs.append(job)
             log_path = log_dir / f"{dataset}_{isa}_{job.name}.log"
             attempt = 0
@@ -272,9 +279,13 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
             except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
                 print(f"  WARNING: sync-solutions failed: {e}", file=sys.stderr)
 
+        if skipped_for_deadline:
+            print(f"=== [{time.strftime('%H:%M:%S')}] TIME BUDGET REACHED — did not start "
+                  f"{len(skipped_for_deadline)} job(s): {skipped_for_deadline} ===")
         incomplete = [
             j.name for j in jobs
-            if not _trajectory_complete(local_results_dir, j.name, args.min_iterations)
+            if j.name not in skipped_for_deadline
+            and not _trajectory_complete(local_results_dir, j.name, args.min_iterations)
         ]
         if incomplete:
             should_stop_tunnel = False
@@ -290,6 +301,21 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
             adapter.cleanup_workspace(job)
         if should_stop_tunnel:
             stop_tunnel(prepared)
+
+
+def _teardown_datasets(datasets: list[str], author: str) -> None:
+    """Wind-down: destroy every box this sweep provisioned (one per dataset
+    label). Labels with no registered instance are skipped; a failed
+    teardown is a warning — the watchdog still bounds that box's cost."""
+    for ds in datasets:
+        label = launch_session._label_for(ds, author)
+        if launch_session._read_config_instance(label) is None:
+            continue
+        print(f"=== [{time.strftime('%H:%M:%S')}] tearing down {label} ===")
+        try:
+            launch_session._teardown(label)
+        except Exception as e:  # noqa: BLE001 — watchdog still bounds the cost
+            print(f"  WARNING: teardown failed for {label}: {e}", file=sys.stderr)
 
 
 def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: list[str], author: str) -> None:
@@ -316,6 +342,8 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
     if args.instance:
         cmd += ["--instance", args.instance]
     cmd += ["--watchdog-minutes", str(args.watchdog_minutes)]
+    if args.deadline_epoch:
+        cmd += ["--deadline-epoch", repr(args.deadline_epoch)]
     if args.on_demand:
         cmd.append("--on-demand")
     if args.local_results_dir:
@@ -370,12 +398,7 @@ def run_until_complete(args: argparse.Namespace) -> None:
             print(f"=== [{time.strftime('%H:%M:%S')}] ALL COMPLETE at round {round_num} ===")
             # Nothing left to run: tear the boxes down now rather than
             # leaving them to the watchdog's trailing window.
-            for ds in datasets:
-                label = launch_session._label_for(ds, author)
-                try:
-                    launch_session._teardown(label)
-                except Exception as e:  # noqa: BLE001 — watchdog still bounds the cost
-                    print(f"  WARNING: teardown failed for {label}: {e}", file=sys.stderr)
+            _teardown_datasets(datasets, author)
             return
 
         print(
@@ -413,6 +436,12 @@ def run_until_complete(args: argparse.Namespace) -> None:
                     continue
                 idx[ds] += len(chunk)
                 _run_chunk_subprocess(args, ds, chunk, author)
+                if args.deadline_epoch and time.time() >= args.deadline_epoch:
+                    print(f"=== [{time.strftime('%H:%M:%S')}] TIME BUDGET REACHED — winding "
+                          f"down; re-run the same command to resume (completed definitions "
+                          f"are skipped automatically) ===")
+                    _teardown_datasets(datasets, author)
+                    return
                 if idx[ds] >= len(names):
                     active.remove(ds)
 
@@ -504,6 +533,15 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "attempt, so a live run keeps pushing the deadline out while an "
                         "orphaned box (dead tunnel, killed driver, closed lid) dies on its "
                         "own. 0 disables.")
+    p.add_argument("--time-budget-hours", type=float, default=None,
+                   help="Run in a bounded session: no new job starts after this many hours "
+                        "(the job in flight finishes), then --until-complete tears the boxes "
+                        "down. Re-run the same command later to resume — completed "
+                        "definitions are skipped.")
+    p.add_argument("--deadline-epoch", type=float, default=None,
+                   help="Advanced: absolute Unix-time deadline (overrides --time-budget-hours). "
+                        "Lets a wrapper share one deadline across several sequential "
+                        "invocations, e.g. one per dataset.")
     p.add_argument("--max-budget-usd", default=None, help="claude-code only: hard $ ceiling per job.")
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
@@ -532,6 +570,11 @@ def main(argv: Optional[list[str]] = None) -> None:
                    help="Default: '{harness}-{isa}-{today's date}', so one sweep's jobs land in "
                         "one group.")
     args = p.parse_args(argv)
+    if args.deadline_epoch is None and args.time_budget_hours:
+        args.deadline_epoch = time.time() + args.time_budget_hours * 3600
+    if args.deadline_epoch:
+        print(f"=== time budget: no new job starts after "
+              f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(args.deadline_epoch))} ===")
 
     if not args.until_complete:
         if len(args.dataset) != 1:
