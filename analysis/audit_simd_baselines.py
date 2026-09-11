@@ -35,15 +35,25 @@ def build_with(sol: Solution, d: Definition, march: str | None):
     return SimdLoopBuilder().build(d, sol)
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--author", default="baseline-sve",
+                    help="baseline author to audit (baseline-sve on a Graviton3, baseline-sve2 on a Graviton4)")
+    ap.add_argument("loops", nargs="*", help="optional loop ids to restrict to (e.g. 038 loop_109)")
+    args = ap.parse_args()
+    author = args.author
+    only = {a if a.startswith("loop_") else f"loop_{a}" for a in args.loops}
     ts = TraceSet.from_path(BT)
-    cfg = BenchmarkConfig(baseline_author="baseline-sve")
+    cfg = BenchmarkConfig(baseline_author=author)
     rows = []
     for p in sorted((BT / "definitions" / "simd-loop").glob("*.json")):
         d = Definition.model_validate(json.loads(p.read_text())); lid = d.name
-        sp = BT / "solutions" / "simd-loop" / "baseline-sve" / lid / f"baseline-sve_{lid}.json"
+        if only and lid not in only:
+            continue
+        sp = BT / "solutions" / "simd-loop" / author / lid / f"{author}_{lid}.json"
         row = {"loop": lid, "solution": sp.exists(), "compile": "-", "eval": "-", "note": ""}
         if not sp.exists():
-            row["note"] = "no baseline-sve solution (SKIP list / no clean SVE block)"; rows.append(row); continue
+            row["note"] = f"no {author} solution (SKIP list / no clean SVE block)"; rows.append(row); continue
         sol = Solution.model_validate(json.loads(sp.read_text()))
         so = None
         try:
@@ -76,7 +86,7 @@ def main():
         k = "no solution" if not r["solution"] else ("compile fail" if r["compile"] == "FAIL" else f"eval {r['eval']}")
         cats.setdefault(k, []).append(r["loop"])
     for k, v in cats.items(): print(f"{k}: {len(v)} {v}")
-    json.dump(rows, open(ROOT / "simd_audit.json", "w"), indent=1)
+    json.dump(rows, open(ROOT / "simd_audit.json", "w"), indent=1)  # noqa: all loops audited
 
 if __name__ == "__main__":
     main()

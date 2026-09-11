@@ -35,6 +35,16 @@ baseline_authors:
   simd-loop: "baseline-sve"
   llama.cpp: "baseline-llamacpp-arm"
 
+# dataset -> isa -> baseline author, for datasets whose expert baseline is
+# tier-specific. simd-loop ships Arm's plain-SVE kernels (Graviton3, with
+# inline-asm fallbacks where the ACLE code needs SVE2) as baseline-sve and the
+# SVE2/ACLE kernels (Graviton4) as baseline-sve2, so both tiers score against
+# code that actually runs on their box. Missing isa -> baseline_authors above.
+baseline_authors_by_isa:
+  simd-loop:
+    sve2: "baseline-sve2"
+    sme2: "baseline-sve2"
+
 # bench/config.py's BenchmarkConfig/EvalConfig field defaults. baseline_author
 # intentionally isn't duplicated here — it reuses baseline_authors.ncnn above.
 eval_defaults:

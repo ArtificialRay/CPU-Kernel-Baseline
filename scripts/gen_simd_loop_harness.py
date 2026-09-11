@@ -32,6 +32,7 @@ Loops requiring custom handling (skipped):
 from __future__ import annotations
 
 import json
+import sys
 import re
 import uuid as _uuid
 from dataclasses import dataclass, field
@@ -731,10 +732,58 @@ _CPP_STUB_HEADERS = [
     "math.h", "stdbool.h", "stdio.h", "stdlib.h", "string.h", "stddef.h",
     "arm_sve.h", "arm_neon.h", "arm_bf16.h", "arm_sme.h", "arm_acle.h",
 ]
-# What the upstream `make` defines for a Graviton3 (armv8.2-a+sve, no SVE2)
-# intrinsics build; the target triple/-march make the compiler add
-# __ARM_FEATURE_SVE / __aarch64__ itself, exactly as on the box.
-_CPP_TARGET = ["-target", "aarch64-linux-gnu", "-march=armv8.2-a+sve"]
+# The two baseline tiers. Each is a separate solution author so a Graviton3
+# (sve) box and a Graviton4 (sve2) box both score against Arm code that runs
+# there: the preprocessor selects branches for the tier's -march (from
+# contracts.ISA_TABLE, the same march the box compiles candidates with), the
+# compiler adds __ARM_FEATURE_SVE/__ARM_FEATURE_SVE2/__aarch64__ itself.
+#   asm_fallback: loops whose HAVE_SVE_INTRINSICS (ACLE) branch needs SVE2 but
+#     which carry a plain-SVE inline-asm branch upstream (`#elif
+#     defined(__ARM_FEATURE_SVE)`) — Arm-authored too, and what upstream `make`
+#     builds on a Graviton3. Cross-compile-checked 2026-09-11, runtime-audited
+#     on a c7g.large with analysis/audit_simd_baselines.py.
+#   skip: no usable kernel at that tier (SVE2-only upstream with only a
+#     scalar/NEON alternative; multi-axis ABI mismatch; unresolved), so no
+#     broken baseline is ever emitted.
+_SVE_TIERS = {
+    "sve": {
+        "author": "baseline-sve",
+        "isa_features": ["sve"],
+        "asm_fallback": {
+            "loop_038", "loop_103", "loop_105", "loop_108", "loop_109", "loop_110",
+            "loop_112", "loop_113", "loop_114", "loop_124",
+        },
+        "skip": {
+            # SVE2-only upstream (101, 106: sve2-bitperm; 102: svhistcnt; 104:
+            # svhistseg; 123: svtbl2; 130, 135: SVE2 matmul).
+            "loop_101", "loop_102", "loop_104", "loop_106", "loop_123", "loop_130", "loop_135",
+            # multi-axis matmul (m/n/k): extracted SVE kernel's ABI still mismatches binding.
+            "loop_216", "loop_217", "loop_218", "loop_220", "loop_221", "loop_223",
+            # extraction/runtime issue not yet resolved.
+            "loop_128",
+        },
+    },
+    "sve2": {
+        "author": "baseline-sve2",
+        "isa_features": ["sve2"],
+        "asm_fallback": set(),
+        "skip": {
+            # Need ISA features beyond the sve2 tier's -march=armv9-a+sve2
+            # (106: sve2-bitperm; 130: f32mm; 135: i8mm), so the
+            # preprocessor lands on their scalar/NEON branch. Revisit if the
+            # tier march grows those features.
+            "loop_106", "loop_130", "loop_135",
+            "loop_216", "loop_217", "loop_218", "loop_220", "loop_221", "loop_223",
+            "loop_128",
+        },
+    },
+}
+
+
+def _cpp_target(tier: str) -> list:
+    sys.path.insert(0, str(REPO))
+    from contracts import ISA_TABLE
+    return ["-target", "aarch64-linux-gnu", ISA_TABLE[tier].march]
 
 
 def _clang() -> str:
@@ -745,7 +794,7 @@ def _clang() -> str:
     raise RuntimeError("gen_simd_loop_harness needs clang on PATH to select SVE branches")
 
 
-def _cpp_select(src: Path, intrinsics: bool, from_line: int = 1) -> str:
+def _cpp_select(src: Path, intrinsics: bool, from_line: int = 1, tier: str = "sve") -> str:
     """Resolve `src`'s #if/#elif chain the way the upstream build does for a
     Graviton3 target, and return ONLY its own surviving text (from source line
     `from_line` on) with macros left unexpanded (clang -E -fdirectives-only).
@@ -763,7 +812,7 @@ def _cpp_select(src: Path, intrinsics: bool, from_line: int = 1) -> str:
         copy = Path(td) / src.name
         shutil.copy(src, copy)
         cmd = [_clang(), "-E", "-fdirectives-only", "-nostdinc", "-I", str(inc),
-               *_CPP_TARGET, *(["-DHAVE_SVE_INTRINSICS"] if intrinsics else []),
+               *_cpp_target(tier), *(["-DHAVE_SVE_INTRINSICS"] if intrinsics else []),
                "-x", "c", str(copy)]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
@@ -799,7 +848,7 @@ def _tidy_extracted(code: str) -> str:
     return code
 
 
-def _extract_sve_kernel(loop_id: str) -> str:
+def _extract_sve_kernel(loop_id: str, tier: str = "sve") -> str:
     """Extract the Arm-authored SVE implementation of loops/loop_NNN.c as a
     self-contained extern "C" kernel, or "" if the loop has none.
 
@@ -818,12 +867,12 @@ def _extract_sve_kernel(loop_id: str) -> str:
     raw = c_file.read_text()
     if "HAVE_SVE_INTRINSICS" not in raw and "__ARM_FEATURE_SVE" not in raw:
         return ""
-    intrinsics = loop_id not in _SVE_ASM_FALLBACK
+    intrinsics = loop_id not in _SVE_TIERS[tier]["asm_fallback"]
     num = re.search(r"loop_(\d+)", loop_id).group(1)
     raw_lines = raw.splitlines()
     first_cond = next((i + 1 for i, ln in enumerate(raw_lines)
                        if re.match(r"\s*#\s*(if|ifdef|ifndef)\b", ln)), 1)
-    lines = _cpp_select(c_file, intrinsics, from_line=first_cond).splitlines()
+    lines = _cpp_select(c_file, intrinsics, from_line=first_cond, tier=tier).splitlines()
     cut = next((i for i, ln in enumerate(lines)
                 if re.match(r"\s*LOOP_DECL\s*\(|\s*int\s+main\s*\(", ln)), len(lines))
     lines = lines[:cut]
@@ -837,17 +886,17 @@ def _extract_sve_kernel(loop_id: str) -> str:
     # Loops that lean on common/sort.c (shared OET/insertion/radix helpers)
     # get that file's matching branch appended — Arm-authored as well.
     if re.search(r'#include\s+"(common/)?sort\.h"', raw):
-        common = _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.h", intrinsics))
-        common += "\n" + _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.c", intrinsics))
+        common = _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.h", intrinsics, tier=tier))
+        common += "\n" + _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.c", intrinsics, tier=tier))
         code = common + "\n" + code
     code = re.sub(rf'^void\s+(NOINLINE\s+)?inner_loop_{num}\b', rf'extern "C" void inner_loop_{num}',
                   code, flags=re.MULTILINE)
     return code
 
 
-def _sve_kernel_src(lid: str) -> str:
-    """kernel.cpp for the baseline-sve author, or "" if no SVE block exists."""
-    extracted = _extract_sve_kernel(lid)
+def _sve_kernel_src(lid: str, tier: str = "sve") -> str:
+    """kernel.cpp for the tier's baseline author, or "" if no SVE block exists."""
+    extracted = _extract_sve_kernel(lid, tier)
     if not extracted:
         return ""
     return f'#include "{lid}.h"\n' + _SVE_PRELUDE + "\n" + extracted + "\n"
@@ -1019,71 +1068,49 @@ def _write_solution_pair(lid: str, sources: list) -> None:
             print(f"  wrote {out_path.relative_to(REPO)}")
 
 
-# Loops whose HAVE_SVE_INTRINSICS (ACLE) branch needs SVE2 (svhistcnt,
-# svnmatch, svaddp, svcadd, svcdot, svcmla, svmullb, svldnt1_gather, ...) but
-# which carry a plain-SVE inline-asm branch upstream (`#elif
-# defined(__ARM_FEATURE_SVE)`): the baseline-sve author takes that branch —
-# Arm-authored too, and what the upstream `make` builds on a Graviton3.
-# Cross-compile-checked for armv8.2-a+sve 2026-09-11; runtime-audited on a
-# c7g.large with analysis/audit_simd_baselines.py.
-_SVE_ASM_FALLBACK = {
-    "loop_038", "loop_103", "loop_105", "loop_108", "loop_109", "loop_110",
-    "loop_112", "loop_113", "loop_114", "loop_124",
-}
-
-_SVE_SKIP = {
-    # SVE2-only upstream: the ACLE branch needs SVE2 and the only alternative
-    # branch is scalar/NEON (101, 106: sve2-bitperm; 102: svhistcnt; 104:
-    # svhistseg; 123: svtbl2; 130, 135: SVE2 matmul). No SVE baseline exists
-    # for a Graviton3, so none is emitted.
-    "loop_101", "loop_102", "loop_104", "loop_106", "loop_123", "loop_130", "loop_135",
-    # multi-axis matmul (m/n/k): extracted SVE kernel's ABI still mismatches binding.
-    "loop_216", "loop_217", "loop_218", "loop_220", "loop_221", "loop_223",
-    # extraction/runtime issue not yet resolved.
-    "loop_128",
-}
-
-
 def _write_sve_solution(lid: str, base_sources: list) -> None:
-    """Emit the `baseline-sve` author: same harness as the reference/autovec pair,
-    with kernel.cpp replaced by the Arm-authored HAVE_SVE_INTRINSICS kernel. The
-    expert hand-SVE ceiling. No-op for loops without a (clean) SVE-intrinsics block."""
-    if lid in _SVE_SKIP:
-        return
-    kernel = _sve_kernel_src(lid)
-    if not kernel:
-        return
-    sources = [
-        s if s["path"] != "kernel.cpp" else {"path": "kernel.cpp", "content": kernel}
-        for s in base_sources
-    ]
-    author = "baseline-sve"
-    out_dir = BENCH_TRACE / "solutions" / "simd-loop" / author / lid
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{author}_{lid}.json"
-    solution = {
-        "name": f"{author}_{lid}",
-        "definition": lid,
-        "dataset": "simd-loop",
-        "author": author,
-        "spec": {
-            "language": "cpp",
-            "target_hardware": ["aarch64"],
-            "entry_point": f"kernel.cpp::inner_{lid}",
-            "dependencies": [],
-            "isa_features": ["sve2"],
-            # Arm's C compiled as C++: designated initialisers with size_t
-            # arithmetic (common/sort.c) are a narrowing error in C++ only.
-            "compile_flags": ["-O3", "-std=c++14", "-march=native", "-Wno-c++11-narrowing"],
-            "link_flags": [],
-        },
-        "sources": sources,
-        "description": f"Arm hand-written SVE intrinsics for {lid} (expert ceiling).",
-    }
-    content = json.dumps(solution, indent=2) + "\n"
-    if not out_path.exists() or out_path.read_text() != content:
-        out_path.write_text(content)
-        print(f"  wrote {out_path.relative_to(REPO)}")
+    """Emit one expert-SVE author per tier in _SVE_TIERS (baseline-sve for a
+    Graviton3, baseline-sve2 for a Graviton4): same harness as the
+    reference/autovec pair, with kernel.cpp replaced by the Arm-authored kernel
+    selected for that tier. The expert hand-SVE ceiling. No-op for a tier where
+    the loop is skipped or has no SVE block."""
+    for tier, spec in _SVE_TIERS.items():
+        if lid in spec["skip"]:
+            continue
+        kernel = _sve_kernel_src(lid, tier)
+        if not kernel:
+            continue
+        sources = [
+            s if s["path"] != "kernel.cpp" else {"path": "kernel.cpp", "content": kernel}
+            for s in base_sources
+        ]
+        author = spec["author"]
+        out_dir = BENCH_TRACE / "solutions" / "simd-loop" / author / lid
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{author}_{lid}.json"
+        solution = {
+            "name": f"{author}_{lid}",
+            "definition": lid,
+            "dataset": "simd-loop",
+            "author": author,
+            "spec": {
+                "language": "cpp",
+                "target_hardware": ["aarch64"],
+                "entry_point": f"kernel.cpp::inner_{lid}",
+                "dependencies": [],
+                "isa_features": list(spec["isa_features"]),
+                # Arm's C compiled as C++: designated initialisers with size_t
+                # arithmetic (common/sort.c) are a narrowing error in C++ only.
+                "compile_flags": ["-O3", "-std=c++14", "-march=native", "-Wno-c++11-narrowing"],
+                "link_flags": [],
+            },
+            "sources": sources,
+            "description": f"Arm hand-written SVE kernel for {lid} ({tier} tier expert ceiling).",
+        }
+        content = json.dumps(solution, indent=2) + "\n"
+        if not out_path.exists() or out_path.read_text() != content:
+            out_path.write_text(content)
+            print(f"  wrote {out_path.relative_to(REPO)}")
 
 
 def _scalar_kernel_src(lid: str) -> str:
