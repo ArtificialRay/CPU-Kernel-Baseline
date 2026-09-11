@@ -228,14 +228,18 @@ def _trajectory_complete(local_results_dir: Path, job_name: str, min_iterations:
     return exploration_calls >= min_iterations
 
 
-def run_fleet(args: argparse.Namespace, dataset: str) -> None:
+def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     """Provision/reuse one instance, drive `dataset`'s matching definitions
     (narrowed by --definitions) through the chosen harness exactly once,
     sync, and close the session. This is the single-pass primitive —
     --until-complete's run_until_complete() re-invokes this script as a
     fresh subprocess per (dataset, chunk) instead of calling this directly,
     so each round/chunk gets its own process (see _run_chunk_subprocess's
-    docstring for why)."""
+    docstring for why). 
+    
+    Returns the instance label this call provisioned/
+    reused, so main() can scope its final teardown to just this instance
+    instead of tearing down every instance eval/provision.py knows about."""
     adapter: HarnessAdapter
     model = args.model
     local_port = _free_local_port()
@@ -363,6 +367,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
         for job in ran_jobs:
             adapter.cleanup_workspace(job)
         stop_tunnel(prepared)
+    return label
 
 
 def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: list[str], author: str) -> None:
@@ -415,7 +420,7 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
     subprocess.run(cmd, check=False)
 
 
-def run_until_complete(args: argparse.Namespace) -> None:
+def run_until_complete(args: argparse.Namespace) -> list[str]:
     """Keep resuming across every --dataset — interleaved round-robin,
     cost-sorted within each dataset — until every matching definition has a
     confirmed-complete local trajectory (a "submit" turn) or --max-rounds is
@@ -423,11 +428,16 @@ def run_until_complete(args: argparse.Namespace) -> None:
     Per-dataset stall detection: zero progress in a round only triggers
     a health probe (launch_session.is_instance_reachable) then distinguish if
     one instance is reachable, if not, start a fresh box
-    Generalized to any --harness/model."""
+    Generalized to any --harness/model.
+    
+    Returns the instance label for every --dataset, so main() can scope its
+    final teardown to just these instances instead of tearing down every
+    instance eval/provision.py knows about."""
     datasets = args.dataset
     # Resolve --model up front
     model = args.model or ADAPTER_CLASSES[args.harness].default_model()
     author = args.author or compute_author(args.harness, model, args.isa)
+    labels = [launch_session._label_for(ds, author) for ds in datasets]
     local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
     prev_incomplete_count: dict[str, Optional[int]] = {ds: None for ds in datasets}
     adapter_cls = ADAPTER_CLASSES[args.harness]
@@ -447,7 +457,7 @@ def run_until_complete(args: argparse.Namespace) -> None:
         } # filter all definition that has completed before by searching on local trajcetory directory
         if not any(per_ds_incomplete.values()):
             print(f"=== [{time.strftime('%H:%M:%S')}] ALL COMPLETE at round {round_num} ===")
-            return
+            return labels
 
         print(
             f"=== [{time.strftime('%H:%M:%S')}] round {round_num}/{args.max_rounds}: "
@@ -496,6 +506,7 @@ def run_until_complete(args: argparse.Namespace) -> None:
         f"=== [{time.strftime('%H:%M:%S')}] giving up after {args.max_rounds} round(s) "
         f"— still incomplete: {still_incomplete} ===", file=sys.stderr,
     )
+    return labels
 
 
 def wandb_log_job(name, dataset, isa, args, author, local_results_dir) -> None:
@@ -605,19 +616,20 @@ def main(argv: Optional[list[str]] = None) -> None:
     if not args.until_complete:
         if len(args.dataset) != 1:
             p.error("multiple --dataset values require --until-complete")
-        run_fleet(args, args.dataset[0])
+        label = run_fleet(args, args.dataset[0])
         if not args.skip_final_teardown:
-            print(f"=== [{time.strftime('%H:%M:%S')}] Teardown all living mcp server...")
-            launch_session._teardown()
+            print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
+            launch_session._teardown(label)
         return
     if args.label and len(args.dataset) > 1:
         p.error("--label can't be fixed across multiple --dataset values under --until-complete "
                  "— each dataset needs its own instance label; omit --label and let it be "
                  "computed per dataset.")
-    run_until_complete(args)
+    labels = run_until_complete(args)
     if not args.skip_final_teardown:
-        print(f"=== [{time.strftime('%H:%M:%S')}] Teardown all living mcp server...")
-        launch_session._teardown()
+        for label in labels:
+            print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
+            launch_session._teardown(label)
 
 
 if __name__ == "__main__":
