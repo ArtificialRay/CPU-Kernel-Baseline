@@ -54,7 +54,7 @@ EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see InstanceHandle.rsync_to's docstring.
 # TODO: fold into an env var
-RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt","config","contracts.py"]
+RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "skills", "requirements.txt", "config", "contracts.py"]
 DATASET_BUILDS_PATH = REPO_ROOT / "config" / "dataset_builds.json"
 
 # Must stay shell/HCL/JSON-key/AWS-tag safe — flows into a `terraform -target`
