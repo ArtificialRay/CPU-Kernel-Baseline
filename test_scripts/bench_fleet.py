@@ -191,7 +191,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
     isa = args.isa
     author = args.author or compute_author(args.harness, model, isa)
     label = args.label or launch_session._label_for(dataset, author)
-    max_iterations = args.max_iterations or (args.min_iterations + 10)
+    max_iterations = args.max_iterations or args.min_iterations
     instance_type = args.instance or ISA_INSTANCE_MAP.get(isa, "c7g.large")
     instance = launch_session._provision(
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
@@ -204,6 +204,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
         remote_root=args.remote_root, sync_repo=True,
         local_repo_dir=str(REPO_ROOT), local_port=local_port,
         remote_port=args.remote_port,
+        max_evaluates=max_iterations,   # hard server-side evaluate() budget (default = the floor)
     )
     ran_jobs: list[Job] = []
     should_stop_tunnel = True
@@ -423,7 +424,7 @@ def run_until_complete(args: argparse.Namespace) -> None:
     local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
     prev_incomplete_count: dict[str, Optional[int]] = {ds: None for ds in datasets}
     adapter_cls = ADAPTER_CLASSES[args.harness]
-    max_iterations = args.max_iterations or (args.min_iterations + 10)
+    max_iterations = args.max_iterations or args.min_iterations
 
     for round_num in range(1, args.max_rounds + 1):
         per_ds_incomplete = {

@@ -173,6 +173,7 @@ def _status() -> None:
 def _spawn_command(
     target: RemoteTarget, remote_root: str, datasets: list[str],
     author: str, baseline_author: Optional[str], isa: str, *, port: int,
+    max_evaluates: int = 0,
 ) -> str:
     """Remote command for a persistent streamable-http-mode mcp_app.server
     (see prepare_session's docstring for why this is the only mode this
@@ -182,8 +183,9 @@ def _spawn_command(
     mcp_app/agent_tools/dispatcher.py."""
     run_dir = f"{remote_root}/agent-runs-mcp/{author}"
     dataset_flags = " ".join(f"--dataset {ds}" for ds in datasets)
+    budget = f"ARMBENCH_MAX_EVALUATES={int(max_evaluates)} " if max_evaluates else ""
     cmd = (
-        f"cd {remote_root} && python3 -m mcp_app.server {dataset_flags} "
+        f"cd {remote_root} && {budget}python3 -m mcp_app.server {dataset_flags} "
         f"--author {author} --isa {isa} --run-dir {run_dir} "
         f"--transport streamable-http --bind-host 127.0.0.1 --port {port}"
     )
@@ -248,6 +250,7 @@ def prepare_session(
     local_port: Optional[int] = None,
     remote_port: int = 8765,
     startup_timeout: int = 60,
+    max_evaluates: int = 0,
 ) -> dict:
     """Get an mcp_app session ready to be driven by a real MCP client.
 
@@ -290,7 +293,7 @@ def prepare_session(
 
     remote_cmd = _spawn_command(
         target, remote_root, datasets, author, baseline_author, isa,
-        port=remote_port,
+        port=remote_port, max_evaluates=max_evaluates,
     )
     ssh_cmd = [
         "ssh", "-L", f"{local_port}:127.0.0.1:{remote_port}",
