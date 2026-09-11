@@ -194,10 +194,10 @@ def _compress_history(
                 f"{len(version_history)} compile attempt(s) — none passed correctness yet."
             )
 
-    recap_parts.append(
-        "The most recently compiled binary is still active on the remote — "
-        "call evaluate() to test it, or compile() a new version."
-    )
+        recap_parts.append(
+            "The most recently compiled binary is still active on the remote — "
+            "call evaluate() to test it, or compile() a new version."
+        )
     recap_msg = {"role": "user", "content": "\n".join(recap_parts)}
 
     # messages: complete chat history at each runs
