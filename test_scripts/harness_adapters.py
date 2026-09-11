@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -283,7 +284,17 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 env[var] = os.environ.get(override, default)
             if os.environ.get("CLAUDE_THINKING"):
                 env.pop("MAX_THINKING_TOKENS", None)
-            rc = _run_and_tee(cmd, log_path=log_path, cwd=workspace, env=env)
+            while True:
+                rc = _run_and_tee(cmd, log_path=log_path, cwd=workspace, env=env)
+                wait = self._usage_limit_wait_s(log_path) if rc != 0 else 0
+                if not wait:
+                    break
+                # Max-plan usage window exhausted: sleep until it resets and
+                # rerun this job (checkpoint on the box makes the rerun resume)
+                # instead of burning one of bench_fleet's retry attempts.
+                print(f"  usage limit hit for {job.name}; pausing {wait // 60} min until the "
+                      f"window resets, then resuming", file=sys.stderr)
+                time.sleep(wait)
             if rc != 0 and self._ended_at_turn_budget(log_path):
                 print(f"  note: {job.name} reached --max-turns; treating as a normal "
                       f"end of budget (nanobot semantics), not a failure")
@@ -292,6 +303,31 @@ class ClaudeCodeAdapter(HarnessAdapter):
         finally:
             mcp_config_path.unlink(missing_ok=True)
             shutil.rmtree(workspace, ignore_errors=True)
+
+    _LIMIT_RE = re.compile(r"(usage limit|rate limit|hit your limit|limit reached|out of (extra )?usage|"
+                           r"resets? (at|in) |rate_limit_error|429)", re.I)
+
+    @classmethod
+    def _usage_limit_wait_s(cls, log_path: Path) -> int:
+        """If the session died on a subscription usage/rate limit, return how
+        long to wait (seconds) before rerunning; 0 otherwise. Parses
+        'resets at 3pm' / 'resets in 2h 15m' when present, else 15 min."""
+        try:
+            tail = log_path.read_text(errors="ignore")[-20000:]
+        except OSError:
+            return 0
+        if not cls._LIMIT_RE.search(tail):
+            return 0
+        m = re.search(r"resets? in (?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?", tail, re.I)
+        if m and (m.group(1) or m.group(2)):
+            return int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60 + 60
+        m = re.search(r"resets? at (\d{1,2})(?::(\d{2}))?\s*(am|pm)?", tail, re.I)
+        if m:
+            h = int(m.group(1)) % 12 + (12 if (m.group(3) or "").lower() == "pm" else 0)
+            t = time.localtime(); now = t.tm_hour * 3600 + t.tm_min * 60
+            target = h * 3600 + int(m.group(2) or 0) * 60
+            return (target - now) % 86400 + 60
+        return 15 * 60
 
     @staticmethod
     def _ended_at_turn_budget(log_path: Path) -> bool:
