@@ -155,6 +155,22 @@ tool_call_loop:
   # `temperature` kwarg outright — skip setting it for these rather than
   # relying solely on the runtime BadRequestError-drop-and-retry fallback.
   models_without_temperature: ["opus-4-7", "opus-4-8"]
+  # Model strings (substring match) that must NOT be sent tool_choice=required.
+  # litellm maps "required" onto Anthropic's {"type": "any"}, and under forced
+  # tool use the API prefills the assistant turn, so the model can emit neither
+  # a text block nor a thinking block — "even if explicitly asked to do so"
+  # (platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools).
+  # Measured on opus-4-8 / opus-5 / sonnet-5, with and without
+  # thinking:{type:adaptive}: content=None, reasoning_tokens=0, 0 thinking
+  # blocks. AGENT_SYSTEM_PROMPT asks for 3-5 sentences of reasoning before every
+  # tool call, which then cannot happen, and the agent selects tools with no
+  # chain of thought: a 26-definition llama.cpp sweep produced 13 productive
+  # calls out of 368 turns, with 4 of 6 definitions never calling compile() at
+  # all. Not Anthropic-specific in principle — gpt-4.1 and gpt-4o-mini also
+  # report reasoning_tokens=0 under "required"; only natively-reasoning models
+  # (gpt-5: 704-1088 reasoning tokens) are unaffected. Scoped to Anthropic here
+  # because that is what has been verified end-to-end.
+  models_without_forced_tool_use: ["claude", "anthropic/"]
   # Retry budget for rate-limit/server-error responses (exponential backoff:
   # retry_base_wait_s * 2**attempt).
   retry_max_attempts: 6

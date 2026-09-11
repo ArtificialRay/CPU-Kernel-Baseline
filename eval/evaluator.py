@@ -352,7 +352,16 @@ def run_agentic_eval(
                 "model": model,
                 "messages": compressed,
                 "tools": schemas,
-                "tool_choice": "required",
+                # Forced tool use prefills the assistant turn, which forbids
+                # both text and thinking blocks — see
+                # models_without_forced_tool_use in config/kernel_contracts.yaml
+                # for the measurements. "auto" is the only mode under which this
+                # loop's "write 3-5 sentences before every tool call" can happen.
+                "tool_choice": (
+                    "auto"
+                    if any(m in model for m in AGENT_LOOP_DEFAULTS["models_without_forced_tool_use"])
+                    else "required"
+                ),
                 # litellm defaults to 600s; large reasoning responses over
                 # OpenRouter can exceed that, so give more headroom.
                 "timeout": AGENT_LOOP_DEFAULTS["completion_timeout_s"],
@@ -404,9 +413,21 @@ def run_agentic_eval(
             messages.append(dumped)
 
             if not msg.tool_calls:
+                # `dumped` is already appended above, so returning to the top of
+                # the loop here would leave the conversation ending on an
+                # assistant turn — which Anthropic rejects with "This model does
+                # not support assistant message prefill. The conversation must
+                # end with a user message." Unreachable while tool_choice was
+                # always "required" (a tool call was guaranteed); with "auto" the
+                # model does sometimes answer in prose, and without this nudge
+                # the next request 400s and the definition is lost (hit 4 of 26
+                # definitions on the 2026-09-10 llama.cpp sweep).
                 if verbose:
                     print(f"  Agent (no tool call): {msg.content}")
-                    print("  [warning] expected a tool call — continuing loop")
+                    print("  [warning] expected a tool call — nudging and continuing")
+                messages.append({"role": "user", "content":
+                    "You did not call a tool. Continue the optimization by calling "
+                    "one of the available tools now."})
                 continue
 
             reasoning_text = msg.content or ""
