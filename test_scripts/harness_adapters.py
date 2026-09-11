@@ -246,9 +246,10 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 "--tools", os.environ.get("CLAUDE_TOOLS", self.PARITY_TOOLS),
                 "--setting-sources", "",
                 "--max-turns", os.environ.get("CLAUDE_MAX_TURNS", "100"),
-                # nanobot never summarises within a run (hard snip ~166k est.);
-                # Claude Code's floor is 100000.
-                "--autocompact", os.environ.get("CLAUDE_AUTOCOMPACT", "160000"),
+                # nanobot never summarises within a run (hard snip ~166k est.).
+                # --autocompact is a window size; measured trigger ≈ 72% of it
+                # (160000 compacted at 116k), so 210000 ≈ nanobot's 166k.
+                "--autocompact", os.environ.get("CLAUDE_AUTOCOMPACT", "210000"),
                 "--no-session-persistence",
                 "--output-format", "stream-json",
                 "--verbose",
