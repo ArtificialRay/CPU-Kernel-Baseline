@@ -774,6 +774,7 @@ def _shared_inner_loop(lines: list, num: str) -> str:
     code = re.sub(r'\bstatic\b\s*', '', code)
     code = re.sub(r'\b__restrict__\b', '', code)
     code = re.sub(r'\brestrict\b', '', code)
+    code = re.sub(r'\bLOOP_ATTR\b', '', code)
     return code
 
 

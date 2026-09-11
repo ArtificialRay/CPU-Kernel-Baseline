@@ -47,7 +47,7 @@ def main():
     ap.add_argument("--lanes", type=int, default=3)
     ap.add_argument("--author", default="claude-code-claude-sonnet-4-6-sve")
     ap.add_argument("--min-iterations", type=int, default=40)
-    ap.add_argument("--simd-loop", default="loop_001 loop_002 loop_003 loop_004 loop_008 loop_010 loop_024 loop_027 loop_028 loop_029 loop_032 loop_033 loop_035 loop_037 loop_126 loop_127",
+    ap.add_argument("--simd-loop", default="loop_001 loop_002 loop_003 loop_004 loop_008 loop_010 loop_024 loop_027 loop_028 loop_029 loop_032 loop_033 loop_035 loop_037",
                     help="only these simd-loops (the ones whose sve baselines work)")
     a = ap.parse_args()
     results = REPO / f"agent-runs-{a.author}"

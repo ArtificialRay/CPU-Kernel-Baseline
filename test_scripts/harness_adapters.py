@@ -286,7 +286,10 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 env.pop("MAX_THINKING_TOKENS", None)
             while True:
                 rc = _run_and_tee(cmd, log_path=log_path, cwd=workspace, env=env)
-                wait = self._usage_limit_wait_s(log_path) if rc != 0 else 0
+                # A max-turns end is a normal end, never a limit — check it first
+                # (the old order paused 15 min and RE-RAN finished jobs).
+                wait = (self._usage_limit_wait_s(log_path)
+                        if rc != 0 and not self._ended_at_turn_budget(log_path) else 0)
                 if not wait:
                     break
                 # Max-plan usage window exhausted: sleep until it resets and
@@ -304,8 +307,8 @@ class ClaudeCodeAdapter(HarnessAdapter):
             mcp_config_path.unlink(missing_ok=True)
             shutil.rmtree(workspace, ignore_errors=True)
 
-    _LIMIT_RE = re.compile(r"(usage limit|rate limit|hit your limit|limit reached|out of (extra )?usage|"
-                           r"resets? (at|in) |rate_limit_error|429)", re.I)
+    _LIMIT_RE = re.compile(r"(usage limit|rate limit|hit your (usage )?limit|out of (extra )?usage|"
+                           r"rate_limit_error|\b429\b)", re.I)
 
     @classmethod
     def _usage_limit_wait_s(cls, log_path: Path) -> int:
