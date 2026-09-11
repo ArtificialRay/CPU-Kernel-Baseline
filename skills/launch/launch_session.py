@@ -282,6 +282,12 @@ def prepare_session(
     for ds in datasets:
         ensure_dataset_ready(target, ds)
 
+    # A driver restarted against a still-live box (crash, kill, Mac sleep)
+    # finds the previous mcp_app.server still bound to remote_port: the new
+    # one fails with "address already in use" and every job in the chunk
+    # fast-fails on ConnectionRefused. Clear the port first.
+    _kill_remote_port(target, remote_port)
+
     remote_cmd = _spawn_command(
         target, remote_root, datasets, author, baseline_author, isa,
         port=remote_port,
