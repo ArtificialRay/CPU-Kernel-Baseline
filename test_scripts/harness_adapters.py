@@ -44,6 +44,10 @@ NANOBOT_CONFIG_BASE = Path(
     )
 )
 CLAUDE_SKILL_FILE = REPO_ROOT / "skills" / "claude-code" / "claude-code-kernel-session" / "SKILL.md"
+CODEX_SKILL_FILE = REPO_ROOT / "skills" / "codex" / "codex-kernel-session" / "SKILL.md"
+# TOML table key for mcp_servers.<name> in codex's `-c` override — matches the
+# mcpServers key ClaudeCodeAdapter uses, just for readability across harness logs.
+CODEX_MCP_SERVER_NAME = "cpu-kernel-baseline"
 NANOBOT_WORKSPACE = Path.home() / ".nanobot" / "workspace"
 NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
 
@@ -162,6 +166,51 @@ class ClaudeCodeAdapter(HarnessAdapter):
             return _run_and_tee(cmd, log_path=log_path)
         finally:
             mcp_config_path.unlink(missing_ok=True)
+
+
+class CodexAdapter(HarnessAdapter):
+    """Local Codex CLI (`codex exec`), non-interactive, talking to the same
+    MCP server over streamable-http as ClaudeCodeAdapter. Codex has no
+    `--append-system-prompt` equivalent, but it auto-loads an AGENTS.md from
+    its working root (`--cd`) the same way Claude Code auto-loads CLAUDE.md —
+    so each job gets a fresh throwaway dir containing one, instead of a
+    system-prompt flag.
+
+    --approve-for-me is just for agent to execute MCP tool without interruption"""
+
+    name = "codex"
+    prompt_template = ClaudeCodeAdapter.prompt_template
+    template_args = 6
+
+    def __init__(self, *, model: Optional[str]):
+        self.model = model
+        if not CODEX_SKILL_FILE.exists():
+            raise RuntimeError(f"SKILL_FILE not found: {CODEX_SKILL_FILE}")
+        if subprocess.run(["which", "codex"], capture_output=True).returncode != 0:
+            raise RuntimeError("codex CLI not found on PATH — install Codex CLI first.")
+        self.skill_text = CODEX_SKILL_FILE.read_text()
+
+    def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
+        with tempfile.TemporaryDirectory(prefix="codex-fleet-job-") as job_dir:
+            (Path(job_dir) / "AGENTS.md").write_text(self.skill_text)
+            cmd = [
+                "codex", "exec",
+                "--cd", job_dir,
+                "--skip-git-repo-check",
+                "--approve-for-me",
+                "-c", f'mcp_servers.{CODEX_MCP_SERVER_NAME}.url="{endpoint}"',
+                # Codex's default MCP tool_timeout_sec (300s) is shorter than
+                # evaluate_kernel()'s own budget (750s under the MCP client's
+                # 900s tool timeout, see mcp_app/agent_tools/ops.py) — without
+                # this override, a slow evaluate() on a big workload times out
+                # client-side and the turn is wasted for nothing.
+                "-c", f"mcp_servers.{CODEX_MCP_SERVER_NAME}.tool_timeout_sec=900",
+                "--json",
+            ]
+            if self.model:
+                cmd += ["-m", self.model]
+            cmd.append(job.prompt)
+            return _run_and_tee(cmd, log_path=log_path)
 
 
 class NanobotAdapter(HarnessAdapter):
