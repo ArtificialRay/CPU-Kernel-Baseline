@@ -690,9 +690,15 @@ def _extract_scalar_kernel(loop_id: str) -> str:
 _SVE_PRELUDE = """#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <limits.h>
+#include <assert.h>
+#include <math.h>
 #include <arm_sve.h>
 #define restrict __restrict
 #define SC_SVE_ATTR
+#define SC_SVE_LOOP_ATTR
+#define NS_SVE_LOOP_ATTR
 #define NOINLINE __attribute__((noinline))
 #define FOR_COND(P, S, I, N) svptest_first(svptrue_b##S(), P = svwhilelt_b##S(I, N))
 #define FOR_LOOP(T, I, M, N, P, S, W) for (T I = M; FOR_COND(P, S, I, N); I += svcnt##W())
@@ -705,87 +711,137 @@ static inline uint32_t get_sve_vl(void) {
   return (uint32_t)vl;
 }
 static inline uint32_t get_vl(void) { return get_sve_vl(); }
+// common/helpers.h: 64-byte-aligned scratch. Only reached when the harness
+// hands a kernel a NULL scratch buffer (it never does — every scratch field is
+// bound), so a plain aligned malloc stands in for Arm's arena allocator.
+static inline void *alloc_64b(uint64_t size, const char *name) {
+  void *p = NULL; (void)name;
+  if (posix_memalign(&p, 64, size ? size : 64) != 0) abort();
+  return p;
+}
+#define ALLOC_64B(P, S, N) P = (__typeof__(P))alloc_64b((S) * sizeof((P)[0]), N)
 """
 
+# Every header the upstream loop/common sources include. Each is replaced by an
+# EMPTY stub while the preprocessor resolves the #if chain, so the selected
+# text is the loop file's own code only (arm_sve.h etc. come from the prelude).
+_CPP_STUB_HEADERS = [
+    "loops.h", "helpers.h", "sort.h", "common/loops.h", "common/helpers.h",
+    "common/sort.h", "stdint.h", "limits.h", "assert.h", "float.h", "inttypes.h",
+    "math.h", "stdbool.h", "stdio.h", "stdlib.h", "string.h", "stddef.h",
+    "arm_sve.h", "arm_neon.h", "arm_bf16.h", "arm_sme.h", "arm_acle.h",
+]
+# What the upstream `make` defines for a Graviton3 (armv8.2-a+sve, no SVE2)
+# intrinsics build; the target triple/-march make the compiler add
+# __ARM_FEATURE_SVE / __aarch64__ itself, exactly as on the box.
+_CPP_TARGET = ["-target", "aarch64-linux-gnu", "-march=armv8.2-a+sve"]
 
-def _extract_sve_kernel(loop_id: str) -> str:
-    """Extract the Arm-authored HAVE_SVE_INTRINSICS function from loops/loop_NNN.c.
 
-    Returns the kernel as a self-contained extern "C" function (intrinsics only),
-    or "" if the loop has no SVE-intrinsics block. The SVE code is Arm's, verbatim;
-    we only strip `static`/`restrict`/`LOOP_ATTR` and add the extern "C" linkage.
-    """
-    c_file = LOOPS_DIR / f"{loop_id}.c"
-    if not c_file.exists():
-        return ""
-    # Join backslash-continued lines first: a multi-line `#if defined(A) || \`
-    # otherwise leaves its continuation in the extracted code (loop_105).
-    lines = re.sub(r"\\\n[ \t]*", " ", c_file.read_text()).splitlines()
-    # Find the `#elif ... HAVE_SVE_INTRINSICS ...` branch, then collect its body
-    # tracking preprocessor depth so a NESTED #if/#endif inside the block doesn't
-    # prematurely terminate it (multi-axis loops nest on vector length).
-    # For loops whose intrinsics branch is SVE2-only, take Arm's plain-SVE
-    # inline-asm branch (`#elif defined(__ARM_FEATURE_SVE)`) instead — it is
-    # Arm-authored too and is what the upstream build uses on a Graviton3.
-    if loop_id in _SVE_ASM_FALLBACK:
-        start = next((i for i, ln in enumerate(lines)
-                      if re.match(r"\s*#\s*elif\s+defined\(__ARM_FEATURE_SVE\)\s*(//.*)?$", ln)), None)
-    else:
-        start = next((i for i, ln in enumerate(lines)
-                      if ln.lstrip().startswith("#elif") and "HAVE_SVE_INTRINSICS" in ln), None)
-    if start is None:
-        return ""
-    body, depth = [], 0
-    for ln in lines[start + 1:]:
-        s = ln.lstrip()
-        if depth == 0 and (s.startswith("#elif") or s.startswith("#else") or s.startswith("#endif")):
-            break
-        if s.startswith(("#if", "#ifdef", "#ifndef")):
-            depth += 1
-        elif s.startswith("#endif"):
-            depth -= 1
-        body.append(ln)
-    code = "\n".join(body).strip()
+def _clang() -> str:
+    import shutil
+    for c in ("clang", "clang-18", "clang-17", "clang-16"):
+        if shutil.which(c):
+            return c
+    raise RuntimeError("gen_simd_loop_harness needs clang on PATH to select SVE branches")
+
+
+def _cpp_select(src: Path, intrinsics: bool, from_line: int = 1) -> str:
+    """Resolve `src`'s #if/#elif chain the way the upstream build does for a
+    Graviton3 target, and return ONLY its own surviving text (from source line
+    `from_line` on) with macros left unexpanded (clang -E -fdirectives-only).
+    `intrinsics=True` is the HAVE_SVE_INTRINSICS (ACLE) build; False selects
+    Arm's plain-SVE inline-asm branches (`#elif defined(__ARM_FEATURE_SVE)`)
+    for loops whose ACLE branch needs SVE2. Comments are dropped, #define
+    lines are kept. The file is preprocessed from a scratch copy so its quoted
+    includes resolve to the empty stubs, never to the real common/ headers."""
+    import shutil, subprocess, tempfile
+    with tempfile.TemporaryDirectory(prefix="simdloop-cpp-") as td:
+        inc = Path(td) / "inc"
+        for h in _CPP_STUB_HEADERS:
+            (inc / h).parent.mkdir(parents=True, exist_ok=True)
+            (inc / h).write_text("")
+        copy = Path(td) / src.name
+        shutil.copy(src, copy)
+        cmd = [_clang(), "-E", "-fdirectives-only", "-nostdinc", "-I", str(inc),
+               *_CPP_TARGET, *(["-DHAVE_SVE_INTRINSICS"] if intrinsics else []),
+               "-x", "c", str(copy)]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"preprocessing {src.name} failed:\n{r.stderr}")
+        # Walk the line markers so only text from the copy itself is kept.
+        out, cur_file, cur_line = [], None, 0
+        for ln in r.stdout.splitlines():
+            m = re.match(r'#\s+(\d+)\s+"([^"]*)"', ln)
+            if m:
+                cur_line, cur_file = int(m.group(1)), m.group(2)
+                continue
+            if cur_file == str(copy) and cur_line >= from_line and ln.strip():
+                out.append(ln)
+            cur_line += 1
+    return "\n".join(out)
+
+
+def _tidy_extracted(code: str) -> str:
+    """The C→self-contained-C++ adaptations applied to every selected block.
+    Arm's SVE code is otherwise verbatim."""
+    code = re.sub(r'^\s*#\s*define\s+LOOP_ATTR\b.*$', '', code, flags=re.MULTILINE)
+    code = re.sub(r'\bLOOP_ATTR\b', '', code)        # SVE target attr (empty on non-SME)
     code = re.sub(r'\bstatic\b\s*', '', code)
     code = re.sub(r'\b__restrict__\b', '', code)
     code = re.sub(r'\brestrict\b', '', code)
-    code = re.sub(r'\bLOOP_ATTR\b', '', code)        # SVE target attr (empty on non-SME)
-    # Some loops (102/103/104/120) keep only helpers in the SVE branch and
-    # define inner_loop_NNN once, in the shared `#if !defined(HAVE_CANDIDATE)`
-    # section after the branch chain. Append that shared definition.
-    num = re.search(r"loop_(\d+)", loop_id).group(1)
-    if not re.search(rf"\binner_loop_{num}\s*\(", code):
-        code += "\n" + _shared_inner_loop(lines, num)
+    # `T *x = (void *)expr;` is ill-formed C++: cast to the declared type.
+    code = re.sub(r'(\b[\w:]+\s*\*)\s*(\w+)\s*=\s*\(\s*void\s*\*\s*\)',
+                  lambda m: f"{m.group(1)} {m.group(2)} = ({m.group(1).strip()})", code)
     # The harness header types half floats as _Float16; Arm's kernels take
     # float16_t (__fp16). Cast at the struct-field loads (loop_038).
     code = re.sub(r'^(\s*)float16_t\s*\*\s*(\w+)\s*=\s*(\w+)->(\w+);',
                   r'\1float16_t *\2 = (float16_t *)\3->\4;', code, flags=re.MULTILINE)
-    # C-only idiom `T *x = (void *)expr;` is ill-formed C++: cast to the declared type.
-    code = re.sub(r'(\b[\w:]+\s*\*)\s*(\w+)\s*=\s*\(\s*void\s*\*\s*\)',
-                  lambda m: f"{m.group(1)} {m.group(2)} = ({m.group(1).strip()})", code)
-    code = re.sub(r'^void\s+inner_loop', 'extern "C" void inner_loop', code, flags=re.MULTILINE)
     return code
 
 
-def _shared_inner_loop(lines: list, num: str) -> str:
-    """The last top-level `static void inner_loop_<num>(...) {...}` definition in
-    the file (the one in the shared `#if !defined(HAVE_CANDIDATE)` section),
-    brace-matched. Returns "" if none."""
-    starts = [i for i, ln in enumerate(lines)
-              if re.match(rf"\s*(static\s+)?void\s+(NOINLINE\s+)?inner_loop_{num}\s*\(", ln)]
-    if not starts:
+def _extract_sve_kernel(loop_id: str) -> str:
+    """Extract the Arm-authored SVE implementation of loops/loop_NNN.c as a
+    self-contained extern "C" kernel, or "" if the loop has none.
+
+    The upstream file is a chain of `#if HAVE_CANDIDATE / #elif HAVE_AUTOVEC /
+    #elif HAVE_SVE_INTRINSICS / #elif __ARM_FEATURE_SVE2 / #elif __ARM_FEATURE_SVE
+    / ...` blocks — often several chains per file (helpers, then the shared
+    `#if !defined(HAVE_CANDIDATE)` inner_loop that calls them). Rather than
+    pattern-match one block, let the preprocessor pick every branch the real
+    Graviton3 build would (see _cpp_select), then drop the benchmark driver
+    that follows the kernel (LOOP_DECL/main) and the driver-only data refill
+    (`fill_int32(...)`: the harness supplies the input each call, and the
+    scalar reference sorts what it is given)."""
+    c_file = LOOPS_DIR / f"{loop_id}.c"
+    if not c_file.exists():
         return ""
-    i = starts[-1]; depth = 0; body = []
-    for ln in lines[i:]:
-        body.append(ln)
-        depth += ln.count("{") - ln.count("}")
-        if depth == 0 and "{" in "".join(body):
-            break
-    code = "\n".join(body)
-    code = re.sub(r'\bstatic\b\s*', '', code)
-    code = re.sub(r'\b__restrict__\b', '', code)
-    code = re.sub(r'\brestrict\b', '', code)
-    code = re.sub(r'\bLOOP_ATTR\b', '', code)
+    raw = c_file.read_text()
+    if "HAVE_SVE_INTRINSICS" not in raw and "__ARM_FEATURE_SVE" not in raw:
+        return ""
+    intrinsics = loop_id not in _SVE_ASM_FALLBACK
+    num = re.search(r"loop_(\d+)", loop_id).group(1)
+    raw_lines = raw.splitlines()
+    first_cond = next((i + 1 for i, ln in enumerate(raw_lines)
+                       if re.match(r"\s*#\s*(if|ifdef|ifndef)\b", ln)), 1)
+    lines = _cpp_select(c_file, intrinsics, from_line=first_cond).splitlines()
+    cut = next((i for i, ln in enumerate(lines)
+                if re.match(r"\s*LOOP_DECL\s*\(|\s*int\s+main\s*\(", ln)), len(lines))
+    lines = lines[:cut]
+    # Drop the trailing `#ifndef SIZE / #define SIZE n` driver constant.
+    lines = [ln for ln in lines if not re.match(r"\s*#\s*define\s+SIZE\b", ln)]
+    lines = [ln for ln in lines if not re.match(r"\s*fill_\w+\s*\(.*\)\s*;\s*$", ln)]
+    code = "\n".join(lines).strip()
+    if not re.search(rf"\binner_loop_{num}\s*\(", code):
+        return ""
+    code = _tidy_extracted(code)
+    # Loops that lean on common/sort.c (shared OET/insertion/radix helpers)
+    # get that file's matching branch appended — Arm-authored as well.
+    if re.search(r'#include\s+"(common/)?sort\.h"', raw):
+        common = _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.h", intrinsics))
+        common += "\n" + _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.c", intrinsics))
+        code = common + "\n" + code
+    code = re.sub(rf'^void\s+(NOINLINE\s+)?inner_loop_{num}\b', rf'extern "C" void inner_loop_{num}',
+                  code, flags=re.MULTILINE)
     return code
 
 
@@ -963,22 +1019,24 @@ def _write_solution_pair(lid: str, sources: list) -> None:
             print(f"  wrote {out_path.relative_to(REPO)}")
 
 
-# Loops whose extracted SVE-intrinsics kernel does not yet compile + pass the
-# standard correctness bar on Graviton4 (verified 2026-06-26). Excluded so we
-# never emit a broken baseline. Grouped by reason — each is a follow-up:
-# Re-validated on Graviton4 2026-07-16: only these 7 still fail compile/correctness.
-# (The old 2026-06-26 list was stale — float-reduction 032/114, matmul 130/135/219,
-# and 13 of 14 "extraction/runtime" loops now pass and are emitted → 36/47 covered.)
-# Loops whose HAVE_SVE_INTRINSICS branch needs SVE2 (svhistcnt, svnmatch,
-# sve2-bitperm, ...) but which carry a plain-SVE inline-asm branch upstream;
-# the baseline-sve author uses that branch for these (audited on Graviton3,
-# 2026-09-11 — see analysis/audit_simd_baselines.py).
-# Audited 2026-09-11: 108 passes via its asm branch; 109/112/113/114 SIGABRT,
-# 110 is numerically wrong and 105 needs an unextractable helper, so those
-# stay on (and fail with) the intrinsics branch.
-_SVE_ASM_FALLBACK = {"loop_038", "loop_108"}
+# Loops whose HAVE_SVE_INTRINSICS (ACLE) branch needs SVE2 (svhistcnt,
+# svnmatch, svaddp, svcadd, svcdot, svcmla, svmullb, svldnt1_gather, ...) but
+# which carry a plain-SVE inline-asm branch upstream (`#elif
+# defined(__ARM_FEATURE_SVE)`): the baseline-sve author takes that branch —
+# Arm-authored too, and what the upstream `make` builds on a Graviton3.
+# Cross-compile-checked for armv8.2-a+sve 2026-09-11; runtime-audited on a
+# c7g.large with analysis/audit_simd_baselines.py.
+_SVE_ASM_FALLBACK = {
+    "loop_038", "loop_103", "loop_105", "loop_108", "loop_109", "loop_110",
+    "loop_112", "loop_113", "loop_114", "loop_124",
+}
 
 _SVE_SKIP = {
+    # SVE2-only upstream: the ACLE branch needs SVE2 and the only alternative
+    # branch is scalar/NEON (101, 106: sve2-bitperm; 102: svhistcnt; 104:
+    # svhistseg; 123: svtbl2; 130, 135: SVE2 matmul). No SVE baseline exists
+    # for a Graviton3, so none is emitted.
+    "loop_101", "loop_102", "loop_104", "loop_106", "loop_123", "loop_130", "loop_135",
     # multi-axis matmul (m/n/k): extracted SVE kernel's ABI still mismatches binding.
     "loop_216", "loop_217", "loop_218", "loop_220", "loop_221", "loop_223",
     # extraction/runtime issue not yet resolved.
@@ -1014,7 +1072,9 @@ def _write_sve_solution(lid: str, base_sources: list) -> None:
             "entry_point": f"kernel.cpp::inner_{lid}",
             "dependencies": [],
             "isa_features": ["sve2"],
-            "compile_flags": ["-O3", "-std=c++14", "-march=native"],
+            # Arm's C compiled as C++: designated initialisers with size_t
+            # arithmetic (common/sort.c) are a narrowing error in C++ only.
+            "compile_flags": ["-O3", "-std=c++14", "-march=native", "-Wno-c++11-narrowing"],
             "link_flags": [],
         },
         "sources": sources,
