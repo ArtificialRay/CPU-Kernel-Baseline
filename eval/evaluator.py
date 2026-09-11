@@ -352,11 +352,8 @@ def run_agentic_eval(
                 "model": model,
                 "messages": compressed,
                 "tools": schemas,
-                # Forced tool use prefills the assistant turn, which forbids
-                # both text and thinking blocks — see
-                # models_without_forced_tool_use in config/kernel_contracts.yaml
-                # for the measurements. "auto" is the only mode under which this
-                # loop's "write 3-5 sentences before every tool call" can happen.
+                # some model may not calling tool only in one turn, see config/kernel_contracts.yaml 
+                # tool_call_loop default
                 "tool_choice": (
                     "auto"
                     if any(m in model for m in AGENT_LOOP_DEFAULTS["models_without_forced_tool_use"])
