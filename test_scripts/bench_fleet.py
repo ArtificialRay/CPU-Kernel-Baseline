@@ -337,6 +337,10 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         "--remote-root", args.remote_root, "--remote-port", str(args.remote_port),
         "--definitions", json.dumps(definitions),
     ]
+    if args.model:
+        # Without this every chunk silently ran on the harness's default
+        # model while its author dir / W&B group still carried --model's name.
+        cmd += ["--model", args.model]
     if args.max_iterations:
         cmd += ["--max-iterations", str(args.max_iterations)]
     if args.instance:
