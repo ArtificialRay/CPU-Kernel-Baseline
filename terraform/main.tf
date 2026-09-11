@@ -101,7 +101,9 @@ resource "aws_instance" "labeled" {
   # (bench_fleet.py --watchdog-minutes) can't leave a stopped box + EBS
   # volume billing after the driver dies. One-time spot instances already
   # behave this way; this makes --on-demand boxes match.
-  instance_initiated_shutdown_behavior = "terminate"
+  # Only settable on on-demand instances (AWS rejects it for spot, where a
+  # one-time request already terminates on shutdown).
+  instance_initiated_shutdown_behavior = var.on_demand ? "terminate" : null
 
   # Installs clang-18 + llvm-objdump and creates ~/arm-bench
   user_data = base64encode(file("${path.module}/setup.sh"))
