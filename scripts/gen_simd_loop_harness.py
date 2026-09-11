@@ -575,9 +575,9 @@ _CUSTOM_REFS: dict[str, str] = {
         "def run(a, b):\n"
         "    res = np.uint32(0)\n"
         "    for i in range(len(a)):\n"
-        "        res = np.uint32(int(res) + int(a[i]) * int(b[i]))\n"
+        "        res = np.uint32((int(res) + int(a[i]) * int(b[i])) & 0xFFFFFFFF)\n"
         "        if res % 2:\n"
-        "            res = np.uint32(int(res) + 1)\n"
+        "            res = np.uint32((int(res) + 1) & 0xFFFFFFFF)\n"
         "    return res\n"
     ),
     "loop_127": (
@@ -586,7 +586,7 @@ _CUSTOM_REFS: dict[str, str] = {
         "    # early exit on a[i]==512 never fires with generated inputs (values 1-100)\n"
         "    res = np.uint32(0)\n"
         "    for i in range(len(a)):\n"
-        "        res = np.uint32(int(res) + int(a[i]) * int(b[i]))\n"
+        "        res = np.uint32((int(res) + int(a[i]) * int(b[i])) & 0xFFFFFFFF)\n"
         "        if a[i] == 512:\n"
         "            break\n"
         "    return res\n"
@@ -688,9 +688,12 @@ def _extract_scalar_kernel(loop_id: str) -> str:
 # exact macros the HAVE_SVE_INTRINSICS blocks use, copied from common/loops.h.
 # On a non-SME SVE2 target (Graviton4) SC_SVE_ATTR is empty.
 _SVE_PRELUDE = """#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
 #include <arm_sve.h>
 #define restrict __restrict
 #define SC_SVE_ATTR
+#define NOINLINE __attribute__((noinline))
 #define FOR_COND(P, S, I, N) svptest_first(svptrue_b##S(), P = svwhilelt_b##S(I, N))
 #define FOR_LOOP(T, I, M, N, P, S, W) for (T I = M; FOR_COND(P, S, I, N); I += svcnt##W())
 #define FOR_LOOP_8(T, I, M, N, P)  FOR_LOOP(T, I, M, N, P, 8, b)
@@ -715,7 +718,9 @@ def _extract_sve_kernel(loop_id: str) -> str:
     c_file = LOOPS_DIR / f"{loop_id}.c"
     if not c_file.exists():
         return ""
-    lines = c_file.read_text().splitlines()
+    # Join backslash-continued lines first: a multi-line `#if defined(A) || \`
+    # otherwise leaves its continuation in the extracted code (loop_105).
+    lines = re.sub(r"\\\n[ \t]*", " ", c_file.read_text()).splitlines()
     # Find the `#elif ... HAVE_SVE_INTRINSICS ...` branch, then collect its body
     # tracking preprocessor depth so a NESTED #if/#endif inside the block doesn't
     # prematurely terminate it (multi-axis loops nest on vector length).
@@ -738,7 +743,37 @@ def _extract_sve_kernel(loop_id: str) -> str:
     code = re.sub(r'\b__restrict__\b', '', code)
     code = re.sub(r'\brestrict\b', '', code)
     code = re.sub(r'\bLOOP_ATTR\b', '', code)        # SVE target attr (empty on non-SME)
+    # Some loops (102/103/104/120) keep only helpers in the SVE branch and
+    # define inner_loop_NNN once, in the shared `#if !defined(HAVE_CANDIDATE)`
+    # section after the branch chain. Append that shared definition.
+    num = re.search(r"loop_(\d+)", loop_id).group(1)
+    if not re.search(rf"\binner_loop_{num}\s*\(", code):
+        code += "\n" + _shared_inner_loop(lines, num)
+    # C-only idiom `T *x = (void *)expr;` is ill-formed C++: cast to the declared type.
+    code = re.sub(r'(\b[\w:]+\s*\*)\s*(\w+)\s*=\s*\(\s*void\s*\*\s*\)',
+                  lambda m: f"{m.group(1)} {m.group(2)} = ({m.group(1).strip()})", code)
     code = re.sub(r'^void\s+inner_loop', 'extern "C" void inner_loop', code, flags=re.MULTILINE)
+    return code
+
+
+def _shared_inner_loop(lines: list, num: str) -> str:
+    """The last top-level `static void inner_loop_<num>(...) {...}` definition in
+    the file (the one in the shared `#if !defined(HAVE_CANDIDATE)` section),
+    brace-matched. Returns "" if none."""
+    starts = [i for i, ln in enumerate(lines)
+              if re.match(rf"\s*(static\s+)?void\s+(NOINLINE\s+)?inner_loop_{num}\s*\(", ln)]
+    if not starts:
+        return ""
+    i = starts[-1]; depth = 0; body = []
+    for ln in lines[i:]:
+        body.append(ln)
+        depth += ln.count("{") - ln.count("}")
+        if depth == 0 and "{" in "".join(body):
+            break
+    code = "\n".join(body)
+    code = re.sub(r'\bstatic\b\s*', '', code)
+    code = re.sub(r'\b__restrict__\b', '', code)
+    code = re.sub(r'\brestrict\b', '', code)
     return code
 
 
