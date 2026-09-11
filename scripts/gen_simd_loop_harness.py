@@ -780,6 +780,15 @@ _SVE_TIERS = {
 }
 
 
+# The sve2 tier is generated only with --emit-sve2. What ships in bench-trace as
+# baseline-sve2 is the Graviton4-validated set from 2026-07-23 (the files that
+# were baseline-sve until 2026-09-11, with author/name renamed and
+# -march=native restored) — frozen so nobody's sve2 numbers move. The
+# generator's own sve2 output (new extractor, cross-compiled, never run on a
+# c8g) is a candidate replacement to audit first.
+_EMIT_SVE2 = "--emit-sve2" in sys.argv
+
+
 def _cpp_target(tier: str) -> list:
     sys.path.insert(0, str(REPO))
     from contracts import ISA_TABLE
@@ -1275,6 +1284,8 @@ def _write_sve_solution(lid: str, base_sources: list) -> None:
     selected for that tier. The expert hand-SVE ceiling. No-op for a tier where
     the loop is skipped or has no SVE block."""
     for tier, spec in _SVE_TIERS.items():
+        if tier == "sve2" and not _EMIT_SVE2:
+            continue  # bench-trace's baseline-sve2 is the frozen 2026-07-23 set (see _EMIT_SVE2)
         if lid in spec["skip"]:
             continue
         kernel = _sve_kernel_src(lid, tier)
