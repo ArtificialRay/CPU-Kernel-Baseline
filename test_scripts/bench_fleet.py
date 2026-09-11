@@ -337,12 +337,13 @@ def _resolved_model(args: argparse.Namespace) -> Optional[str]:
     return args.model or ADAPTER_CLASSES[args.harness].default_model()
 
 
-def _teardown_datasets(datasets: list[str], author: str) -> None:
+def _teardown_datasets(datasets: list[str], author: str, label_override: Optional[str] = None) -> None:
     """Wind-down: destroy every box this sweep provisioned (one per dataset
-    label). Labels with no registered instance are skipped; a failed
-    teardown is a warning — the watchdog still bounds that box's cost."""
+    label, or the single --label override). Labels with no registered
+    instance are skipped; a failed teardown is a warning — the watchdog
+    still bounds that box's cost."""
     for ds in datasets:
-        label = launch_session._label_for(ds, author)
+        label = label_override or launch_session._label_for(ds, author)
         if launch_session._read_config_instance(label) is None:
             continue
         print(f"=== [{time.strftime('%H:%M:%S')}] tearing down {label} ===")
@@ -375,6 +376,10 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         # Without this every chunk silently ran on the harness's default
         # model while its author dir / W&B group still carried --model's name.
         cmd += ["--model", args.model]
+    if args.label:
+        # Same failure mode: concurrent lanes each passing their own --label
+        # all provisioned/tore down the SAME default label without this.
+        cmd += ["--label", args.label]
     if args.max_iterations:
         cmd += ["--max-iterations", str(args.max_iterations)]
     if args.instance:
@@ -436,7 +441,7 @@ def run_until_complete(args: argparse.Namespace) -> None:
             print(f"=== [{time.strftime('%H:%M:%S')}] ALL COMPLETE at round {round_num} ===")
             # Nothing left to run: tear the boxes down now rather than
             # leaving them to the watchdog's trailing window.
-            _teardown_datasets(datasets, author)
+            _teardown_datasets(datasets, author, args.label)
             return
 
         print(
@@ -478,7 +483,7 @@ def run_until_complete(args: argparse.Namespace) -> None:
                     print(f"=== [{time.strftime('%H:%M:%S')}] TIME BUDGET REACHED — winding "
                           f"down; re-run the same command to resume (completed definitions "
                           f"are skipped automatically) ===")
-                    _teardown_datasets(datasets, author)
+                    _teardown_datasets(datasets, author, args.label)
                     return
                 if idx[ds] >= len(names):
                     active.remove(ds)
@@ -633,7 +638,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     run_until_complete(args)
     author = args.author or compute_author(args.harness, _resolved_model(args), args.isa)
     print(f"=== [{time.strftime('%H:%M:%S')}] Teardown this sweep's boxes ({author})...")
-    _teardown_datasets(args.dataset, author)
+    _teardown_datasets(args.dataset, author, args.label)
 
 
 if __name__ == "__main__":

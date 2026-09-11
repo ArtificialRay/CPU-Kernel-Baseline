@@ -35,6 +35,8 @@ Usage:
 
 import argparse
 import json
+import fcntl
+import contextlib
 import os
 import re
 import subprocess
@@ -226,6 +228,23 @@ def _install_deps(handle: InstanceHandle) -> None:
             print(f"[provision] WARNING: {label} failed: {err[:200]}")
 
 
+
+@contextlib.contextmanager
+def _tf_lock():
+    """Serialise terraform apply/destroy (and the eval_config.json write that
+    follows) across concurrent driver processes. Terraform's own local state
+    lock is try-once: two lanes provisioning within the same minute made the
+    second fail with "Error acquiring the state lock" and cascade into
+    teardowns. A blocking flock makes them queue instead."""
+    lock_path = TERRAFORM_DIR / ".armbench.lock"
+    with open(lock_path, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 def provision(
     label: str,
     instance_type: str = "c7g.large",
@@ -264,17 +283,16 @@ def provision(
     # label as "should be destroyed" (see terraform/main.tf's var.instances
     # docstring) — -target is what keeps concurrent labels from stepping on
     # each other.
-    result = _tf(
-        "apply", "-auto-approve", *vars,
-        f'-target=aws_instance.labeled["{label}"]',
-        f'-target=null_resource.deploy["{label}"]',
-        extra_env={"TF_VAR_instances": json.dumps({label: instance_type})},
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError("terraform apply failed")
-
-    outputs = _tf_output()
+    with _tf_lock():
+        result = _tf(
+            "apply", "-auto-approve", *vars,
+            f'-target=aws_instance.labeled["{label}"]',
+            f'-target=null_resource.deploy["{label}"]',
+            extra_env={"TF_VAR_instances": json.dumps({label: instance_type})},
+        )
+        if result.returncode != 0:
+            raise RuntimeError("terraform apply failed")
+        outputs = _tf_output()
     host = outputs["instance_public_ips"]["value"][label]
     instance_id = outputs.get("instance_ids", {}).get("value", {}).get(label)
     key_file = outputs.get("ssh_key_path", {}).get("value", "~/.ssh/id_rsa")
@@ -307,7 +325,8 @@ def provision(
     if dataset:
         ensure_dataset_ready(handle, dataset)
 
-    _save_config(handle, label)
+    with _tf_lock():
+        _save_config(handle, label)
     print(f"[provision] Done. SSH: ssh -i {key_file} ubuntu@{host}")
     return handle
 
@@ -335,18 +354,19 @@ def teardown(label: str | None = None):
     _validate_label(label)
     instance_type = _recorded_instance_type(label) or "c7g.large"
     print(f"[teardown] Destroying label={label!r}...")
-    result = _tf(
-        "destroy", "-auto-approve",
-        f'-target=aws_instance.labeled["{label}"]',
-        f'-target=null_resource.deploy["{label}"]',
-        extra_env={"TF_VAR_instances": json.dumps({label: instance_type})},
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"terraform destroy failed for label={label!r}")
-    if EVAL_CONFIG_PATH.exists():
-        config = json.loads(EVAL_CONFIG_PATH.read_text())
-        config.get("instances", {}).pop(label, None)
-        EVAL_CONFIG_PATH.write_text(json.dumps(config, indent=2))
+    with _tf_lock():
+        result = _tf(
+            "destroy", "-auto-approve",
+            f'-target=aws_instance.labeled["{label}"]',
+            f'-target=null_resource.deploy["{label}"]',
+            extra_env={"TF_VAR_instances": json.dumps({label: instance_type})},
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"terraform destroy failed for label={label!r}")
+        if EVAL_CONFIG_PATH.exists():
+            config = json.loads(EVAL_CONFIG_PATH.read_text())
+            config.get("instances", {}).pop(label, None)
+            EVAL_CONFIG_PATH.write_text(json.dumps(config, indent=2))
     print(f"[teardown] label={label!r} terminated.")
 
 
