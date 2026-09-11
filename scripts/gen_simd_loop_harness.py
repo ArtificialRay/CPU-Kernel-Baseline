@@ -1314,9 +1314,12 @@ def _write_sve_solution(lid: str, base_sources: list) -> None:
                 "entry_point": f"kernel.cpp::inner_{lid}",
                 "dependencies": [],
                 "isa_features": list(spec["isa_features"]),
-                # Arm's C compiled as C++: designated initialisers with size_t
-                # arithmetic (common/sort.c) are a narrowing error in C++ only.
-                "compile_flags": ["-O3", "-std=c++14", "-march=native", "-Wno-c++11-narrowing"],
+                # The tier's march is pinned (not -march=native): clang-18 resolves
+                # native to a generic, SVE-less target on a Graviton3, and the
+                # main branch has no resolve_native_march. -Wno-c++11-narrowing:
+                # Arm's C compiled as C++ (designated initialisers with size_t
+                # arithmetic in common/sort.c) is a narrowing error in C++ only.
+                "compile_flags": ["-O3", "-std=c++14", _cpp_target(tier)[-1], "-Wno-c++11-narrowing"],
                 "link_flags": [],
             },
             "sources": sources,

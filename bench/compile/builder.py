@@ -82,6 +82,11 @@ class CompileResult:
 # isa tier -> /proc/cpuinfo "Features" tokens that must all be present, highest
 # tier first. Mirrors mcp_app/agent_tools/isa.py's _ISA_CPUINFO_TOKENS.
 _NATIVE_TIERS = (("sve2", ("sve2",)), ("sve", ("sve",)), ("neon", ("asimd",)))
+# /proc/cpuinfo token -> -march extension appended to the tier march.
+_NATIVE_OPTIONAL_EXTS = (
+    ("svei8mm", "+i8mm"), ("svebf16", "+bf16"), ("svef32mm", "+f32mm"),
+    ("svebitperm", "+sve2-bitperm"),
+)
 
 
 def resolve_native_march(flags: List[str]) -> List[str]:
@@ -108,6 +113,12 @@ def resolve_native_march(flags: List[str]) -> List[str]:
             tokens = set(feats.split())
             march = next((ISA_TABLE[t].march for t, need in _NATIVE_TIERS
                           if all(n in tokens for n in need)), None)
+            # Keep the optional extensions clang's own -march=native would have
+            # enabled on a correctly-detected part (i8mm/bf16 on Graviton3,
+            # plus sve2-bitperm on Graviton4), so baselines written against
+            # them (simd-loop 106/130/135) still build.
+            if march:
+                march += "".join(ext for tok, ext in _NATIVE_OPTIONAL_EXTS if tok in tokens)
         except Exception:  # noqa: BLE001 — fall through to clang's own detection
             march = None
     if not march:
