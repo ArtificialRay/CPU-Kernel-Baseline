@@ -303,6 +303,12 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
             stop_tunnel(prepared)
 
 
+def _resolved_model(args: argparse.Namespace) -> Optional[str]:
+    """The model name run_fleet folds into the author: --model, else the
+    harness adapter's default."""
+    return args.model or ADAPTER_CLASSES[args.harness].default_model()
+
+
 def _teardown_datasets(datasets: list[str], author: str) -> None:
     """Wind-down: destroy every box this sweep provisioned (one per dataset
     label). Labels with no registered instance are skipped; a failed
@@ -584,16 +590,22 @@ def main(argv: Optional[list[str]] = None) -> None:
         if len(args.dataset) != 1:
             p.error("multiple --dataset values require --until-complete")
         run_fleet(args, args.dataset[0])
-        print(f"=== [{time.strftime('%H:%M:%S')}] Teardown all living mcp server...")
-        launch_session._teardown()
+        # Scoped to THIS run's box: an unscoped _teardown() destroys every
+        # label in eval_config.json, i.e. any concurrent sweep's box too.
+        author = args.author or compute_author(args.harness, _resolved_model(args), args.isa)
+        label = args.label or launch_session._label_for(args.dataset[0], author)
+        print(f"=== [{time.strftime('%H:%M:%S')}] Teardown {label}...")
+        if launch_session._read_config_instance(label) is not None:
+            launch_session._teardown(label)
         return
     if args.label and len(args.dataset) > 1:
         p.error("--label can't be fixed across multiple --dataset values under --until-complete "
                  "— each dataset needs its own instance label; omit --label and let it be "
                  "computed per dataset.")
     run_until_complete(args)
-    print(f"=== [{time.strftime('%H:%M:%S')}] Teardown all living mcp server...")
-    launch_session._teardown()
+    author = args.author or compute_author(args.harness, _resolved_model(args), args.isa)
+    print(f"=== [{time.strftime('%H:%M:%S')}] Teardown this sweep's boxes ({author})...")
+    _teardown_datasets(args.dataset, author)
 
 
 if __name__ == "__main__":

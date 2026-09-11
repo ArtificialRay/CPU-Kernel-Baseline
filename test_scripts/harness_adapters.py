@@ -9,6 +9,7 @@ retry quirks.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -209,6 +210,13 @@ class ClaudeCodeAdapter(HarnessAdapter):
             ]
             if self.model:
                 cmd += ["--model", self.model]
+            # Parity knobs vs the nanobot harness (override via env):
+            #   CLAUDE_EFFORT      low|medium|high|xhigh|max — thinking budget
+            #                      (default low: thinking was ~2/3 of output tokens)
+            #   CLAUDE_AUTOCOMPACT auto|<tokens> (min 100000) — compact the
+            #                      session history once context passes this
+            cmd += ["--effort", os.environ.get("CLAUDE_EFFORT", "low")]
+            cmd += ["--autocompact", os.environ.get("CLAUDE_AUTOCOMPACT", "100000")]
             if self.max_budget_usd:
                 cmd += ["--max-budget-usd", self.max_budget_usd]
             cmd.append(job.prompt)
