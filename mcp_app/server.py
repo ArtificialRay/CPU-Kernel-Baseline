@@ -60,6 +60,19 @@ def _truncate_repr(obj: Any, limit: int) -> str:
     return f"{text[:limit]}... ({len(text) - limit} more chars truncated)"
 
 
+def _elog(msg: str) -> None:
+    """Print to stderr, but never let a dead stderr pipe fail the caller.
+
+    A bare ``print(..., file=sys.stderr)`` raises ``BrokenPipeError`` if
+    stderr's consumer is gone (closed terminal, dead tmux, rotated log fd).
+    ``_call_tool`` logs on every tool call, so an unguarded print would crash
+    every compile/evaluate with "[Errno 32] Broken pipe" whenever that
+    happens. Logging must never be able to fail a tool call.
+    """
+    with contextlib.suppress(BrokenPipeError, OSError):
+        print(msg, file=sys.stderr, flush=True)
+
+
 def build_server(tools: KernelSessionLike) -> Server:
     server: Server = Server("armbench-kernel-session")
 
@@ -79,8 +92,7 @@ def build_server(tools: KernelSessionLike) -> Server:
         # Run the (synchronous, potentially long-running) dispatch off the event
         # loop so pings can still go out while it's in flight — dispatch_tool_call
         # itself stays untouched, it doesn't need to know about sessions/pings.
-        print(f"[mcp_app.server] tool call: {name}({_truncate_repr(arguments, ARG_LOG_TRUNCATE_CHARS)})",
-              file=sys.stderr, flush=True)
+        _elog(f"[mcp_app.server] tool call: {name}({_truncate_repr(arguments, ARG_LOG_TRUNCATE_CHARS)})")
         started = time.monotonic()
         session = server.request_context.session
         task = asyncio.ensure_future(
@@ -90,13 +102,13 @@ def build_server(tools: KernelSessionLike) -> Server:
             done, _ = await asyncio.wait({task}, timeout=TOOL_CALL_PING_INTERVAL_S)
             if task in done:
                 break
-            print(f"[mcp_app.server] tool '{name}' still running "
-                  f"({time.monotonic() - started:.0f}s elapsed)...", file=sys.stderr, flush=True)
+            _elog(f"[mcp_app.server] tool '{name}' still running "
+                  f"({time.monotonic() - started:.0f}s elapsed)...")
             with contextlib.suppress(Exception):
                 await session.send_ping()
         result = task.result()
-        print(f"[mcp_app.server] tool '{name}' done in {time.monotonic() - started:.1f}s: "
-              f"{_truncate_repr(result, RESULT_LOG_TRUNCATE_CHARS)}", file=sys.stderr, flush=True)
+        _elog(f"[mcp_app.server] tool '{name}' done in {time.monotonic() - started:.1f}s: "
+              f"{_truncate_repr(result, RESULT_LOG_TRUNCATE_CHARS)}")
         # Resource-visibility bookkeeping only (see resources_mod / KernelSession
         # .note_session_definition) — never consulted by dispatch_tool_call's own
         # definition-match guard, so this can't affect tool-call correctness.
@@ -188,9 +200,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "definition compile()'d gets its own <run-dir>/<definition>/ subdir.")
     p.add_argument("--instance-label", default=None,
                     help="Cosmetic only (e.g. 'c8g.large') — never used for compile-flag decisions.")
-    p.add_argument("--transport", choices=["stdio", "streamable-http"])
+    p.add_argument("--transport", choices=["stdio", "streamable-http"],default="streamable-http")
     p.add_argument("--bind-host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--max-iterations", type=int, default=None,
+                    help="Hard per-definition ceiling on compile/evaluate/disassemble calls "
+                         "None (default) = unlimited.")
     args = p.parse_args(argv)
     args.dataset = list(dict.fromkeys(args.dataset))  # dedupe, preserve order
     if len(args.dataset) > 1 and args.baseline_author is not None:
@@ -210,6 +225,7 @@ def _build_session_config(args: argparse.Namespace, dataset: str, *, baseline_au
         bench_trace_root=Path(args.bench_trace_root),
         run_dir=Path(args.run_dir),
         instance_label=args.instance_label,
+        max_iterations=args.max_iterations,
     )
 
 

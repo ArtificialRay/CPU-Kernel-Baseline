@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import os
 import re
 import subprocess
 import sys
@@ -34,6 +35,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
+
+load_dotenv()
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 # This module's own directory, so `from remote import RemoteTarget` below
@@ -54,9 +58,12 @@ PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see RemoteTarget.rsync_to's docstring.
-# TODO: fold into an env var (shared with the separately-duplicated copies in
-# eval/provision.py and mcp_app/smoke_test_driver.py).
-RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
+# NOTE: bench-trace is listed by sub-directory, not whole. traces/ is not included
+# as archive traces may pollute speedup geomean calculation
+# Set in .env (comma-separated) — see .env.example.
+RSYNC_ALLOWLIST = [p.strip() for p in os.environ.get("RSYNC_ALLOWLIST", "").split(",") if p.strip()]
+if not RSYNC_ALLOWLIST:
+    raise RuntimeError("RSYNC_ALLOWLIST is unset or empty — set it in .env (see .env.example).")
 
 # Shared with eval/provision.py and mcp_app/smoke_test_driver.py — lives at
 # the repo root (like contracts.py/config/kernel_contracts.yaml) so none of
@@ -129,6 +136,19 @@ def _provision(
     return instance
 
 
+def is_instance_reachable(label: str, *, timeout: int = 15) -> bool:
+    """True iff `label`'s provisioned instance still answers over SSH.
+    Use to detect if I need to restart an instance for this new agent session"""
+    instance = _read_config_instance(label)
+    if instance is None:
+        return False
+    try:
+        rc, _, _ = instance.target.run("true", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False
+    return rc == 0
+
+
 def _teardown(label: Optional[str] = None) -> None:
     """`label` given: destroy just that one instance. Omitted: tear down
     every label eval/provision.py knows about (old "destroy everything"
@@ -154,6 +174,7 @@ def _status() -> None:
 def _spawn_command(
     target: RemoteTarget, remote_root: str, datasets: list[str],
     author: str, baseline_author: Optional[str], isa: str, *, port: int,
+    max_iterations: Optional[int] = None,
 ) -> str:
     """Remote command for a persistent streamable-http-mode mcp_app.server
     (see prepare_session's docstring for why this is the only mode this
@@ -170,6 +191,8 @@ def _spawn_command(
     )
     if baseline_author:
         cmd += f" --baseline-author {baseline_author}"
+    if max_iterations is not None:
+        cmd += f" --max-iterations {max_iterations}"
     return cmd
 
 
@@ -229,24 +252,23 @@ def prepare_session(
     local_port: Optional[int] = None,
     remote_port: int = 8765,
     startup_timeout: int = 60,
+    max_iterations: Optional[int] = None,
 ) -> dict:
     """Get an mcp_app session ready to be driven by a real MCP client.
 
-    `dataset` accepts either a single dataset string (today's behavior,
-    unchanged) or a list of more than one — the remote mcp_app.server then
-    starts in dispatcher mode, serving all of them over one connection (see
-    mcp_app/agent_tools/dispatcher.py). `baseline_author` is a single-dataset
-    override only — omit it and the server auto-derives it from `dataset`
-    (mcp_app/agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR); it
-    can't be combined with more than one dataset, since one override can't
-    correctly apply to more than one dataset's baseline.
+    `dataset` may be a single string or a list — a list starts the remote
+    mcp_app.server in dispatcher mode (agent_tools/dispatcher.py).
+    `baseline_author` overrides the per-dataset auto-derived default
+    (agent_tools/baseline_readiness.py::DEFAULT_BASELINE_AUTHOR) and only
+    applies with a single dataset. `max_iterations`, if given, becomes the
+    server's hard --max-iterations ceiling (mcp_app/server.py); None leaves
+    it unlimited.
 
-    Always use streamable-http: establishes an SSH local-port-forward +
-    starts the remote server, returns {"transport": "streamable-http",
-    "endpoint": "http://127.0.0.1:<port>/mcp", "_tunnel_proc": <Popen>} —
-    call stop_tunnel() on the result when done. The SSH tunnel (not the
-    server's own transport) is what keeps the compile/evaluate tool surface
-    off the public network — see mcp_app/server.py's module docstring.
+    Always streamable-http: opens an SSH local-port-forward and starts the
+    remote server, returning {"transport": "streamable-http", "endpoint":
+    "http://127.0.0.1:<port>/mcp", "_tunnel_proc": <Popen>} — call
+    stop_tunnel() on the result when done. The SSH tunnel keeps the
+    compile/evaluate tool surface off the public network.
     """
     datasets = [dataset] if isinstance(dataset, str) else list(dict.fromkeys(dataset))
     if len(datasets) > 1 and baseline_author is not None:
@@ -263,9 +285,14 @@ def prepare_session(
     for ds in datasets:
         ensure_dataset_ready(target, ds)
 
+    # A previous session on this instance may not have torn down cleanly
+    # (Ctrl+C interrupted mid-cleanup, kill -9, a hard crash), before start a new server, 
+    # gracefully stop current server session at remote instance
+    _graceful_stop_remote_server(target, remote_port)
+
     remote_cmd = _spawn_command(
         target, remote_root, datasets, author, baseline_author, isa,
-        port=remote_port,
+        port=remote_port, max_iterations=max_iterations,
     )
     ssh_cmd = [
         "ssh", "-L", f"{local_port}:127.0.0.1:{remote_port}",
@@ -290,13 +317,32 @@ def prepare_session(
 
 
 def _kill_remote_port(target: RemoteTarget, remote_port: int) -> None:
-    """Explicitly kill whatever's bound to remote_port on target, synchronously.
-    """
+    """Immediately SIGKILL whatever's bound to remote_port on target"""
     target.run(
         f"fuser -k {remote_port}/tcp 2>/dev/null || "
         f"pkill -f 'mcp_app.server.*--port {remote_port}' 2>/dev/null || true",
         timeout=15,
     )
+
+
+def _graceful_stop_remote_server(
+    target: RemoteTarget, remote_port: int, *, grace_seconds: int = 30,
+) -> None:
+    """Ask whatever mcp_app.server is bound to remote_port to shut down, and
+    give it grace_seconds to actually exit before force-killing it.
+
+    This function will send a SIGTERM first, as server process may still in
+    the progress of compile/evaluate tool call, after that, send a SIGKILL
+    """
+    pattern = f"mcp_app[.]server.*--port {remote_port}"
+    script = (
+        f"pkill -TERM -f '{pattern}' 2>/dev/null; "
+        f"for i in $(seq 1 {grace_seconds}); do "
+        f"pgrep -f '{pattern}' >/dev/null 2>&1 || exit 0; sleep 1; "
+        f"done; "
+        f"fuser -k {remote_port}/tcp 2>/dev/null || pkill -KILL -f '{pattern}' 2>/dev/null || true"
+    )
+    target.run(script, timeout=grace_seconds + 15)
 
 
 def _probe_ready(port: int) -> bool:
@@ -342,7 +388,7 @@ def stop_tunnel(prepared: dict) -> None:
     target: Optional[RemoteTarget] = prepared.get("_target")
     remote_port = prepared.get("_remote_port")
     if target is not None and remote_port is not None:
-        _kill_remote_port(target, remote_port)
+        _graceful_stop_remote_server(target, remote_port)
 
 
 def sync_results(
@@ -415,18 +461,12 @@ def _cli_sync(args: argparse.Namespace) -> None:
 
 def _resolve_instance(args: argparse.Namespace) -> ProvisionedInstance:
     """Reuse an already-up-and-reachable instance for --isa if one's up,
-    otherwise provision a fresh one — via eval/provision.py's own
-    reuse-if-reachable default (see its module docstring). Note:
-    eval/provision.py always rsyncs its own repo checkout during
-    provisioning, so `--local-repo-dir` has no effect on that initial sync;
-    `_cli_launch` re-syncs via `prepare_session()` afterward, which does
-    respect it.
+    otherwise provision a fresh one 
 
     eval/provision.py's own `--dataset` only builds one dataset's native lib
     at provision time. With more than one --dataset requested here, skip
     that step (pass "") and rely on prepare_session's own per-dataset
-    ensure_dataset_ready loop right after — slower on a cold instance's very
-    first multi-dataset launch, correct thereafter, no eval/ changes needed.
+    ensure_dataset_ready loop right after 
     """
     instance_type = args.instance or ISA_INSTANCE_MAP.get(args.isa, "c7g.large")
     provision_dataset = args.dataset[0] if len(args.dataset) == 1 else ""

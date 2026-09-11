@@ -28,10 +28,12 @@ AGENT_SYSTEM_PROMPT = """\
 You are an expert AArch64 SIMD programmer. Your task: write an optimized
 {op_type} kernel for {isa_desc}.
 
-Tools: compile, evaluate, disassemble, check_progress — each (except
-check_progress) takes `definition` (always "{definition_name}" for this
-session) and, except compile, `version` (the number compile() returned for
-the version you want to act on).
+Tools: compile, evaluate, disassemble, check_progress, read_code — each
+(except check_progress and read_code) takes `definition` (always
+"{definition_name}" for this session) and, except compile, `version` (the
+number compile() returned for the version you want to act on). read_code
+takes `filename` instead (e.g. "reference-scalar-kernel.cpp", or "v2.cpp"/
+"v1.s" for files saved during this session).
 
 There is no separate submit tool — evaluate() automatically persists your
 best result so far to bench-trace whenever it beats your previous best
@@ -58,8 +60,17 @@ not. Before your first compile() call:
      version numbers yourself — compile() always tells you which version it
      assigned.
 
-Workflow (if no prior progress found above):
-  1. compile() your first attempt.
+If no prior progress found above. Establish the starting-point baseline first:
+  1. read_code({{"filename": "reference-scalar-kernel.cpp"}}) — the unoptimized
+     scalar reference implementation for this definition.
+  2. compile() it as-is, then evaluate() it. This becomes v1. Record its
+     time_speedup_geomean/cycle_speedup_geomean — you'll need the naive
+     starting point later to report how much you improved over it, not just
+     over the competitive baseline.
+  3. Only after this pair of calls should you start optimizing below.
+
+Workflow (after v1 above, or after re-establishing best-so-far per step 3 above):
+  1. compile() your next attempt.
   2. evaluate()     — checks correctness first (fail-fast); if that passes, also
                        measures timing and cycle speedup in the same call.
   3. disassemble()  — inspect assembly when IPC is low or speedup is unexpectedly poor.
@@ -183,10 +194,10 @@ def _compress_history(
                 f"{len(version_history)} compile attempt(s) — none passed correctness yet."
             )
 
-    recap_parts.append(
-        "The most recently compiled binary is still active on the remote — "
-        "call evaluate() to test it, or compile() a new version."
-    )
+        recap_parts.append(
+            "The most recently compiled binary is still active on the remote — "
+            "call evaluate() to test it, or compile() a new version."
+        )
     recap_msg = {"role": "user", "content": "\n".join(recap_parts)}
 
     # messages: complete chat history at each runs
@@ -305,11 +316,11 @@ def run_agentic_eval(
         definition_name=definition.name,
     )
     user_msg = build_user_prompt(definition, ref_solution)
-    if os.environ.get("ARMBENCH_PUSH_ITER", "").strip() == "1":
-        user_msg += ("\n\nIMPORTANT: Keep going until you have compiled AND measured "
-                     "(evaluate()) at least 5 GENUINELY DIFFERENT implementations "
-                     "and can no longer beat your best measured time_speedup. Each new version "
-                     "must try a distinct strategy — not a small tweak of the previous one.")
+    # max_turns is already a hard ceiling, so there's no budget risk in
+    # always nudging against early stopping 
+    user_msg += ("\n\nIMPORTANT: Try multiple genuinely different implementations — "
+                 "not just small tweaks of your previous version — and keep iterating "
+                 "as long as you can still beat your best measured time_speedup.")
 
     messages: list[dict] = [
         {"role": "system", "content": system},
@@ -320,6 +331,7 @@ def run_agentic_eval(
     final_result: dict | None = None
     version_history: list[dict] = []
     best_version: dict | None = None
+    hit_iteration_cap = False
 
     if verbose:
         print(f"\n{'='*60}")
@@ -429,6 +441,11 @@ def run_agentic_eval(
                 else:
                     result_dict = tools.dispatch_tool_call(fn_name, fn_args)
 
+                if result_dict.get("status") == "MAX_ITERATIONS_EXCEEDED":
+                    # This definition's server-side call budget is already
+                    # exhausted, should exit tool call loop immediately
+                    hit_iteration_cap = True
+
                 if verbose:
                     if fn_name == "compile":
                         status = result_dict.get("status", "?")
@@ -499,6 +516,12 @@ def run_agentic_eval(
                                 }
 
                 reasoning_text = ""  # emit reasoning only on the first tool call per turn
+
+                if hit_iteration_cap:
+                    break
+
+            if hit_iteration_cap:
+                break
 
         # ── Report the best version seen this session ────────────────────────────
         if best_version and best_version.get("code"):

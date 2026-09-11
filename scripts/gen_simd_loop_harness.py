@@ -871,7 +871,10 @@ def _write_workloads(info: LoopInfo) -> None:
 # only in compile flags, giving two baselines per loop:
 #   reference — honest scalar (auto-vectorization disabled): the speedup denominator.
 #   autovec   — same source, let the compiler auto-vectorize: the "free compiler" ceiling.
-# (On Graviton, swap autovec's `-march=native` for `-march=armv9-a+sve2`.)
+# `-march=native` was unreliable at detecting SVE on Graviton3 (clang emitted
+# "SVE vector type cannot be used in a target without sve" even though the
+# host supports it) — pin an explicit march instead, the same authority
+# mcp_app/agent_tools/isa.py::march_for_isa() uses for candidate compiles.
 _SOLUTION_AUTHORS = [
     {
         "author": "reference",
@@ -880,7 +883,7 @@ _SOLUTION_AUTHORS = [
     },
     {
         "author": "autovec",
-        "compile_flags": ["-O3", "-std=c++14", "-march=native"],
+        "compile_flags": ["-O3", "-std=c++14", "-march=armv8.2-a+sve"],
         "desc": "Compiler auto-vectorized baseline",
     },
 ]
@@ -958,7 +961,7 @@ def _write_sve_solution(lid: str, base_sources: list) -> None:
             "entry_point": f"kernel.cpp::inner_{lid}",
             "dependencies": [],
             "isa_features": ["sve2"],
-            "compile_flags": ["-O3", "-std=c++14", "-march=native"],
+            "compile_flags": ["-O3", "-std=c++14", "-march=armv8.2-a+sve"],
             "link_flags": [],
         },
         "sources": sources,

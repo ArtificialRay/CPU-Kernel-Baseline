@@ -34,6 +34,7 @@ class SessionConfig:
     # None = auto-derive from dataset (see baseline_readiness.DEFAULT_BASELINE_AUTHOR);
     # only pass explicitly to override.
     instance_label: Optional[str] = None
+    max_iterations: Optional[int] = None  # hard per-definition tool-call ceiling; None = unlimited
 
 
 def build_tools(cfg: SessionConfig) -> KernelSession:
@@ -63,6 +64,7 @@ def build_tools(cfg: SessionConfig) -> KernelSession:
     tools = tools_cls(
         ts, cfg.author, bench_cfg, cfg.run_dir, cfg.isa,
         instance_label=cfg.instance_label,
+        max_iterations=cfg.max_iterations,
     )
     _write_reference_scalar_kernels(ts, cfg.dataset, cfg.run_dir)
     _write_hardware_docs(cfg.run_dir)
