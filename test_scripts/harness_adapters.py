@@ -190,8 +190,16 @@ class ClaudeCodeAdapter(HarnessAdapter):
     # ~1.5k+ thinking tokens/turn, one 24.6k-token turn, with it set to 4096).
     # --effort is the knob that works: 'low' measured ~250 thinking tokens/turn.
     PARITY_EFFORT = "low"
+    # Thinking OFF. Measured on a real kernel-writing prompt (sonnet-4-6):
+    # default = 8,075 thinking tokens / 101 s; --effort low = 40 / 26 s on a
+    # single prompt but still ~7k thinking tokens per turn inside long
+    # agentic sessions (loop_001: 355k of 465k output tokens were thinking);
+    # --settings alwaysThinkingEnabled=false and MAX_THINKING_TOKENS=0 each
+    # give 0 thinking / 19 s. Both are applied (CLAUDE_THINKING=1 re-enables).
+    PARITY_SETTINGS = '{"alwaysThinkingEnabled": false}'
     PARITY_ENV = {
         "CLAUDE_CODE_MAX_OUTPUT_TOKENS": ("CLAUDE_MAX_OUTPUT_TOKENS", "32768"),
+        "MAX_THINKING_TOKENS": ("CLAUDE_THINKING_TOKENS", "0"),
     }
 
     def __init__(self, *, model: Optional[str], max_budget_usd: Optional[str]):
@@ -265,12 +273,16 @@ class ClaudeCodeAdapter(HarnessAdapter):
             if self.model:
                 cmd += ["--model", self.model]
             cmd += ["--effort", os.environ.get("CLAUDE_EFFORT", self.PARITY_EFFORT)]
+            if not os.environ.get("CLAUDE_THINKING"):
+                cmd += ["--settings", self.PARITY_SETTINGS]
             if self.max_budget_usd:
                 cmd += ["--max-budget-usd", self.max_budget_usd]
             cmd.append(job.prompt)
             env = dict(os.environ)
             for var, (override, default) in self.PARITY_ENV.items():
                 env[var] = os.environ.get(override, default)
+            if os.environ.get("CLAUDE_THINKING"):
+                env.pop("MAX_THINKING_TOKENS", None)
             rc = _run_and_tee(cmd, log_path=log_path, cwd=workspace, env=env)
             if rc != 0 and self._ended_at_turn_budget(log_path):
                 print(f"  note: {job.name} reached --max-turns; treating as a normal "
