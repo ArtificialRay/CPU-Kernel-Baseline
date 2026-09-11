@@ -724,8 +724,15 @@ def _extract_sve_kernel(loop_id: str) -> str:
     # Find the `#elif ... HAVE_SVE_INTRINSICS ...` branch, then collect its body
     # tracking preprocessor depth so a NESTED #if/#endif inside the block doesn't
     # prematurely terminate it (multi-axis loops nest on vector length).
-    start = next((i for i, ln in enumerate(lines)
-                  if ln.lstrip().startswith("#elif") and "HAVE_SVE_INTRINSICS" in ln), None)
+    # For loops whose intrinsics branch is SVE2-only, take Arm's plain-SVE
+    # inline-asm branch (`#elif defined(__ARM_FEATURE_SVE)`) instead — it is
+    # Arm-authored too and is what the upstream build uses on a Graviton3.
+    if loop_id in _SVE_ASM_FALLBACK:
+        start = next((i for i, ln in enumerate(lines)
+                      if re.match(r"\s*#\s*elif\s+defined\(__ARM_FEATURE_SVE\)\s*(//.*)?$", ln)), None)
+    else:
+        start = next((i for i, ln in enumerate(lines)
+                      if ln.lstrip().startswith("#elif") and "HAVE_SVE_INTRINSICS" in ln), None)
     if start is None:
         return ""
     body, depth = [], 0
@@ -749,6 +756,10 @@ def _extract_sve_kernel(loop_id: str) -> str:
     num = re.search(r"loop_(\d+)", loop_id).group(1)
     if not re.search(rf"\binner_loop_{num}\s*\(", code):
         code += "\n" + _shared_inner_loop(lines, num)
+    # The harness header types half floats as _Float16; Arm's kernels take
+    # float16_t (__fp16). Cast at the struct-field loads (loop_038).
+    code = re.sub(r'^(\s*)float16_t\s*\*\s*(\w+)\s*=\s*(\w+)->(\w+);',
+                  r'\1float16_t *\2 = (float16_t *)\3->\4;', code, flags=re.MULTILINE)
     # C-only idiom `T *x = (void *)expr;` is ill-formed C++: cast to the declared type.
     code = re.sub(r'(\b[\w:]+\s*\*)\s*(\w+)\s*=\s*\(\s*void\s*\*\s*\)',
                   lambda m: f"{m.group(1)} {m.group(2)} = ({m.group(1).strip()})", code)
@@ -958,6 +969,15 @@ def _write_solution_pair(lid: str, sources: list) -> None:
 # Re-validated on Graviton4 2026-07-16: only these 7 still fail compile/correctness.
 # (The old 2026-06-26 list was stale — float-reduction 032/114, matmul 130/135/219,
 # and 13 of 14 "extraction/runtime" loops now pass and are emitted → 36/47 covered.)
+# Loops whose HAVE_SVE_INTRINSICS branch needs SVE2 (svhistcnt, svnmatch,
+# sve2-bitperm, ...) but which carry a plain-SVE inline-asm branch upstream;
+# the baseline-sve author uses that branch for these (audited on Graviton3,
+# 2026-09-11 — see analysis/audit_simd_baselines.py).
+# Audited 2026-09-11: 108 passes via its asm branch; 109/112/113/114 SIGABRT,
+# 110 is numerically wrong and 105 needs an unextractable helper, so those
+# stay on (and fail with) the intrinsics branch.
+_SVE_ASM_FALLBACK = {"loop_038", "loop_108"}
+
 _SVE_SKIP = {
     # multi-axis matmul (m/n/k): extracted SVE kernel's ABI still mismatches binding.
     "loop_216", "loop_217", "loop_218", "loop_220", "loop_221", "loop_223",
