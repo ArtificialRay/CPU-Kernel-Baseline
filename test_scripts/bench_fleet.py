@@ -24,6 +24,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -245,7 +246,13 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
                       f"(attempt {attempt + 1}/{args.retries + 1}) ===")
                 if args.watchdog_minutes > 0:
                     launch_session.arm_watchdog(instance.target, args.watchdog_minutes)
-                rc = adapter.run_job(job, endpoint=prepared["endpoint"], author=author, log_path=log_path)
+                    keeper = _WatchdogKeeper(instance.target, args.watchdog_minutes)
+                    keeper.start()
+                try:
+                    rc = adapter.run_job(job, endpoint=prepared["endpoint"], author=author, log_path=log_path)
+                finally:
+                    if args.watchdog_minutes > 0:
+                        keeper.stop()
                 if rc == 0:
                     break
                 if adapter.is_benign_failure(log_path):
@@ -301,6 +308,27 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> None:
             adapter.cleanup_workspace(job)
         if should_stop_tunnel:
             stop_tunnel(prepared)
+
+
+
+class _WatchdogKeeper(threading.Thread):
+    """Re-arms the box watchdog every watchdog_minutes/3 while a job runs.
+    A job that outlives a single watchdog window (40-iteration kernels take
+    1.5-2.5 h; the default window is 2 h) otherwise gets its box shut down
+    mid-run — which is exactly what happened to loop_001 on 2026-09-11."""
+
+    def __init__(self, target, minutes: int) -> None:
+        super().__init__(daemon=True, name="watchdog-keeper")
+        self._target, self._minutes = target, minutes
+        self._stop = threading.Event()
+
+    def run(self) -> None:
+        period = max(5, self._minutes // 3) * 60
+        while not self._stop.wait(period):
+            launch_session.arm_watchdog(self._target, self._minutes)
+
+    def stop(self) -> None:
+        self._stop.set()
 
 
 def _resolved_model(args: argparse.Namespace) -> Optional[str]:
