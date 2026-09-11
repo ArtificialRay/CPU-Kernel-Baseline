@@ -155,6 +155,10 @@ tool_call_loop:
   # `temperature` kwarg outright — skip setting it for these rather than
   # relying solely on the runtime BadRequestError-drop-and-retry fallback.
   models_without_temperature: ["opus-4-7", "opus-4-8"]
+  # Model strings (substring match) that must NOT be sent tool_choice=required.
+  # So that the model could produce both a text block and a thinking block in the same turn,
+  # Enforce the model to reasoning and not just calling tools
+  models_without_forced_tool_use: ["claude", "anthropic/"]
   # Retry budget for rate-limit/server-error responses (exponential backoff:
   # retry_base_wait_s * 2**attempt).
   retry_max_attempts: 6
