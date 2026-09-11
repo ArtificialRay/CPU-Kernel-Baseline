@@ -186,8 +186,11 @@ class ClaudeCodeAdapter(HarnessAdapter):
     # budget map), maxTokens 32768, 100 LLM round-trips, and no in-run
     # summarisation (hard snip at ~166k est. tokens).
     PARITY_TOOLS = "Read,Write,Edit,Glob,Grep,ListMcpResourcesTool,ReadMcpResourceTool"
+    # NOTE: MAX_THINKING_TOKENS is ignored by claude CLI 2.1.268 (measured:
+    # ~1.5k+ thinking tokens/turn, one 24.6k-token turn, with it set to 4096).
+    # --effort is the knob that works: 'low' measured ~250 thinking tokens/turn.
+    PARITY_EFFORT = "low"
     PARITY_ENV = {
-        "MAX_THINKING_TOKENS": ("CLAUDE_THINKING_TOKENS", "4096"),
         "CLAUDE_CODE_MAX_OUTPUT_TOKENS": ("CLAUDE_MAX_OUTPUT_TOKENS", "32768"),
     }
 
@@ -252,8 +255,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
             ]
             if self.model:
                 cmd += ["--model", self.model]
-            if os.environ.get("CLAUDE_EFFORT"):  # optional; thinking budget is
-                cmd += ["--effort", os.environ["CLAUDE_EFFORT"]]  # set via env below
+            cmd += ["--effort", os.environ.get("CLAUDE_EFFORT", self.PARITY_EFFORT)]
             if self.max_budget_usd:
                 cmd += ["--max-budget-usd", self.max_budget_usd]
             cmd.append(job.prompt)
