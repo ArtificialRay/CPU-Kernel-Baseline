@@ -23,7 +23,7 @@ from typing import List
 from bench.data.definition import Definition
 from bench.data.solution import Solution, SupportedDatasets
 
-from ..builder import Builder, CompileError, CompileResult
+from ..builder import Builder, CompileError, CompileResult, resolve_native_march
 
 
 class SimdLoopBuilder(Builder):
@@ -57,7 +57,7 @@ class SimdLoopBuilder(Builder):
 
             so_path = build_dir / f"{solution.name[:64]}.so"
             cmd: List[str] = [self._cxx, "-shared", "-fPIC"]
-            cmd += list(solution.spec.compile_flags or [])
+            cmd += resolve_native_march(list(solution.spec.compile_flags or []))
             for inc in include_dirs:
                 cmd += ["-I", str(inc)]
             # Harness cpp first so its forward-decl of inner_loop_NNN is visible.
