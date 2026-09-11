@@ -8,6 +8,7 @@ many different definition names across the lifetime of one process; see
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from abc import ABC, abstractmethod
