@@ -1,0 +1,331 @@
+[
+ {
+  "loop": "loop_001",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_002",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_003",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_004",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_005",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_006",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_008",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_010",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_024",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_027",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_028",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_029",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_032",
+  "solution": true,
+  "compile": "OK",
+  "eval": "INCORRECT_NUMERICAL",
+  "note": "correctness numerical: max_abs=1.278e-01 max_rel=1.332e-02 matched=0.0000 first_idx=(0,) got=9.469582 ref=9.59"
+ },
+ {
+  "loop": "loop_033",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_034",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_035",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_037",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_038",
+  "solution": true,
+  "compile": "OK",
+  "eval": "INCORRECT_NUMERICAL",
+  "note": "correctness numerical: max_abs=5.146e-01 max_rel=1.000e+00 matched=0.7500 first_idx=(0, 0) got=0.000000 ref=0."
+ },
+ {
+  "loop": "loop_101",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_102",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_103",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_104",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_105",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_106",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_108",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_109",
+  "solution": true,
+  "compile": "OK",
+  "eval": "RUNTIME_ERROR",
+  "note": "kernel crashed the evaluation subprocess with signal SIGABRT (6)"
+ },
+ {
+  "loop": "loop_110",
+  "solution": true,
+  "compile": "OK",
+  "eval": "INCORRECT_NUMERICAL",
+  "note": "correctness numerical: max_abs=1.792e+04 max_rel=2.270e+00 matched=0.0000 first_idx=(0, 0) got=10024.000000 re"
+ },
+ {
+  "loop": "loop_112",
+  "solution": true,
+  "compile": "OK",
+  "eval": "RUNTIME_ERROR",
+  "note": "kernel crashed the evaluation subprocess with signal SIGABRT (6)"
+ },
+ {
+  "loop": "loop_113",
+  "solution": true,
+  "compile": "OK",
+  "eval": "RUNTIME_ERROR",
+  "note": "kernel crashed the evaluation subprocess with signal SIGABRT (6)"
+ },
+ {
+  "loop": "loop_114",
+  "solution": true,
+  "compile": "OK",
+  "eval": "RUNTIME_ERROR",
+  "note": "kernel crashed the evaluation subprocess with signal SIGSEGV (11)"
+ },
+ {
+  "loop": "loop_120",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_121",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_122",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_123",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_124",
+  "solution": true,
+  "compile": "OK",
+  "eval": "PASSED",
+  "note": ""
+ },
+ {
+  "loop": "loop_126",
+  "solution": true,
+  "compile": "OK",
+  "eval": "RUNTIME_ERROR",
+  "note": "reference run() failed: Python integer 4294969800 out of bounds for uint32 Traceback (most recent call last): "
+ },
+ {
+  "loop": "loop_127",
+  "solution": true,
+  "compile": "OK",
+  "eval": "RUNTIME_ERROR",
+  "note": "reference run() failed: Python integer 4294968243 out of bounds for uint32 Traceback (most recent call last): "
+ },
+ {
+  "loop": "loop_128",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_130",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_135",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_216",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_217",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_218",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_219",
+  "solution": true,
+  "compile": "OK",
+  "eval": "RUNTIME_ERROR",
+  "note": "kernel crashed the evaluation subprocess with signal SIGSEGV (11)"
+ },
+ {
+  "loop": "loop_220",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_221",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ },
+ {
+  "loop": "loop_223",
+  "solution": false,
+  "compile": "-",
+  "eval": "-",
+  "note": "no baseline-sve solution (SKIP list / no clean SVE block)"
+ }
+]
