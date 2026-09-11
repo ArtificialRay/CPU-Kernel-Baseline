@@ -245,12 +245,15 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 "--system-prompt", self._system_prompt(workspace),
                 "--tools", os.environ.get("CLAUDE_TOOLS", self.PARITY_TOOLS),
                 "--setting-sources", "",
-                # Claude Code counts every tool call as a turn (~2.5 per
-                # compile+evaluate iteration), so 100 tripped at 39 evaluates
-                # and exited 1 (error_max_turns) — a wasted retry. Keep the
-                # server-side --max-iterations cap as the binding limit, as
-                # it is for nanobot; this is only a runaway guard.
-                "--max-turns", os.environ.get("CLAUDE_MAX_TURNS", "400"),
+                # nanobot parity: its maxToolIterations=100 caps LLM
+                # round-trips (~1 tool call each on this sequential workflow)
+                # and then ends the run normally. Claude Code counts every
+                # tool call as a turn — 100 measured ≈ 39 evaluates, the same
+                # ballpark — but exits 1 (error_max_turns); run_job() maps that
+                # exit to success below so the driver doesn't burn a retry.
+                # There is no server-side iteration cap on this branch, and the
+                # task prompt is floor-only like nanobot's, so this IS the cap.
+                "--max-turns", os.environ.get("CLAUDE_MAX_TURNS", "100"),
                 # nanobot never summarises within a run (hard snip ~166k est.).
                 # --autocompact is a window size; measured trigger ≈ 72% of it
                 # (160000 compacted at 116k), so 210000 ≈ nanobot's 166k.
@@ -268,10 +271,28 @@ class ClaudeCodeAdapter(HarnessAdapter):
             env = dict(os.environ)
             for var, (override, default) in self.PARITY_ENV.items():
                 env[var] = os.environ.get(override, default)
-            return _run_and_tee(cmd, log_path=log_path, cwd=workspace, env=env)
+            rc = _run_and_tee(cmd, log_path=log_path, cwd=workspace, env=env)
+            if rc != 0 and self._ended_at_turn_budget(log_path):
+                print(f"  note: {job.name} reached --max-turns; treating as a normal "
+                      f"end of budget (nanobot semantics), not a failure")
+                return 0
+            return rc
         finally:
             mcp_config_path.unlink(missing_ok=True)
             shutil.rmtree(workspace, ignore_errors=True)
+
+    @staticmethod
+    def _ended_at_turn_budget(log_path: Path) -> bool:
+        """True if the stream-json result event says the session stopped
+        because --max-turns was reached (subtype 'error_max_turns')."""
+        try:
+            for line in reversed(log_path.read_text(errors="ignore").splitlines()):
+                if line.startswith('{"type":"result"'):
+                    d = json.loads(line)
+                    return d.get("subtype") == "error_max_turns" or d.get("terminal_reason") == "max_turns"
+        except (OSError, json.JSONDecodeError):
+            pass
+        return False
 
     def parse_session_metrics(self, log_path: Path) -> SessionMetrics:
         """session metrics logging from JSON event per line at command: `claude -p --output-format stream-json --verbose` 
