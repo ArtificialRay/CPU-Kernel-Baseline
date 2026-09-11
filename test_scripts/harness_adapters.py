@@ -245,7 +245,12 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 "--system-prompt", self._system_prompt(workspace),
                 "--tools", os.environ.get("CLAUDE_TOOLS", self.PARITY_TOOLS),
                 "--setting-sources", "",
-                "--max-turns", os.environ.get("CLAUDE_MAX_TURNS", "100"),
+                # Claude Code counts every tool call as a turn (~2.5 per
+                # compile+evaluate iteration), so 100 tripped at 39 evaluates
+                # and exited 1 (error_max_turns) — a wasted retry. Keep the
+                # server-side --max-iterations cap as the binding limit, as
+                # it is for nanobot; this is only a runaway guard.
+                "--max-turns", os.environ.get("CLAUDE_MAX_TURNS", "400"),
                 # nanobot never summarises within a run (hard snip ~166k est.).
                 # --autocompact is a window size; measured trigger ≈ 72% of it
                 # (160000 compacted at 116k), so 210000 ≈ nanobot's 166k.
