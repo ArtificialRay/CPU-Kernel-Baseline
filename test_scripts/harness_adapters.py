@@ -287,8 +287,11 @@ class ClaudeCodeAdapter(HarnessAdapter):
         because --max-turns was reached (subtype 'error_max_turns')."""
         try:
             for line in reversed(log_path.read_text(errors="ignore").splitlines()):
-                if line.startswith('{"type":"result"'):
-                    d = json.loads(line)
+                # the result event's "type" key is not first in the line
+                if not line.startswith("{") or '"type":"result"' not in line:
+                    continue
+                d = json.loads(line)
+                if d.get("type") == "result":
                     return d.get("subtype") == "error_max_turns" or d.get("terminal_reason") == "max_turns"
         except (OSError, json.JSONDecodeError):
             pass
