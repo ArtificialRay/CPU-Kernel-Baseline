@@ -48,6 +48,9 @@ CODEX_SKILL_FILE = REPO_ROOT / "skills" / "codex" / "codex-kernel-session" / "SK
 # TOML table key for mcp_servers.<name> in codex's `-c` override — matches the
 # mcpServers key ClaudeCodeAdapter uses, just for readability across harness logs.
 CODEX_MCP_SERVER_NAME = "cpu-kernel-baseline"
+# One single, permanent `--cd` root shared by every codex job, wiped and
+# rewritten fresh by CodexAdapter.prepare_workspace() before each run 
+CODEX_WORKSPACE_DIR = Path.home() / ".codex-fleet" / "workspace"
 NANOBOT_WORKSPACE = Path.home() / ".nanobot" / "workspace"
 NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
 
@@ -171,10 +174,11 @@ class ClaudeCodeAdapter(HarnessAdapter):
 class CodexAdapter(HarnessAdapter):
     """Local Codex CLI (`codex exec`), non-interactive, talking to the same
     MCP server over streamable-http as ClaudeCodeAdapter. Codex has no
+    
     `--append-system-prompt` equivalent, but it auto-loads an AGENTS.md from
-    its working root (`--cd`) the same way Claude Code auto-loads CLAUDE.md —
-    so each job gets a fresh throwaway dir containing one, instead of a
-    system-prompt flag.
+    its working root (`--cd`) the same way Claude Code auto-loads CLAUDE.md,
+    `prepare_workspace()` wiped-and-rewritten-per-run directory rather than 
+    a fresh tempdir or a per-job one
 
     --approve-for-me is just for agent to execute MCP tool without interruption"""
 
@@ -191,11 +195,10 @@ class CodexAdapter(HarnessAdapter):
         self.skill_text = CODEX_SKILL_FILE.read_text()
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
-        with tempfile.TemporaryDirectory(prefix="codex-fleet-job-") as job_dir:
-            (Path(job_dir) / "AGENTS.md").write_text(self.skill_text)
+        with self.prepare_workspace(job) as workspace:
             cmd = [
                 "codex", "exec",
-                "--cd", job_dir,
+                "--cd", str(workspace),
                 "--skip-git-repo-check",
                 "--approve-for-me",
                 "-c", f'mcp_servers.{CODEX_MCP_SERVER_NAME}.url="{endpoint}"',
@@ -211,6 +214,18 @@ class CodexAdapter(HarnessAdapter):
                 cmd += ["-m", self.model]
             cmd.append(job.prompt)
             return _run_and_tee(cmd, log_path=log_path)
+
+    @contextmanager
+    def prepare_workspace(self, job: Job):
+        """Wipe and rewrite the one shared CODEX_WORKSPACE_DIR before every
+        run_job() call (every attempt, every job) — nothing accumulates
+        between runs. No cleanup_workspace() override needed: the directory is
+        reused indefinitely, and the next prepare_workspace() wipes it
+        again before its own run anyway."""
+        shutil.rmtree(CODEX_WORKSPACE_DIR, ignore_errors=True)
+        CODEX_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+        (CODEX_WORKSPACE_DIR / "AGENTS.md").write_text(self.skill_text)
+        yield CODEX_WORKSPACE_DIR
 
 
 class NanobotAdapter(HarnessAdapter):
