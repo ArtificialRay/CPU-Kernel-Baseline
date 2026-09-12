@@ -97,9 +97,6 @@ class HarnessAdapter:
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         raise NotImplementedError
 
-    def is_benign_failure(self, log_path: Path) -> bool:
-        return False
-
     def prepare_workspace(self, job: Job) -> AbstractContextManager[Optional[Path]]:
         return nullcontext(None)
 
@@ -122,9 +119,8 @@ class ClaudeCodeAdapter(HarnessAdapter):
     )
     template_args = 6
 
-    def __init__(self, *, model: Optional[str], max_budget_usd: Optional[str]):
+    def __init__(self, *, model: Optional[str]):
         self.model = model
-        self.max_budget_usd = max_budget_usd
         if not CLAUDE_SKILL_FILE.exists():
             raise RuntimeError(f"SKILL_FILE not found: {CLAUDE_SKILL_FILE}")
         if subprocess.run(["which", "claude"], capture_output=True).returncode != 0:
@@ -156,8 +152,6 @@ class ClaudeCodeAdapter(HarnessAdapter):
             ]
             if self.model:
                 cmd += ["--model", self.model]
-            if self.max_budget_usd:
-                cmd += ["--max-budget-usd", self.max_budget_usd]
             cmd.append(job.prompt)
             return _run_and_tee(cmd, log_path=log_path)
         finally:
@@ -227,13 +221,6 @@ class NanobotAdapter(HarnessAdapter):
                 "-w", str(workspace), "-c", str(self.config_path), "--session", session,
             ]
             return _run_and_tee(cmd, log_path=log_path)
-
-    def is_benign_failure(self, log_path: Path) -> bool:
-        """Known benign nanobot bug: close_mcp() can crash on
-        CancelledError after the job's own work (and evaluate()'s
-        auto-persist) already finished — treat as success, not a retry."""
-        text = log_path.read_text(errors="replace")
-        return "asyncio.exceptions.CancelledError" in text and "close_mcp" in text
 
     @contextmanager
     def prepare_workspace(self, job: Job):
