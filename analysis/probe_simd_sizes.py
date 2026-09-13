@@ -8,9 +8,6 @@ import ctypes, json, os, re, sys, signal
 import numpy as np
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from bench.data.solution import Solution
-from bench.data.definition import Definition
-from bench.compile.builders.simd_loop import SimdLoopBuilder
 
 ROOT = Path(__file__).resolve().parent.parent; BT = ROOT / "bench-trace"
 PAD = 4096
@@ -32,14 +29,29 @@ def padded(shape, dtype, rng=None):
     return raw, view
 
 def main():
+    # optional: --author <name> (default baseline-sve), --so <prebuilt .so> (skip the build,
+    # e.g. when running under an emulator), then --workloads | --axes ... | sizes...
+    argv = sys.argv[1:]; author = "baseline-sve"; so_arg = None
+    while len(argv) > 2 and argv[1] in ("--author", "--so"):
+        if argv[1] == "--author": author = argv[2]
+        else: so_arg = argv[2]
+        argv = [argv[0]] + argv[3:]
+    sys.argv = [sys.argv[0]] + argv
     lid = sys.argv[1]; wl_mode = len(sys.argv) > 2 and sys.argv[2] == "--workloads"
     sizes = [int(s) for s in sys.argv[2:]] if not wl_mode and not (len(sys.argv) > 2 and sys.argv[2] == "--axes") else []
     sizes = sizes or [1, 2, 3, 4, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 127, 128, 129, 256, 1000, 1024]
     d = json.loads((BT / "definitions/simd-loop" / f"{lid}.json").read_text())
-    sp = BT / "solutions/simd-loop/baseline-sve" / lid / f"baseline-sve_{lid}.json"
-    sol = Solution.model_validate(json.loads(sp.read_text()))
-    so = SimdLoopBuilder().build(Definition.model_validate(d), sol).so_path
-    hdr = next(s.content for s in sol.sources if s.path == f"{lid}.h")
+    sp = BT / "solutions/simd-loop" / author / lid / f"{author}_{lid}.json"
+    solj = json.loads(sp.read_text())
+    if so_arg:
+        so = Path(so_arg)
+    else:
+        from bench.data.solution import Solution
+        from bench.data.definition import Definition
+        from bench.compile.builders.simd_loop import SimdLoopBuilder
+        sol = Solution.model_validate(solj)
+        so = SimdLoopBuilder().build(Definition.model_validate(d), sol).so_path
+    hdr = next(s["content"] for s in solj["sources"] if s["path"] == f"{lid}.h")
     sig = re.search(rf"armbench_entry_{lid}\s*\(([^)]*)\)", hdr).group(1)
     params = [p.strip().split()[-1].lstrip("*") for p in sig.split(",")]
     ptypes = [ctypes.c_void_p if "void" in p else ctypes.c_int64 for p in sig.split(",")]
@@ -65,7 +77,7 @@ def main():
                     shape = [axes[x] if isinstance(x, str) else x for x in spec["shape"]]
                     raw, view = padded(shape, NP[spec["dtype"]], rng); bufs[name] = (raw, view); args[name] = view
                 (oname, ospec), = d["outputs"].items()
-                oshape = [axes[x] if isinstance(x, str) else x for x in ospec["shape"]]
+                oshape = [] if ospec["shape"] is None else [axes[x] if isinstance(x, str) else x for x in ospec["shape"]]
                 oraw, oview = padded(oshape, NP[ospec["dtype"]]); bufs[oname] = (oraw, oview)
                 lib = ctypes.CDLL(str(so)); fn = getattr(lib, f"armbench_entry_{lid}"); fn.argtypes = ptypes; fn.restype = ctypes.c_int
                 call = []
@@ -78,11 +90,14 @@ def main():
                 overrun = [n for n, (raw, view) in bufs.items() if not np.all(raw[view.nbytes:] == 0xA5)]
                 exp = np.asarray(expected).reshape(oview.shape).astype(oview.dtype)
                 if np.issubdtype(oview.dtype, np.floating):
-                    ok = np.allclose(oview.astype(np.float64), exp.astype(np.float64), rtol=1e-2, atol=1e-3)
+                    ok = np.allclose(oview.astype(np.float64), exp.astype(np.float64), rtol=1e-3, atol=1e-3)  # evaluator tolerances
                 else:
                     ok = np.array_equal(oview, exp)
                 bad = int(np.sum(oview != exp)) if not ok else 0
                 msg = ("PASS" if ok else f"MISMATCH({bad}/{oview.size} elems)") + (f" OVERRUN{overrun}" if overrun else "")
+                if not ok:
+                    idx = np.argwhere(oview.reshape(-1) != exp.reshape(-1)).reshape(-1)[:4]
+                    msg += " e.g. " + ", ".join(f"[{i}] got={oview.reshape(-1)[i]} exp={exp.reshape(-1)[i]}" for i in idx)
             except Exception as e:
                 msg = f"EXC {type(e).__name__}: {str(e)[:80]}"
             os.write(w, msg.encode()); os._exit(0)
