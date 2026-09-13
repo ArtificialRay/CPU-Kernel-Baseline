@@ -12,6 +12,9 @@ Usage:
     python3 test_scripts/bench_fleet.py --harness codex \\
         --dataset ncnn --isa sve2 --model gpt-5.6-luna
 
+    python3 test_scripts/bench_fleet.py --harness cline \\
+        --dataset ncnn --isa sve2 --model gpt-5.6-luna
+
     # Resume across multiple datasets until every definition in both is
     # confirmed complete, self-healing a stalled/wedged instance along the
     # way:
@@ -50,7 +53,8 @@ from contracts import BASELINE_AUTHORS, ISA_INSTANCE_MAP
 # run script's own directory on sys.path[0] automatically (same idiom
 # skills/launch/launch_session.py uses for its sibling remote.py).
 from harness_adapters import (
-    HarnessAdapter, ClaudeCodeAdapter, CodexAdapter, NanobotAdapter, OwnHarnessAdapter, Job,
+    HarnessAdapter, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, NanobotAdapter,
+    OwnHarnessAdapter, Job,
 )
 
 DEFINITIONS_DIR = REPO_ROOT / "bench-trace" / "definitions"
@@ -59,7 +63,7 @@ EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
 # For run_until_complete()'s round planner only — it needs each harness's
 # prompt_template/template_args.
 ADAPTER_CLASSES = {
-    "claude-code": ClaudeCodeAdapter, "codex": CodexAdapter,
+    "claude-code": ClaudeCodeAdapter, "cline": ClineAdapter, "codex": CodexAdapter,
     "nanobot": NanobotAdapter, "own": OwnHarnessAdapter,
 }
 
@@ -252,9 +256,11 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     model = args.model
     local_port = _free_local_port()
     if args.harness == "claude-code":
-        adapter = ClaudeCodeAdapter(model=args.model, max_budget_usd=args.max_budget_usd)
+        adapter = ClaudeCodeAdapter(model=args.model)
     elif args.harness == "codex":
         adapter = CodexAdapter(model=args.model)
+    elif args.harness == "cline":
+        adapter = ClineAdapter(model=args.model)
     elif args.harness == "nanobot":
         adapter = NanobotAdapter(dataset=dataset, model=args.model, local_port=local_port)
         if model is None:
@@ -329,11 +335,6 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
                       f"(attempt {attempt + 1}/{args.retries + 1}) ===")
                 rc = adapter.run_job(job, endpoint=prepared["endpoint"], author=author, log_path=log_path)
                 if rc == 0:
-                    break
-                if adapter.is_benign_failure(log_path):
-                    print(f"  WARNING: job {job.name} crashed during MCP cleanup after "
-                          f"finishing (known benign) — result may already be persisted "
-                          f"remotely, continuing", file=sys.stderr)
                     break
                 if attempt >= args.retries:
                     print(f"  ERROR: job {job.name}'s process exited {rc} after "
@@ -414,8 +415,6 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         cmd.append("--on-demand")
     if args.local_results_dir:
         cmd += ["--local-results-dir", args.local_results_dir]
-    if args.max_budget_usd:
-        cmd += ["--max-budget-usd", args.max_budget_usd]
     if args.sync_solutions:
         cmd.append("--sync-solutions")
     if args.wandb:
@@ -561,7 +560,7 @@ def sync_job_results(label: str, author: str, definition: str, local_results_dir
 
 def main(argv: Optional[list[str]] = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--harness", required=True, choices=["claude-code", "codex", "nanobot", "own"])
+    p.add_argument("--harness", required=True, choices=["claude-code", "cline", "codex", "nanobot", "own"])
     p.add_argument("--dataset", required=True, nargs="+", choices=["ncnn", "simd-loop", "llama.cpp"],
                    help="One or more datasets (space-separated). More than one requires "
                         "--until-complete, which interleaves them round-robin.")
@@ -593,7 +592,6 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "provisioned instance).")
     p.add_argument("--local-results-dir", default=None,
                    help="Default: agent-runs-<author>/ under the repo root.")
-    p.add_argument("--max-budget-usd", default=None, help="claude-code only: hard $ ceiling per job.")
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
                         "remote instance (not bench-trace/traces/ — that data's already in "

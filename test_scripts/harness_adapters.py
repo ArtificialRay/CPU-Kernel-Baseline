@@ -51,6 +51,16 @@ CODEX_MCP_SERVER_NAME = "cpu-kernel-baseline"
 # One single, permanent `--cd` root shared by every codex job, wiped and
 # rewritten fresh by CodexAdapter.prepare_workspace() before each run 
 CODEX_WORKSPACE_DIR = Path.home() / ".codex-fleet" / "workspace"
+# Arbitrary id for the optional custom `model_providers.<id>` entry
+# CodexAdapter builds from OPENAI_API_BASE/OPENAI_API_KEY (see its run_job()).
+CODEX_DOTENV_PROVIDER_NAME = "dotenv-openai-compatible"
+CLINE_SKILL_FILE = REPO_ROOT / "skills" / "cline" / "cline-kernel-session" / "SKILL.md"
+CLINE_MCP_SERVER_NAME = "cpu-kernel-baseline"
+# Same one-shared-directory reasoning as CODEX_WORKSPACE_DIR (see its
+# comment) — cwd for cline's own sandboxed shell/file tools, not for the
+# system prompt (that goes via `-s`, not an auto-loaded file), wiped and
+# recreated fresh by ClineAdapter.prepare_workspace() before each run.
+CLINE_WORKSPACE_DIR = Path.home() / ".cline-fleet" / "workspace"
 NANOBOT_WORKSPACE = Path.home() / ".nanobot" / "workspace"
 NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
 
@@ -104,9 +114,6 @@ class HarnessAdapter:
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         raise NotImplementedError
 
-    def is_benign_failure(self, log_path: Path) -> bool:
-        return False
-
     def prepare_workspace(self, job: Job) -> AbstractContextManager[Optional[Path]]:
         return nullcontext(None)
 
@@ -129,9 +136,8 @@ class ClaudeCodeAdapter(HarnessAdapter):
     )
     template_args = 6
 
-    def __init__(self, *, model: Optional[str], max_budget_usd: Optional[str]):
+    def __init__(self, *, model: Optional[str]):
         self.model = model
-        self.max_budget_usd = max_budget_usd
         if not CLAUDE_SKILL_FILE.exists():
             raise RuntimeError(f"SKILL_FILE not found: {CLAUDE_SKILL_FILE}")
         if subprocess.run(["which", "claude"], capture_output=True).returncode != 0:
@@ -163,8 +169,6 @@ class ClaudeCodeAdapter(HarnessAdapter):
             ]
             if self.model:
                 cmd += ["--model", self.model]
-            if self.max_budget_usd:
-                cmd += ["--max-budget-usd", self.max_budget_usd]
             cmd.append(job.prompt)
             return _run_and_tee(cmd, log_path=log_path)
         finally:
@@ -193,6 +197,11 @@ class CodexAdapter(HarnessAdapter):
         if subprocess.run(["which", "codex"], capture_output=True).returncode != 0:
             raise RuntimeError("codex CLI not found on PATH — install Codex CLI first.")
         self.skill_text = CODEX_SKILL_FILE.read_text()
+        # Optional: point codex at a custom OpenAI-compatible endpoint via
+        # .env instead of whatever account `codex login` already persisted
+        # to ~/.codex/auth.json. 
+        self.dotenv_base_url = os.environ.get("OPENAI_API_BASE") or os.environ.get("OPENAI_BASE_URL")
+        self.dotenv_key_is_set = bool(os.environ.get("OPENAI_API_KEY"))
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         with self.prepare_workspace(job) as workspace:
@@ -203,13 +212,24 @@ class CodexAdapter(HarnessAdapter):
                 "--approve-for-me",
                 "-c", f'mcp_servers.{CODEX_MCP_SERVER_NAME}.url="{endpoint}"',
                 # Codex's default MCP tool_timeout_sec (300s) is shorter than
-                # evaluate_kernel()'s own budget (750s under the MCP client's
-                # 900s tool timeout, see mcp_app/agent_tools/ops.py) — without
-                # this override, a slow evaluate() on a big workload times out
-                # client-side and the turn is wasted for nothing.
-                "-c", f"mcp_servers.{CODEX_MCP_SERVER_NAME}.tool_timeout_sec=900",
+                # evaluate_kernel()'s own budget, override to 1200s timeout
+                "-c", f"mcp_servers.{CODEX_MCP_SERVER_NAME}.tool_timeout_sec=1200",
                 "--json",
             ]
+            if self.dotenv_base_url and self.dotenv_key_is_set:
+                p = CODEX_DOTENV_PROVIDER_NAME
+                cmd += [
+                    "-c", f'model_providers.{p}.name="{p}"',
+                    "-c", f'model_providers.{p}.base_url="{self.dotenv_base_url}"',
+                    # Value is the *name* of the env var codex reads the key
+                    # from at request time — never the key itself.
+                    "-c", f'model_providers.{p}.env_key="OPENAI_API_KEY"',
+                    # Most third-party OpenAI-compatible gateways (litellm,
+                    # OpenRouter) only implement the older chat-completions
+                    # wire format, not OpenAI's newer responses API.
+                    "-c", f'model_providers.{p}.wire_api="chat"',
+                    "-c", f'model_provider="{p}"',
+                ]
             if self.model:
                 cmd += ["-m", self.model]
             cmd.append(job.prompt)
@@ -226,6 +246,65 @@ class CodexAdapter(HarnessAdapter):
         CODEX_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
         (CODEX_WORKSPACE_DIR / "AGENTS.md").write_text(self.skill_text)
         yield CODEX_WORKSPACE_DIR
+
+
+class ClineAdapter(HarnessAdapter):
+    name = "cline"
+    prompt_template = ClaudeCodeAdapter.prompt_template
+    template_args = 6
+
+    def __init__(self, *, model: Optional[str]):
+        if not model:
+            raise RuntimeError("--model is required for --harness cline (cline auth has no default).")
+        self.model = model
+        if not CLINE_SKILL_FILE.exists():
+            raise RuntimeError(f"SKILL_FILE not found: {CLINE_SKILL_FILE}")
+        if subprocess.run(["which", "cline"], capture_output=True).returncode != 0:
+            raise RuntimeError("cline CLI not found on PATH — install Cline CLI first.")
+        self.skill_text = CLINE_SKILL_FILE.read_text()
+        self.base_url = os.environ.get("OPENAI_API_BASE") or os.environ.get("OPENAI_BASE_URL")
+        self.api_key = os.environ.get("OPENAI_API_KEY")
+        if not self.base_url or not self.api_key:
+            raise RuntimeError(
+                "OPENAI_API_BASE and OPENAI_API_KEY must both be set in .env for --harness "
+                "cline — unlike codex, cline has no already-logged-in account to fall back to."
+            )
+
+    def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
+        auth_cmd = ["cline", "auth", "-p", self._provider_id(), "-k", self.api_key, "-m", self.model]
+        if self._provider_id() == "openai-compatible":
+            auth_cmd += ["-b", self.base_url]
+        subprocess.run(auth_cmd, check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["cline", "mcp", "add", CLINE_MCP_SERVER_NAME, endpoint,
+             "--transport", "streamable-http", "--yes"],
+            check=True, capture_output=True, text=True,
+        )
+        with self.prepare_workspace(job) as workspace:
+            cmd = [
+                "cline",
+                "-c", str(workspace),
+                "-s", self.skill_text,
+                "-m", self.model,
+                "--auto-approve", "true",
+                "--json",
+                job.prompt,
+            ]
+            return _run_and_tee(cmd, log_path=log_path)
+
+    def _provider_id(self) -> str:
+        """`openai-compatible` hits /v1/chat/completions, which rejects
+        gpt-5.6-luna's tool-calling + reasoning_effort combo outright
+        (confirmed empirically); `openai-native` hits /v1/responses instead
+        and works, but only for a real OpenAI account — so only pick it
+        when OPENAI_API_BASE actually points at api.openai.com."""
+        return "openai-native" if "api.openai.com" in self.base_url else "openai-compatible"
+
+    @contextmanager
+    def prepare_workspace(self, job: Job):
+        shutil.rmtree(CLINE_WORKSPACE_DIR, ignore_errors=True)
+        CLINE_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+        yield CLINE_WORKSPACE_DIR
 
 
 class NanobotAdapter(HarnessAdapter):
@@ -291,13 +370,6 @@ class NanobotAdapter(HarnessAdapter):
                 "-w", str(workspace), "-c", str(self.config_path), "--session", session,
             ]
             return _run_and_tee(cmd, log_path=log_path)
-
-    def is_benign_failure(self, log_path: Path) -> bool:
-        """Known benign nanobot bug: close_mcp() can crash on
-        CancelledError after the job's own work (and evaluate()'s
-        auto-persist) already finished — treat as success, not a retry."""
-        text = log_path.read_text(errors="replace")
-        return "asyncio.exceptions.CancelledError" in text and "close_mcp" in text
 
     @contextmanager
     def prepare_workspace(self, job: Job):
