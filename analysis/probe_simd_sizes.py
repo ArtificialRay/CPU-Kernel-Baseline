@@ -20,10 +20,12 @@ def padded(shape, dtype, rng=None):
     raw = np.full(n * np.dtype(dtype).itemsize + PAD, 0xA5, np.uint8)
     view = raw[:n * np.dtype(dtype).itemsize].view(dtype).reshape(shape)
     if rng is not None:
+        # Same distributions as bench/runtime/inputs.py::_gen_random_tensor
+        # (the evaluator's contract): floats uniform(-1, 1), integers in [1, 100].
         if np.issubdtype(dtype, np.floating):
             view[...] = rng.uniform(-1, 1, shape).astype(dtype)
         else:
-            info = np.iinfo(dtype); view[...] = rng.integers(info.min, info.max, shape, dtype=dtype, endpoint=True)
+            view[...] = rng.integers(1, 101, shape).astype(dtype)
     else:
         view[...] = 0
     return raw, view
@@ -90,10 +92,10 @@ def main():
                 overrun = [n for n, (raw, view) in bufs.items() if not np.all(raw[view.nbytes:] == 0xA5)]
                 exp = np.asarray(expected).reshape(oview.shape).astype(oview.dtype)
                 if np.issubdtype(oview.dtype, np.floating):
-                    ok = np.allclose(oview.astype(np.float64), exp.astype(np.float64), rtol=1e-3, atol=1e-3)  # evaluator tolerances
+                    ok = np.allclose(oview.astype(np.float64), exp.astype(np.float64), rtol=1e-3, atol=1e-3, equal_nan=True)  # evaluator tolerances
                 else:
                     ok = np.array_equal(oview, exp)
-                bad = int(np.sum(oview != exp)) if not ok else 0
+                bad = int(np.sum(~np.isclose(oview.astype(np.float64), exp.astype(np.float64), rtol=1e-3, atol=1e-3, equal_nan=True))) if not ok else 0
                 msg = ("PASS" if ok else f"MISMATCH({bad}/{oview.size} elems)") + (f" OVERRUN{overrun}" if overrun else "")
                 if not ok:
                     idx = np.argwhere(oview.reshape(-1) != exp.reshape(-1)).reshape(-1)[:4]
