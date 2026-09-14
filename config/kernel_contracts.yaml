@@ -88,21 +88,25 @@ isa:
     instance_type: "c7g.xlarge"
   sve:
     march: "-march=armv8.2-a+sve"
-    features: ["sve"]
+    # dotprod/i8mm are orthogonal CPU features (not a higher isa tier) —
+    # confirmed present in /proc/cpuinfo's Features line (asimddp, i8mm/
+    # svei8mm) on a real c7g.xlarge, 2026-09-14.
+    features: ["sve", "dotprod", "i8mm"]
     labels: ["graviton3", "aarch64-sve"]
     instance_type: "c7g.xlarge"
   sve2:
     march: "-march=armv9-a+sve2"
     # sve2 is a strict superset of sve, so a solution declaring
-    # isa_features=["sve"] must be satisfiable under sve2 too.
-    features: ["sve", "sve2"]
+    # isa_features=["sve"] must be satisfiable under sve2 too. dotprod/i8mm
+    # confirmed present on a real c8g.xlarge the same way as sve above.
+    features: ["sve", "sve2", "dotprod", "i8mm"]
     labels: ["graviton4", "aarch64-sve2"]
     instance_type: "c8g.xlarge"
   sme2:
     march: "-march=armv9-a+sve2+sme2"
-    features: ["sve2", "sme2"]
+    features: ["sme","sme2"]
     labels: ["aarch64-sme2"]
-    instance_type: "c8g.xlarge"
+    instance_type: "mac-m4.metal"
 
 # Disallowed-source-pattern policy for agent-submitted kernel.cpp, consumed
 # by mcp_app's compile() tool (mcp_app/agent_tools/base.py::
