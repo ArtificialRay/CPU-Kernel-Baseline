@@ -27,6 +27,7 @@ reference_scalar_authors:
   ncnn: "reference-scalar"
   llama.cpp: "reference-scalar"
   simd-loop: "reference"
+  kleidiai: "reference-scalar"
 
 # dataset -> the Solution.author tag for the competitive speedup baseline
 # (what time_speedup_geomean / cycle_speedup_geomean are computed against).
@@ -34,6 +35,7 @@ baseline_authors:
   ncnn: "baseline-ncnn-arm"
   simd-loop: "baseline-sve"
   llama.cpp: "baseline-llamacpp-arm"
+  kleidiai: "baseline-kleidiai-sve"
 
 # bench/config.py's BenchmarkConfig/EvalConfig field defaults. baseline_author
 # intentionally isn't duplicated here — it reuses baseline_authors.ncnn above.

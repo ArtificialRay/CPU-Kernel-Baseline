@@ -561,7 +561,7 @@ def sync_job_results(label: str, author: str, definition: str, local_results_dir
 def main(argv: Optional[list[str]] = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--harness", required=True, choices=["claude-code", "cline", "codex", "nanobot", "own"])
-    p.add_argument("--dataset", required=True, nargs="+", choices=["ncnn", "simd-loop", "llama.cpp"],
+    p.add_argument("--dataset", required=True, nargs="+", choices=["ncnn", "simd-loop", "llama.cpp", "kleidiai"],
                    help="One or more datasets (space-separated). More than one requires "
                         "--until-complete, which interleaves them round-robin.")
     p.add_argument("--isa", default="sve", choices=["neon", "sve", "sve2", "sme2", "portable"])

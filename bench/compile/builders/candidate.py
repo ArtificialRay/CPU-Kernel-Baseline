@@ -1,8 +1,12 @@
-"""CandidateBuilder — the shared raw-`float*` path for ALL candidate solutions.
+"""CandidateBuilder — the shared raw-`float*` path for ALL candidate solutions,
+plus the one true-baseline exception: `kleidiai` (see SupportedDatasets.KLEIDIAI).
 
 Every non-baseline solution is built here, regardless of `solution.dataset`.
 Candidates have NO ncnn dependency: each solution embeds its own binding in
 its sources (armbench_entry_<op> is defined in the solution's own files).
+kleidiai baselines compile identically — embedded sources, no linked static
+lib — so they share this exact build path despite being `is_baseline=True`;
+bench/runner.py::_bind_kernel still binds them via the "raw" adapter.
 """
 
 from __future__ import annotations
@@ -25,7 +29,11 @@ class CandidateBuilder(Builder):
     def can_build(self, solution: Solution, is_baseline: bool) -> bool:
         from bench.data.solution import SupportedDatasets
         # simd-loop / llama.cpp solutions use their dataset builders regardless
-        # of is_baseline.
+        # of is_baseline. kleidiai is the one dataset where a true baseline
+        # still belongs here 
+        # TODO: simd-loop builder could be replaced by candidateBuilder if needed
+        if solution.dataset == SupportedDatasets.KLEIDIAI:
+            return True
         return not is_baseline and solution.dataset not in (
             SupportedDatasets.SIMD_LOOP,
             SupportedDatasets.LLAMA_CPP,
@@ -42,7 +50,7 @@ class CandidateBuilder(Builder):
         # Include dirs: only the solution's own sources.
         cmd += ["-I", str(sources_dir)]
 
-        cmd += [str(p) for p in solution_src_paths]
+        cmd += self._source_compile_args(solution_src_paths)
         cmd += ["-o", str(so_path)]
         cmd += list(solution.spec.link_flags or [])
 
