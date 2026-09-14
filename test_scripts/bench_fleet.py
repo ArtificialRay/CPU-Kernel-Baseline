@@ -48,6 +48,7 @@ import analysis.wandb_log_run as wandb_log_run
 import skills.launch.launch_session as launch_session
 from skills.launch.launch_session import RemoteTarget, prepare_session, stop_tunnel, sync_results
 from contracts import BASELINE_AUTHORS, ISA_INSTANCE_MAP
+from mcp_app.agent_tools.isa import isa_satisfies
 
 # harness_adapters.py lives alongside this script — Python puts a directly
 # run script's own directory on sys.path[0] automatically (same idiom
@@ -140,7 +141,7 @@ def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root
             combined = "\n".join(filter(None, [out.strip(), err.strip()]))
             raise RuntimeError(
                 f"Baseline collection failed for {name}; refusing to start the agent "
-                f"(speedup would come back None).\n{combined}"
+                f"(speedup would come back None).\n{combined}\n\n--- diagnostics ---\n{diagnostics}"
             )
 
     still_missing = [d for d in missing if not _has_passed_baseline(target, d, baseline_author, remote_root)]
@@ -197,6 +198,7 @@ def build_jobs(
 
     baseline_author = BASELINE_AUTHORS.get(dataset, dataset)
     jobs: list[Job] = []
+    isa_skipped: list[str] = []
     for path in sorted(DEFINITIONS_DIR.rglob("*.json")):
         d = json.loads(path.read_text())
         tags = d.get("tags", [])
@@ -208,17 +210,43 @@ def build_jobs(
         name = d["name"]
         if wanted and name not in wanted:
             continue
+        if not _baseline_isa_compatible(dataset, baseline_author, d["op_type"], name, isa):
+            isa_skipped.append(name)
+            continue
         args = (name, dataset, baseline_author, isa, min_iterations, max_iterations)
         prompt = prompt_template % args[:template_args]
         jobs.append(Job(name=name, prompt=prompt))
 
-    if wanted and len(jobs) != len(wanted):
+    if isa_skipped:
+        print(
+            f"[isa-filter] skipping {len(isa_skipped)} definition(s) whose baseline solution's "
+            f"isa_features aren't satisfied by --isa {isa}: {', '.join(isa_skipped)}",
+            file=sys.stderr,
+        )
+    if wanted and len(jobs) + len(isa_skipped) != len(wanted):
         print(
             f"WARNING: requested {len(wanted)} definition(s) via --definitions, "
-            f"but only found {len(jobs)} matching --dataset {dataset}.",
+            f"but only found {len(jobs) + len(isa_skipped)} matching --dataset {dataset}.",
             file=sys.stderr,
         )
     return jobs
+
+
+def _baseline_isa_compatible(
+    dataset: str, baseline_author: str, op_type: str, name: str, isa: str,
+) -> bool:
+    """True unless this definition's local baseline solution declares
+    isa_features the current --isa can't satisfy 、
+    """
+    sol_path = (
+        REPO_ROOT / "bench-trace" / "solutions" / dataset / baseline_author / op_type / f"{name}.json"
+    )
+    if not sol_path.exists():
+        return True
+    isa_features = json.loads(sol_path.read_text()).get("spec", {}).get("isa_features", [])
+    if not isa_features:
+        return True
+    return isa_satisfies(isa_features, isa)
 
 
 def _trajectory_complete(local_results_dir: Path, job_name: str, min_iterations: int) -> bool:
