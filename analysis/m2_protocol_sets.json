@@ -58,5 +58,37 @@
   "pooling_fp32_max_kh3_kw3_sh1_sw1_p1",
   "pooling_fp32_max_kh3_kw3_sh2_sw2_p0",
   "pooling_fp32_max_kh3_kw3_sh2_sw2_p1"
- ]
+ ],
+ "simd-loop": [
+  "loop_001",
+  "loop_002",
+  "loop_003",
+  "loop_004",
+  "loop_008",
+  "loop_010",
+  "loop_024",
+  "loop_027",
+  "loop_028",
+  "loop_029",
+  "loop_033",
+  "loop_035",
+  "loop_037",
+  "loop_038",
+  "loop_103",
+  "loop_105",
+  "loop_108",
+  "loop_109",
+  "loop_110",
+  "loop_112",
+  "loop_113",
+  "loop_114",
+  "loop_120",
+  "loop_121",
+  "loop_122",
+  "loop_124",
+  "loop_126",
+  "loop_127",
+  "loop_219"
+ ],
+ "_note": "Full sve set = 85: ncnn 30 + llama.cpp 26 (teammate's cells) + simd-loop 29 (every loop with an Arm SVE baseline verified on Graviton3, 2026-09-11..13; excludes 032 (baseline numerically wrong), 7 SVE2-only, 10 with no upstream SVE code)."
 }
