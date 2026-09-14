@@ -82,14 +82,21 @@ def main():
                 oshape = [] if ospec["shape"] is None else [axes[x] if isinstance(x, str) else x for x in ospec["shape"]]
                 oraw, oview = padded(oshape, NP[ospec["dtype"]]); bufs[oname] = (oraw, oview)
                 lib = ctypes.CDLL(str(so)); fn = getattr(lib, f"armbench_entry_{lid}"); fn.argtypes = ptypes; fn.restype = ctypes.c_int
-                call = []
+                call = []; scratch = {}
+                inplace = "res_out" not in params          # in-place sorts: output is the data buffer
                 for p, t in zip(params, ptypes):
                     if p == "res_out": call.append(oview.ctypes.data)
                     elif p in args: call.append(args[p].ctypes.data)
-                    else: call.append(int(next(v for k, v in axes.items() if k.lower() == p.lower())))
+                    elif t is ctypes.c_int64 and p != "unused":
+                        call.append(int(next(v for k, v in axes.items() if k.lower() == p.lower())))
+                    elif p == "unused": call.append(0)
+                    else:  # scratch pointer (temp/hist/prfx/block_sizes): generous zeroed buffer + canary
+                        raw, view = padded([max(int(np.prod(oview.shape)) if oview.shape else 1, 4096) * 32], np.uint8)
+                        scratch[p] = (raw, view); bufs["scratch_" + p] = (raw, view); call.append(view.ctypes.data)
                 expected = ref(*[args[n] for n in d["inputs"]])
                 fn(*call)
                 overrun = [n for n, (raw, view) in bufs.items() if not np.all(raw[view.nbytes:] == 0xA5)]
+                if inplace: oview = args[next(iter(d["inputs"]))]
                 exp = np.asarray(expected).reshape(oview.shape).astype(oview.dtype)
                 if np.issubdtype(oview.dtype, np.floating):
                     ok = np.allclose(oview.astype(np.float64), exp.astype(np.float64), rtol=1e-3, atol=1e-3, equal_nan=True)  # evaluator tolerances

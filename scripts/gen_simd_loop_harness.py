@@ -1309,6 +1309,32 @@ extern "C" int armbench_entry_loop_219(void *a, void *b, int64_t m_in, int64_t n
     return 0;
 }
 """,
+    # int32 radix sort: Arm's kernel refuses n below one vector of words
+    # ("buffer size must be greater than VL") and returns the input unsorted.
+    # Sort a copy padded with INT32_MAX (sorts to the end) instead, with the
+    # kernel's own scratch sizes, and copy the first n back.
+    "loop_124": """
+extern "C" int armbench_entry_loop_124(void *data, void *temp, void *hist, void *prfx, int64_t n_in, void *unused) {
+    const uint64_t n = (uint64_t)n_in, mvl = svcntw();
+    struct loop_124_data d;
+    if (n >= mvl) {
+        d.n = (uint32_t)n; d.data = static_cast<int32_t *>(data); d.temp = static_cast<int32_t *>(temp);
+        d.hist = static_cast<uint32_t *>(hist); d.prfx = static_cast<uint32_t *>(prfx);
+        inner_loop_124(&d);
+        return 0;
+    }
+    const uint64_t np = mvl;
+    int32_t *pd = (int32_t *)_zeroed(np * sizeof(int32_t)), *pt = (int32_t *)_zeroed(np * sizeof(int32_t));
+    uint32_t *ph = (uint32_t *)_zeroed(np * 16 * sizeof(uint32_t)), *pp = (uint32_t *)_zeroed(np * sizeof(uint32_t));
+    for (uint64_t i = 0; i < np; ++i) pd[i] = INT32_MAX;
+    memcpy(pd, data, n * sizeof(int32_t));
+    d.n = (uint32_t)np; d.data = pd; d.temp = pt; d.hist = ph; d.prfx = pp;
+    inner_loop_124(&d);
+    memcpy(data, pd, n * sizeof(int32_t));
+    free(pd); free(pt); free(ph); free(pp);
+    return 0;
+}
+""",
     # int16 autocorrelation: upstream allocates DATA + LAGS and leaves LAGS
     # zeros after the data (the kernel reads data[i + lag + VLh)), and writes
     # res in whole vectors of halfs. Always run on padded copies — an int16
