@@ -120,11 +120,12 @@ class KernelSession(ABC):
         return self._definitions[self._active_definition]["definition"]
 
     def _get_or_create_definition(self, definition_name: str) -> dict:
-        """Memory-side bookkeeping only — no baseline checks or file writes here.
+        """Memory-side bookkeeping and validate baseline solution's isa_features to 
+        ensure the baseline solution could be compiled in this instance
 
         Returns the existing per-definition state dict if this definition was
         already touched this session (nothing is reset), otherwise resolves
-        and validates the definition and creates a fresh entry.
+        and validates the definition and creates a fresh entry at this session.
         """
         existing = self._definitions.get(definition_name)
         if existing is not None:
