@@ -101,4 +101,23 @@ def verify_isa_available(isa: str, *, cpuinfo_path: Path = Path("/proc/cpuinfo")
         )
 
 
-__all__ = ["MarchInfo", "SUPPORTED_ISAS", "march_for_isa", "verify_isa_available"]
+def isa_satisfies(required: list[str], isa: str) -> bool:
+    """True if `isa` provides every token in `required` (typically a Solution's
+    spec.isa_features).
+
+    A plain subset check against `isa`'s own declared features — no hierarchy
+    is assumed in code. kernel_contracts.yaml is expected to list each isa's
+    *cumulative* feature set explicitly (e.g. sve2's entry lists both "sve"
+    and "sve2" which means an sve2 instance could run both kernel written in both
+    sve and sve2), so if  
+    """
+    if isa not in _ISA_MARCH:
+        raise ValueError(f"Unknown isa {isa!r}. Supported: {sorted(_ISA_MARCH)}")
+    # verify baseline.spec.isa.isa_features is in isa.<specific-isa-name>.features from kernel_contract.yaml
+    return set(required) <= set(_ISA_MARCH[isa][1]) 
+
+
+__all__ = [
+    "MarchInfo", "SUPPORTED_ISAS", "march_for_isa", "verify_isa_available",
+    "isa_satisfies",
+]

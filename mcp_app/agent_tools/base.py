@@ -22,6 +22,7 @@ from contracts import (
     REFERENCE_SCALAR_FILENAME,
 )
 
+from . import isa as isa_mod
 from . import ops
 from .trajectory import TrajectoryWriter
 
@@ -138,6 +139,22 @@ class KernelSession(ABC):
             raise ValueError(
                 f"Definition {definition_name!r} has no {self.dataset!r} solution "
                 f"— this server was started with --dataset {self.dataset!r}."
+            )
+
+        baseline = self._trace_set.get_baseline_solution(
+            definition_name, self._bench_cfg.baseline_author,
+        )
+        if (
+            baseline is not None
+            and baseline.spec.isa_features
+            and not isa_mod.isa_satisfies(baseline.spec.isa_features, self._isa)
+        ):
+            raise ValueError(
+                f"Definition {definition_name!r}'s baseline ({baseline.author!r}) "
+                f"requires isa_features={baseline.spec.isa_features!r}, but this "
+                f"session was started with --isa {self._isa!r}, which doesn't "
+                "provide them, so a speedup could never be computed for this definition." 
+                "Skip it, or rerun this session with an isa that provides those features."
             )
 
         trajectory = TrajectoryWriter(self._run_dir / definition_name)

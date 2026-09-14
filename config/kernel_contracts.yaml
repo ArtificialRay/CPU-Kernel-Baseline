@@ -93,7 +93,9 @@ isa:
     instance_type: "c7g.xlarge"
   sve2:
     march: "-march=armv9-a+sve2"
-    features: ["sve2"]
+    # sve2 is a strict superset of sve, so a solution declaring
+    # isa_features=["sve"] must be satisfiable under sve2 too.
+    features: ["sve", "sve2"]
     labels: ["graviton4", "aarch64-sve2"]
     instance_type: "c8g.xlarge"
   sme2:
