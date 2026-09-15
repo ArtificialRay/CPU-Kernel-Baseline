@@ -254,7 +254,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     isa = args.isa
     author = args.author or compute_author(args.harness, model, isa)
     label = args.label or launch_session._label_for(dataset, author)
-    max_iterations = args.max_iterations or (args.min_iterations + 10)
+    max_iterations = args.max_iterations
     instance_type = args.instance or ISA_INSTANCE_MAP.get(isa, "c7g.large")
     instance = launch_session._provision(
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
@@ -441,7 +441,7 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
     local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
     prev_incomplete_count: dict[str, Optional[int]] = {ds: None for ds in datasets}
     adapter_cls = ADAPTER_CLASSES[args.harness]
-    max_iterations = args.max_iterations or (args.min_iterations + 10)
+    max_iterations = args.max_iterations
 
     for round_num in range(1, args.max_rounds + 1):
         per_ds_incomplete = {
@@ -561,13 +561,13 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "(empty = CLI default). nanobot: patched into a temp copy of "
                         "agents.defaults.model (nanobot's CLI has no --model flag). own: "
                         "litellm model string, required (e.g. anthropic/claude-opus-4-8).")
-    p.add_argument("--min-iterations", type=int, default=40,
-                   help="Floor, not a cap — the model is told not to submit early.")
-    p.add_argument("--max-iterations", type=int, default=None,
+    p.add_argument("--min-iterations", type=int, default=15,
+                   help="Floor, not a cap — the model is told not to submit early. Default: 15")
+    p.add_argument("--max-iterations", type=int, default=40,
                    help="Ceiling, baked into every harness's prompt as a soft budget and "
                         "into the MCP server as a hard --max-iterations cap (mcp_app/server.py) "
                         "that rejects further compile/evaluate/disassemble calls once hit. "
-                        "Default: --min-iterations + 10.")
+                        "Default: 40, the benchmark's 40-step budget")
     p.add_argument("--definitions", default="",
                    help="JSON array or space-separated definition names to narrow the run "
                         "to. Empty = every definition matching --dataset.")
