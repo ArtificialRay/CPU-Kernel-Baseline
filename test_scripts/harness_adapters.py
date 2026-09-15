@@ -71,6 +71,7 @@ NANOBOT_SERVER_NAME_BY_DATASET = {
     "ncnn": "NCNNKernelBench",
     "llama.cpp": "LLAMACPPKernelBench",
     "simd-loop": "SIMDLoopKernelBench",
+    "kleidiai": "KleidiaiKernelBench",
 }
 
 
