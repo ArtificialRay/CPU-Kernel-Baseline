@@ -561,14 +561,13 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "(empty = CLI default). nanobot: patched into a temp copy of "
                         "agents.defaults.model (nanobot's CLI has no --model flag). own: "
                         "litellm model string, required (e.g. anthropic/claude-opus-4-8).")
-    p.add_argument("--min-iterations", type=int, default=40,
-                   help="Floor, not a cap — the model is told not to submit early.")
+    p.add_argument("--min-iterations", type=int, default=15,
+                   help="Floor, not a cap — the model is told not to submit early. Default: 15")
     p.add_argument("--max-iterations", type=int, default=40,
                    help="Ceiling, baked into every harness's prompt as a soft budget and "
                         "into the MCP server as a hard --max-iterations cap (mcp_app/server.py) "
                         "that rejects further compile/evaluate/disassemble calls once hit. "
-                        "Default: 40, the benchmark's 40-step budget. (It used to be "
-                        "--min-iterations + 10, which gave 25 under --min-iterations 15.)")
+                        "Default: 40, the benchmark's 40-step budget")
     p.add_argument("--definitions", default="",
                    help="JSON array or space-separated definition names to narrow the run "
                         "to. Empty = every definition matching --dataset.")
