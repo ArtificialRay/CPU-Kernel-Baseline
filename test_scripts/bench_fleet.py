@@ -332,7 +332,10 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
         adapter = OwnHarnessAdapter(
             endpoint=prepared["endpoint"], author=author, remote_root=args.remote_root,
             target=instance.target, dataset=dataset, isa=isa, model=args.model,
-            max_turns=max_iterations,
+            # Deliberately decoupled from the MCP server's own --max-iterations
+            # cap (line above, `max_iterations`): since some model won't provide a tool call for each turn,
+            # set a tool call budget that is much higher than max-iterations to avoid unnecessary re-running
+            max_turns=max_iterations * 3,
         )
     ran_jobs: list[Job] = []
     try:
