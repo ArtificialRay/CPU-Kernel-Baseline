@@ -90,7 +90,8 @@ isa:
     march: "-march=armv8.2-a+sve"
     # dotprod/i8mm are orthogonal CPU features (not a higher isa tier) —
     # confirmed present in /proc/cpuinfo's Features line (asimddp, i8mm/
-    # svei8mm) on a real c7g.xlarge. vl256 marks Graviton3's SVE
+    # svei8mm) on a real c7g.xlarge. 
+    # vl256 marks Graviton3's SVE
     # implementation as 256-bit wide 
     features: ["sve", "dotprod", "i8mm", "vl256"]
     labels: ["graviton3", "aarch64-sve"]

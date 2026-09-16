@@ -141,7 +141,7 @@ def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root
             combined = "\n".join(filter(None, [out.strip(), err.strip()]))
             raise RuntimeError(
                 f"Baseline collection failed for {name}; refusing to start the agent "
-                f"(speedup would come back None).\n{combined}\n\n--- diagnostics ---\n{diagnostics}"
+                f"(speedup would come back None).\n{combined}\n\n"
             )
 
     still_missing = [d for d in missing if not _has_passed_baseline(target, d, baseline_author, remote_root)]
