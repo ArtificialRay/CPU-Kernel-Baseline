@@ -24,7 +24,7 @@ PY
   python test_scripts/bench_fleet.py --harness claude-code --dataset "$ds" --isa sve --instance c7g.large \
     --model "$MODEL" --min-iterations 40 --until-complete --deadline-epoch "$DEADLINE" \
     --label "$label" --definitions "$defs" --watchdog-minutes 300 \
-    --batch-size "$(echo $defs | wc -w)" \
+    --batch-size "$(echo $defs | wc -w)" ${LANE_ON_DEMAND:+--on-demand} \
     --wandb --wandb-project arm-bench-kernels --wandb-entity ArmBench \
     --wandb-group "$group" >> "$LOG" 2>&1 < /dev/null
 done
