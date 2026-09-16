@@ -85,7 +85,7 @@ def _read_darwin_features() -> set[str]:
     if platform.system() != "Darwin":
         return set()
     keys = {
-        "asimd": "hw.optional.AdvSIMD",
+        "asimd": "hw.optional.arm.AdvSIMD",
         "sme": "hw.optional.arm.FEAT_SME",
         "sme2": "hw.optional.arm.FEAT_SME2",
     }
