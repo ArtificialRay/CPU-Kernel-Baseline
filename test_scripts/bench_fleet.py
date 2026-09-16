@@ -119,7 +119,7 @@ def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root
     for i, name in enumerate(missing):
         print(f"  [{i + 1}/{len(missing)}] {name} ...", end=" ", flush=True)
         rc, out, err = target.run(
-            f"cd {remote_root} && python3 -m bench.cli collect-baselines "
+            f"cd {remote_root} && {target.python} -m bench.cli collect-baselines "
             f"--baseline-author {baseline_author} --definition {name}",
             timeout=1500,
         )
@@ -160,7 +160,7 @@ def _has_passed_baseline(target, definition: str, baseline_author: str, remote_r
         "sys.exit(1)\n"
     )
     b64 = base64.b64encode(check.encode()).decode()
-    rc, _, _ = target.run(f"echo {b64!r} | base64 -d | python3", timeout=60)
+    rc, _, _ = target.run(f"echo {b64!r} | base64 -d | {target.python}", timeout=60)
     return rc == 0
 
 

@@ -185,7 +185,7 @@ def _spawn_command(
     run_dir = f"{remote_root}/agent-runs-mcp/{author}"
     dataset_flags = " ".join(f"--dataset {ds}" for ds in datasets)
     cmd = (
-        f"cd {remote_root} && python3 -m mcp_app.server {dataset_flags} "
+        f"cd {remote_root} && {target.python} -m mcp_app.server {dataset_flags} "
         f"--author {author} --isa {isa} --run-dir {run_dir} "
         f"--transport streamable-http --bind-host 127.0.0.1 --port {port}"
     )

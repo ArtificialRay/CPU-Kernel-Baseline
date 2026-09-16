@@ -18,9 +18,12 @@ provider "aws" {
 variable "build_target" {
   description = "arm-bench make target (scalar, neon, sve, sve2, sme2, all, ...)"
   default     = "sve"
-  # c7g  = Graviton3 (Neoverse V1)  — SVE at 256-bit (no SVE2, no SME)
-  # c8g  = Graviton4 (Neoverse V2)  — SVE2 at 128-bit (no SME)
-  # No AWS instance type supports SME/SME2 as of early 2026.
+  # c7g          = Graviton3 (Neoverse V1) — SVE at 256-bit (no SVE2, no SME)
+  # c8g          = Graviton4 (Neoverse V2) — SVE2 at 128-bit (no SME)
+  # mac-m4.metal = Apple M4                — SME2 at 512-bit streaming SVL
+  # No Graviton generation implements SME/SME2 (it is optional in Armv9.2-A and
+  # AWS did not take it), so sme2 is the one tier that lands on Apple silicon —
+  # see the "Mac tier" section below and config/kernel_contracts.yaml's isa.sme2.
 }
 
 variable "instances" {
@@ -38,9 +41,96 @@ variable "instances" {
 }
 
 variable "on_demand" {
-  description = "If true, provision on-demand instead of spot — AWS won't reclaim the instance mid-run, at a higher hourly price (spot is the default: cheaper, but can be interrupted/terminated by AWS at any time with no fixed schedule)."
+  description = "If true, provision on-demand instead of spot — AWS won't reclaim the instance mid-run, at a higher hourly price (spot is the default: cheaper, but can be interrupted/terminated by AWS at any time with no fixed schedule). Ignored for Mac labels, which have no spot market."
   type        = bool
   default     = false
+}
+
+variable "mac_host_ids" {
+  description = <<-EOT
+    label -> id of an ALREADY-ALLOCATED Dedicated Host to place that label's
+    EC2 Mac instance on (e.g. {"ncnn-sme2" = "h-029b7735a4392cedc"}).
+
+    A mac label absent from this map gets a host allocated for it by
+    aws_ec2_host.mac below. AWS bills every freshly allocated Mac host for a
+    24-hour minimum and refuses to release it before that elapses, so pass an
+    existing host id whenever there is one — eval/provision.py forwards
+    $ARMBENCH_MAC_HOST_ID into this map.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
+variable "mac_availability_zone" {
+  description = "AZ for Mac hosts this config allocates itself. Ignored for ids passed in through var.mac_host_ids — those bring their own AZ, which is read back off the host."
+  type        = string
+  default     = "us-west-2a"
+}
+
+
+# ---------------------------------------------------------------------------
+# Mac tier — the sme2 target, and the only tier here that is not a Linux spot
+# instance. EC2 Mac differs in five ways, all of which the conditionals below
+# key off the instance type rather than off a separate resource, so there stays
+# exactly one aws_instance / one deploy / one provisioning path:
+#   1. Dedicated Host only — no shared tenancy.
+#   2. No spot market.
+#   3. macOS AMI, and a >= 100 GiB root volume (the AMI's own minimum).
+#   4. ec2-user, not ubuntu.
+#   5. No setup.sh: it is apt-based, and the AMI already ships the Apple clang
+#      we compile with, so there is no cloud-init to wait on either.
+# ---------------------------------------------------------------------------
+
+locals {
+  is_mac = { for label, it in var.instances : label => startswith(it, "mac") }
+
+  # Mac labels this config has to allocate a host for: those with no id given.
+  mac_hosts_to_allocate = {
+    for label, it in var.instances : label => it
+    if startswith(it, "mac") && lookup(var.mac_host_ids, label, "") == ""
+  }
+
+  # Effective host id per mac label — the one supplied, else the one allocated.
+  # try() rather than a bare index because aws_ec2_host.mac has no entry for a
+  # label that supplied its own id.
+  ssh_user = { for label, _ in var.instances : label => local.is_mac[label] ? "ec2-user" : "ubuntu" }
+
+  mac_host_id = {
+    for label, it in var.instances : label =>
+    coalesce(lookup(var.mac_host_ids, label, ""), try(aws_ec2_host.mac[label].id, ""))
+    if startswith(it, "mac")
+  }
+}
+
+# A targeted destroy removes the instance and its dependents, not its
+# dependencies, so a host allocated here survives teardown and can be reused —
+# which is what you want given the 24-hour minimum.
+resource "aws_ec2_host" "mac" {
+  for_each = local.mac_hosts_to_allocate
+
+  instance_type     = each.value
+  availability_zone = var.mac_availability_zone
+  auto_placement    = "off" # only instances naming this host land on it
+  host_recovery     = "off"
+
+  tags = {
+    Name = "kernel-testing-host-${each.key}"
+  }
+}
+
+# An instance has to sit in a subnet in its host's own AZ, and this VPC has a
+# default subnet in all four — leave subnet_id implicit and AWS is free to pick
+# a mismatched one. Read the AZ back off the host (works for both supplied and
+# allocated ids) and pin the matching default subnet.
+data "aws_ec2_host" "mac" {
+  for_each = local.mac_host_id
+  host_id  = each.value
+}
+
+data "aws_subnet" "mac" {
+  for_each          = data.aws_ec2_host.mac
+  availability_zone = each.value.availability_zone
+  default_for_az    = true
 }
 
 
@@ -85,22 +175,30 @@ resource "aws_instance" "labeled" {
   for_each = var.instances
 
   dynamic "instance_market_options" {
-    for_each = var.on_demand ? [] : [1]
+    for_each = (var.on_demand || local.is_mac[each.key]) ? [] : [1]
     content {
       market_type = "spot"
     }
   }
 
-  ami                    = "ami-012798e88aebdba5c" # Ubuntu 22.04 LTS arm64 us-west-2
+  # macOS Tahoe 26 arm64 (Apple clang 21) for Mac, Ubuntu 22.04 LTS arm64 otherwise
+  ami                    = local.is_mac[each.key] ? "ami-0e971f0ce976b2435" : "ami-012798e88aebdba5c"
   instance_type          = each.value
   key_name               = aws_key_pair.kernel_testing.key_name
   vpc_security_group_ids = [aws_security_group.kernel_testing.id]
 
+  # null for every non-Mac label, i.e. default tenancy in the default subnet.
+  tenancy   = local.is_mac[each.key] ? "host" : null
+  host_id   = try(local.mac_host_id[each.key], null)
+  subnet_id = try(data.aws_subnet.mac[each.key].id, null)
+
   # Installs clang-18 + llvm-objdump and creates ~/arm-bench
-  user_data = base64encode(file("${path.module}/setup.sh"))
+  user_data = local.is_mac[each.key] ? null : base64encode(file("${path.module}/setup.sh"))
 
   root_block_device {
-    volume_size = 50
+    # 100 GiB is the macOS AMI's own minimum; it leaves ~72 GiB free after the
+    # OS and Xcode CLT, which has held every dataset we run.
+    volume_size = local.is_mac[each.key] ? 100 : 50
     volume_type = "gp3"
   }
 
@@ -129,15 +227,18 @@ resource "null_resource" "deploy" {
 
   connection {
     type        = "ssh"
-    user        = "ubuntu"
+    user        = local.ssh_user[each.key]
     private_key = file("~/.ssh/id_rsa")
     host        = aws_instance.labeled[each.key].public_ip
     timeout     = "15m"
   }
 
-  # Block until user_data (setup.sh) is done
+  # Block until user_data (setup.sh) is done. macOS runs no user_data and has
+  # no cloud-init — its clang ships with the AMI — so assert that instead.
   provisioner "remote-exec" {
-    inline = ["cloud-init status --wait"]
+    inline = [
+      local.is_mac[each.key] ? "clang --version" : "cloud-init status --wait"
+    ]
   }
 }
 
@@ -151,6 +252,22 @@ output "instance_public_ips" {
 
 output "instance_ids" {
   value = { for label, inst in aws_instance.labeled : label => inst.id }
+}
+
+# Which SSH user each label takes — ec2-user on Mac, ubuntu elsewhere. Read by
+# eval/provision.py so the Mac/Linux split lives here and not in two places.
+#
+# Read off each instance's OWN instance_type, like the two outputs above.
+# Computed from var.instances instead, it breaks twice over: every apply here
+# is -target-scoped and terraform drops outputs that depend on nothing
+# targeted, so the value vanishes from state and provision.py silently falls
+# back to "ubuntu"; and state holds labels absent from var.instances, so
+# indexing a var-derived map by them is an "Invalid index" error.
+output "instance_ssh_users" {
+  value = {
+    for label, inst in aws_instance.labeled :
+    label => startswith(inst.instance_type, "mac") ? "ec2-user" : "ubuntu"
+  }
 }
 
 output "ssh_key_path" {
