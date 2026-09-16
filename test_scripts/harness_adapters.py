@@ -34,7 +34,15 @@ from dotenv import load_dotenv
 load_dotenv()
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-NANOBOT_CONFIG_BASE = REPO_ROOT / "skills" / "nanobot" / "nanobot-kernel-session" / "config.json"
+# Overridable (same as main): point NANOBOT_CONFIG_BASE at a private copy of the
+# checked-in config that carries the provider apiKey, so no key ever lands in
+# the repo. The adapter still patches model + MCP port into a temp copy.
+NANOBOT_CONFIG_BASE = Path(
+    os.environ.get(
+        "NANOBOT_CONFIG_BASE",
+        REPO_ROOT / "skills" / "nanobot" / "nanobot-kernel-session" / "config.json",
+    )
+)
 CLAUDE_SKILL_FILE = REPO_ROOT / "skills" / "claude-code" / "claude-code-kernel-session" / "SKILL.md"
 NANOBOT_WORKSPACE = Path.home() / ".nanobot" / "workspace"
 NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
