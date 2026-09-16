@@ -148,7 +148,7 @@ class KernelSession(ABC):
         if (
             baseline is not None
             and baseline.spec.isa_features
-            and not isa_mod.isa_satisfies(baseline.spec.isa_features, self._isa)
+            and not isa_mod.isa_satisfies_on_host(baseline.spec.isa_features)
         ):
             raise ValueError(
                 f"Definition {definition_name!r}'s baseline ({baseline.author!r}) "
