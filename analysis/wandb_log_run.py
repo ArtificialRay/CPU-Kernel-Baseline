@@ -174,7 +174,7 @@ def find_best_kernel(traj: Path, ver_best: dict):
 
 
 def log_run_to_wandb(
-    *, name: str, dataset: str, isa: str, model: str, author: str,
+    *, name: str, dataset: str, isa: str, model: str, author: str, harness: str,
     trajectory_path: Optional[Path],
     project: str = "arm-bench-kernels",
     entity: Optional[str] = None,
@@ -206,10 +206,10 @@ def log_run_to_wandb(
         project=project, entity=entity, group=group,
         id=run_id, resume="allow", reinit=True, allow_val_change=True,
         name=name,
-        tags=[model, dataset, isa, author, op_type],
+        tags=[model, dataset, isa, author, op_type, harness],
         config={
             "definition": name, "dataset": dataset, "op_type": op_type,
-            "isa": isa, "model": model, "author": author,
+            "isa": isa, "model": model, "author": author, "harness": harness,
             "instance_type": os.environ.get("WANDB_INSTANCE_TYPE", "unknown"),
             "baseline_kernel_sha": baseline_hash(dataset, name),
         },
@@ -306,6 +306,7 @@ def _cli_main() -> int:
     p.add_argument("--isa", required=True)
     p.add_argument("--model", default="unknown")
     p.add_argument("--author", default="unknown")
+    p.add_argument("--harness", default="unknown")
     p.add_argument("--results-dir", default="")
     p.add_argument("--trajectory", default="")
     p.add_argument("--project", default="arm-bench-kernels")
@@ -316,6 +317,7 @@ def _cli_main() -> int:
     traj = Path(args.trajectory) if args.trajectory else _locate_trajectory(args.results_dir, args.name)
     log_run_to_wandb(
         name=args.name, dataset=args.dataset, isa=args.isa, model=args.model, author=args.author,
+        harness=args.harness,
         trajectory_path=traj,
         project=args.project, entity=args.entity, group=args.group,
     )

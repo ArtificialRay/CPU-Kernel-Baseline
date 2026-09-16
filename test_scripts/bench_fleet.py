@@ -332,7 +332,10 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
         adapter = OwnHarnessAdapter(
             endpoint=prepared["endpoint"], author=author, remote_root=args.remote_root,
             target=instance.target, dataset=dataset, isa=isa, model=args.model,
-            max_turns=max_iterations,
+            # Deliberately decoupled from the MCP server's own --max-iterations
+            # cap (line above, `max_iterations`): since some model won't provide a tool call for each turn,
+            # set a tool call budget that is much higher than max-iterations to avoid unnecessary re-running
+            max_turns=max_iterations * 3,
         )
     ran_jobs: list[Job] = []
     try:
@@ -554,6 +557,7 @@ def wandb_log_job(name, dataset, isa, args, author, local_results_dir) -> None:
     try:
         wandb_log_run.log_run_to_wandb(
             name=name, dataset=dataset, isa=isa, model=args.model or "unknown", author=author,
+            harness=args.harness,
             trajectory_path=wandb_log_run._locate_trajectory(str(local_results_dir), name),
             project=args.wandb_project,
             entity=args.wandb_entity,
@@ -589,7 +593,7 @@ def sync_job_results(label: str, author: str, definition: str, local_results_dir
 def main(argv: Optional[list[str]] = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--harness", required=True, choices=["claude-code", "cline", "codex", "nanobot", "own"])
-    p.add_argument("--dataset", required=True, nargs="+", choices=["ncnn", "simd-loop", "llama.cpp"],
+    p.add_argument("--dataset", required=True, nargs="+", choices=["ncnn", "simd-loop", "llama.cpp", "kleidiai"],
                    help="One or more datasets (space-separated). More than one requires "
                         "--until-complete, which interleaves them round-robin.")
     p.add_argument("--isa", default="sve", choices=["neon", "sve", "sve2", "sme2", "portable"])

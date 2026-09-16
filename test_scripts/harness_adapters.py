@@ -71,6 +71,7 @@ NANOBOT_SERVER_NAME_BY_DATASET = {
     "ncnn": "NCNNKernelBench",
     "llama.cpp": "LLAMACPPKernelBench",
     "simd-loop": "SIMDLoopKernelBench",
+    "kleidiai": "KleidiaiKernelBench",
 }
 
 
@@ -224,10 +225,11 @@ class CodexAdapter(HarnessAdapter):
                     # Value is the *name* of the env var codex reads the key
                     # from at request time — never the key itself.
                     "-c", f'model_providers.{p}.env_key="OPENAI_API_KEY"',
-                    # Most third-party OpenAI-compatible gateways (litellm,
-                    # OpenRouter) only implement the older chat-completions
-                    # wire format, not OpenAI's newer responses API.
-                    "-c", f'model_providers.{p}.wire_api="chat"',
+                    # This codex CLI version dropped "chat" wire_api support
+                    # entirely (hard config-load error, not a runtime
+                    # fallback) — "responses" is the only value it accepts
+                    # now: https://github.com/openai/codex/discussions/7782
+                    "-c", f'model_providers.{p}.wire_api="responses"',
                     "-c", f'model_provider="{p}"',
                 ]
             if self.model:
