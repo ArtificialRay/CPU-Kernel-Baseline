@@ -92,7 +92,7 @@
  ],
  "_note": "Full sve set = 85: ncnn 30 + llama.cpp 26 (teammate's cells) + simd-loop 29 (every loop with an Arm SVE baseline verified on Graviton3, 2026-09-11..13; excludes 032 (baseline numerically wrong), 7 SVE2-only, 10 with no upstream SVE code).",
  "subset33": {
-  "_note": "FINAL subset (33 = 12 ncnn + 8 llama.cpp + 13 simd loops), decided 2026-09-16 by Allen (subset owner): the 7 workbook loops without an Arm SVE expert baseline (102 106 123 128 130 135 223) are replaced by 219 105 110 114 038 113 124. All 33 have Arm-written baselines and M1/M2 runs. W&B tag: subset33.",
+  "_note": "FINAL subset (33 = 12 ncnn + 8 llama.cpp + 13 simd loops), Allen (subset owner) 2026-09-16: chosen so every kernel (a) is in the 85-kernel main set with Arm-written SVE baseline + M1/M2 runs and (b) already has a nanobot+gpt-5.6-luna 40-step run in W&B project arm-bench-kernels-gpt5.6-luna (S0 control done). Swaps vs workbook: loops 102 106 123 128 130 135 223 -> 219 105 110 114 038 113 124 (no SVE expert); gemm_fp32_n1000_k2048 -> gemm_fp32_n1280_k960, gemm_w8a8ch_n1000_k2048 -> conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0 (1x1 int8 conv = GEMM-shaped), moe_q8_0_e64_k8_d2048_ff1024 -> moe_q8_0_e60_k4_d2048_ff1408, loop_037 -> loop_103, loop_127 -> loop_120 (no luna run yet). W&B tag: subset33.",
   "ncnn": [
    "conv2d_depthwise_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1",
    "conv2d_depthwise_fp32_kh5_kw5_sh1_sw1_dh1_dw1_p2",
@@ -100,10 +100,10 @@
    "conv2d_depthwise_w8a8ch_kh5_kw5_sh1_sw1_dh1_dw1_p2",
    "conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1",
    "conv2d_fp32_kh7_kw7_sh2_sw2_dh1_dw1_p3",
+   "conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0",
    "conv2d_w8a8ch_kh3_kw3_sh1_sw1_dh1_dw1_p1",
    "conv2d_w8a8ch_kh7_kw7_sh2_sw2_dh1_dw1_p3",
-   "gemm_fp32_n1000_k2048",
-   "gemm_w8a8ch_n1000_k2048",
+   "gemm_fp32_n1280_k960",
    "pooling_fp32_global_avg",
    "pooling_fp32_max_kh3_kw3_sh2_sw2_p1"
   ],
@@ -114,22 +114,22 @@
    "mha_bf16_h16_d128_kvh16",
    "moe_bf16_e64_k8_d2048_ff1024",
    "moe_q4_k_m_e64_k8_d2048_ff1024",
-   "moe_q8_0_e64_k8_d2048_ff1024",
+   "moe_q8_0_e60_k4_d2048_ff1408",
    "rms_norm_fp32_d2048"
   ],
   "simd-loop": [
    "loop_001",
    "loop_008",
    "loop_024",
-   "loop_037",
    "loop_038",
+   "loop_103",
    "loop_105",
    "loop_110",
    "loop_113",
    "loop_114",
+   "loop_120",
    "loop_121",
    "loop_124",
-   "loop_127",
    "loop_219"
   ],
   "simd-loop_dropped_no_sve_baseline": [
@@ -140,6 +140,13 @@
    "loop_130",
    "loop_135",
    "loop_223"
+  ],
+  "swapped_out_no_luna_run": [
+   "gemm_fp32_n1000_k2048",
+   "gemm_w8a8ch_n1000_k2048",
+   "loop_037",
+   "loop_127",
+   "moe_q8_0_e64_k8_d2048_ff1024"
   ]
  }
 }
