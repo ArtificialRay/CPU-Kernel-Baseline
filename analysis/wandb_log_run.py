@@ -168,6 +168,41 @@ def baseline_hash(dataset: str, name: str):
         return None
 
 
+
+def step_budget_fields(path: Path, budget: int = 40) -> dict:
+    """Teammate-convention step accounting (matches the nanobot cells on W&B):
+    a *step* is one MCP tool call that is not `submit` (compile / evaluate /
+    disassemble / ...), indexed by the trajectory's `turn` counter minus the
+    submits seen so far. Returns
+      steps_used            = last turn - number of submit calls
+      performance_step_40   = best PASSED time_speedup_geomean reached by step 40
+      steps_exceeded_40     = steps_used > 40
+    so runs with different budgets (40 evaluates vs 40 steps) can be compared."""
+    subs, best, at_budget, last_turn = 0, 0.0, None, 0
+    for line in path.read_text().splitlines():
+        try:
+            d = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        t = d.get("turn")
+        if t is None:
+            continue
+        last_turn = max(last_turn, t)
+        if d.get("tool") == "submit":
+            subs += 1
+            continue
+        m = d.get("metrics") or {}
+        if d.get("tool") == "evaluate" and m.get("status") == "PASSED":
+            sp = m.get("time_speedup_geomean")
+            if isinstance(sp, (int, float)):
+                best = max(best, sp)
+        if t - subs <= budget:
+            at_budget = best
+    steps = last_turn - subs
+    return {"steps_used": steps,
+            f"performance_step_{budget}": best if at_budget is None else at_budget,
+            f"steps_exceeded_{budget}": steps > budget}
+
 def find_best_kernel(traj: Path, ver_best: dict):
     d = traj.parent
     if ver_best:
@@ -285,6 +320,7 @@ def log_run_to_wandb(
         "n_compile_error": ctax.get("COMPILE_ERROR", 0),
         "worst_max_abs_error": worst_abs,
         "worst_max_rel_error": worst_rel,
+        **(step_budget_fields(traj) if traj and traj.exists() else {}),
         "cost_per_speedup": round(cost / best, 4) if (cost and best) else None,
         "cost_per_eval": round(cost / len(rows), 4) if (cost and rows) else None,
         **{k: v for k, v in session_fields.items() if v is not None},
