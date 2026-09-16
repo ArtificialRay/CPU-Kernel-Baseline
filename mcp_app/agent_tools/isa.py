@@ -71,10 +71,39 @@ def march_for_isa(isa: str, *, instance_label: str | None = None) -> MarchInfo:
     return MarchInfo(march_flag, list(isa_features), target_hardware)
 
 
+def _read_darwin_features() -> set[str]:
+    """macOS has no /proc/cpuinfo; probe the equivalent sysctl keys instead.
+
+    The keys are named after the architectural features (FEAT_*), so map them
+    onto the same token vocabulary _ISA_CPUINFO_TOKENS already uses. Apple
+    silicon exposes SME/SME2 but NOT non-streaming SVE, hence no sve/sve2
+    entries here — see the sme2 notes in config/kernel_contracts.yaml.
+    """
+    import platform
+    import subprocess
+
+    if platform.system() != "Darwin":
+        return set()
+    keys = {
+        "asimd": "hw.optional.AdvSIMD",
+        "sme": "hw.optional.arm.FEAT_SME",
+        "sme2": "hw.optional.arm.FEAT_SME2",
+    }
+    found: set[str] = set()
+    for token, key in keys.items():
+        try:
+            r = subprocess.run(["sysctl", "-n", key], capture_output=True, text=True)
+            if r.stdout.strip() == "1":
+                found.add(token)
+        except Exception:  # noqa: BLE001 — absent key/binary just means "no feature"
+            pass
+    return found
+
+
 def _read_cpuinfo_features(cpuinfo_path: Path = Path("/proc/cpuinfo")) -> set[str]:
     """Return the set of tokens in /proc/cpuinfo's first "Features" line."""
     if not cpuinfo_path.exists():
-        return set()
+        return _read_darwin_features()
     for line in cpuinfo_path.read_text().splitlines():
         if line.startswith("Features"):
             _, _, rest = line.partition(":")

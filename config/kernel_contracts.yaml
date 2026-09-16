@@ -97,10 +97,22 @@ isa:
     labels: ["graviton4", "aarch64-sve2"]
     instance_type: "c8g.xlarge"
   sme2:
-    march: "-march=armv9-a+sve2+sme2"
-    features: ["sve2", "sme2"]
-    labels: ["aarch64-sme2"]
-    instance_type: "c8g.xlarge"
+    # No Graviton generation implements SME (G4/G5 are SVE2 only; SME is
+    # optional in Armv9.2-A and AWS did not take it), so this tier needs Apple
+    # silicon. Measured on EC2 mac-m4.metal, Apple clang 21:
+    #   -mcpu=apple-m4            plain SVE does not compile   <- safe
+    #   -march=armv9-a+sme2       compiles, then SIGILL
+    #   -march=armv9-a+sve2+sme2  compiles, then SIGILL
+    # M4's SME is a coprocessor: SME2 is present but the cores do not run
+    # SVE/SVE2 outside streaming mode. Dropping "+sve2" is not enough because
+    # armv9-a already implies SVE — only -mcpu keeps it out of reach, and it
+    # fails at compile time, which an agent can act on, unlike a bare SIGILL.
+    # features therefore stops at sme2: the cumulative rule does not extend
+    # here, sme2 does NOT imply sve2.
+    march: "-mcpu=apple-m4"
+    features: ["sme2"]
+    labels: ["apple-m4", "aarch64-sme2"]
+    instance_type: "mac-m4.metal"
 
 # Disallowed-source-pattern policy for agent-submitted kernel.cpp, consumed
 # by mcp_app's compile() tool (mcp_app/agent_tools/base.py::
