@@ -54,11 +54,15 @@ ISA_TABLE: dict[str, IsaSpec] = _isa_table()
 ISA_INSTANCE_MAP: dict[str, str] = {isa: spec.instance_type for isa, spec in ISA_TABLE.items()}
 
 # bench/config.py's BenchmarkConfig/EvalConfig field defaults, and its
-# per-op-type tolerance overrides. Raw dicts — bench/config.py owns the
-# EvalOverride dataclass these get wrapped in, since that shape is bench-specific.
+# per-op-type / per-definition tolerance overrides. Raw dicts — bench/config.py
+# owns the EvalOverride dataclass these get wrapped in, since that shape is
+# bench-specific.
 EVAL_DEFAULTS: dict = dict(_load()["eval_defaults"])
 EVAL_OP_TYPE_OVERRIDES: dict[str, dict] = {
     op: dict(cfg) for op, cfg in _load()["eval_op_type_overrides"].items()
+}
+EVAL_DEFINITION_OVERRIDES: dict[str, dict] = {
+    name: dict(cfg) for name, cfg in _load()["eval_definition_overrides"].items()
 }
 
 # Disallowed-source-pattern policy for agent-submitted kernel.cpp — consumed
@@ -89,6 +93,7 @@ __all__ = [
     "ISA_INSTANCE_MAP",
     "EVAL_DEFAULTS",
     "EVAL_OP_TYPE_OVERRIDES",
+    "EVAL_DEFINITION_OVERRIDES",
     "DISALLOWED_SOURCE_PATTERNS_DEFAULT",
     "DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE",
     "DISALLOWED_SOURCE_PATTERNS_BY_ISA",
