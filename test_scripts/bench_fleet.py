@@ -448,6 +448,8 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         cmd += ["--local-results-dir", args.local_results_dir]
     if args.sync_solutions:
         cmd.append("--sync-solutions")
+    if args.label:
+        cmd += ["--label", args.label]
     if args.wandb:
         cmd += ["--wandb", "--wandb-project", args.wandb_project]
         if args.wandb_entity:
@@ -477,7 +479,8 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
     # Resolve --model up front
     model = args.model or ADAPTER_CLASSES[args.harness].default_model()
     author = args.author or compute_author(args.harness, model, args.isa)
-    labels = [launch_session._label_for(ds, author) for ds in datasets]
+    # support label override or create label on my own
+    labels = [args.label or launch_session._label_for(ds, author) for ds in datasets]
     local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
     prev_incomplete_count: dict[str, Optional[int]] = {ds: None for ds in datasets}
     adapter_cls = ADAPTER_CLASSES[args.harness]
@@ -510,7 +513,7 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
         for ds in datasets:
             n = len(per_ds_incomplete[ds])
             if n > 0 and prev_incomplete_count[ds] == n:
-                label = launch_session._label_for(ds, author)
+                label = args.label or launch_session._label_for(ds, author)
                 if launch_session.is_instance_reachable(label):
                     print(f"  STALLED but {label}'s instance is still reachable "
                           f"(still {n} incomplete) — leaving it running", file=sys.stderr)
