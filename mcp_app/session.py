@@ -19,7 +19,7 @@ from contracts import REFERENCE_SCALAR_AUTHORS, REFERENCE_SCALAR_FILENAME
 from .agent_tools import isa as isa_mod
 from .agent_tools import resolve_tools
 from .agent_tools.base import KernelSession
-from .agent_tools.baseline_readiness import DEFAULT_BASELINE_AUTHOR
+from contracts import baseline_author_for
 
 
 @dataclass
@@ -31,7 +31,7 @@ class SessionConfig:
     run_dir: Path  # session root, e.g. <remote_root>/agent-runs-mcp/<author> — each
     # definition the agent compile()s gets its own run_dir/<definition_name>/ subdir
     baseline_author: Optional[str] = None
-    # None = auto-derive from dataset (see baseline_readiness.DEFAULT_BASELINE_AUTHOR);
+    # None = auto-derive from dataset + isa (see contracts.baseline_author_for);
     # only pass explicitly to override.
     instance_label: Optional[str] = None
     max_iterations: Optional[int] = None  # hard per-definition tool-call ceiling; None = unlimited
@@ -58,7 +58,7 @@ def build_tools(cfg: SessionConfig) -> KernelSession:
 
     isa_mod.verify_isa_available(cfg.isa)
 
-    baseline_author = cfg.baseline_author or DEFAULT_BASELINE_AUTHOR[cfg.dataset]
+    baseline_author = cfg.baseline_author or baseline_author_for(cfg.dataset, cfg.isa)
     bench_cfg = BenchmarkConfig(baseline_author=baseline_author)
 
     tools = tools_cls(
@@ -75,7 +75,13 @@ def build_tools(cfg: SessionConfig) -> KernelSession:
 # session as read-on-demand MCP resources under `<run_dir>/docs/` (see
 # resources.py::_DOCS_DIRNAME). Static + dataset-independent, so written once at
 # run_dir root rather than per-definition.
-_HARDWARE_DOCS_SRC = Path(__file__).parent / "hardware_docs"
+# Docs moved to skills/hardware_docs (e21954c); the old in-package location is
+# kept as a fallback so an out-of-date sync still finds them.
+_HARDWARE_DOCS_SRC = next(
+    (p for p in (Path(__file__).resolve().parent.parent / "skills" / "hardware_docs",
+                 Path(__file__).parent / "hardware_docs") if p.is_dir()),
+    Path(__file__).parent / "hardware_docs",
+)
 DOCS_DIRNAME = "docs"
 
 

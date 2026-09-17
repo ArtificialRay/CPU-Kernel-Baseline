@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -76,6 +77,53 @@ class CompileResult:
 
 
 # ── Builder ABC ──────────────────────────────────────────────────────────────
+
+
+# isa tier -> /proc/cpuinfo "Features" tokens that must all be present, highest
+# tier first. Mirrors mcp_app/agent_tools/isa.py's _ISA_CPUINFO_TOKENS.
+_NATIVE_TIERS = (("sve2", ("sve2",)), ("sve", ("sve",)), ("neon", ("asimd",)))
+# /proc/cpuinfo token -> -march extension appended to the tier march.
+_NATIVE_OPTIONAL_EXTS = (
+    ("svei8mm", "+i8mm"), ("svebf16", "+bf16"), ("svef32mm", "+f32mm"),
+    ("svebitperm", "+sve2-bitperm"),
+)
+
+
+def resolve_native_march(flags: List[str]) -> List[str]:
+    """Replace `-march=native` with a concrete `-march=` for this host.
+
+    clang's AArch64 host detection doesn't know every Graviton part (clang-18
+    on Graviton3, part 0xd40, resolves `-march=native` to `-target-cpu generic`
+    with NO SVE), so a baseline that bakes `-march=native` — every simd-loop
+    baseline does — compiles without SVE and fails, leaving evaluate() with no
+    baseline and a null speedup. Pick the highest tier whose cpuinfo tokens
+    are all present and use the same march candidates are compiled with
+    (contracts.ISA_TABLE). ARMBENCH_NATIVE_MARCH overrides the choice."""
+    if "-march=native" not in flags:
+        return list(flags)
+    march = os.environ.get("ARMBENCH_NATIVE_MARCH")
+    if not march:
+        try:
+            from contracts import ISA_TABLE  # repo-root module, present on the box
+            feats = ""
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                if line.startswith("Features"):
+                    feats = line.split(":", 1)[1]
+                    break
+            tokens = set(feats.split())
+            march = next((ISA_TABLE[t].march for t, need in _NATIVE_TIERS
+                          if all(n in tokens for n in need)), None)
+            # Keep the optional extensions clang's own -march=native would have
+            # enabled on a correctly-detected part (i8mm/bf16 on Graviton3,
+            # plus sve2-bitperm on Graviton4), so baselines written against
+            # them (simd-loop 106/130/135) still build.
+            if march:
+                march += "".join(ext for tok, ext in _NATIVE_OPTIONAL_EXTS if tok in tokens)
+        except Exception:  # noqa: BLE001 — fall through to clang's own detection
+            march = None
+    if not march:
+        return list(flags)
+    return [march if f == "-march=native" else f for f in flags]
 
 class Builder(ABC):
     """Base class for all builders.

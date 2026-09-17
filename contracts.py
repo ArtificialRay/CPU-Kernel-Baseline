@@ -48,6 +48,18 @@ AGENT_KERNEL_FILENAME: str = _contracts()["agent_kernel_filename"]
 REFERENCE_SCALAR_FILENAME: str = _contracts()["reference_scalar_filename"]
 REFERENCE_SCALAR_AUTHORS: dict[str, str] = dict(_load()["reference_scalar_authors"])
 BASELINE_AUTHORS: dict[str, str] = dict(_load()["baseline_authors"])
+BASELINE_AUTHORS_BY_ISA: dict[str, dict[str, str]] = {
+    ds: dict(m) for ds, m in (_load().get("baseline_authors_by_isa") or {}).items()
+}
+
+
+def baseline_author_for(dataset: str, isa: str | None) -> str:
+    """The speedup-baseline author for `dataset` on an `isa` box: the
+    tier-specific author from baseline_authors_by_isa when one is declared
+    (simd-loop: baseline-sve2 on sve2/sme2), else the dataset default."""
+    return BASELINE_AUTHORS_BY_ISA.get(dataset, {}).get(isa or "", BASELINE_AUTHORS[dataset])
+
+
 ISA_TABLE: dict[str, IsaSpec] = _isa_table()
 
 # isa -> EC2 instance type, the subset of ISA_TABLE most callers actually need.
@@ -85,6 +97,8 @@ __all__ = [
     "REFERENCE_SCALAR_FILENAME",
     "REFERENCE_SCALAR_AUTHORS",
     "BASELINE_AUTHORS",
+    "BASELINE_AUTHORS_BY_ISA",
+    "baseline_author_for",
     "ISA_TABLE",
     "ISA_INSTANCE_MAP",
     "EVAL_DEFAULTS",

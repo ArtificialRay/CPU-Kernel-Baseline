@@ -31,6 +31,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -47,7 +48,7 @@ import analysis.wandb_log_run as wandb_log_run
 # imports its public functions.
 import skills.launch.launch_session as launch_session
 from skills.launch.launch_session import RemoteTarget, prepare_session, stop_tunnel, sync_results
-from contracts import BASELINE_AUTHORS, ISA_INSTANCE_MAP
+from contracts import ISA_INSTANCE_MAP, baseline_author_for
 
 # harness_adapters.py lives alongside this script — Python puts a directly
 # run script's own directory on sys.path[0] automatically (same idiom
@@ -111,11 +112,13 @@ def _cost_proxy(name: str) -> int:
     return prod
 
 
-def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root: str) -> None:
+def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root: str,
+                     isa: Optional[str] = None) -> None:
     """Sync the repo, then collect + verify baseline traces BEFORE the MCP
-    server starts.
+    server starts. The author is ISA-routed (contracts.baseline_author_for) so
+    it matches what mcp_app/session.py will compare against on this box.
     """
-    baseline_author = BASELINE_AUTHORS.get(dataset, dataset)
+    baseline_author = baseline_author_for(dataset, isa)
     target = instance.target
 
     print(f"[sync] Syncing benchmark inputs to {target.host} before baseline collection...")
@@ -195,7 +198,7 @@ def build_jobs(
         for entry in raw_entries
     }
 
-    baseline_author = BASELINE_AUTHORS.get(dataset, dataset)
+    baseline_author = baseline_author_for(dataset, isa)
     jobs: list[Job] = []
     for path in sorted(DEFINITIONS_DIR.rglob("*.json")):
         d = json.loads(path.read_text())
@@ -270,11 +273,13 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     isa = args.isa
     author = args.author or compute_author(args.harness, model, isa)
     label = args.label or launch_session._label_for(dataset, author)
-    max_iterations = args.max_iterations
+    max_iterations = args.max_iterations or None   # 0 = no server-side tool-call cap
     instance_type = args.instance or ISA_INSTANCE_MAP.get(isa, "c7g.large")
     instance = launch_session._provision(
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
     )
+    if args.watchdog_minutes > 0:
+        launch_session.arm_watchdog(instance.target, args.watchdog_minutes)
 
     # Build the job list first: ensure_baselines() needs the definition names,
     # and it has to run between the repo sync and the MCP server start.
@@ -287,7 +292,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     )
     if jobs:
         ensure_baselines(
-            instance, dataset, [j.name for j in jobs], args.remote_root,
+            instance, dataset, [j.name for j in jobs], args.remote_root, isa=isa,
         )
 
     # sync_repo=False: ensure_baselines() already synced, and re-syncing here
@@ -326,14 +331,29 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             f"--isa {isa}, author={author}, label={label}"
         )
 
+        skipped_for_deadline: list[str] = []
         for job in jobs:
+            if args.deadline_epoch and time.time() >= args.deadline_epoch:
+                # Time budget reached: never start a new job past the deadline
+                # (a running one is always allowed to finish — killing it would
+                # waste its LLM spend and leave an unusable trajectory).
+                skipped_for_deadline.append(job.name)
+                continue
             ran_jobs.append(job)
             log_path = log_dir / f"{dataset}_{isa}_{job.name}.log"
             attempt = 0
             while True:
                 print(f"=== [{time.strftime('%H:%M:%S')}] starting job: {job.name} "
                       f"(attempt {attempt + 1}/{args.retries + 1}) ===")
-                rc = adapter.run_job(job, endpoint=prepared["endpoint"], author=author, log_path=log_path)
+                if args.watchdog_minutes > 0:
+                    launch_session.arm_watchdog(instance.target, args.watchdog_minutes)
+                    keeper = _WatchdogKeeper(instance.target, args.watchdog_minutes)
+                    keeper.start()
+                try:
+                    rc = adapter.run_job(job, endpoint=prepared["endpoint"], author=author, log_path=log_path)
+                finally:
+                    if args.watchdog_minutes > 0:
+                        keeper.stop()
                 if rc == 0:
                     break
                 if attempt >= args.retries:
@@ -362,9 +382,13 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
                 print(f"  WARNING: sync-solutions failed: {e}", file=sys.stderr)
 
+        if skipped_for_deadline:
+            print(f"=== [{time.strftime('%H:%M:%S')}] TIME BUDGET REACHED — did not start "
+                  f"{len(skipped_for_deadline)} job(s): {skipped_for_deadline} ===")
         incomplete = [
             j.name for j in jobs
-            if not _trajectory_complete(local_results_dir, j.name, args.min_iterations)
+            if j.name not in skipped_for_deadline
+            and not _trajectory_complete(local_results_dir, j.name, args.min_iterations)
         ]
         if incomplete:
             print(
@@ -379,6 +403,49 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             adapter.cleanup_workspace(job)
         stop_tunnel(prepared)
     return label
+
+
+
+class _WatchdogKeeper(threading.Thread):
+    """Re-arms the box watchdog every watchdog_minutes/3 while a job runs.
+    A job that outlives a single watchdog window (40-iteration kernels take
+    1.5-2.5 h; the default window is 2 h) otherwise gets its box shut down
+    mid-run — which is exactly what happened to loop_001 on 2026-09-11."""
+
+    def __init__(self, target, minutes: int) -> None:
+        super().__init__(daemon=True, name="watchdog-keeper")
+        self._target, self._minutes = target, minutes
+        self._stop = threading.Event()
+
+    def run(self) -> None:
+        period = max(5, self._minutes // 3) * 60
+        while not self._stop.wait(period):
+            launch_session.arm_watchdog(self._target, self._minutes)
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
+def _resolved_model(args: argparse.Namespace) -> Optional[str]:
+    """The model name run_fleet folds into the author: --model, else the
+    harness adapter's default."""
+    return args.model or ADAPTER_CLASSES[args.harness].default_model()
+
+
+def _teardown_datasets(datasets: list[str], author: str, label_override: Optional[str] = None) -> None:
+    """Wind-down: destroy every box this sweep provisioned (one per dataset
+    label, or the single --label override). Labels with no registered
+    instance are skipped; a failed teardown is a warning — the watchdog
+    still bounds that box's cost."""
+    for ds in datasets:
+        label = label_override or launch_session._label_for(ds, author)
+        if launch_session._read_config_instance(label) is None:
+            continue
+        print(f"=== [{time.strftime('%H:%M:%S')}] tearing down {label} ===")
+        try:
+            launch_session._teardown(label)
+        except Exception as e:  # noqa: BLE001 — watchdog still bounds the cost
+            print(f"  WARNING: teardown failed for {label}: {e}", file=sys.stderr)
 
 
 def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: list[str], author: str) -> None:
@@ -406,11 +473,20 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         "--skip-final-teardown",
     ]
     if args.model:
+        # Without this every chunk silently ran on the harness's default
+        # model while its author dir / W&B group still carried --model's name.
         cmd += ["--model", args.model]
+    if args.label:
+        # Same failure mode: concurrent lanes each passing their own --label
+        # all provisioned/tore down the SAME default label without this.
+        cmd += ["--label", args.label]
     if args.max_iterations:
         cmd += ["--max-iterations", str(args.max_iterations)]
     if args.instance:
         cmd += ["--instance", args.instance]
+    cmd += ["--watchdog-minutes", str(args.watchdog_minutes)]
+    if args.deadline_epoch:
+        cmd += ["--deadline-epoch", repr(args.deadline_epoch)]
     if args.on_demand:
         cmd.append("--on-demand")
     if args.local_results_dir:
@@ -450,7 +526,7 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
     local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
     prev_incomplete_count: dict[str, Optional[int]] = {ds: None for ds in datasets}
     adapter_cls = ADAPTER_CLASSES[args.harness]
-    max_iterations = args.max_iterations
+    max_iterations = args.max_iterations or None   # 0 = no server-side tool-call cap
 
     for round_num in range(1, args.max_rounds + 1):
         per_ds_incomplete = {
@@ -507,6 +583,12 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
                     continue
                 idx[ds] += len(chunk)
                 _run_chunk_subprocess(args, ds, chunk, author)
+                if args.deadline_epoch and time.time() >= args.deadline_epoch:
+                    print(f"=== [{time.strftime('%H:%M:%S')}] TIME BUDGET REACHED — winding "
+                          f"down; re-run the same command to resume (completed definitions "
+                          f"are skipped automatically) ===")
+                    _teardown_datasets(datasets, author, args.label)
+                    return
                 if idx[ds] >= len(names):
                     active.remove(ds)
 
@@ -592,6 +674,21 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "provisioned instance).")
     p.add_argument("--local-results-dir", default=None,
                    help="Default: agent-runs-<author>/ under the repo root.")
+    p.add_argument("--watchdog-minutes", type=int, default=120,
+                   help="Cost guard: the box self-terminates this many minutes after the "
+                        "last (re)arm. Armed after provisioning and again before every job "
+                        "attempt, so a live run keeps pushing the deadline out while an "
+                        "orphaned box (dead tunnel, killed driver, closed lid) dies on its "
+                        "own. 0 disables.")
+    p.add_argument("--time-budget-hours", type=float, default=None,
+                   help="Run in a bounded session: no new job starts after this many hours "
+                        "(the job in flight finishes), then --until-complete tears the boxes "
+                        "down. Re-run the same command later to resume — completed "
+                        "definitions are skipped.")
+    p.add_argument("--deadline-epoch", type=float, default=None,
+                   help="Advanced: absolute Unix-time deadline (overrides --time-budget-hours). "
+                        "Lets a wrapper share one deadline across several sequential "
+                        "invocations, e.g. one per dataset.")
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
                         "remote instance (not bench-trace/traces/ — that data's already in "
@@ -620,12 +717,19 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "one group.")
     p.add_argument("--skip-final-teardown", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(argv)
+    if args.deadline_epoch is None and args.time_budget_hours:
+        args.deadline_epoch = time.time() + args.time_budget_hours * 3600
+    if args.deadline_epoch:
+        print(f"=== time budget: no new job starts after "
+              f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(args.deadline_epoch))} ===")
 
     if not args.until_complete:
         if len(args.dataset) != 1:
             p.error("multiple --dataset values require --until-complete")
         label = run_fleet(args, args.dataset[0])
-        if not args.skip_final_teardown:
+        if not args.skip_final_teardown and launch_session._read_config_instance(label) is not None:
+            # Scoped to THIS run's box: an unscoped _teardown() destroys every
+            # label in eval_config.json, i.e. any concurrent sweep's box too.
             print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
             launch_session._teardown(label)
         return
@@ -633,11 +737,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         p.error("--label can't be fixed across multiple --dataset values under --until-complete "
                  "— each dataset needs its own instance label; omit --label and let it be "
                  "computed per dataset.")
-    labels = run_until_complete(args)
+    run_until_complete(args)
     if not args.skip_final_teardown:
-        for label in labels:
-            print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
-            launch_session._teardown(label)
+        author = args.author or compute_author(args.harness, _resolved_model(args), args.isa)
+        print(f"=== [{time.strftime('%H:%M:%S')}] Teardown this sweep's boxes ({author})...")
+        _teardown_datasets(args.dataset, author, args.label)
 
 
 if __name__ == "__main__":

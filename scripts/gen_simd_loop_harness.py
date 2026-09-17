@@ -32,6 +32,7 @@ Loops requiring custom handling (skipped):
 from __future__ import annotations
 
 import json
+import sys
 import re
 import uuid as _uuid
 from dataclasses import dataclass, field
@@ -575,9 +576,9 @@ _CUSTOM_REFS: dict[str, str] = {
         "def run(a, b):\n"
         "    res = np.uint32(0)\n"
         "    for i in range(len(a)):\n"
-        "        res = np.uint32(int(res) + int(a[i]) * int(b[i]))\n"
+        "        res = np.uint32((int(res) + int(a[i]) * int(b[i])) & 0xFFFFFFFF)\n"
         "        if res % 2:\n"
-        "            res = np.uint32(int(res) + 1)\n"
+        "            res = np.uint32((int(res) + 1) & 0xFFFFFFFF)\n"
         "    return res\n"
     ),
     "loop_127": (
@@ -586,7 +587,7 @@ _CUSTOM_REFS: dict[str, str] = {
         "    # early exit on a[i]==512 never fires with generated inputs (values 1-100)\n"
         "    res = np.uint32(0)\n"
         "    for i in range(len(a)):\n"
-        "        res = np.uint32(int(res) + int(a[i]) * int(b[i]))\n"
+        "        res = np.uint32((int(res) + int(a[i]) * int(b[i])) & 0xFFFFFFFF)\n"
         "        if a[i] == 512:\n"
         "            break\n"
         "    return res\n"
@@ -688,9 +689,18 @@ def _extract_scalar_kernel(loop_id: str) -> str:
 # exact macros the HAVE_SVE_INTRINSICS blocks use, copied from common/loops.h.
 # On a non-SME SVE2 target (Graviton4) SC_SVE_ATTR is empty.
 _SVE_PRELUDE = """#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <limits.h>
+#include <assert.h>
+#include <math.h>
 #include <arm_sve.h>
 #define restrict __restrict
 #define SC_SVE_ATTR
+#define SC_SVE_LOOP_ATTR
+#define NS_SVE_LOOP_ATTR
+#define NOINLINE __attribute__((noinline))
 #define FOR_COND(P, S, I, N) svptest_first(svptrue_b##S(), P = svwhilelt_b##S(I, N))
 #define FOR_LOOP(T, I, M, N, P, S, W) for (T I = M; FOR_COND(P, S, I, N); I += svcnt##W())
 #define FOR_LOOP_8(T, I, M, N, P)  FOR_LOOP(T, I, M, N, P, 8, b)
@@ -702,49 +712,200 @@ static inline uint32_t get_sve_vl(void) {
   return (uint32_t)vl;
 }
 static inline uint32_t get_vl(void) { return get_sve_vl(); }
+// common/helpers.h: 64-byte-aligned scratch. Only reached when the harness
+// hands a kernel a NULL scratch buffer (it never does — every scratch field is
+// bound), so a plain aligned malloc stands in for Arm's arena allocator.
+static inline void *alloc_64b(uint64_t size, const char *name) {
+  void *p = NULL; (void)name;
+  if (posix_memalign(&p, 64, size ? size : 64) != 0) abort();
+  return p;
+}
+#define ALLOC_64B(P, S, N) P = (__typeof__(P))alloc_64b((S) * sizeof((P)[0]), N)
 """
 
+# Every header the upstream loop/common sources include. Each is replaced by an
+# EMPTY stub while the preprocessor resolves the #if chain, so the selected
+# text is the loop file's own code only (arm_sve.h etc. come from the prelude).
+_CPP_STUB_HEADERS = [
+    "loops.h", "helpers.h", "sort.h", "common/loops.h", "common/helpers.h",
+    "common/sort.h", "stdint.h", "limits.h", "assert.h", "float.h", "inttypes.h",
+    "math.h", "stdbool.h", "stdio.h", "stdlib.h", "string.h", "stddef.h",
+    "arm_sve.h", "arm_neon.h", "arm_bf16.h", "arm_sme.h", "arm_acle.h",
+]
+# The two baseline tiers. Each is a separate solution author so a Graviton3
+# (sve) box and a Graviton4 (sve2) box both score against Arm code that runs
+# there: the preprocessor selects branches for the tier's -march (from
+# contracts.ISA_TABLE, the same march the box compiles candidates with), the
+# compiler adds __ARM_FEATURE_SVE/__ARM_FEATURE_SVE2/__aarch64__ itself.
+#   asm_fallback: loops whose HAVE_SVE_INTRINSICS (ACLE) branch needs SVE2 but
+#     which carry a plain-SVE inline-asm branch upstream (`#elif
+#     defined(__ARM_FEATURE_SVE)`) — Arm-authored too, and what upstream `make`
+#     builds on a Graviton3. Cross-compile-checked 2026-09-11, runtime-audited
+#     on a c7g.large with analysis/audit_simd_baselines.py.
+#   skip: no usable kernel at that tier (SVE2-only upstream with only a
+#     scalar/NEON alternative; multi-axis ABI mismatch; unresolved), so no
+#     broken baseline is ever emitted.
+_SVE_TIERS = {
+    "sve": {
+        "author": "baseline-sve",
+        "isa_features": ["sve"],
+        "asm_fallback": {
+            "loop_038", "loop_103", "loop_105", "loop_108", "loop_109", "loop_110",
+            "loop_112", "loop_113", "loop_114", "loop_124",
+        },
+        "skip": {
+            # SVE2-only upstream (101, 106: sve2-bitperm; 102: svhistcnt; 104:
+            # svhistseg; 123: svtbl2; 130, 135: SVE2 matmul).
+            "loop_101", "loop_102", "loop_104", "loop_106", "loop_123", "loop_130", "loop_135",
+            # multi-axis matmul (m/n/k): extracted SVE kernel's ABI still mismatches binding.
+            "loop_216", "loop_217", "loop_218", "loop_220", "loop_221", "loop_223",
+            # extraction/runtime issue not yet resolved.
+            "loop_128",
+        },
+    },
+    "sve2": {
+        "author": "baseline-sve2",
+        "isa_features": ["sve2"],
+        "asm_fallback": set(),
+        "skip": {
+            # Need ISA features beyond the sve2 tier's -march=armv9-a+sve2
+            # (106: sve2-bitperm; 130: f32mm; 135: i8mm), so the
+            # preprocessor lands on their scalar/NEON branch. Revisit if the
+            # tier march grows those features.
+            "loop_106", "loop_130", "loop_135",
+            "loop_216", "loop_217", "loop_218", "loop_220", "loop_221", "loop_223",
+            "loop_128",
+        },
+    },
+}
 
-def _extract_sve_kernel(loop_id: str) -> str:
-    """Extract the Arm-authored HAVE_SVE_INTRINSICS function from loops/loop_NNN.c.
 
-    Returns the kernel as a self-contained extern "C" function (intrinsics only),
-    or "" if the loop has no SVE-intrinsics block. The SVE code is Arm's, verbatim;
-    we only strip `static`/`restrict`/`LOOP_ATTR` and add the extern "C" linkage.
-    """
-    c_file = LOOPS_DIR / f"{loop_id}.c"
-    if not c_file.exists():
-        return ""
-    lines = c_file.read_text().splitlines()
-    # Find the `#elif ... HAVE_SVE_INTRINSICS ...` branch, then collect its body
-    # tracking preprocessor depth so a NESTED #if/#endif inside the block doesn't
-    # prematurely terminate it (multi-axis loops nest on vector length).
-    start = next((i for i, ln in enumerate(lines)
-                  if ln.lstrip().startswith("#elif") and "HAVE_SVE_INTRINSICS" in ln), None)
-    if start is None:
-        return ""
-    body, depth = [], 0
-    for ln in lines[start + 1:]:
-        s = ln.lstrip()
-        if depth == 0 and (s.startswith("#elif") or s.startswith("#else") or s.startswith("#endif")):
-            break
-        if s.startswith(("#if", "#ifdef", "#ifndef")):
-            depth += 1
-        elif s.startswith("#endif"):
-            depth -= 1
-        body.append(ln)
-    code = "\n".join(body).strip()
+# The sve2 tier is generated only with --emit-sve2. What ships in bench-trace as
+# baseline-sve2 is the Graviton4-validated set from 2026-07-23 (the files that
+# were baseline-sve until 2026-09-11, with author/name renamed and
+# -march=native restored) — frozen so nobody's sve2 numbers move. The
+# generator's own sve2 output (new extractor, cross-compiled, never run on a
+# c8g) is a candidate replacement to audit first.
+_EMIT_SVE2 = "--emit-sve2" in sys.argv
+
+
+def _cpp_target(tier: str) -> list:
+    sys.path.insert(0, str(REPO))
+    from contracts import ISA_TABLE
+    return ["-target", "aarch64-linux-gnu", ISA_TABLE[tier].march]
+
+
+def _clang() -> str:
+    import shutil
+    for c in ("clang", "clang-18", "clang-17", "clang-16"):
+        if shutil.which(c):
+            return c
+    raise RuntimeError("gen_simd_loop_harness needs clang on PATH to select SVE branches")
+
+
+def _cpp_select(src: Path, intrinsics: bool, from_line: int = 1, tier: str = "sve") -> str:
+    """Resolve `src`'s #if/#elif chain the way the upstream build does for a
+    Graviton3 target, and return ONLY its own surviving text (from source line
+    `from_line` on) with macros left unexpanded (clang -E -fdirectives-only).
+    `intrinsics=True` is the HAVE_SVE_INTRINSICS (ACLE) build; False selects
+    Arm's plain-SVE inline-asm branches (`#elif defined(__ARM_FEATURE_SVE)`)
+    for loops whose ACLE branch needs SVE2. Comments are dropped, #define
+    lines are kept. The file is preprocessed from a scratch copy so its quoted
+    includes resolve to the empty stubs, never to the real common/ headers."""
+    import shutil, subprocess, tempfile
+    with tempfile.TemporaryDirectory(prefix="simdloop-cpp-") as td:
+        inc = Path(td) / "inc"
+        for h in _CPP_STUB_HEADERS:
+            (inc / h).parent.mkdir(parents=True, exist_ok=True)
+            (inc / h).write_text("")
+        copy = Path(td) / src.name
+        shutil.copy(src, copy)
+        cmd = [_clang(), "-E", "-fdirectives-only", "-nostdinc", "-I", str(inc),
+               *_cpp_target(tier), *(["-DHAVE_SVE_INTRINSICS"] if intrinsics else []),
+               "-x", "c", str(copy)]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"preprocessing {src.name} failed:\n{r.stderr}")
+        # Walk the line markers so only text from the copy itself is kept.
+        out, cur_file, cur_line = [], None, 0
+        for ln in r.stdout.splitlines():
+            m = re.match(r'#\s+(\d+)\s+"([^"]*)"', ln)
+            if m:
+                cur_line, cur_file = int(m.group(1)), m.group(2)
+                continue
+            if cur_file == str(copy) and cur_line >= from_line and ln.strip():
+                out.append(ln)
+            cur_line += 1
+    return "\n".join(out)
+
+
+def _tidy_extracted(code: str) -> str:
+    """The C→self-contained-C++ adaptations applied to every selected block.
+    Arm's SVE code is otherwise verbatim."""
+    code = re.sub(r'^\s*#\s*define\s+LOOP_ATTR\b.*$', '', code, flags=re.MULTILINE)
+    code = re.sub(r'\bLOOP_ATTR\b', '', code)        # SVE target attr (empty on non-SME)
     code = re.sub(r'\bstatic\b\s*', '', code)
     code = re.sub(r'\b__restrict__\b', '', code)
     code = re.sub(r'\brestrict\b', '', code)
-    code = re.sub(r'\bLOOP_ATTR\b', '', code)        # SVE target attr (empty on non-SME)
-    code = re.sub(r'^void\s+inner_loop', 'extern "C" void inner_loop', code, flags=re.MULTILINE)
+    # `T *x = (void *)expr;` is ill-formed C++: cast to the declared type.
+    code = re.sub(r'(\b[\w:]+\s*\*)\s*(\w+)\s*=\s*\(\s*void\s*\*\s*\)',
+                  lambda m: f"{m.group(1)} {m.group(2)} = ({m.group(1).strip()})", code)
+    # The harness header types half floats as _Float16; Arm's kernels take
+    # float16_t (__fp16). Cast at the struct-field loads (loop_038).
+    code = re.sub(r'^(\s*)float16_t\s*\*\s*(\w+)\s*=\s*(\w+)->(\w+);',
+                  r'\1float16_t *\2 = (float16_t *)\3->\4;', code, flags=re.MULTILINE)
     return code
 
 
-def _sve_kernel_src(lid: str) -> str:
-    """kernel.cpp for the baseline-sve author, or "" if no SVE block exists."""
-    extracted = _extract_sve_kernel(lid)
+def _extract_sve_kernel(loop_id: str, tier: str = "sve") -> str:
+    """Extract the Arm-authored SVE implementation of loops/loop_NNN.c as a
+    self-contained extern "C" kernel, or "" if the loop has none.
+
+    The upstream file is a chain of `#if HAVE_CANDIDATE / #elif HAVE_AUTOVEC /
+    #elif HAVE_SVE_INTRINSICS / #elif __ARM_FEATURE_SVE2 / #elif __ARM_FEATURE_SVE
+    / ...` blocks — often several chains per file (helpers, then the shared
+    `#if !defined(HAVE_CANDIDATE)` inner_loop that calls them). Rather than
+    pattern-match one block, let the preprocessor pick every branch the real
+    Graviton3 build would (see _cpp_select), then drop the benchmark driver
+    that follows the kernel (LOOP_DECL/main) and the driver-only data refill
+    (`fill_int32(...)`: the harness supplies the input each call, and the
+    scalar reference sorts what it is given)."""
+    c_file = LOOPS_DIR / f"{loop_id}.c"
+    if not c_file.exists():
+        return ""
+    raw = c_file.read_text()
+    if "HAVE_SVE_INTRINSICS" not in raw and "__ARM_FEATURE_SVE" not in raw:
+        return ""
+    intrinsics = loop_id not in _SVE_TIERS[tier]["asm_fallback"]
+    num = re.search(r"loop_(\d+)", loop_id).group(1)
+    raw_lines = raw.splitlines()
+    first_cond = next((i + 1 for i, ln in enumerate(raw_lines)
+                       if re.match(r"\s*#\s*(if|ifdef|ifndef)\b", ln)), 1)
+    lines = _cpp_select(c_file, intrinsics, from_line=first_cond, tier=tier).splitlines()
+    cut = next((i for i, ln in enumerate(lines)
+                if re.match(r"\s*LOOP_DECL\s*\(|\s*int\s+main\s*\(", ln)), len(lines))
+    lines = lines[:cut]
+    # Drop the trailing `#ifndef SIZE / #define SIZE n` driver constant.
+    lines = [ln for ln in lines if not re.match(r"\s*#\s*define\s+SIZE\b", ln)]
+    lines = [ln for ln in lines if not re.match(r"\s*fill_\w+\s*\(.*\)\s*;\s*$", ln)]
+    code = "\n".join(lines).strip()
+    if not re.search(rf"\binner_loop_{num}\s*\(", code):
+        return ""
+    code = _tidy_extracted(code)
+    # Loops that lean on common/sort.c (shared OET/insertion/radix helpers)
+    # get that file's matching branch appended — Arm-authored as well.
+    if re.search(r'#include\s+"(common/)?sort\.h"', raw):
+        common = _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.h", intrinsics, tier=tier))
+        common += "\n" + _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.c", intrinsics, tier=tier))
+        code = common + "\n" + code
+    code = re.sub(rf'^void\s+(NOINLINE\s+)?inner_loop_{num}\b', rf'extern "C" void inner_loop_{num}',
+                  code, flags=re.MULTILINE)
+    return code
+
+
+def _sve_kernel_src(lid: str, tier: str = "sve") -> str:
+    """kernel.cpp for the tier's baseline author, or "" if no SVE block exists."""
+    extracted = _extract_sve_kernel(lid, tier)
     if not extracted:
         return ""
     return f'#include "{lid}.h"\n' + _SVE_PRELUDE + "\n" + extracted + "\n"
@@ -919,58 +1080,284 @@ def _write_solution_pair(lid: str, sources: list) -> None:
             print(f"  wrote {out_path.relative_to(REPO)}")
 
 
-# Loops whose extracted SVE-intrinsics kernel does not yet compile + pass the
-# standard correctness bar on Graviton4 (verified 2026-06-26). Excluded so we
-# never emit a broken baseline. Grouped by reason — each is a follow-up:
-# Re-validated on Graviton4 2026-07-16: only these 7 still fail compile/correctness.
-# (The old 2026-06-26 list was stale — float-reduction 032/114, matmul 130/135/219,
-# and 13 of 14 "extraction/runtime" loops now pass and are emitted → 36/47 covered.)
-_SVE_SKIP = {
-    # multi-axis matmul (m/n/k): extracted SVE kernel's ABI still mismatches binding.
-    "loop_216", "loop_217", "loop_218", "loop_220", "loop_221", "loop_223",
-    # extraction/runtime issue not yet resolved.
-    "loop_128",
+# Harness-side size workaround for Arm kernels that are only correct at the
+# sizes upstream builds with (multiples of the vector length, minimum sizes —
+# they overrun the tail or skip the last partial chunk otherwise; see
+# analysis/probe_simd_sizes.py). Rather than touch Arm's code, the expert
+# authors ship their OWN loop_NNN.cpp binding (every solution carries its
+# binding) that, only when a workload's size breaks the rule, copies the
+# inputs into zero-padded buffers of a supported size, runs the kernel, and
+# copies the valid region back. Perf workloads all satisfy the rules, so the
+# timed path is the plain call. Rules are in vector-length units (svcntw /
+# svcnth) so the same binding serves the sve and sve2 tiers.
+_SVE_PAD_PRELUDE = """// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
+// Expert-baseline binding: pads edge-size workloads to the sizes Arm's kernel
+// supports (see _SVE_PAD_BINDINGS in the generator). Plain call otherwise.
+#include "{lid}.h"
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <arm_sve.h>
+
+extern "C" void inner_{lid}(struct {lid}_data *data);
+
+static inline uint64_t _round_up(uint64_t v, uint64_t m) {{ return (v + m - 1) / m * m; }}
+static inline void *_zeroed(uint64_t bytes) {{ void *p = calloc(bytes ? bytes : 1, 1); if (!p) abort(); return p; }}
+"""
+
+_SVE_PAD_BINDINGS = {
+    # complex uint32 pairs: size must be a multiple of the words-per-vector.
+    "loop_109": """
+extern "C" int armbench_entry_loop_109(void *a0, void *b0, int64_t size, void *res_out) {
+    const uint64_t n = (uint64_t)size, mult = svcntw();
+    struct loop_109_data _kd;
+    if (n % mult == 0) {
+        _kd.a0 = static_cast<cuint32_t *>(a0); _kd.b0 = static_cast<cuint32_t *>(b0);
+        _kd.c0 = static_cast<cuint32_t *>(res_out); _kd.size = n;
+        inner_loop_109(&_kd);
+        return 0;
+    }
+    const uint64_t np = _round_up(n, mult);
+    cuint32_t *pa = (cuint32_t *)_zeroed(np * sizeof(cuint32_t)), *pb = (cuint32_t *)_zeroed(np * sizeof(cuint32_t)), *pc = (cuint32_t *)_zeroed(np * sizeof(cuint32_t));
+    memcpy(pa, a0, n * sizeof(cuint32_t)); memcpy(pb, b0, n * sizeof(cuint32_t));
+    _kd.a0 = pa; _kd.b0 = pb; _kd.c0 = pc; _kd.size = np;
+    inner_loop_109(&_kd);
+    memcpy(res_out, pc, n * sizeof(cuint32_t));
+    free(pa); free(pb); free(pc);
+    return 0;
+}
+""",
+    "loop_112": """
+extern "C" int armbench_entry_loop_112(void *a0, void *b0, int64_t size, void *res_out) {
+    const uint64_t n = (uint64_t)size, mult = svcntw();
+    struct loop_112_data _kd;
+    if (n % mult == 0) {
+        _kd.a0 = static_cast<cuint32_t *>(a0); _kd.b0 = static_cast<cuint32_t *>(b0);
+        _kd.c0 = static_cast<cuint32_t *>(res_out); _kd.size = n;
+        inner_loop_112(&_kd);
+        return 0;
+    }
+    const uint64_t np = _round_up(n, mult);
+    cuint32_t *pa = (cuint32_t *)_zeroed(np * sizeof(cuint32_t)), *pb = (cuint32_t *)_zeroed(np * sizeof(cuint32_t)), *pc = (cuint32_t *)_zeroed(np * sizeof(cuint32_t));
+    memcpy(pa, a0, n * sizeof(cuint32_t)); memcpy(pb, b0, n * sizeof(cuint32_t));
+    _kd.a0 = pa; _kd.b0 = pb; _kd.c0 = pc; _kd.size = np;
+    inner_loop_112(&_kd);
+    memcpy(res_out, pc, n * sizeof(cuint32_t));
+    free(pa); free(pb); free(pc);
+    return 0;
+}
+""",
+    # uint32 pair-wise add over N elements: N must be a multiple of two vectors
+    # of words. Zero padding matches the reference (it zero-pads odd N).
+    "loop_113": """
+extern "C" int armbench_entry_loop_113(void *a0, void *b0, int64_t n_in, void *res_out) {
+    const uint64_t n = (uint64_t)n_in, mult = 2 * svcntw();
+    struct loop_113_data data;
+    if (n % mult == 0) {
+        data.a0 = static_cast<uint32_t *>(a0); data.b0 = static_cast<uint32_t *>(b0);
+        data.c0 = static_cast<uint32_t *>(res_out); data.size = n;
+        inner_loop_113(&data);
+        return 0;
+    }
+    const uint64_t np = _round_up(n, mult);
+    uint32_t *pa = (uint32_t *)_zeroed(np * 4), *pb = (uint32_t *)_zeroed(np * 4), *pc = (uint32_t *)_zeroed(np * 4);
+    memcpy(pa, a0, n * 4); memcpy(pb, b0, n * 4);
+    data.a0 = pa; data.b0 = pb; data.c0 = pc; data.size = np;
+    inner_loop_113(&data);
+    memcpy(res_out, pc, n * 4);
+    free(pa); free(pb); free(pc);
+    return 0;
+}
+""",
+    # complex int8 dot over pairs: the kernel's tail-only path is wrong below
+    # two vectors of words; a0/b0 hold 2*size cint8_t, c0 holds size cint32_t.
+    "loop_110": """
+extern "C" int armbench_entry_loop_110(void *a0, void *b0, int64_t size, void *res_out) {
+    const uint64_t n = (uint64_t)size, minimum = 2 * svcntw();
+    struct loop_110_data _kd;
+    if (n >= minimum) {
+        _kd.a0 = static_cast<cint8_t *>(a0); _kd.b0 = static_cast<cint8_t *>(b0);
+        _kd.c0 = static_cast<cint32_t *>(res_out); _kd.size = n;
+        inner_loop_110(&_kd);
+        return 0;
+    }
+    const uint64_t np = minimum;
+    cint8_t *pa = (cint8_t *)_zeroed(2 * np * sizeof(cint8_t)), *pb = (cint8_t *)_zeroed(2 * np * sizeof(cint8_t));
+    cint32_t *pc = (cint32_t *)_zeroed(np * sizeof(cint32_t));
+    memcpy(pa, a0, 2 * n * sizeof(cint8_t)); memcpy(pb, b0, 2 * n * sizeof(cint8_t));
+    _kd.a0 = pa; _kd.b0 = pb; _kd.c0 = pc; _kd.size = np;
+    inner_loop_110(&_kd);
+    memcpy(res_out, pc, n * sizeof(cint32_t));
+    free(pa); free(pb); free(pc);
+    return 0;
+}
+""",
+    # fp16 2x2 stencil over a dim x dim matrix, output rows/cols [0, dim-1):
+    # the kernel iterates (dim-1) columns two vectors at a time and skips the
+    # first vector of a final partial pair, so (dim-1) mod 2*VLh must be 0 or
+    # > VLh. Otherwise run on a dim' x dim' zero-padded copy with (dim'-1) a
+    # multiple of 2*VLh and copy the valid (dim-1)x(dim-1) block back; the
+    # last row and column are zero, as in the reference.
+    "loop_038": """
+extern "C" int armbench_entry_loop_038(void *a, void *b, int64_t dim_in, void *res_out) {
+    const uint64_t dim = (uint64_t)dim_in, vlh = svcnth(), two = 2 * vlh;
+    struct loop_038_data _kd;
+    _Float16 *c = static_cast<_Float16 *>(res_out);
+    if (dim < 2) { memset(c, 0, dim * dim * sizeof(_Float16)); return 0; }
+    const uint64_t r = (dim - 1) % two;
+    if (r == 0 || r > vlh) {
+        _kd.a = static_cast<_Float16 *>(a); _kd.b = static_cast<_Float16 *>(b); _kd.c = c; _kd.dim = (int)dim;
+        inner_loop_038(&_kd);
+        return 0;
+    }
+    const uint64_t dp = _round_up(dim - 1, two) + 1;
+    _Float16 *pa = (_Float16 *)_zeroed(dp * dp * sizeof(_Float16)), *pb = (_Float16 *)_zeroed(dp * dp * sizeof(_Float16)), *pc = (_Float16 *)_zeroed(dp * dp * sizeof(_Float16));
+    for (uint64_t row = 0; row < dim; ++row) {
+        memcpy(pa + row * dp, static_cast<_Float16 *>(a) + row * dim, dim * sizeof(_Float16));
+        memcpy(pb + row * dp, static_cast<_Float16 *>(b) + row * dim, dim * sizeof(_Float16));
+    }
+    _kd.a = pa; _kd.b = pb; _kd.c = pc; _kd.dim = (int)dp;
+    inner_loop_038(&_kd);
+    memset(c, 0, dim * dim * sizeof(_Float16));
+    for (uint64_t row = 0; row + 1 < dim; ++row)
+        memcpy(c + row * dim, pc + row * dp, (dim - 1) * sizeof(_Float16));
+    free(pa); free(pb); free(pc);
+    return 0;
+}
+""",
+    # uint8 column-major matrix-vector (a is n x m, b is n, c is m): the
+    # kernel tiles m by 8 vectors of words and n by 2 vectors of words. Zero
+    # padding leaves every valid c[j] unchanged.
+    "loop_219": """
+extern "C" int armbench_entry_loop_219(void *a, void *b, int64_t m_in, int64_t n_in, void *res_out) {
+    const uint64_t m = (uint64_t)m_in, n = (uint64_t)n_in, vlw = svcntw();
+    const uint64_t mm = (8 * vlw > 64 ? 8 * vlw : 64), nm = (2 * vlw > 16 ? 2 * vlw : 16);
+    struct loop_219_data _kd;
+    if (m % mm == 0 && n % nm == 0) {
+        _kd.a = static_cast<uint8_t *>(a); _kd.b = static_cast<uint8_t *>(b);
+        _kd.c = static_cast<uint32_t *>(res_out); _kd.m = m; _kd.n = n;
+        inner_loop_219(&_kd);
+        return 0;
+    }
+    const uint64_t mp = _round_up(m, mm), np = _round_up(n, nm);
+    uint8_t *pa = (uint8_t *)_zeroed(np * mp), *pb = (uint8_t *)_zeroed(np);
+    uint32_t *pc = (uint32_t *)_zeroed(mp * sizeof(uint32_t));
+    for (uint64_t i = 0; i < n; ++i) memcpy(pa + i * mp, static_cast<uint8_t *>(a) + i * m, m);
+    memcpy(pb, b, n);
+    _kd.a = pa; _kd.b = pb; _kd.c = pc; _kd.m = mp; _kd.n = np;
+    inner_loop_219(&_kd);
+    memcpy(res_out, pc, m * sizeof(uint32_t));
+    free(pa); free(pb); free(pc);
+    return 0;
+}
+""",
+    # int32 radix sort: Arm's kernel refuses n below one vector of words
+    # ("buffer size must be greater than VL") and returns the input unsorted.
+    # Sort a copy padded with INT32_MAX (sorts to the end) instead, with the
+    # kernel's own scratch sizes, and copy the first n back.
+    "loop_124": """
+extern "C" int armbench_entry_loop_124(void *data, void *temp, void *hist, void *prfx, int64_t n_in, void *unused) {
+    const uint64_t n = (uint64_t)n_in, mvl = svcntw();
+    struct loop_124_data d;
+    if (n >= mvl) {
+        d.n = (uint32_t)n; d.data = static_cast<int32_t *>(data); d.temp = static_cast<int32_t *>(temp);
+        d.hist = static_cast<uint32_t *>(hist); d.prfx = static_cast<uint32_t *>(prfx);
+        inner_loop_124(&d);
+        return 0;
+    }
+    const uint64_t np = mvl;
+    int32_t *pd = (int32_t *)_zeroed(np * sizeof(int32_t)), *pt = (int32_t *)_zeroed(np * sizeof(int32_t));
+    uint32_t *ph = (uint32_t *)_zeroed(np * 16 * sizeof(uint32_t)), *pp = (uint32_t *)_zeroed(np * sizeof(uint32_t));
+    for (uint64_t i = 0; i < np; ++i) pd[i] = INT32_MAX;
+    memcpy(pd, data, n * sizeof(int32_t));
+    d.n = (uint32_t)np; d.data = pd; d.temp = pt; d.hist = ph; d.prfx = pp;
+    inner_loop_124(&d);
+    memcpy(data, pd, n * sizeof(int32_t));
+    free(pd); free(pt); free(ph); free(pp);
+    return 0;
+}
+""",
+    # int16 autocorrelation: upstream allocates DATA + LAGS and leaves LAGS
+    # zeros after the data (the kernel reads data[i + lag + VLh)), and writes
+    # res in whole vectors of halfs. Always run on padded copies — an int16
+    # copy of n + lags elements is negligible next to the n*lags kernel.
+    "loop_114": """
+extern "C" int armbench_entry_loop_114(void *data, int64_t n_in, int64_t lags_in, int64_t scale, void *res_out) {
+    const uint64_t n = (uint64_t)n_in, lags = (uint64_t)lags_in, vlh = svcnth();
+    struct loop_114_data _kd;
+    int16_t *pd = (int16_t *)_zeroed((n + lags + 2 * vlh) * sizeof(int16_t));
+    int16_t *pr = (int16_t *)_zeroed((_round_up(lags, vlh) + vlh) * sizeof(int16_t));
+    memcpy(pd, data, n * sizeof(int16_t));
+    _kd.data = pd; _kd.res = pr; _kd.n = (int32_t)n; _kd.lags = (int32_t)lags; _kd.scale = (int16_t)scale;
+    inner_loop_114(&_kd);
+    memcpy(res_out, pr, lags * sizeof(int16_t));
+    free(pd); free(pr);
+    return 0;
+}
+""",
 }
 
 
+def _sve_binding(lid: str, base_cpp: str) -> str:
+    """The expert authors' loop_NNN.cpp: the padded binding for loops in
+    _SVE_PAD_BINDINGS, else the shared auto-generated one."""
+    if lid not in _SVE_PAD_BINDINGS:
+        return base_cpp
+    return _SVE_PAD_PRELUDE.format(lid=lid) + _SVE_PAD_BINDINGS[lid]
+
+
 def _write_sve_solution(lid: str, base_sources: list) -> None:
-    """Emit the `baseline-sve` author: same harness as the reference/autovec pair,
-    with kernel.cpp replaced by the Arm-authored HAVE_SVE_INTRINSICS kernel. The
-    expert hand-SVE ceiling. No-op for loops without a (clean) SVE-intrinsics block."""
-    if lid in _SVE_SKIP:
-        return
-    kernel = _sve_kernel_src(lid)
-    if not kernel:
-        return
-    sources = [
-        s if s["path"] != "kernel.cpp" else {"path": "kernel.cpp", "content": kernel}
-        for s in base_sources
-    ]
-    author = "baseline-sve"
-    out_dir = BENCH_TRACE / "solutions" / "simd-loop" / author / lid
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{author}_{lid}.json"
-    solution = {
-        "name": f"{author}_{lid}",
-        "definition": lid,
-        "dataset": "simd-loop",
-        "author": author,
-        "spec": {
-            "language": "cpp",
-            "target_hardware": ["aarch64"],
-            "entry_point": f"kernel.cpp::inner_{lid}",
-            "dependencies": [],
-            "isa_features": ["sve2"],
-            "compile_flags": ["-O3", "-std=c++14", "-march=armv8.2-a+sve"],
-            "link_flags": [],
-        },
-        "sources": sources,
-        "description": f"Arm hand-written SVE intrinsics for {lid} (expert ceiling).",
-    }
-    content = json.dumps(solution, indent=2) + "\n"
-    if not out_path.exists() or out_path.read_text() != content:
-        out_path.write_text(content)
-        print(f"  wrote {out_path.relative_to(REPO)}")
+    """Emit one expert-SVE author per tier in _SVE_TIERS (baseline-sve for a
+    Graviton3, baseline-sve2 for a Graviton4): same harness as the
+    reference/autovec pair, with kernel.cpp replaced by the Arm-authored kernel
+    selected for that tier. The expert hand-SVE ceiling. No-op for a tier where
+    the loop is skipped or has no SVE block."""
+    for tier, spec in _SVE_TIERS.items():
+        if tier == "sve2" and not _EMIT_SVE2:
+            continue  # bench-trace's baseline-sve2 is the frozen 2026-07-23 set (see _EMIT_SVE2)
+        if lid in spec["skip"]:
+            continue
+        kernel = _sve_kernel_src(lid, tier)
+        if not kernel:
+            continue
+        sources = []
+        for src in base_sources:
+            if src["path"] == "kernel.cpp":
+                sources.append({"path": "kernel.cpp", "content": kernel})
+            elif src["path"] == f"{lid}.cpp":
+                sources.append({"path": src["path"], "content": _sve_binding(lid, src["content"])})
+            else:
+                sources.append(src)
+        author = spec["author"]
+        out_dir = BENCH_TRACE / "solutions" / "simd-loop" / author / lid
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{author}_{lid}.json"
+        solution = {
+            "name": f"{author}_{lid}",
+            "definition": lid,
+            "dataset": "simd-loop",
+            "author": author,
+            "spec": {
+                "language": "cpp",
+                "target_hardware": ["aarch64"],
+                "entry_point": f"kernel.cpp::inner_{lid}",
+                "dependencies": [],
+                "isa_features": list(spec["isa_features"]),
+                # The tier's march is pinned (not -march=native): clang-18 resolves
+                # native to a generic, SVE-less target on a Graviton3, and the
+                # main branch has no resolve_native_march. -Wno-c++11-narrowing:
+                # Arm's C compiled as C++ (designated initialisers with size_t
+                # arithmetic in common/sort.c) is a narrowing error in C++ only.
+                "compile_flags": ["-O3", "-std=c++14", _cpp_target(tier)[-1], "-Wno-c++11-narrowing"],
+                "link_flags": [],
+            },
+            "sources": sources,
+            "description": f"Arm hand-written SVE kernel for {lid} ({tier} tier expert ceiling).",
+        }
+        content = json.dumps(solution, indent=2) + "\n"
+        if not out_path.exists() or out_path.read_text() != content:
+            out_path.write_text(content)
+            print(f"  wrote {out_path.relative_to(REPO)}")
 
 
 def _scalar_kernel_src(lid: str) -> str:
@@ -1463,8 +1850,12 @@ _MULTI_AXIS: dict[str, dict] = {
             "    d = data.astype(np.int64)\n"
             "    res = np.zeros(n, dtype=np.int16)\n"
             "    for lag in range(n):\n"
+            "        # Same arithmetic as the scalar C reference: a wrapping int32\n"
+            "        # accumulator, arithmetic shift, then a wrapping int16 store.\n"
             "        acc = int(((d[:n - lag] * d[lag:]) >> scale).sum())\n"
-            "        res[lag] = np.int16(acc >> 16)\n"
+            "        acc = ((acc + 2**31) % 2**32) - 2**31\n"
+            "        v = acc >> 16\n"
+            "        res[lag] = ((v + 2**15) % 2**16) - 2**15\n"
             "    return res\n"
         ),
         "sizes": {
