@@ -763,27 +763,6 @@ _SVE_TIERS = {
             "loop_128",
         },
     },
-    # SME: Arm's HAVE_SME_INTRINSICS build. For most loops that is the SVE
-    # kernel marked streaming-compatible and entered from a locally-streaming
-    # caller; the 2xx matmuls have real ZA-tile kernels. Emitted only with
-    # --emit-sme2 (no AWS box has SME; correctness is checked under QEMU with
-    # analysis/sme_qemu_check.py). Ships a tiny SME-ABI stub source because the
-    # Ubuntu clang-18 compiler-rt lacks __arm_tpidr2_save & co.
-    "sme2": {
-        "author": "baseline-sme2",
-        "isa_features": ["sve2", "sme2"],
-        "defines": ["-DHAVE_SME_INTRINSICS"],
-        "asm_fallback": set(),
-        "skip": {
-            # no SME branch upstream
-            "loop_008", "loop_103", "loop_120", "loop_121", "loop_122", "loop_123", "loop_124",
-            "loop_102", "loop_104",
-            # feature-gated beyond the tier march / SVE2-only matmul variants
-            "loop_101", "loop_106", "loop_130", "loop_135",
-            "loop_216", "loop_217", "loop_218", "loop_220", "loop_221", "loop_223",
-            "loop_128",
-        },
-    },
     "sve2": {
         "author": "baseline-sve2",
         "isa_features": ["sve2"],
@@ -808,7 +787,6 @@ _SVE_TIERS = {
 # generator's own sve2 output (new extractor, cross-compiled, never run on a
 # c8g) is a candidate replacement to audit first.
 _EMIT_SVE2 = "--emit-sve2" in sys.argv
-_EMIT_SME2 = "--emit-sme2" in sys.argv
 
 
 def _cpp_target(tier: str) -> list:
@@ -843,8 +821,7 @@ def _cpp_select(src: Path, intrinsics: bool, from_line: int = 1, tier: str = "sv
         copy = Path(td) / src.name
         shutil.copy(src, copy)
         cmd = [_clang(), "-E", "-fdirectives-only", "-nostdinc", "-I", str(inc),
-               *_cpp_target(tier),
-               *(_SVE_TIERS[tier].get("defines", ["-DHAVE_SVE_INTRINSICS"]) if intrinsics else []),
+               *_cpp_target(tier), *(["-DHAVE_SVE_INTRINSICS"] if intrinsics else []),
                "-x", "c", str(copy)]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
@@ -862,14 +839,11 @@ def _cpp_select(src: Path, intrinsics: bool, from_line: int = 1, tier: str = "sv
     return "\n".join(out)
 
 
-def _tidy_extracted(code: str, tier: str = "sve") -> str:
+def _tidy_extracted(code: str) -> str:
     """The C→self-contained-C++ adaptations applied to every selected block.
-    Arm's SVE code is otherwise verbatim. On the sme2 tier the LOOP_ATTR /
-    OUTER_LOOP_ATTR streaming attributes are kept (the prelude defines them
-    as in common/loops.h); elsewhere they are empty and are dropped."""
-    if tier != "sme2":
-        code = re.sub(r'^\s*#\s*define\s+LOOP_ATTR\b.*$', '', code, flags=re.MULTILINE)
-        code = re.sub(r'\bLOOP_ATTR\b', '', code)    # SVE target attr (empty on non-SME)
+    Arm's SVE code is otherwise verbatim."""
+    code = re.sub(r'^\s*#\s*define\s+LOOP_ATTR\b.*$', '', code, flags=re.MULTILINE)
+    code = re.sub(r'\bLOOP_ATTR\b', '', code)        # SVE target attr (empty on non-SME)
     code = re.sub(r'\bstatic\b\s*', '', code)
     code = re.sub(r'\b__restrict__\b', '', code)
     code = re.sub(r'\brestrict\b', '', code)
@@ -917,51 +891,16 @@ def _extract_sve_kernel(loop_id: str, tier: str = "sve") -> str:
     code = "\n".join(lines).strip()
     if not re.search(rf"\binner_loop_{num}\s*\(", code):
         return ""
-    code = _tidy_extracted(code, tier)
-    # On the sme2 tier a loop's own `#define LOOP_ATTR ...` may sit above its
-    # first conditional (dropped by the cut): carry those lines over.
-    if tier == "sme2":
-        pre = [ln for ln in raw_lines[:first_cond - 1]
-               if re.match(r"\s*#\s*define\s+(OUTER_)?LOOP_ATTR\b", ln)]
-        code = "\n".join(pre + [code])
+    code = _tidy_extracted(code)
     # Loops that lean on common/sort.c (shared OET/insertion/radix helpers)
     # get that file's matching branch appended — Arm-authored as well.
     if re.search(r'#include\s+"(common/)?sort\.h"', raw):
-        common = _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.h", intrinsics, tier=tier), tier)
-        common += "\n" + _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.c", intrinsics, tier=tier), tier)
+        common = _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.h", intrinsics, tier=tier))
+        common += "\n" + _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.c", intrinsics, tier=tier))
         code = common + "\n" + code
     code = re.sub(rf'^void\s+(NOINLINE\s+)?inner_loop_{num}\b', rf'extern "C" void inner_loop_{num}',
                   code, flags=re.MULTILINE)
     return code
-
-
-# common/loops.h's SME attribute block (armv9-a+sve2+sme2: __ARM_FEATURE_SME
-# and __ARM_FEATURE_SVE both defined), swapped into the prelude on the sme2 tier.
-_SME_ATTRS = """#include <arm_sme.h>
-#define SC_SVE_LOOP_ATTR __arm_locally_streaming
-#define S_LOOP_ATTR __arm_locally_streaming __arm_new("za", "zt0")
-#define NS_SVE_LOOP_ATTR
-#define SC_SVE_ATTR __arm_streaming_compatible
-#define S_SVE_ATTR __arm_streaming
-#define SC_SVE_ZT0_ATTR __arm_streaming_compatible __arm_inout("zt0") __arm_preserves("za")
-#define SME_ZA_ZT0_ATTR __arm_streaming __arm_inout("za", "zt0")
-#define SME_ZA_ATTR __arm_streaming __arm_inout("za") __arm_preserves("zt0")
-static inline uint32_t get_sme_vl(void) {
-  uint64_t svl = 0; asm volatile("rdsvl %[svl], #8" : [svl] "+r"(svl) : :);
-  return (uint32_t)svl;
-}
-"""
-
-
-def _prelude(tier: str) -> str:
-    p = _SVE_PRELUDE
-    if tier == "sme2":
-        p = p.replace("#define SC_SVE_ATTR\n#define SC_SVE_LOOP_ATTR\n#define NS_SVE_LOOP_ATTR\n", _SME_ATTRS)
-        p = p.replace("static inline uint32_t get_sve_vl(void) {", "static inline uint32_t get_sve_vl(void) SC_SVE_ATTR {")
-        p = p.replace("static inline uint32_t get_vl(void) { return get_sve_vl(); }",
-                      "static inline uint32_t get_vl(void) { return get_sme_vl(); }")
-        assert "arm_sme.h" in p and "get_sme_vl()" in p
-    return p
 
 
 def _sve_kernel_src(lid: str, tier: str = "sve") -> str:
@@ -969,7 +908,7 @@ def _sve_kernel_src(lid: str, tier: str = "sve") -> str:
     extracted = _extract_sve_kernel(lid, tier)
     if not extracted:
         return ""
-    return f'#include "{lid}.h"\n' + _prelude(tier) + "\n" + extracted + "\n"
+    return f'#include "{lid}.h"\n' + _SVE_PRELUDE + "\n" + extracted + "\n"
 
 
 # ── Writers ───────────────────────────────────────────────────────────────────
@@ -1359,58 +1298,12 @@ extern "C" int armbench_entry_loop_114(void *data, int64_t n_in, int64_t lags_in
 }
 
 
-def _sve_binding(lid: str, base_cpp: str, tier: str = "sve") -> str:
+def _sve_binding(lid: str, base_cpp: str) -> str:
     """The expert authors' loop_NNN.cpp: the padded binding for loops in
-    _SVE_PAD_BINDINGS, else the shared auto-generated one. On the sme2 tier the
-    kernel is streaming(-compatible), so the binding declares it with Arm's
-    LOOP_ATTR and calls it from a wrapper carrying the LOOP_DECL attribute
-    (__arm_locally_streaming, plus __arm_new("za","zt0") for ZA kernels),
-    exactly as upstream's inner_loops_NNN driver does; padding rules switch
-    to the streaming vector length."""
-    cpp = base_cpp if lid not in _SVE_PAD_BINDINGS else _SVE_PAD_PRELUDE.format(lid=lid) + _SVE_PAD_BINDINGS[lid]
-    if tier != "sme2":
-        return cpp
-    raw = (LOOPS_DIR / f"{lid}.c").read_text()
-    sel = _cpp_select(LOOPS_DIR / f"{lid}.c", True, tier="sme2")
-    defs = dict(re.findall(r"^\s*#\s*define\s+((?:OUTER_)?LOOP_ATTR)\s*(.*?)\s*$", raw.split("#if")[0], re.MULTILINE))
-    defs.update(re.findall(r"^\s*#\s*define\s+((?:OUTER_)?LOOP_ATTR)\s*(.*?)\s*$", sel, re.MULTILINE))
-    inner_attr = defs.get("LOOP_ATTR", "SC_SVE_ATTR")
-    m = re.search(r"LOOP_DECL\(\s*\d+\s*,\s*([A-Z_0-9]+)\s*\)", raw)
-    outer = m.group(1) if m else "SC_SVE_LOOP_ATTR"
-    if outer == "OUTER_LOOP_ATTR":
-        outer = defs.get("OUTER_LOOP_ATTR", "SC_SVE_LOOP_ATTR")
-    num = re.search(r"loop_(\d+)", lid).group(1)
-    wrapper = (f"extern \"C\" void inner_loop_{num}(struct loop_{num}_data *data) {inner_attr};\n"
-               # __arm_locally_streaming / __arm_new are declaration attributes:
-               # they go before the declarator, as in upstream's LOOP_DECL.
-               f"{outer} static void __attribute__((noinline)) _armbench_call_{num}(struct loop_{num}_data *d) "
-               f"{{ inner_loop_{num}(d); }}\n")
-    cpp = re.sub(rf'^extern "C" void inner_loop_{num}\(struct loop_{num}_data \*data\);\s*$',
-                 lambda _: _SME_ATTRS + wrapper, cpp, count=1, flags=re.MULTILINE)
-    assert f"_armbench_call_{num}" in cpp, f"{lid}: inner_loop declaration not found in binding"
-    cpp = re.sub(rf"\binner_loop_{num}\((&\w+)\);", rf"_armbench_call_{num}(\1);", cpp)
-    cpp = cpp.replace("svcntw()", "svcntsw()").replace("svcnth()", "svcntsh()")
-    if lid == "loop_219":
-        # Arm's SME2 matmul tiles m by 4*SVL bytes of uint32 output (16 words
-        # per streaming word-vector), twice the SVE asm kernel's tile.
-        cpp = cpp.replace("(8 * vlw > 64 ? 8 * vlw : 64)", "(16 * vlw > 64 ? 16 * vlw : 64)")
-        assert "16 * vlw" in cpp
-    return cpp
-
-
-# Test-only SME ABI routines. Ubuntu's clang-18 compiler-rt does not build the
-# SME ABI (sme-abi.S), so __arm_new("za") functions fail to link. These are
-# only correct when no caller keeps live ZA state across a lazy-save block —
-# true for a single kernel call from the harness. Real hardware builds should
-# drop this file and link the real compiler-rt.
-_SME_ABI_STUB = """// Minimal SME ABI support routines (see scripts/gen_simd_loop_harness.py).
-extern "C" {
-__attribute__((naked)) void __arm_tpidr2_save(void) { __asm__ volatile("ret"); }
-__attribute__((naked)) void __arm_tpidr2_restore(void *) { __asm__ volatile("ret"); }
-__attribute__((naked)) void __arm_za_disable(void) { __asm__ volatile("smstop za\\n ret"); }
-__attribute__((naked)) void __arm_sme_state(void) { __asm__ volatile("mrs x0, svcr\\n mrs x1, tpidr2_el0\\n ret"); }
-}
-"""
+    _SVE_PAD_BINDINGS, else the shared auto-generated one."""
+    if lid not in _SVE_PAD_BINDINGS:
+        return base_cpp
+    return _SVE_PAD_PRELUDE.format(lid=lid) + _SVE_PAD_BINDINGS[lid]
 
 
 def _write_sve_solution(lid: str, base_sources: list) -> None:
@@ -1422,8 +1315,6 @@ def _write_sve_solution(lid: str, base_sources: list) -> None:
     for tier, spec in _SVE_TIERS.items():
         if tier == "sve2" and not _EMIT_SVE2:
             continue  # bench-trace's baseline-sve2 is the frozen 2026-07-23 set (see _EMIT_SVE2)
-        if tier == "sme2" and not _EMIT_SME2:
-            continue
         if lid in spec["skip"]:
             continue
         kernel = _sve_kernel_src(lid, tier)
@@ -1434,11 +1325,9 @@ def _write_sve_solution(lid: str, base_sources: list) -> None:
             if src["path"] == "kernel.cpp":
                 sources.append({"path": "kernel.cpp", "content": kernel})
             elif src["path"] == f"{lid}.cpp":
-                sources.append({"path": src["path"], "content": _sve_binding(lid, src["content"], tier)})
+                sources.append({"path": src["path"], "content": _sve_binding(lid, src["content"])})
             else:
                 sources.append(src)
-        if tier == "sme2":
-            sources.append({"path": "sme_abi_stub.cpp", "content": _SME_ABI_STUB})
         author = spec["author"]
         out_dir = BENCH_TRACE / "solutions" / "simd-loop" / author / lid
         out_dir.mkdir(parents=True, exist_ok=True)

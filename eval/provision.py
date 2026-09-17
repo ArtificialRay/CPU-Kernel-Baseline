@@ -36,7 +36,6 @@ Usage:
 import argparse
 import fcntl
 import json
-import fcntl
 import contextlib
 import os
 import re

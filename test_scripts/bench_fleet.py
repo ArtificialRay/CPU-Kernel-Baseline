@@ -274,7 +274,6 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     author = args.author or compute_author(args.harness, model, isa)
     label = args.label or launch_session._label_for(dataset, author)
     max_iterations = args.max_iterations or None   # 0 = no server-side tool-call cap
-    max_evaluates = args.max_evaluates
     instance_type = args.instance or ISA_INSTANCE_MAP.get(isa, "c7g.large")
     instance = launch_session._provision(
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
@@ -303,7 +302,6 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
         remote_root=args.remote_root, sync_repo=False,
         local_repo_dir=str(REPO_ROOT), local_port=local_port,
         remote_port=args.remote_port, max_iterations=max_iterations,
-        max_evaluates=max_evaluates,   # optional hard server-side evaluate() budget
     )
     # "own" needs the just-established MCP endpoint/target, unlike
     # claude-code/nanobot above — construct it here instead.
@@ -484,8 +482,6 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         cmd += ["--label", args.label]
     if args.max_iterations:
         cmd += ["--max-iterations", str(args.max_iterations)]
-    if args.max_evaluates:
-        cmd += ["--max-evaluates", str(args.max_evaluates)]
     if args.instance:
         cmd += ["--instance", args.instance]
     cmd += ["--watchdog-minutes", str(args.watchdog_minutes)]
@@ -693,11 +689,6 @@ def main(argv: Optional[list[str]] = None) -> None:
                    help="Advanced: absolute Unix-time deadline (overrides --time-budget-hours). "
                         "Lets a wrapper share one deadline across several sequential "
                         "invocations, e.g. one per dataset.")
-    p.add_argument("--max-budget-usd", default=None, help="claude-code only: hard $ ceiling per job.")
-    p.add_argument("--max-evaluates", type=int, default=0,
-                   help="Optional hard server-side cap on evaluate() calls per definition "
-                        "(ARMBENCH_MAX_EVALUATES); 0 = off. Independent of --max-iterations, "
-                        "which caps every trajectory-recorded tool call.")
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
                         "remote instance (not bench-trace/traces/ — that data's already in "

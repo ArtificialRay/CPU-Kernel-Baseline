@@ -8,7 +8,6 @@ many different definition names across the lifetime of one process; see
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 from abc import ABC, abstractmethod
@@ -243,32 +242,6 @@ class KernelSession(ABC):
                 return pattern
         return None
 
-    # Hard per-definition evaluate budget (ARMBENCH_MAX_EVALUATES, 0 = off),
-    # counted from the persisted trajectory so a resumed session cannot get
-    # a fresh budget. Without it a claude-code session packing several
-    # compile+evaluate calls per turn ran 90 evaluates on one kernel.
-    @staticmethod
-    def _max_evaluates() -> int:
-        try:
-            return int(os.environ.get("ARMBENCH_MAX_EVALUATES", "0") or 0)
-        except ValueError:
-            return 0
-
-    def _evaluate_budget_exhausted(self, definition: str) -> Optional[dict]:
-        cap = self._max_evaluates()
-        if cap <= 0:
-            return None
-        traj_path = self._run_dir / definition / "trajectory.jsonl"
-        n = sum(1 for rec in TrajectoryWriter.read_records(traj_path) if rec.get("tool") == "evaluate")
-        if n < cap:
-            return None
-        return {
-            "status": "MAX_ITERATIONS_EXCEEDED",
-            "error": (f"the evaluate() budget for '{definition}' is exhausted ({n}/{cap} used). "
-                      "Stop iterating now: your best-performing version has already been "
-                      "auto-persisted. Do not compile or evaluate again."),
-        }
-
     def check_progress(self, definition: str) -> dict:
         """Read run_dir/<definition>/trajectory.jsonl directly off disk, bypassing
         self._definitions / session_definitions entirely.
@@ -316,9 +289,6 @@ class KernelSession(ABC):
                 self._trace_set, definition, self._bench_cfg.baseline_author,
             )
         self._active_definition = definition
-        exhausted = self._evaluate_budget_exhausted(definition)
-        if exhausted is not None:
-            return exhausted
 
         budget_error = self._check_iteration_budget(state)
         if budget_error is not None:
@@ -402,9 +372,6 @@ class KernelSession(ABC):
         mismatch = self._check_definition_arg(definition)
         if mismatch is not None:
             return mismatch
-        exhausted = self._evaluate_budget_exhausted(definition)
-        if exhausted is not None:
-            return exhausted
         state = self._definitions[self._active_definition]
         budget_error = self._check_iteration_budget(state)
         if budget_error is not None:
