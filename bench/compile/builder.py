@@ -124,15 +124,50 @@ class Builder(ABC):
         return build_dir, sources_dir
 
     def _materialize_sources(self, solution: Solution, sources_dir: Path) -> List[Path]:
-        """Write solution.sources to disk; return the compilable .cpp paths."""
+        """Write solution.sources to disk; return the compilable source paths.
+
+        `.c`/`.S`/`.s` matter beyond C++: a shared lib (`-shared`) links
+        successfully even with unresolved symbols (they're only required at
+        dlopen time), so silently dropping a real source file here doesn't
+        surface as a CompileError — it surfaces later as a confusing
+        "undefined symbol" at dlopen (see kleidiai's vendored KleidiAI .c/.S
+        sources, the first solution in this repo to need them).
+        """
         src_paths: List[Path] = []
         for src in solution.sources:
             dst = sources_dir / src.path
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_text(src.content)
-            if dst.suffix in (".cpp", ".cc", ".cxx"):
+            if dst.suffix in (".cpp", ".cc", ".cxx", ".c", ".S", ".s"):
                 src_paths.append(dst)
         return src_paths
+
+    _LANG_BY_SUFFIX = {
+        ".c": "c",
+        ".cpp": "c++", ".cc": "c++", ".cxx": "c++",
+        ".S": "assembler-with-cpp",
+        ".s": "assembler",
+    }
+
+    def _source_compile_args(self, paths: List[Path]) -> List[str]:
+        """Emit `-x <lang> <path>` pairs so each source is compiled by its
+        true language explicitly, instead of relying on the cxx driver
+        (clang++/g++) to infer it from the extension. Needed once a solution
+        mixes C++ with real C/assembly (e.g. kleidiai's vendored KleidiAI
+        kernels): empirically, invoking a `.c` file through the `clang++`
+        driver here compiled it as C++ (its internal, non-`extern "C"`
+        helper declarations got C++-mangled, while their `.S` definitions
+        emit plain C symbol names) — an undefined-symbol failure only at
+        dlopen time, not at compile time, since a `-shared` link doesn't
+        require every symbol to resolve.
+        """
+        args: List[str] = []
+        for p in paths:
+            lang = self._LANG_BY_SUFFIX.get(p.suffix)
+            if lang is not None:
+                args += ["-x", lang]
+            args.append(str(p))
+        return args
 
     def _run_clang(self, cmd: List[str], solution: Solution) -> None:
         """Run the compile command; raise CompileError on non-zero exit."""

@@ -28,12 +28,17 @@ from .builder import BuildError, Builder, CompileResult
 from .builders import CandidateBuilder, LlamaCppBuilder, NcnnBuilder, SimdLoopBuilder
 
 _BUILDER_PRIORITY: List[Type[Builder]] = [
-    CandidateBuilder,
     NcnnBuilder,
     SimdLoopBuilder,
     LlamaCppBuilder,
+    CandidateBuilder,
 ]
-"""Builder types in priority order for automatic selection."""
+"""Builder types in priority order for automatic selection.
+
+CandidateBuilder is last on purpose: it's the fallback for anything no
+framework-specific builder above it wanted (its own can_build() is an
+unconditional True), so every dataset with a dedicated builder must get
+first refusal before dispatch ever reaches it."""
 
 _LOCK_DIR = Path(tempfile.gettempdir()) / "armbench_build_locks"
 

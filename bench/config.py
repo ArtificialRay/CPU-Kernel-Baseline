@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from contracts import BASELINE_AUTHORS, EVAL_DEFAULTS, EVAL_OP_TYPE_OVERRIDES
+from contracts import BASELINE_AUTHORS, EVAL_DEFAULTS, EVAL_DEFINITION_OVERRIDES, EVAL_OP_TYPE_OVERRIDES
 
 # ── Defaults (single source of truth: config/kernel_contracts.yaml) ───────────
 
@@ -42,6 +42,7 @@ class EvalOverride:
     abs_tol: Optional[float] = None
     rel_tol: Optional[float] = None
     required_matched_ratio: Optional[float] = None
+    min_sqnr_db: Optional[float] = None
 
 
 # Per-op-type tolerance overrides — see eval_op_type_overrides in
@@ -49,6 +50,13 @@ class EvalOverride:
 # in gemm/moe/mha baselines).
 DEFAULT_OP_TYPE_CONFIG: Dict[str, "EvalOverride"] = {
     op: EvalOverride(**cfg) for op, cfg in EVAL_OP_TYPE_OVERRIDES.items()
+}
+
+# Per-definition tolerance overrides — see eval_definition_overrides in
+# config/kernel_contracts.yaml. Scoped to one Definition.name instead of a
+# whole op_type
+DEFAULT_DEFINITION_CONFIG: Dict[str, "EvalOverride"] = {
+    name: EvalOverride(**cfg) for name, cfg in EVAL_DEFINITION_OVERRIDES.items()
 }
 
 
@@ -76,32 +84,50 @@ class BenchmarkConfig:
     """Per-op-type tolerance overrides keyed by definition.op_type. Defaults to
     DEFAULT_OP_TYPE_CONFIG (loosened tolerance for gemm/moe/mha float reductions);
     pass an explicit dict (e.g. {}) to opt out."""
+    definition_config: Dict[str, EvalOverride] = field(
+        default_factory=lambda: dict(DEFAULT_DEFINITION_CONFIG)
+    )
+    """Per-definition tolerance overrides keyed by definition.name. Defaults to
+    DEFAULT_DEFINITION_CONFIG; consulted after op_type_config (higher priority),
+    so a definition-specific entry wins over its op_type's. Pass an explicit
+    dict (e.g. {}) to opt out."""
     watchdog_s: float = DEFAULT_WATCHDOG_S
     collect_perf_counters: bool = DEFAULT_COLLECT_PERF_COUNTERS
 
     def resolve_eval_config(self, definition=None) -> "EvalConfig":
-        """Merge: BenchmarkConfig base → op_type_config[definition.op_type].
+        """Define/overwrite evaluation config from lowest → highest priority: BenchmarkConfig base →
+        op_type_config[definition.op_type] → definition_config[definition.name].
 
-        Higher priority wins. op_type_config is only consulted when definition
-        is provided and op_type_config is non-empty.
+        Higher priority wins. Each layer is only consulted when definition is
+        provided and that layer's dict is non-empty.
         """
         atol = self.abs_tol
         rtol = self.rel_tol
         ratio = self.required_matched_ratio
-        if definition is not None and self.op_type_config:
-            op = self.op_type_config.get(definition.op_type)
-            if op is not None:
-                if op.abs_tol is not None:
-                    atol = op.abs_tol
-                if op.rel_tol is not None:
-                    rtol = op.rel_tol
-                if op.required_matched_ratio is not None:
-                    ratio = op.required_matched_ratio
+        sqnr = self.min_sqnr_db
+        if definition is not None:
+            for layer, key in (
+                (self.op_type_config, definition.op_type),
+                (self.definition_config, definition.name),
+            ):
+                if not layer:
+                    continue
+                override = layer.get(key)
+                if override is None:
+                    continue
+                if override.abs_tol is not None:
+                    atol = override.abs_tol
+                if override.rel_tol is not None:
+                    rtol = override.rel_tol
+                if override.required_matched_ratio is not None:
+                    ratio = override.required_matched_ratio
+                if override.min_sqnr_db is not None:
+                    sqnr = override.min_sqnr_db
         return EvalConfig(
             abs_tol=atol,
             rel_tol=rtol,
             required_matched_ratio=ratio,
-            min_sqnr_db=self.min_sqnr_db,
+            min_sqnr_db=sqnr,
             warmup=self.warmup,
             repeat=self.repeat,
             inner_iters=self.inner_iters,

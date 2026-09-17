@@ -27,6 +27,7 @@ reference_scalar_authors:
   ncnn: "reference-scalar"
   llama.cpp: "reference-scalar"
   simd-loop: "reference"
+  kleidiai: "reference-scalar"
 
 # dataset -> the Solution.author tag for the competitive speedup baseline
 # (what time_speedup_geomean / cycle_speedup_geomean are computed against).
@@ -34,6 +35,7 @@ baseline_authors:
   ncnn: "baseline-ncnn-arm"
   simd-loop: "baseline-sve"
   llama.cpp: "baseline-llamacpp-arm"
+  kleidiai: "baseline-kleidiai-sve"
 
 # bench/config.py's BenchmarkConfig/EvalConfig field defaults. baseline_author
 # intentionally isn't duplicated here — it reuses baseline_authors.ncnn above.
@@ -76,6 +78,26 @@ eval_op_type_overrides:
     rel_tol: 1.0e-2
     required_matched_ratio: 0.98
 
+# definition.name -> tolerance overrides, same shape as eval_op_type_overrides
+# above but scoped to one Definition instead of a whole op_type. Consulted
+# AFTER eval_op_type_overrides (higher priority) in
+# BenchmarkConfig.resolve_eval_config -- see bench/config.py.
+eval_definition_overrides:
+  conv2d_depthwise_f16_nhwc_kh3_kw3_s1_p1:
+    # abs_tol/rel_tol stay at the tight 1e-3 default -- only the match-ratio
+    # bar is lowered. This definition's KleidiAI SME2 baseline (f16
+    # throughout) showed matched_ratio 0.9672-0.9821 across all 14
+    # workloads on real hardware
+    required_matched_ratio: 0.95
+  # Tighter-than-global-default min_sqnr_db for correctness:sqnr definitions
+  # whose real KleidiAI baseline measures well above the 20.0 global default
+  gemm_bf16_n512_k512:
+    min_sqnr_db: 45.0
+  gemm_qs4cx_sme2_n256_k512:
+    min_sqnr_db: 40.0
+  gemm_qs4c32_n256_k512:
+    min_sqnr_db: 30.0
+
 # isa -> compile flags + the EC2 instance type that satisfies it.
 # "portable"/"neon" both compile to plain armv8-a; portable's "no hand-written
 # SIMD" constraint is a prompt-level rule (see eval/evaluator.py's ISA-ablation
@@ -88,12 +110,20 @@ isa:
     instance_type: "c7g.xlarge"
   sve:
     march: "-march=armv8.2-a+sve"
-    features: ["sve"]
+    # dotprod/i8mm are orthogonal CPU features (not a higher isa tier) —
+    # confirmed present in /proc/cpuinfo's Features line (asimddp, i8mm/
+    # svei8mm) on a real c7g.xlarge. vl256 marks Graviton3's SVE
+    # implementation as 256-bit wide 
+    features: ["sve", "dotprod", "i8mm", "vl256"]
     labels: ["graviton3", "aarch64-sve"]
     instance_type: "c7g.xlarge"
   sve2:
     march: "-march=armv9-a+sve2"
-    features: ["sve2"]
+    # sve2 is a strict superset of sve, so a solution declaring
+    # isa_features=["sve"] must be satisfiable under sve2 too. dotprod/i8mm
+    # confirmed present on a real c8g.xlarge the same way as sve above.
+    # No vl256: Graviton4's SVE2 measures 128-bit wide on real hardware
+    features: ["sve", "sve2", "dotprod", "i8mm"]
     labels: ["graviton4", "aarch64-sve2"]
     instance_type: "c8g.xlarge"
   sme2:

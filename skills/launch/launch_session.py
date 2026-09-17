@@ -530,7 +530,7 @@ def main(argv: list[str] | None = None) -> None:
     prep.add_argument("--key-file", default="~/.ssh/id_rsa")
     prep.add_argument("--remote-root", default="~/arm-bench")
     prep.add_argument("--dataset", action="append", required=True,
-                       choices=["ncnn", "simd-loop", "llama.cpp"],
+                       choices=["ncnn", "simd-loop", "llama.cpp", "kleidiai"],
                        help="Repeatable — pass more than once to start the remote "
                             "mcp_app.server in dispatcher mode, serving several "
                             "datasets over one connection (see "
@@ -621,7 +621,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     _add_provision_args(launch)
     launch.add_argument("--dataset", action="append", required=True,
-                         choices=["ncnn", "simd-loop", "llama.cpp"],
+                         choices=["ncnn", "simd-loop", "llama.cpp", "kleidiai"],
                          help="Repeatable — pass more than once to start the remote "
                               "mcp_app.server in dispatcher mode, serving several "
                               "datasets over one connection (see "
