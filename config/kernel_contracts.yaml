@@ -89,6 +89,14 @@ eval_definition_overrides:
     # throughout) showed matched_ratio 0.9672-0.9821 across all 14
     # workloads on real hardware
     required_matched_ratio: 0.95
+  # Tighter-than-global-default min_sqnr_db for correctness:sqnr definitions
+  # whose real KleidiAI baseline measures well above the 20.0 global default
+  gemm_bf16_n512_k512:
+    min_sqnr_db: 45.0
+  gemm_qs4cx_sme2_n256_k512:
+    min_sqnr_db: 40.0
+  gemm_qs4c32_n256_k512:
+    min_sqnr_db: 30.0
 
 # isa -> compile flags + the EC2 instance type that satisfies it.
 # "portable"/"neon" both compile to plain armv8-a; portable's "no hand-written
