@@ -430,13 +430,17 @@ class KernelSession(ABC):
                 "cache_misses_mean": perf.get("cache_misses_mean"),
             })
             cs = perf.get("cycle_speedup_geomean")
-            if cs is not None:
+            ts = perf.get("time_speedup_geomean")
+            # if there is not cycle_speedup(for mac-m4.metal)，will fall back to time-speedup-geomean
+            rank = cs if cs is not None else ts
+            if rank is not None:
                 if (state["best_compile"] is None
-                        or cs > (state["best_compile"].get("cycle_speedup") or 0.0)):
+                        or rank > (state["best_compile"].get("rank_speedup") or 0.0)):
                     state["best_compile"] = {
                         "solution": lc["solution"],
                         "version": lc["version"],
                         "cycle_speedup": cs,
+                        "rank_speedup": rank,
                         "score": self.score(perf),
                         "correctness": correctness,
                         "traces_data": result.get("traces", []),
