@@ -1,0 +1,63 @@
+{
+ "_note": "S1 turn-budget (100 steps \u2248 --min-iterations 50) on subset33, nanobot + gpt-5.6-luna, sve, 2 lanes",
+ "lanes": [
+  {
+   "lane": 1,
+   "segments": [
+    {
+     "dataset": "llama.cpp",
+     "definitions": [
+      "gemm_bf16_n2048_k2048",
+      "gemm_q4_k_m_n2048_k2048",
+      "gemm_q8_0_n2048_k2048",
+      "mha_bf16_h16_d128_kvh16",
+      "moe_bf16_e64_k8_d2048_ff1024",
+      "moe_q4_k_m_e64_k8_d2048_ff1024",
+      "moe_q8_0_e60_k4_d2048_ff1408",
+      "rms_norm_fp32_d2048"
+     ]
+    },
+    {
+     "dataset": "simd-loop",
+     "definitions": [
+      "loop_001",
+      "loop_008",
+      "loop_024",
+      "loop_038",
+      "loop_103",
+      "loop_105",
+      "loop_110",
+      "loop_113",
+      "loop_114",
+      "loop_120",
+      "loop_121",
+      "loop_124",
+      "loop_219"
+     ]
+    }
+   ]
+  },
+  {
+   "lane": 2,
+   "segments": [
+    {
+     "dataset": "ncnn",
+     "definitions": [
+      "conv2d_depthwise_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1",
+      "conv2d_depthwise_fp32_kh5_kw5_sh1_sw1_dh1_dw1_p2",
+      "conv2d_depthwise_w8a8ch_kh3_kw3_sh1_sw1_dh1_dw1_p1",
+      "conv2d_depthwise_w8a8ch_kh5_kw5_sh1_sw1_dh1_dw1_p2",
+      "conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1",
+      "conv2d_fp32_kh7_kw7_sh2_sw2_dh1_dw1_p3",
+      "conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0",
+      "conv2d_w8a8ch_kh3_kw3_sh1_sw1_dh1_dw1_p1",
+      "conv2d_w8a8ch_kh7_kw7_sh2_sw2_dh1_dw1_p3",
+      "gemm_fp32_n1280_k960",
+      "pooling_fp32_global_avg",
+      "pooling_fp32_max_kh3_kw3_sh2_sw2_p1"
+     ]
+    }
+   ]
+  }
+ ]
+}
