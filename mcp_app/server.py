@@ -202,9 +202,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "definition compile()'d gets its own <run-dir>/<definition>/ subdir.")
     p.add_argument("--instance-label", default=None,
                     help="Cosmetic only (e.g. 'c8g.large') — never used for compile-flag decisions.")
-    p.add_argument("--transport", choices=["stdio", "streamable-http"])
+    p.add_argument("--transport", choices=["stdio", "streamable-http"],default="streamable-http")
     p.add_argument("--bind-host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--max-iterations", type=int, default=None,
+                    help="Hard per-definition ceiling on compile/evaluate/disassemble calls "
+                         "None (default) = unlimited.")
     args = p.parse_args(argv)
     args.dataset = list(dict.fromkeys(args.dataset))  # dedupe, preserve order
     if len(args.dataset) > 1 and args.baseline_author is not None:
@@ -224,6 +227,7 @@ def _build_session_config(args: argparse.Namespace, dataset: str, *, baseline_au
         bench_trace_root=Path(args.bench_trace_root),
         run_dir=Path(args.run_dir),
         instance_label=args.instance_label,
+        max_iterations=args.max_iterations,
     )
 
 

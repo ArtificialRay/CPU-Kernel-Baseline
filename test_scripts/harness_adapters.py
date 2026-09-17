@@ -37,6 +37,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Overridable (same as main): point NANOBOT_CONFIG_BASE at a private copy of the
 # checked-in config that carries the provider apiKey, so no key ever lands in
 # the repo. The adapter still patches model + MCP port into a temp copy.
+# Also: `--model` alone is not
+# enough to switch models across providers: the adapter overrides only
+# agents.defaults.model, leaving agents.defaults.provider (and that
+# provider's apiKey) pointing at whatever the checked-in config uses, which
+# fails with "No API key configured for provider '<other>'".
 NANOBOT_CONFIG_BASE = Path(
     os.environ.get(
         "NANOBOT_CONFIG_BASE",
@@ -44,6 +49,23 @@ NANOBOT_CONFIG_BASE = Path(
     )
 )
 CLAUDE_SKILL_FILE = REPO_ROOT / "skills" / "claude-code" / "claude-code-kernel-session" / "SKILL.md"
+CODEX_SKILL_FILE = REPO_ROOT / "skills" / "codex" / "codex-kernel-session" / "SKILL.md"
+# TOML table key for mcp_servers.<name> in codex's `-c` override — matches the
+# mcpServers key ClaudeCodeAdapter uses, just for readability across harness logs.
+CODEX_MCP_SERVER_NAME = "cpu-kernel-baseline"
+# One single, permanent `--cd` root shared by every codex job, wiped and
+# rewritten fresh by CodexAdapter.prepare_workspace() before each run 
+CODEX_WORKSPACE_DIR = Path.home() / ".codex-fleet" / "workspace"
+# Arbitrary id for the optional custom `model_providers.<id>` entry
+# CodexAdapter builds from OPENAI_API_BASE/OPENAI_API_KEY (see its run_job()).
+CODEX_DOTENV_PROVIDER_NAME = "dotenv-openai-compatible"
+CLINE_SKILL_FILE = REPO_ROOT / "skills" / "cline" / "cline-kernel-session" / "SKILL.md"
+CLINE_MCP_SERVER_NAME = "cpu-kernel-baseline"
+# Same one-shared-directory reasoning as CODEX_WORKSPACE_DIR (see its
+# comment) — cwd for cline's own sandboxed shell/file tools, not for the
+# system prompt (that goes via `-s`, not an auto-loaded file), wiped and
+# recreated fresh by ClineAdapter.prepare_workspace() before each run.
+CLINE_WORKSPACE_DIR = Path.home() / ".cline-fleet" / "workspace"
 NANOBOT_WORKSPACE = Path.home() / ".nanobot" / "workspace"
 NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
 
@@ -155,15 +177,6 @@ class HarnessAdapter:
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         raise NotImplementedError
 
-    def is_benign_failure(self, log_path: Path) -> bool:
-        return False
-
-    def parse_session_metrics(self, log_path: Path) -> SessionMetrics:
-        """Extract whatever session-level telemetry (cost, tokens, turn
-        latency, ...) this harness's log format actually exposes. Default:
-        none """
-        return SessionMetrics()
-
     def prepare_workspace(self, job: Job) -> AbstractContextManager[Optional[Path]]:
         return nullcontext(None)
 
@@ -176,18 +189,22 @@ class HarnessAdapter:
 
 class ClaudeCodeAdapter(HarnessAdapter):
     name = "claude-code"
-    # Same task prompt as NanobotAdapter (floor only; the iteration ceiling is
-    # enforced server-side via --max-iterations for every harness alike), so
-    # the two harnesses differ only in the agent runtime, not in instructions.
+    # Same task prompt as NanobotAdapter (floor + the --max-iterations tool-call
+    # ceiling, which mcp_app/server.py also enforces), so the two harnesses
+    # differ only in the agent runtime, not in instructions.
     prompt_template = (
         'Optimize the "%s" kernel definition (dataset: %s, baseline solution source: %s) '
         'in new ISA %s. You must spend at least %s compile+evaluate iterations exploring '
         'genuinely different optimization attempts before you are allowed to submit — do not '
         'submit early just because an attempt already looks good, keep iterating until you '
-        'hit the floor. You may keep going past it if you are still finding improvements. '
-        'Follow the claude-code-kernel-session skill workflow in your system prompt end to end.'
+        'hit the floor. You may keep going past it if you are still finding improvements, but '
+        'do not exceed %s tool calls total — once you approach that ceiling, stop iterating '
+        'and submit your best version immediately, since every iteration spends real model API '
+        'budget and the server will start rejecting further compile/evaluate/disassemble calls '
+        'once you hit it. Follow the claude-code-kernel-session skill workflow in your system '
+        'prompt end to end.'
     )
-    template_args = 5
+    template_args = 6
 
     # nanobot-parity runtime knobs (env-overridable). nanobot (0.3.0) sends a
     # ~3.6k-token custom system prompt, 13 file tools + MCP, a fixed 4096-token
@@ -211,9 +228,8 @@ class ClaudeCodeAdapter(HarnessAdapter):
         "MAX_THINKING_TOKENS": ("CLAUDE_THINKING_TOKENS", "0"),
     }
 
-    def __init__(self, *, model: Optional[str], max_budget_usd: Optional[str]):
+    def __init__(self, *, model: Optional[str]):
         self.model = model
-        self.max_budget_usd = max_budget_usd
         if not CLAUDE_SKILL_FILE.exists():
             raise RuntimeError(f"SKILL_FILE not found: {CLAUDE_SKILL_FILE}")
         if subprocess.run(["which", "claude"], capture_output=True).returncode != 0:
@@ -356,80 +372,138 @@ class ClaudeCodeAdapter(HarnessAdapter):
             pass
         return False
 
-    def parse_session_metrics(self, log_path: Path) -> SessionMetrics:
-        """session metrics logging from JSON event per line at command: `claude -p --output-format stream-json --verbose` 
-        including:
-            cost_usd, num_turns,
-            wall_time_s,api_retries, session_compile_errors,
-            tokens_input, tokens_output,
-            tokens_cache_read, tokens_cache_created,
-            turn_rows
-       """
-        if not log_path.exists():
-            return SessionMetrics()
-        cost = turns = dur_ms = None
-        retries = compile_errors = 0
-        tok_in = tok_out = tok_cache_r = tok_cache_c = 0
-        events: list[tuple[str, datetime, str]] = []  # (kind: "llm"|"tool", when, mcp_tool_name)
-        for line in log_path.read_text(errors="ignore").splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if d.get("subtype") == "api_retry":
-                retries += 1
-            if d.get("type") == "result":
-                cost = d.get("total_cost_usd", cost)
-                turns = d.get("num_turns", turns)
-                dur_ms = d.get("duration_ms", dur_ms)
-            u = _find(d, "usage")
-            if isinstance(u, dict):
-                tok_in += u.get("input_tokens", 0) or 0
-                tok_out += u.get("output_tokens", 0) or 0
-                tok_cache_r += u.get("cache_read_input_tokens", 0) or 0
-                tok_cache_c += u.get("cache_creation_input_tokens", 0) or 0
-            when = _parse_ts(d.get("timestamp"))
-            content = ((d.get("message") or {}).get("content")) or []
-            if when is not None and d.get("type") == "assistant":
-                mcp = next((c.get("name", "") for c in content
-                            if isinstance(c, dict) and c.get("type") == "tool_use"
-                            and str(c.get("name", "")).startswith("mcp__")), "")
-                events.append(("llm", when, mcp.split("__")[-1] if mcp else ""))
-            for c in content:
-                if isinstance(c, dict) and c.get("type") == "tool_result":
-                    if when is not None:
-                        events.append(("tool", when, ""))
-                    t = c.get("content")
-                    if isinstance(t, str) and "kernel.cpp" in t and "error" in t.lower():
-                        compile_errors += 1
-        # fold event deltas into per-turn rows (turn boundary = each MCP tool_use)
-        turn_rows: list[TurnRow] = []
-        acc = {"llm": 0.0, "tool": 0.0}
-        prev_when = prev_boundary = None
-        for kind, when, mcp_tool in events:
-            if prev_when is not None:
-                delta = (when - prev_when).total_seconds()
-                if 0 <= delta < 7200:
-                    acc[kind] += delta
-            prev_when = when
-            if kind == "llm" and mcp_tool:
-                if prev_boundary is not None:
-                    turn_rows.append(TurnRow(
-                        total_s=round((when - prev_boundary).total_seconds(), 1),
-                        llm_s=round(acc["llm"], 1), tool_s=round(acc["tool"], 1),
-                    ))
-                prev_boundary, acc = when, {"llm": 0.0, "tool": 0.0}
-        return SessionMetrics(
-            cost_usd=cost, num_turns=turns,
-            wall_time_s=round(dur_ms / 1000.0, 1) if dur_ms else None,
-            api_retries=retries, session_compile_errors=compile_errors,
-            tokens_input=tok_in, tokens_output=tok_out,
-            tokens_cache_read=tok_cache_r, tokens_cache_created=tok_cache_c,
-            turn_rows=turn_rows,
+
+class CodexAdapter(HarnessAdapter):
+    """Local Codex CLI (`codex exec`), non-interactive, talking to the same
+    MCP server over streamable-http as ClaudeCodeAdapter. Codex has no
+    
+    `--append-system-prompt` equivalent, but it auto-loads an AGENTS.md from
+    its working root (`--cd`) the same way Claude Code auto-loads CLAUDE.md,
+    `prepare_workspace()` wiped-and-rewritten-per-run directory rather than 
+    a fresh tempdir or a per-job one
+
+    --approve-for-me is just for agent to execute MCP tool without interruption"""
+
+    name = "codex"
+    prompt_template = ClaudeCodeAdapter.prompt_template
+    template_args = 6
+
+    def __init__(self, *, model: Optional[str]):
+        self.model = model
+        if not CODEX_SKILL_FILE.exists():
+            raise RuntimeError(f"SKILL_FILE not found: {CODEX_SKILL_FILE}")
+        if subprocess.run(["which", "codex"], capture_output=True).returncode != 0:
+            raise RuntimeError("codex CLI not found on PATH — install Codex CLI first.")
+        self.skill_text = CODEX_SKILL_FILE.read_text()
+        # Optional: point codex at a custom OpenAI-compatible endpoint via
+        # .env instead of whatever account `codex login` already persisted
+        # to ~/.codex/auth.json. 
+        self.dotenv_base_url = os.environ.get("OPENAI_API_BASE") or os.environ.get("OPENAI_BASE_URL")
+        self.dotenv_key_is_set = bool(os.environ.get("OPENAI_API_KEY"))
+
+    def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
+        with self.prepare_workspace(job) as workspace:
+            cmd = [
+                "codex", "exec",
+                "--cd", str(workspace),
+                "--skip-git-repo-check",
+                "--approve-for-me",
+                "-c", f'mcp_servers.{CODEX_MCP_SERVER_NAME}.url="{endpoint}"',
+                # Codex's default MCP tool_timeout_sec (300s) is shorter than
+                # evaluate_kernel()'s own budget, override to 1200s timeout
+                "-c", f"mcp_servers.{CODEX_MCP_SERVER_NAME}.tool_timeout_sec=1200",
+                "--json",
+            ]
+            if self.dotenv_base_url and self.dotenv_key_is_set:
+                p = CODEX_DOTENV_PROVIDER_NAME
+                cmd += [
+                    "-c", f'model_providers.{p}.name="{p}"',
+                    "-c", f'model_providers.{p}.base_url="{self.dotenv_base_url}"',
+                    # Value is the *name* of the env var codex reads the key
+                    # from at request time — never the key itself.
+                    "-c", f'model_providers.{p}.env_key="OPENAI_API_KEY"',
+                    # This codex CLI version dropped "chat" wire_api support
+                    # entirely (hard config-load error, not a runtime
+                    # fallback) — "responses" is the only value it accepts
+                    # now: https://github.com/openai/codex/discussions/7782
+                    "-c", f'model_providers.{p}.wire_api="responses"',
+                    "-c", f'model_provider="{p}"',
+                ]
+            if self.model:
+                cmd += ["-m", self.model]
+            cmd.append(job.prompt)
+            return _run_and_tee(cmd, log_path=log_path)
+
+    @contextmanager
+    def prepare_workspace(self, job: Job):
+        """Wipe and rewrite the one shared CODEX_WORKSPACE_DIR before every
+        run_job() call (every attempt, every job) — nothing accumulates
+        between runs. No cleanup_workspace() override needed: the directory is
+        reused indefinitely, and the next prepare_workspace() wipes it
+        again before its own run anyway."""
+        shutil.rmtree(CODEX_WORKSPACE_DIR, ignore_errors=True)
+        CODEX_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+        (CODEX_WORKSPACE_DIR / "AGENTS.md").write_text(self.skill_text)
+        yield CODEX_WORKSPACE_DIR
+
+
+class ClineAdapter(HarnessAdapter):
+    name = "cline"
+    prompt_template = ClaudeCodeAdapter.prompt_template
+    template_args = 6
+
+    def __init__(self, *, model: Optional[str]):
+        if not model:
+            raise RuntimeError("--model is required for --harness cline (cline auth has no default).")
+        self.model = model
+        if not CLINE_SKILL_FILE.exists():
+            raise RuntimeError(f"SKILL_FILE not found: {CLINE_SKILL_FILE}")
+        if subprocess.run(["which", "cline"], capture_output=True).returncode != 0:
+            raise RuntimeError("cline CLI not found on PATH — install Cline CLI first.")
+        self.skill_text = CLINE_SKILL_FILE.read_text()
+        self.base_url = os.environ.get("OPENAI_API_BASE") or os.environ.get("OPENAI_BASE_URL")
+        self.api_key = os.environ.get("OPENAI_API_KEY")
+        if not self.base_url or not self.api_key:
+            raise RuntimeError(
+                "OPENAI_API_BASE and OPENAI_API_KEY must both be set in .env for --harness "
+                "cline — unlike codex, cline has no already-logged-in account to fall back to."
+            )
+
+    def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
+        auth_cmd = ["cline", "auth", "-p", self._provider_id(), "-k", self.api_key, "-m", self.model]
+        if self._provider_id() == "openai-compatible":
+            auth_cmd += ["-b", self.base_url]
+        subprocess.run(auth_cmd, check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["cline", "mcp", "add", CLINE_MCP_SERVER_NAME, endpoint,
+             "--transport", "streamable-http", "--yes"],
+            check=True, capture_output=True, text=True,
         )
+        with self.prepare_workspace(job) as workspace:
+            cmd = [
+                "cline",
+                "-c", str(workspace),
+                "-s", self.skill_text,
+                "-m", self.model,
+                "--auto-approve", "true",
+                "--json",
+                job.prompt,
+            ]
+            return _run_and_tee(cmd, log_path=log_path)
+
+    def _provider_id(self) -> str:
+        """`openai-compatible` hits /v1/chat/completions, which rejects
+        gpt-5.6-luna's tool-calling + reasoning_effort combo outright
+        (confirmed empirically); `openai-native` hits /v1/responses instead
+        and works, but only for a real OpenAI account — so only pick it
+        when OPENAI_API_BASE actually points at api.openai.com."""
+        return "openai-native" if "api.openai.com" in self.base_url else "openai-compatible"
+
+    @contextmanager
+    def prepare_workspace(self, job: Job):
+        shutil.rmtree(CLINE_WORKSPACE_DIR, ignore_errors=True)
+        CLINE_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+        yield CLINE_WORKSPACE_DIR
 
 
 class NanobotAdapter(HarnessAdapter):
@@ -439,10 +513,13 @@ class NanobotAdapter(HarnessAdapter):
         'in new ISA %s. You must spend at least %s compile+evaluate iterations exploring '
         'genuinely different optimization attempts before you are allowed to submit — do not '
         'submit early just because an attempt already looks good, keep iterating until you '
-        'hit the floor. You may keep going past it if you are still finding improvements. '
-        'Follow the nanobot-kernel-session skill workflow end to end.'
+        'hit the floor. You may keep going past it if you are still finding improvements, but '
+        'do not exceed %s tool calls total — once you approach that ceiling, stop iterating '
+        'and submit your best version immediately, since every iteration spends real model API '
+        'budget and the server will start rejecting further compile/evaluate/disassemble calls '
+        'once you hit it. Follow the nanobot-kernel-session skill workflow end to end.'
     )
-    template_args = 5
+    template_args = 6
 
     @classmethod
     def default_model(cls) -> Optional[str]:
@@ -492,13 +569,6 @@ class NanobotAdapter(HarnessAdapter):
                 "-w", str(workspace), "-c", str(self.config_path), "--session", session,
             ]
             return _run_and_tee(cmd, log_path=log_path)
-
-    def is_benign_failure(self, log_path: Path) -> bool:
-        """Known benign nanobot bug: close_mcp() can crash on
-        CancelledError after the job's own work (and evaluate()'s
-        auto-persist) already finished — treat as success, not a retry."""
-        text = log_path.read_text(errors="replace")
-        return "asyncio.exceptions.CancelledError" in text and "close_mcp" in text
 
     @contextmanager
     def prepare_workspace(self, job: Job):

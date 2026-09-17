@@ -53,7 +53,15 @@ class RemoteTarget:
         can't accumulate stale synced copies that a deny-list would leave behind
         forever once excluded (rsync --exclude never deletes what's already there).
         """
-        self.run(f"mkdir -p {remote_dir}")
+        # Create each path's parent too: entries may be nested (e.g.
+        # "bench-trace/definitions"), and rsync does not create missing
+        # intermediate directories — it fails with
+        # `mkdir ... failed: No such file or directory`.
+        # Unquoted on purpose: remote_dir is a repo constant like "~/arm-bench"
+        # and the tilde must stay shell-expandable (quoting it would create a
+        # directory literally named "~").
+        parents = sorted({f"{remote_dir}/{rel}".rsplit("/", 1)[0] for rel in paths})
+        self.run("mkdir -p " + " ".join(dict.fromkeys([remote_dir, *parents])))
         ssh_opt = f"ssh {' '.join(self.ssh_base_args())}"
         for rel in paths:
             local_path = Path(local_dir) / rel

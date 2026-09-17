@@ -62,7 +62,13 @@ def rsync_to(
     can't accumulate stale synced copies that a deny-list would leave behind
     forever once excluded (rsync --exclude never deletes what's already there).
     """
-    run_remote(host, user, key_file, f"mkdir -p {remote_dir}")
+    # Create each path's parent too: entries may be nested (e.g.
+    # "bench-trace/definitions") and rsync does not create missing
+    # intermediate directories. Unquoted so remote_dir's "~" still expands
+    # (quoting would make a directory literally named "~").
+    parents = sorted({f"{remote_dir}/{rel}".rsplit("/", 1)[0] for rel in paths})
+    run_remote(host, user, key_file,
+               "mkdir -p " + " ".join(dict.fromkeys([remote_dir, *parents])))
     ssh_opt = f"ssh {' '.join(_ssh_base_args(key_file))}"
     for rel in paths:
         local_path = Path(local_dir) / rel

@@ -54,6 +54,15 @@ pip install -r requirements.txt
 Provisioning and remote runs need an AWS account with Terraform configured
 (`terraform/`) and an SSH key. See `eval/eval_config.json.example`.
 
+## Configuration
+
+| Config | Purpose |
+|---|---|
+| `config/kernel_contracts.yaml` | Kernel evaluation parameters: op-type correctness/timing overrides, disallowed source patterns, ISA→march mapping, baseline authors |
+| `config/dataset_builds.json` | Step-by-step clone/build of each dataset's native lib (ncnn, ggml) on a remote instance |
+| `.env` (copy from `.env.example`) | System parameters: harness config paths, API keys, `RSYNC_ALLOWLIST` |
+| `skills/<harness>/<harness>-kernel-session/config.json` | Per-harness config (e.g. nanobot's model/provider + MCP server wiring) |
+
 ## Two ways to run an agent against this benchmark
 
 - **MCP server for an external harness** — start `mcp_app/server.py` directly
@@ -112,6 +121,13 @@ kernels per dataset, no LLM involved.
 | nanobot | `nanobot` | `nanobot` CLI on PATH + a bootstrapped `~/.nanobot/workspace` |
 | This repo's own loop | `own` | none (no external CLI) |
 
+`--harness nanobot` reads its base config from
+`skills/nanobot/nanobot-kernel-session/config.json` by default. Passing
+`--model` alone only overrides `agents.defaults.model` — the provider (and
+its API key) still comes from that checked-in config, so switching to a
+model from a different provider needs its own base config. Set
+`NANOBOT_CONFIG_BASE` in `.env` (see `.env.example`) to point at one instead.
+
 ### Supported harness (claude-code / nanobot / own)
 
 If your harness already has a `HarnessAdapter`
@@ -137,6 +153,8 @@ repo, starts an MCP session against `mcp_app/server.py` on it
 (`eval/evaluator.py::run_agentic_eval`) in-process for every definition
 matching `--dataset` (narrow with `--definitions`) until the model stops or
 `--max-iterations` is hit.
+
+**--model** is a required argument for own harness as there are no default model provided for own harness
 
 See [`eval/README.md`](eval/README.md) for `eval/evaluator.py`'s agent-loop
 details, `eval/provision.py`'s standalone provisioning commands, and where

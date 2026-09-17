@@ -22,12 +22,9 @@ One W&B run = one definition. Fields fall into two shapes: **time series**
 **scalars** (`run.summary`/`config`, shown in the **Overview** tab or as
 columns you add to the **Runs Table** — they do *not* appear as charts).
 
-Every field's source is either the trajectory (`trajectory.jsonl`, written
-by `mcp_app`'s `TrajectoryWriter` — identical format regardless of which
-harness drove the session) or a `SessionMetrics` object that the
-**HarnessAdapter** which ran the job (`test_scripts/harness_adapters.py`)
-parsed from its own log format. `wandb_log_run.py` has no harness-specific
-parsing of its own — it only knows the `SessionMetrics`/`TurnRow` shape.
+Every field's source is the trajectory (`trajectory.jsonl`, written by
+`mcp_app`'s `TrajectoryWriter` — identical format regardless of which
+harness drove the session).
 
 ### Charts — per-evaluate curve (from trajectory, all harnesses)
 
@@ -42,24 +39,6 @@ One point per perf-eval call, x-axis = `iteration`.
 | `ipc` | instructions-per-cycle (hardware perf counter mean) |
 | `cache_misses` | cache-miss counter mean |
 | `max_abs_error` / `max_rel_error` | this version's worst correctness-check error |
-
-### Charts — `turn/*` group (from `SessionMetrics.turn_rows`, harness-dependent)
-
-Own x-axis (`turn/idx`), one point per agent turn (one MCP tool_use to the next).
-
-| field | meaning |
-|---|---|
-| `turn/total_s` | wall time for this turn |
-| `turn/llm_s` | portion spent on model thinking/generation |
-| `turn/tool_s` | portion spent on remote compile/evaluate execution |
-
-Only populated by harnesses whose log format has enough structure to split
-a turn into sub-deltas. Today: **claude-code only** — its stream-json log
-has separate assistant/tool_result timestamped events to diff. A harness
-that can only tell "a turn happened" but not "the LLM part vs the tool
-part" would report `total_s` with `llm_s=tool_s=0.0` (see `TurnRow`'s
-docstring in `harness_adapters.py`); a harness with no turn boundaries at
-all reports an empty `turn_rows`, and this whole chart group is absent.
 
 ### Overview / Runs Table — run summary (from trajectory, all harnesses)
 
@@ -81,26 +60,7 @@ trajectory (not just perf-mode ones), so it's accurate regardless of harness.
 | `n_passed` / `n_incorrect` / `n_runtime_error` / `n_timeout` | eval-call taxonomy (status = `PASSED` / `INCORRECT_NUMERICAL` / `RUNTIME_ERROR` / `TIMEOUT`) |
 | `n_compile_error` | compile-call taxonomy |
 | `worst_max_abs_error` / `worst_max_rel_error` | worst correctness error across all versions |
-| `cost_per_speedup` | `cost_usd / best_speedup` — $ spent per 1x of speedup gained |
-| `cost_per_eval` | `cost_usd / n_perf_evals` |
 | `best_kernel_version` / `best_kernel_techniques` | winning version + detected optimization idioms (regex match against `TECHNIQUES` in `wandb_log_run.py`: bf16 bfdot/bfmmla, int8 dot/mmla, FMA, prefetch, predication, NEON, unroll, cache blocking) |
-
-### Overview / Runs Table — session fields (from `SessionMetrics`, harness-dependent)
-
-| field | meaning | claude-code | nanobot | own |
-|---|---|:---:|:---:|:---:|
-| `cost_usd` | total $ spent (harness-reported) | ✅ | ❌ | ❌ |
-| `num_turns` | total agent turns | ✅ | ❌ | ❌ |
-| `wall_time_s` | total job wall-clock time | ✅ | ❌ | ❌ |
-| `api_retries` | LLM API retries (rate limit/timeout) | ✅ | ❌ | ❌ |
-| `session_compile_errors` | compile-error mentions detected in the conversation text (heuristic, distinct from `n_compile_error` which comes from the trajectory) | ✅ | ❌ | ❌ |
-| `tokens_input`/`tokens_output`/`tokens_cache_read`/`tokens_cache_created` | token usage | ✅ | ❌ | ❌ |
-| `sec_per_turn_mean`/`median`/`max`, `llm_time_s`, `tool_time_s` | derived from `turn_rows` | ✅ | ❌ | ❌ |
-
-A ❌ here isn't a bug — it means that harness's `HarnessAdapter.parse_session_metrics()`
-hasn't been taught to extract that field yet (or the harness's own log/output
-doesn't carry it in a form we can read). Fields it can't populate are simply
-absent from the run, not zero. See the note below on extending this per harness.
 
 ### Config (from `bench_fleet.py`, all harnesses)
 
@@ -116,13 +76,3 @@ absent from the run, not zero. See the note below on extending this per harness.
   detected techniques, and full source — browsable in the run page.
 - A versioned `kernel` W&B Artifact bundling every `vN.cpp` (+ `vN.s` if
   disassembled) and the full `trajectory.jsonl`.
-
-## Extending session metrics to a new harness
-
-`HarnessAdapter.parse_session_metrics(log_path) -> SessionMetrics` defaults
-to an all-empty `SessionMetrics()`. To report real data for a harness,
-override it on that harness's adapter class in
-`test_scripts/harness_adapters.py` — see `ClaudeCodeAdapter`'s override
-(delegates to the module-level `parse_claude_code_session_log()`) for the
-pattern. `wandb_log_run.py` never needs to change: it only consumes the
-`SessionMetrics`/`TurnRow` shape, not any harness's raw log format.

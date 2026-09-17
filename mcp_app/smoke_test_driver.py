@@ -26,10 +26,13 @@ import argparse
 import asyncio
 import base64
 import json
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 from bench.data.trace_set import TraceSet
 from contracts import BASELINE_AUTHORS
@@ -38,6 +41,7 @@ from .agent_tools.isa import SUPPORTED_ISAS
 from .scripts import _local_ssh
 from .scripts.test_mcp_client import run_stdio_sequence
 
+load_dotenv()
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCH_TRACE = REPO_ROOT / "bench-trace"
 
@@ -48,9 +52,12 @@ DATASET_BUILDS: dict = json.loads((REPO_ROOT / "config" / "dataset_builds.json")
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see _local_ssh.rsync_to's docstring.
-# TODO: fold into an env var (shared with the separately-duplicated copies in
-# eval/provision.py and skills/launch/launch_session.py).
-RSYNC_ALLOWLIST = ["bench", "bench-trace", "mcp_app", "requirements.txt"]
+# NOTE: bench-trace is listed by sub-directory, not whole. traces/ is not included
+# as archive traces may pollute speedup geomean calculation
+# Set in .env (comma-separated) — see .env.example.
+RSYNC_ALLOWLIST = [p.strip() for p in os.environ.get("RSYNC_ALLOWLIST", "").split(",") if p.strip()]
+if not RSYNC_ALLOWLIST:
+    raise RuntimeError("RSYNC_ALLOWLIST is unset or empty — set it in .env (see .env.example).")
 
 # baseline_author from contracts.BASELINE_AUTHORS (shared with eval/run_benchmark.py
 # and mcp_app/agent_tools/baseline_readiness.py); isa_hint is display-only, local to

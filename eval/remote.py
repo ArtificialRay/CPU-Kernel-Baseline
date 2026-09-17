@@ -66,7 +66,12 @@ class InstanceHandle:
         can't accumulate stale synced copies that a deny-list would leave behind
         forever once excluded (rsync --exclude never deletes what's already there).
         """
-        self.run(f"mkdir -p {remote_dir}")
+        # Create each path's parent too: entries may be nested (e.g.
+        # "bench-trace/definitions") and rsync does not create missing
+        # intermediate directories. Unquoted so remote_dir's "~" still
+        # expands (quoting would make a directory literally named "~").
+        parents = sorted({f"{remote_dir}/{rel}".rsplit("/", 1)[0] for rel in paths})
+        self.run("mkdir -p " + " ".join(dict.fromkeys([remote_dir, *parents])))
         key = os.path.expanduser(self.key_file)
         ssh_opt = f"ssh -i {key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
         for rel in paths:

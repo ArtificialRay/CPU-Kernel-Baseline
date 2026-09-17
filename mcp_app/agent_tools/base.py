@@ -83,6 +83,7 @@ class KernelSession(ABC):
         isa: str,
         *,
         instance_label: Optional[str] = None,
+        max_iterations: Optional[int] = None,
     ) -> None:
         self._trace_set = trace_set
         self._author = author
@@ -90,6 +91,9 @@ class KernelSession(ABC):
         self._run_dir = run_dir
         self._isa = isa
         self._instance_label = instance_label
+        # Hard per-definition ceiling on trajectory-recorded tool calls
+        # (compile/evaluate/disassemble/submit) 
+        self._max_iterations = max_iterations
 
         # definition name -> {definition, trajectory, turn, last_compile, best_compile}
         self._definitions: dict[str, dict] = {}
@@ -186,6 +190,22 @@ class KernelSession(ABC):
                     f"requested definition {definition!r}, but the active one is "
                     f"{self._active_definition!r} — call compile(definition={definition!r}, "
                     "code=...) again before acting on it."
+                ),
+            }
+        return None
+
+    def _check_iteration_budget(self, state: dict) -> Optional[dict]:
+        """Hard ceiling on trajectory-recorded tool calls for one definition.
+        """
+        if self._max_iterations is not None and state["turn"] >= self._max_iterations:
+            return {
+                "status": "MAX_ITERATIONS_EXCEEDED",
+                "error": (
+                    f"this definition has already recorded {state['turn']} tool call(s) "
+                    f"to trajectory, at or above this server's --max-iterations="
+                    f"{self._max_iterations} limit — no further compile/evaluate/"
+                    "disassemble/submit calls will be accepted for it. Submit your "
+                    "best version now if you haven't already."
                 ),
             }
         return None
@@ -300,6 +320,9 @@ class KernelSession(ABC):
         if exhausted is not None:
             return exhausted
 
+        budget_error = self._check_iteration_budget(state)
+        if budget_error is not None:
+            return budget_error
         state["turn"] += 1
 
         rejection = self._check_source_policy(state["definition"], code)
@@ -383,6 +406,9 @@ class KernelSession(ABC):
         if exhausted is not None:
             return exhausted
         state = self._definitions[self._active_definition]
+        budget_error = self._check_iteration_budget(state)
+        if budget_error is not None:
+            return budget_error
         state["turn"] += 1
         if state["last_compile"] is None:
             return {"status": "COMPILE_ERROR", "error": "nothing compiled yet"}
@@ -456,6 +482,9 @@ class KernelSession(ABC):
         if mismatch is not None:
             return mismatch
         state = self._definitions[self._active_definition]
+        budget_error = self._check_iteration_budget(state)
+        if budget_error is not None:
+            return budget_error
         state["turn"] += 1
         if state["last_compile"] is None:
             return {"error": "nothing compiled yet — call compile() first"}
@@ -510,7 +539,6 @@ class KernelSession(ABC):
         if mismatch is not None:
             return mismatch
         state = self._definitions[self._active_definition]
-        state["turn"] += 1
 
         best = state["best_compile"]
         if best is None:
