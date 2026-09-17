@@ -28,6 +28,16 @@ class InstanceHandle:
     instance_type: str
     instance_id: str | None = None
 
+    @property
+    def python(self) -> str:
+        """Interpreter to run bench/ and mcp_app/ with on THIS instance.
+
+        macOS ships a python3 (3.9.6) too old for requirements.txt, so the
+        Apple-silicon tier runs out of the uv-managed venv that
+        eval/provision.py::_install_deps creates.
+        """
+        return "~/venv/bin/python" if self.instance_type.startswith("mac") else "python3"
+
     def ssh_base_args(self) -> list[str]:
         key = os.path.expanduser(self.key_file)
         return [
