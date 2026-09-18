@@ -148,6 +148,15 @@ disallowed_source_patterns:
   # under "portable", contradicting the whole point of that ISA tier (agent
   # optimizes via plain, compiler-vectorizable C++ only).
   by_isa:
+    # neon/sve/sve2: the arm is enforced by the candidate -march (ISA table above);
+    # inline-asm target directives would let a kernel opt back into instructions
+    # the arm excludes, so they are rejected at compile time in every SIMD arm.
+    neon:
+      - '\.arch(_extension)?\b'
+    sve:
+      - '\.arch(_extension)?\b'
+    sve2:
+      - '\.arch(_extension)?\b'
     portable:
       - '#\s*include\s*[<"]arm_neon\.h[>"]'
       - '#\s*include\s*[<"]arm_sve\.h[>"]'

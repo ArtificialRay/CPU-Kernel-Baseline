@@ -113,12 +113,12 @@ def _cost_proxy(name: str) -> int:
 
 
 def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root: str,
-                     isa: Optional[str] = None) -> None:
+                     isa: Optional[str] = None, baseline_author: Optional[str] = None) -> None:
     """Sync the repo, then collect + verify baseline traces BEFORE the MCP
     server starts. The author is ISA-routed (contracts.baseline_author_for) so
     it matches what mcp_app/session.py will compare against on this box.
     """
-    baseline_author = baseline_author_for(dataset, isa)
+    baseline_author = baseline_author or baseline_author_for(dataset, isa)
     target = instance.target
 
     print(f"[sync] Syncing benchmark inputs to {target.host} before baseline collection...")
@@ -182,6 +182,7 @@ def _has_passed_baseline(target, definition: str, baseline_author: str, remote_r
 def build_jobs(
     dataset: str, isa: str, definitions_filter: str,
     min_iterations: int, max_iterations: int, prompt_template: str, template_args: int,
+    baseline_author: Optional[str] = None,
 ) -> list[Job]:
     """Build one Job (with its rendered prompt) per definition matching
     `dataset`, narrowed to `definitions_filter` if non-empty (a JSON array
@@ -198,7 +199,7 @@ def build_jobs(
         for entry in raw_entries
     }
 
-    baseline_author = baseline_author_for(dataset, isa)
+    baseline_author = baseline_author or baseline_author_for(dataset, isa)
     jobs: list[Job] = []
     for path in sorted(DEFINITIONS_DIR.rglob("*.json")):
         d = json.loads(path.read_text())
@@ -289,10 +290,12 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     jobs = build_jobs(
         dataset, isa, args.definitions, args.min_iterations, max_iterations,
         adapter_cls.prompt_template, adapter_cls.template_args,
+        baseline_author=args.baseline_author,
     )
     if jobs:
         ensure_baselines(
             instance, dataset, [j.name for j in jobs], args.remote_root, isa=isa,
+            baseline_author=args.baseline_author,
         )
 
     # sync_repo=False: ensure_baselines() already synced, and re-syncing here
@@ -302,6 +305,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
         remote_root=args.remote_root, sync_repo=False,
         local_repo_dir=str(REPO_ROOT), local_port=local_port,
         remote_port=args.remote_port, max_iterations=max_iterations,
+        baseline_author=args.baseline_author,
     )
     # "own" needs the just-established MCP endpoint/target, unlike
     # claude-code/nanobot above — construct it here instead.
@@ -482,6 +486,8 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         cmd += ["--label", args.label]
     if args.max_iterations:
         cmd += ["--max-iterations", str(args.max_iterations)]
+    if args.baseline_author:
+        cmd += ["--baseline-author", args.baseline_author]
     if args.instance:
         cmd += ["--instance", args.instance]
     cmd += ["--watchdog-minutes", str(args.watchdog_minutes)]
@@ -665,6 +671,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--retries", type=int, default=3,
                    help="Retries for transient infra failures. Total attempts = retries+1.")
     p.add_argument("--author", default=None, help="Override the computed author (advanced).")
+    p.add_argument("--baseline-author", default=None,
+                   help="Pin the speedup-baseline author for every dataset in this run instead of "
+                        "the per-dataset/per-ISA default (contracts.baseline_author_for). Use it to hold "
+                        "one reference fixed across ISA arms on the same box (e.g. baseline-sve2).")
     p.add_argument("--label", default=None, help="Override the computed instance label (advanced).")
     p.add_argument("--instance", default=None, help="EC2 instance type override.")
     p.add_argument("--remote-root", default="~/arm-bench")
