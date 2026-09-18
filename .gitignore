@@ -69,3 +69,4 @@ arm-bench/
 .claude/settings.json
 .claude/settings.local.json
 wandb/
+eval/llm_providers.json
