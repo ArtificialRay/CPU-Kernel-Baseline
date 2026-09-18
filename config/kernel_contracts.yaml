@@ -42,19 +42,16 @@ baseline_authors:
 eval_defaults:
   warmup: 5
   repeat: 50
-  # "auto": pick per (definition, workload) so one timed sample spans
-  # target_sample_ns. A single global constant cannot serve this fleet —
-  # baseline min_ns spans 2,531 ns to 683 ms inside ncnn alone — and the value
-  # changes WHAT is measured, not just its resolution (measured on Apple
-  # silicon: the same kernel reads 2.3x slower at 1 than at 1000, because
-  # back-to-back calls keep its working set hot). Candidates therefore inherit
-  # the value implied by their baseline's per-call time, so both sides of the
-  # speedup ratio share it. An integer here still forces that value, which is
-  # what reproduces a pre-2026-09 run.
-  # Set to "auto" to opt in. Left at 1 so every existing number stays
-  # reproducible: switching changes results on ALL platforms, not just Apple
-  # silicon, and the 54-cell result matrix was collected at 1.
-  inner_iters: 1
+# "auto": Auto-tunes `inner_iters` per (definition, workload) to target `target_sample_ns`.
+#
+# A fixed `inner_iters` fails because kernel runtimes vary wildly (2.5 µs to 683 ms)
+# and iteration count alters cache behavior (e.g., 2.3x throughput on Apple silicon 
+# at 1000 vs 1 iter due to hot working sets).
+#
+# To ensure fair comparisons, candidates inherit their baseline's `inner_iters`.
+#
+# NOTE: Currently disabled (default=1) so existing benchmark results remain reproducible.
+  inner_iters: 1 # could set to "auto", see above comment
   target_sample_ns: 1000000
   cpu: 0
   watchdog_s: 30.0

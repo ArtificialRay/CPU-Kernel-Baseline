@@ -155,13 +155,7 @@ class DefaultEvaluator(Evaluator):
         is_baseline: bool,
         trace_set: Optional[Any],
     ) -> Tuple[Optional[Performance], Optional[Evaluation]]:
-        # Baseline lookup happens BEFORE timing: with inner_iters on "auto" the
-        # candidate takes the value implied by the baseline's own per-call time
-        # rather than probing itself. inner_iters changes what is measured, not
-        # just its resolution — the same kernel reads 2.3x slower at 1 than at
-        # 1000 on Apple silicon (back-to-back calls keep the working set hot) —
-        # so numerator and denominator have to share it for the ratio to mean
-        # anything.
+        # Baseline lookup happens BEFORE timing
         ref_cycles: Optional[int] = None
         ref_min_ns: Optional[int] = None
         cycle_speedup: Optional[float] = None
@@ -179,7 +173,7 @@ class DefaultEvaluator(Evaluator):
         if inner_iters == "auto":
             target = getattr(cfg, "target_sample_ns", DEFAULT_TARGET_SAMPLE_NS)
             if ref_min_ns:
-                inner_iters = round_pow2(-(-target // ref_min_ns))
+                inner_iters = round_pow2(-(-target // ref_min_ns)) # use inner iter from target at first, if no target, pick one inner iters
             else:
                 inner_iters = pick_inner_iters(invoke, target_sample_ns=target)
 
