@@ -366,6 +366,8 @@ def run_agentic_eval(
             }
             if not any(m in model for m in AGENT_LOOP_DEFAULTS["models_without_temperature"]):
                 completion_kwargs["temperature"] = AGENT_LOOP_DEFAULTS["temperature"]
+            if any(m in model for m in AGENT_LOOP_DEFAULTS["models_needing_reasoning_effort_none"]):
+                completion_kwargs["reasoning_effort"] = "none"
 
             for _retry in range(AGENT_LOOP_DEFAULTS["retry_max_attempts"]):
                 try:

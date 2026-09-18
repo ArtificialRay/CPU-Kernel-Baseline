@@ -174,7 +174,7 @@ def _status() -> None:
 def _spawn_command(
     target: RemoteTarget, remote_root: str, datasets: list[str],
     author: str, baseline_author: Optional[str], isa: str, *, port: int,
-    max_iterations: Optional[int] = None,
+    max_iterations: Optional[int] = None, instance_type: str = "c7g.large",
 ) -> str:
     """Remote command for a persistent streamable-http-mode mcp_app.server
     (see prepare_session's docstring for why this is the only mode this
@@ -184,8 +184,20 @@ def _spawn_command(
     mcp_app/agent_tools/dispatcher.py."""
     run_dir = f"{remote_root}/agent-runs-mcp/{author}"
     dataset_flags = " ".join(f"--dataset {ds}" for ds in datasets)
+    # RemoteTarget carries no instance_type, so it can't expose
+    # eval/remote.py::InstanceHandle's `.python` property directly — and
+    # that property's own mac branch (~/venv/bin/python) is stale anyway.
+    # On a mac tier, plain `python3` on PATH is the stock macOS 3.9.6
+    # (no `mcp` package) UNLESS a host happens to have a manual PATH shim
+    # (armbench-sme-gpt-5.6-luna does; armbench-sme-kleidiai-test doesn't —
+    # confirmed live, the latter failed every job with `ModuleNotFoundError:
+    # No module named 'mcp'`). `{remote_root}/.venv/bin/python3` is the
+    # uv-managed venv eval/provision.py::_install_deps actually creates for
+    # the Apple-silicon tier and is present with `mcp` installed on BOTH
+    # mac hosts — use that explicitly instead of hoping PATH is shimmed.
+    python = f"{remote_root}/.venv/bin/python3" if instance_type.startswith("mac") else "python3"
     cmd = (
-        f"cd {remote_root} && python3 -m mcp_app.server {dataset_flags} "
+        f"cd {remote_root} && {python} -m mcp_app.server {dataset_flags} "
         f"--author {author} --isa {isa} --run-dir {run_dir} "
         f"--transport streamable-http --bind-host 127.0.0.1 --port {port}"
     )
@@ -253,6 +265,7 @@ def prepare_session(
     remote_port: int = 8765,
     startup_timeout: int = 60,
     max_iterations: Optional[int] = None,
+    instance_type: str = "c7g.large",
 ) -> dict:
     """Get an mcp_app session ready to be driven by a real MCP client.
 
@@ -292,7 +305,7 @@ def prepare_session(
 
     remote_cmd = _spawn_command(
         target, remote_root, datasets, author, baseline_author, isa,
-        port=remote_port, max_iterations=max_iterations,
+        port=remote_port, max_iterations=max_iterations, instance_type=instance_type,
     )
     ssh_cmd = [
         "ssh", "-L", f"{local_port}:127.0.0.1:{remote_port}",

@@ -101,6 +101,20 @@ def _tier_for_instance_type(instance_type: str) -> str:
     return "c8g" if "c8g" in instance_type else "c7g"
 
 
+def _mac_host_ids(label: str, instance_type: str) -> str:
+    """TF_VAR_mac_host_ids for this label, as JSON.
+
+    EC2 Mac instance types run only on Dedicated Hosts, and AWS bills a freshly
+    allocated one for a 24-hour minimum. $ARMBENCH_MAC_HOST_ID names a host to
+    reuse; left unset, terraform/main.tf allocates one (and keeps it across a
+    targeted teardown). No-op for every non-Mac instance type.
+    """
+    host_id = os.environ.get("ARMBENCH_MAC_HOST_ID", "").strip()
+    if not instance_type.startswith("mac") or not host_id:
+        return json.dumps({})
+    return json.dumps({label: host_id})
+
+
 def _tf(*args, capture: bool = False, extra_env: dict | None = None) -> subprocess.CompletedProcess:
     cmd = ["terraform"] + list(args)
     env = {**os.environ, **extra_env} if extra_env else None
@@ -143,10 +157,17 @@ def _run_dataset_build(handle: InstanceHandle, dataset: str, config: dict) -> bo
         return True
     print(f"[provision] Building dataset {dataset!r} ({len(steps)} step(s))...")
     ok = True
+    darwin = handle.instance_type.startswith("mac")
     for step in steps:
         label = step["label"]
+        # "cmd" is the Linux command and stays the only one most steps need.
+        # A step that cannot run as-is on macOS carries a "cmd_darwin" override
+        # instead of the Linux command being rewritten to suit both: the Linux
+        # path runs on every campaign and the Apple-silicon one is rare, so the
+        # duplication is cheaper than any regression risk to the common path.
+        cmd = step.get("cmd_darwin", step["cmd"]) if darwin else step["cmd"]
         print(f"[provision]   {label}...")
-        rc, _, err = handle.run(step["cmd"], timeout=step.get("timeout", 300))
+        rc, _, err = handle.run(cmd, timeout=step.get("timeout", 300))
         if rc != 0:
             print(f"[provision]   WARNING: {label} failed: {err[:200]}")
             ok = False
@@ -184,9 +205,8 @@ def ensure_dataset_ready(handle: InstanceHandle, dataset: str) -> None:
         print(f"[provision] Dataset {dataset!r} ready on {handle.host}.")
 
 
-def _install_deps(handle: InstanceHandle) -> None:
-    """Install system and Python dependencies on the remote instance."""
-    steps = [
+def _linux_dep_steps() -> list[tuple[str, str, int]]:
+    return [
         (
             "disable unattended-upgrades",
             # Ubuntu's apt-daily-upgrade.timer fires once a day at a randomized
@@ -219,6 +239,65 @@ def _install_deps(handle: InstanceHandle) -> None:
             10,
         ),
     ]
+
+
+# Homebrew's own install path on Apple silicon. Not on a non-login shell's PATH,
+# so every step below names it explicitly rather than relying on shellenv.
+_BREW = "/opt/homebrew/bin/brew"
+_UV = "/opt/homebrew/bin/uv"
+
+
+def _macos_dep_steps() -> list[tuple[str, str, int]]:
+    """macOS counterpart of _linux_dep_steps.
+
+    Every Linux step fails here, and quietly: apt-get and systemctl do not
+    exist, `pip3 install --break-system-packages` is rejected by the AMI's
+    python 3.9.6, and kernel.perf_event_paranoid is not a macOS sysctl oid.
+    Since _install_deps only warns, that left a box that looked provisioned and
+    failed at the first eval.
+
+    The AMI already ships the Apple clang we compile with, so this installs
+    only what is missing: cmake for the dataset builds, and a uv-managed venv
+    (the system python is too old for requirements.txt, and is not what
+    InstanceHandle.python points at). Perf counters have no macOS equivalent —
+    perf_event_open is Linux-only — and timing.py already degrades without
+    them. Every step no-ops once done, so re-running provision() is safe.
+    """
+    return [
+        (
+            "homebrew",
+            f"command -v brew >/dev/null 2>&1 || test -x {_BREW} || "
+            'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL '
+            'https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+            900,
+        ),
+        (
+            "brew packages",
+            # llvm is for llvm-objdump, use for both apple m4 and amazon gravitons
+            f"{_BREW} list --formula cmake uv llvm >/dev/null 2>&1 || "
+            f"{_BREW} install cmake uv llvm",
+            900,
+        ),
+        (
+            "python venv",
+            f"test -x ~/venv/bin/python || {_UV} venv ~/venv --python 3.12",
+            300,
+        ),
+        (
+            "pip packages",
+            f"{_UV} pip install --python ~/venv/bin/python -r ~/arm-bench/requirements.txt",
+            300,
+        ),
+    ]
+
+
+def _install_deps(handle: InstanceHandle) -> None:
+    """Install system and Python dependencies on the remote instance."""
+    steps = (
+        _macos_dep_steps()
+        if handle.instance_type.startswith("mac")
+        else _linux_dep_steps()
+    )
     for label, cmd, timeout in steps:
         print(f"[provision] Installing {label}...")
         rc, _, err = handle.run(cmd, timeout=timeout)
@@ -268,7 +347,10 @@ def provision(
         "apply", "-auto-approve", *vars,
         f'-target=aws_instance.labeled["{label}"]',
         f'-target=null_resource.deploy["{label}"]',
-        extra_env={"TF_VAR_instances": json.dumps({label: instance_type})},
+        extra_env={
+            "TF_VAR_instances": json.dumps({label: instance_type}),
+            "TF_VAR_mac_host_ids": _mac_host_ids(label, instance_type),
+        },
     )
 
     if result.returncode != 0:
@@ -278,10 +360,12 @@ def provision(
     host = outputs["instance_public_ips"]["value"][label]
     instance_id = outputs.get("instance_ids", {}).get("value", {}).get(label)
     key_file = outputs.get("ssh_key_path", {}).get("value", "~/.ssh/id_rsa")
+    # ec2-user on Mac, ubuntu elsewhere — terraform/main.tf owns that split.
+    ssh_user = outputs.get("instance_ssh_users", {}).get("value", {}).get(label, "ubuntu")
 
     handle = InstanceHandle(
         host=host,
-        user="ubuntu",
+        user=ssh_user,
         key_file=key_file,
         instance_type=instance_type,
         instance_id=instance_id,
@@ -308,7 +392,7 @@ def provision(
         ensure_dataset_ready(handle, dataset)
 
     _save_config(handle, label)
-    print(f"[provision] Done. SSH: ssh -i {key_file} ubuntu@{host}")
+    print(f"[provision] Done. SSH: ssh -i {key_file} {ssh_user}@{host}")
     return handle
 
 
@@ -339,7 +423,10 @@ def teardown(label: str | None = None):
         "destroy", "-auto-approve",
         f'-target=aws_instance.labeled["{label}"]',
         f'-target=null_resource.deploy["{label}"]',
-        extra_env={"TF_VAR_instances": json.dumps({label: instance_type})},
+        extra_env={
+            "TF_VAR_instances": json.dumps({label: instance_type}),
+            "TF_VAR_mac_host_ids": _mac_host_ids(label, instance_type),
+        },
     )
     if result.returncode != 0:
         raise RuntimeError(f"terraform destroy failed for label={label!r}")
@@ -400,7 +487,23 @@ def get_or_provision(
     return provision(label, instance_type, dataset=dataset, on_demand=on_demand)
 
 
-def _wait_for_ssh(handle: InstanceHandle, max_wait: int = 300, interval: int = 10):
+# EC2 Mac boots far slower than the Linux tiers: a fresh mac-m4.metal took
+# 6m49s from LaunchTime to its first accepted SSH connection, so the 300s
+# Linux default times out every time — after terraform has created the
+# instance and billing has started.
+_SSH_WAIT_S = {"mac": 900}
+_SSH_WAIT_DEFAULT_S = 300
+
+
+def _ssh_wait_budget(handle: InstanceHandle) -> int:
+    for prefix, budget in _SSH_WAIT_S.items():
+        if handle.instance_type.startswith(prefix):
+            return budget
+    return _SSH_WAIT_DEFAULT_S
+
+
+def _wait_for_ssh(handle: InstanceHandle, max_wait: int | None = None, interval: int = 10):
+    max_wait = _ssh_wait_budget(handle) if max_wait is None else max_wait
     deadline = time.time() + max_wait
     while time.time() < deadline:
         if _is_reachable(handle):
