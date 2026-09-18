@@ -52,7 +52,7 @@ eval_defaults:
 #
 # NOTE: Currently disabled (default=1) so existing benchmark results remain reproducible.
   inner_iters: 1 # could set to "auto", see above comment
-  target_sample_ns: 1000000
+  target_sample_ns: 10000000
   cpu: 0
   watchdog_s: 30.0
   correctness_abs_tol: 1.0e-3
