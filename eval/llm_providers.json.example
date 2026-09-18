@@ -1,0 +1,7 @@
+{
+  "providers": {
+    "anthropic": { "api_key": "", "api_base": "" },
+    "openai": { "api_key": "", "api_base": "" },
+    "openrouter": { "api_key": "", "api_base": "" }
+  }
+}

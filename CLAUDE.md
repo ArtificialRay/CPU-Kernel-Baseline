@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Implementation Guide
+
+- USE AS LESS HIDDEN FUNCTION (function with "_" beforehead) AS YOU CAN IN YOUR IMPLEMENTATION
+
 ## What this repo is
 
 **CPU-Kernel-Baseline** evaluates LLMs on their ability to write optimized AArch64
@@ -218,6 +222,11 @@ eval/                           # In-repo litellm agent loop (Path 1)
                                  #   caller's (test_scripts/bench_fleet.py's) job, not this module's
   remote.py                     # InstanceHandle — SSH/rsync to a provisioned instance
   eval_config.json              # SSH connection info — copy from .example
+  llm_providers.py              # resolve_completion_kwargs() — optional per-provider
+                                 #   api_key/api_base override for litellm.completion()
+  llm_providers.json            # per-provider api_key/api_base — copy from .example;
+                                 #   optional, litellm falls back to env vars (ANTHROPIC_API_KEY etc.)
+                                 #   for any provider/field left out or if this file is absent
 
 mcp_app/                        # MCP server for Path 3
   server.py                     # MCP server (--transport stdio|streamable-http)
