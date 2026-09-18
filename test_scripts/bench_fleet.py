@@ -118,11 +118,29 @@ def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root
     """
     baseline_author = BASELINE_AUTHORS.get(dataset, dataset)
     target = instance.target
+    # RemoteTarget (skills/launch/remote.py) carries no instance_type, so it
+    # can't expose eval/remote.py::InstanceHandle's `.python` property, and
+    # that property's own mac branch (~/venv/bin/python) is stale anyway.
+    # Plain `python3` on PATH is the stock macOS 3.9.6 (no deps) UNLESS a
+    # host has a manual PATH shim (armbench-sme-gpt-5.6-luna does;
+    # armbench-sme-kleidiai-test doesn't — confirmed live, the latter's
+    # jobs all failed with `ModuleNotFoundError: No module named 'mcp'`).
+    # {remote_root}/.venv/bin/python3 is the uv-managed venv
+    # eval/provision.py::_install_deps actually creates for the
+    # Apple-silicon tier, present with deps installed on BOTH mac hosts —
+    # use that explicitly instead of hoping PATH is shimmed.
+    python = (
+        f"{remote_root}/.venv/bin/python3" if instance.instance_type.startswith("mac")
+        else "python3"
+    )
 
     print(f"[sync] Syncing benchmark inputs to {target.host} before baseline collection...")
     target.rsync_to(str(REPO_ROOT), remote_root, paths=launch_session.RSYNC_ALLOWLIST)
 
-    missing = [d for d in definitions if not _has_passed_baseline(target, d, baseline_author, remote_root)]
+    missing = [
+        d for d in definitions
+        if not _has_passed_baseline(target, python, d, baseline_author, remote_root)
+    ]
     if not missing:
         print(f"[baselines] All {len(definitions)} baseline trace(s) present.")
         return
@@ -132,7 +150,7 @@ def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root
     for i, name in enumerate(missing):
         print(f"  [{i + 1}/{len(missing)}] {name} ...", end=" ", flush=True)
         rc, out, err = target.run(
-            f"cd {remote_root} && {target.python} -m bench.cli collect-baselines "
+            f"cd {remote_root} && {python} -m bench.cli collect-baselines "
             f"--baseline-author {baseline_author} --definition {name}",
             timeout=1500,
         )
@@ -144,7 +162,10 @@ def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root
                 f"(speedup would come back None).\n{combined}\n\n"
             )
 
-    still_missing = [d for d in missing if not _has_passed_baseline(target, d, baseline_author, remote_root)]
+    still_missing = [
+        d for d in missing
+        if not _has_passed_baseline(target, python, d, baseline_author, remote_root)
+    ]
     if still_missing:
         raise RuntimeError(
             f"collect-baselines reported success but no PASSED baseline trace exists for: "
@@ -152,7 +173,9 @@ def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root
         )
 
 
-def _has_passed_baseline(target, definition: str, baseline_author: str, remote_root: str) -> bool:
+def _has_passed_baseline(
+    target, python: str, definition: str, baseline_author: str, remote_root: str,
+) -> bool:
     """True when `definition` already has a PASSED trace for `baseline_author`
     on this host. Host-specific on purpose: baselines are absolute timings, so
     one is only valid on the machine that measured it."""
@@ -173,7 +196,7 @@ def _has_passed_baseline(target, definition: str, baseline_author: str, remote_r
         "sys.exit(1)\n"
     )
     b64 = base64.b64encode(check.encode()).decode()
-    rc, _, _ = target.run(f"echo {b64!r} | base64 -d | {target.python}", timeout=60)
+    rc, _, _ = target.run(f"echo {b64!r} | base64 -d | {python}", timeout=60)
     return rc == 0
 
 
@@ -325,6 +348,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
         remote_root=args.remote_root, sync_repo=False,
         local_repo_dir=str(REPO_ROOT), local_port=local_port,
         remote_port=args.remote_port, max_iterations=max_iterations,
+        instance_type=instance.instance_type,
     )
     # "own" needs the just-established MCP endpoint/target, unlike
     # claude-code/nanobot above — construct it here instead.

@@ -273,7 +273,9 @@ def _macos_dep_steps() -> list[tuple[str, str, int]]:
         ),
         (
             "brew packages",
-            f"{_BREW} list --formula cmake uv >/dev/null 2>&1 || {_BREW} install cmake uv",
+            # llvm is for llvm-objdump, use for both apple m4 and amazon gravitons
+            f"{_BREW} list --formula cmake uv llvm >/dev/null 2>&1 || "
+            f"{_BREW} install cmake uv llvm",
             900,
         ),
         (

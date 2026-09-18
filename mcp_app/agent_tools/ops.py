@@ -8,9 +8,11 @@ from disk on every tool call.
 from __future__ import annotations
 
 import ctypes
+import shutil
 import subprocess
 import traceback as tb
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -19,6 +21,10 @@ if TYPE_CHECKING:
     from bench.data.solution import Solution
     from bench.data.trace_set import TraceSet
 
+# Homebrew's llvm formula is keg-only (kept off PATH to avoid clashing with
+# Apple's own clang/cctools), so llvm-objdump doesn't show up under a bare
+# name there even once installed.
+_LLVM_OBJDUMP_MACOS = "/opt/homebrew/opt/llvm/bin/llvm-objdump"
 
 def compile_kernel(definition: "Definition", solution: "Solution") -> dict:
     """Build `solution` into a `.so` via BuilderRegistry; return {"status": "OK", "so_path": ...}."""
@@ -189,16 +195,37 @@ def _evaluate_kernel_direct(
     }
 
 
+def _find_llvm_objdump() -> Optional[str]:
+    found = shutil.which("llvm-objdump")
+    if found:
+        return found
+    if Path(_LLVM_OBJDUMP_MACOS).is_file():
+        return _LLVM_OBJDUMP_MACOS
+    return None
+
+
 def disassemble_so(so_path: str, symbol: str) -> dict:
     """Run llvm-objdump on so_path; filter to one symbol; return full output."""
-    try:
-        result = subprocess.run(
-            ["llvm-objdump", "-d", f"--disassemble-symbols={symbol}", so_path],
-            capture_output=True, text=True, timeout=30,
-        )
-        return {"asm": result.stdout}
-    except FileNotFoundError:
+    objdump = _find_llvm_objdump()
+    if not objdump:
         return {"error": "llvm-objdump not found on PATH"}
+    # Mach-O (macOS) object files prefix every C symbol with an extra "_"
+    # that ELF (Linux) doesn't add, so the same entry-symbol string that
+    # matches on Graviton silently matches nothing here — objdump still
+    # exits 0, just with an empty disassembly, so if the first try can't 
+    # find "disassembly of section" will try the symble with "_" at the beginning
+    candidates = [symbol] if symbol.startswith("_") else [symbol, f"_{symbol}"]
+    try:
+        last_stdout = ""
+        for candidate in candidates:
+            result = subprocess.run(
+                [objdump, "-d", f"--disassemble-symbols={candidate}", so_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            last_stdout = result.stdout
+            if "Disassembly of section" in result.stdout:
+                return {"asm": result.stdout}
+        return {"asm": last_stdout}
     except Exception as e:
         return {"error": str(e)}
 
