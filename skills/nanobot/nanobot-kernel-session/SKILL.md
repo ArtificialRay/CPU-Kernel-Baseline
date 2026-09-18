@@ -72,6 +72,13 @@ those to check. Instead, for every definition, before your first
    version numbers yourself — `compile()` always tells you which version it
    assigned.
 
+Separately, also check your workspace root (not an MCP resource — a plain
+local file, use your builtin `read` tool) for `SHARED_NOTES.md`. If it
+exists, someone optimizing an earlier kernel definition in this run may have
+left notes there — read it before you start. If it doesn't exist, this is
+the first definition in the run; there's nothing to read yet, proceed as
+normal.
+
 ## 1. Establish the starting-point baseline (do this first, per definition)
 
 Before writing any optimized code for a given definition:
@@ -120,3 +127,19 @@ On a non-`PASSED` status, `failed_workload`/`log` say which workload failed
 and why (correctness or a runtime/timeout error).
 
 ## 3. Finish and report
+
+Before you finish, use your builtin `write` tool to append (never overwrite
+— keep every earlier section intact) a short section to `SHARED_NOTES.md`
+in your workspace root, creating the file if it doesn't exist yet. This is
+read by whoever optimizes the next kernel definition in this run, so make
+it useful to a future agent with no other context on this definition:
+
+```
+## <definition name> (<ISO date>)
+- Worked: <optimization approaches that actually improved speedup, briefly>
+- Didn't work: <approaches you tried that didn't pan out, and why if known>
+- Hardware notes: <SWOG/instruction-cost findings, cache/IPC observations,
+  anything about the target ISA that could transfer to a different kernel>
+```
+
+Keep it short — a few bullets per section, not a full trajectory dump.

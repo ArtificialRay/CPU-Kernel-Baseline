@@ -66,3 +66,5 @@ arm-bench/
 .claude/settings.json
 .claude/settings.local.json
 wandb/
+eval/llm_providers.json
+skills/nanobot/nanobot-kernel-session/config.json
