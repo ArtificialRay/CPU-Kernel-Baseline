@@ -1,27 +1,19 @@
 """eval/llm_call.py — wire-API dispatch for Path 1's litellm agent loop.
 
-litellm.completion() (Chat Completions API) is the default. A few models
-(config/kernel_contracts.yaml's models_using_responses_api — currently
-gpt-5.6-luna) reject tool-calling combined with reasoning on that endpoint
-outright and must go through litellm.responses() (Responses API) instead —
-a genuinely different request/response shape (a flat list of typed
-`input`/`output` items, not `messages`/`choices[0].message`).
+litellm.completion() (Chat Completions) is the default. Models listed in
+config/kernel_contracts.yaml's models_using_responses_api (currently
+gpt-5.6-luna) reject tool-calling + reasoning there and need
+litellm.responses() (Responses API) instead — a different request/response
+shape (flat `input`/`output` items vs `messages`/`choices[0].message`).
 
-To avoid teaching eval/evaluator.py's turn loop two wire formats (history
-compression, notepad, tool-call sanitization, and version tracking all
-assume a Chat-Completions-shaped message), translation happens only at this
-call boundary: chat-shaped completion_kwargs in, a message object duck-typed
-like litellm's ChatCompletionMessage (.content, .tool_calls, .model_dump())
-out. run_agentic_eval's `messages` list stays the single source of truth in
-Chat Completions shape for every model, regardless of which wire API
-actually carried a given turn.
+Translation happens only at this call boundary — chat-shaped
+completion_kwargs in, a message duck-typed like litellm's
+ChatCompletionMessage out — so evaluator.py's turn loop (history
+compression, notepad, tool-call sanitization, version tracking) only ever
+deals with one shape, regardless of which wire API served a given turn.
 
-Known limitation: reasoning content from a Responses API turn is not
-round-tripped back into the next turn's request (no `store`/
-`previous_response_id`/encrypted-reasoning-item wiring) — each turn is
-translated fresh from the chat-shaped history, same as the Chat Completions
-path already does statelessly. Whether that's enough to keep reasoning
-quality for models on this path is unverified without a live run.
+Known limitation: So far, reasoning content from a Responses API turn isn't
+round-tripped into the next turn's request 
 """
 
 from types import SimpleNamespace

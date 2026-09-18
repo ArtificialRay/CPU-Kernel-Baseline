@@ -1,12 +1,11 @@
 """eval/llm_providers.py — optional per-provider api_key/api_base overrides
 for Path 1's litellm agent loop (eval/evaluator.py::run_agentic_eval).
 
-Without this file, litellm resolves credentials purely from provider-specific
-env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, ...), which
-still works unchanged. eval/llm_providers.json (gitignored, copy from
-.example) is opt-in: only providers/fields actually present there override
-litellm's normal resolution, so a partially-filled or missing file falls back
-to env vars for whatever's left out.
+Opt-in: without eval/llm_providers.json (gitignored, copy from .example),
+litellm resolves credentials from provider env vars (ANTHROPIC_API_KEY,
+OPENAI_API_KEY, ...) unchanged. Only providers/fields actually present in
+the file override that — a partial or missing file falls back to env vars
+for whatever's left out.
 """
 
 import json
