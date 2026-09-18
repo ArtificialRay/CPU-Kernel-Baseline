@@ -89,6 +89,50 @@ def pin_to_cpu(cpu: int) -> Optional[int]:
         return None
 
 
+# Window a timed sample should span when inner_iters is chosen automatically.
+# 1 ms against macOS's 1000 ns clock_gettime granularity is 0.1% quantisation
+# error; a candidate 50x faster than the baseline it inherits inner_iters from
+# still sees only 5%. It also bounds the cost: repeat * 1 ms per workload no
+# matter how fast the kernel is.
+DEFAULT_TARGET_SAMPLE_NS = 1_000_000
+
+
+def round_pow2(n: int) -> int:
+    """Round up to a power of two, so probe noise cannot shift the choice.
+
+    ceil(target / t) is not reproducible when t jitters by a few percent; the
+    grid makes the same kernel pick the same inner_iters run after run, at the
+    cost of overshooting the window by at most 2x.
+    """
+    return 1 if n <= 1 else 1 << (n - 1).bit_length()
+
+
+def pick_inner_iters(
+    inner: Callable[[], None],
+    *,
+    target_sample_ns: int = DEFAULT_TARGET_SAMPLE_NS,
+    max_inner_iters: int = 1 << 20,
+) -> int:
+    """Choose inner_iters so one timed window spans ~target_sample_ns.
+
+    Doubling probe rather than an estimate off the warmup calls: the first
+    calls run cold, so dividing target by them underestimates inner_iters,
+    which is exactly the failure this is meant to prevent.
+    """
+    n = 1
+    while n < max_inner_iters:
+        t0 = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+        for _ in range(n):
+            inner()
+        elapsed = time.clock_gettime_ns(time.CLOCK_MONOTONIC) - t0
+        if elapsed >= target_sample_ns:
+            return round_pow2(n)
+        # elapsed can read 0 on a coarse clock; treat it as "far too fast".
+        grow = 2 if elapsed <= 0 else max(2, -(-target_sample_ns // max(elapsed, 1)))
+        n = min(max_inner_iters, n * grow)
+    return round_pow2(n)
+
+
 def time_callable(
     inner: Callable[[], None],
     *,
@@ -225,4 +269,12 @@ def time_callable(
     )
 
 
-__all__ = ["TimingResult", "WatchdogTimeout", "pin_to_cpu", "time_callable"]
+__all__ = [
+    "DEFAULT_TARGET_SAMPLE_NS",
+    "TimingResult",
+    "WatchdogTimeout",
+    "pick_inner_iters",
+    "round_pow2",
+    "pin_to_cpu",
+    "time_callable",
+]

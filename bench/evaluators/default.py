@@ -24,7 +24,13 @@ from bench.data.trace import (
 from bench.data.workload import Workload
 from bench.runtime.correctness import compare
 from bench.runtime.inputs import gen_inputs_for_workload
-from bench.runtime.timing import WatchdogTimeout, time_callable
+from bench.runtime.timing import (
+    DEFAULT_TARGET_SAMPLE_NS,
+    WatchdogTimeout,
+    pick_inner_iters,
+    round_pow2,
+    time_callable,
+)
 
 from .evaluator import BoundKernel, Evaluator, RefBaseline, _error
 
@@ -149,18 +155,13 @@ class DefaultEvaluator(Evaluator):
         is_baseline: bool,
         trace_set: Optional[Any],
     ) -> Tuple[Optional[Performance], Optional[Evaluation]]:
-        try:
-            timing = time_callable(
-                lambda: kernel.invoke(ctx),
-                warmup=cfg.warmup, repeat=cfg.repeat, inner_iters=cfg.inner_iters,
-                cpu=cfg.cpu, watchdog_s=cfg.watchdog_s,
-                collect_perf_counters=cfg.collect_perf_counters,
-            )
-        except WatchdogTimeout as e:
-            return None, _error(EvaluationStatus.TIMEOUT, env, timestamp, str(e))
-
-        # Baseline lookup → speedup. Skip when this Solution *is* the baseline
-        # (avoids self-divides).
+        # Baseline lookup happens BEFORE timing: with inner_iters on "auto" the
+        # candidate takes the value implied by the baseline's own per-call time
+        # rather than probing itself. inner_iters changes what is measured, not
+        # just its resolution — the same kernel reads 2.3x slower at 1 than at
+        # 1000 on Apple silicon (back-to-back calls keep the working set hot) —
+        # so numerator and denominator have to share it for the ratio to mean
+        # anything.
         ref_cycles: Optional[int] = None
         ref_min_ns: Optional[int] = None
         cycle_speedup: Optional[float] = None
@@ -172,14 +173,35 @@ class DefaultEvaluator(Evaluator):
             ref_min_ns = trace_set.get_baseline_min_ns(
                 definition.name, workload.uuid, baseline_author=cfg.baseline_author
             )
-            if ref_cycles is not None and timing.cycles and timing.cycles > 0:
-                cycle_speedup = ref_cycles / timing.cycles
-            if ref_min_ns is not None and timing.min_ns > 0:
-                time_speedup = ref_min_ns / timing.min_ns
+
+        invoke = lambda: kernel.invoke(ctx)  # noqa: E731
+        inner_iters = cfg.inner_iters
+        if inner_iters == "auto":
+            target = getattr(cfg, "target_sample_ns", DEFAULT_TARGET_SAMPLE_NS)
+            if ref_min_ns:
+                inner_iters = round_pow2(-(-target // ref_min_ns))
+            else:
+                inner_iters = pick_inner_iters(invoke, target_sample_ns=target)
+
+        try:
+            timing = time_callable(
+                invoke,
+                warmup=cfg.warmup, repeat=cfg.repeat, inner_iters=inner_iters,
+                cpu=cfg.cpu, watchdog_s=cfg.watchdog_s,
+                collect_perf_counters=cfg.collect_perf_counters,
+            )
+        except WatchdogTimeout as e:
+            return None, _error(EvaluationStatus.TIMEOUT, env, timestamp, str(e))
+
+        if ref_cycles is not None and timing.cycles and timing.cycles > 0:
+            cycle_speedup = ref_cycles / timing.cycles
+        if ref_min_ns is not None and timing.min_ns > 0:
+            time_speedup = ref_min_ns / timing.min_ns
 
         return (
             Performance(
                 min_ns=timing.min_ns,
+                inner_iters=timing.inner_iters,
                 p5_ns=timing.p5_ns,
                 reference_min_ns=ref_min_ns,
                 cycle_speedup=cycle_speedup,
