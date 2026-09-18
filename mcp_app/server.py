@@ -179,7 +179,7 @@ async def _run_streamable_http(server: Server, bind_host: str, port: int) -> Non
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", action="append", required=True,
-                    choices=["ncnn", "simd-loop", "llama.cpp"],
+                    choices=["ncnn", "simd-loop", "llama.cpp", "kleidiai"],
                     help="Repeatable — pass more than once (e.g. --dataset ncnn "
                          "--dataset llama.cpp) to serve several datasets from one "
                          "process, dispatching each tool call by which dataset its "

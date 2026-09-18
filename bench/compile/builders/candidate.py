@@ -1,8 +1,10 @@
-"""CandidateBuilder — the shared raw-`float*` path for ALL candidate solutions.
+"""CandidateBuilder — the shared raw-`float*` path for every solution no
+framework-specific builder wants: all candidates, plus any dataset whose true
+baseline also has no framework dependency of its own (e.g. kleidiai — see
+SupportedDatasets.KLEIDIAI).
 
-Every non-baseline solution is built here, regardless of `solution.dataset`.
-Candidates have NO ncnn dependency: each solution embeds its own binding in
-its sources (armbench_entry_<op> is defined in the solution's own files).
+CandidateBuilder is for solution where each solution embeds its own binding in its sources (armbench_entry_<op> is
+defined in the solution's own files) 
 """
 
 from __future__ import annotations
@@ -23,13 +25,13 @@ class CandidateBuilder(Builder):
         super().__init__(build_dir_name="armbench-cand")
 
     def can_build(self, solution: Solution, is_baseline: bool) -> bool:
-        from bench.data.solution import SupportedDatasets
-        # simd-loop / llama.cpp solutions use their dataset builders regardless
-        # of is_baseline.
-        return not is_baseline and solution.dataset not in (
-            SupportedDatasets.SIMD_LOOP,
-            SupportedDatasets.LLAMA_CPP,
-        )
+        """Unconditional fallback — see registry.py's _BUILDER_PRIORITY: this
+        builder is tried last, after every dataset with its own
+        framework-specific builder (ncnn's true baseline, simd-loop,
+        llama.cpp) has already had first refusal and declined. No dataset
+        enumeration needed here — a new no-framework dataset is picked up
+        automatically, with zero changes to this file."""
+        return True
 
     def build(self, definition: Definition, solution: Solution) -> CompileResult:
         build_dir, sources_dir = self._make_build_dir(solution)
@@ -42,7 +44,7 @@ class CandidateBuilder(Builder):
         # Include dirs: only the solution's own sources.
         cmd += ["-I", str(sources_dir)]
 
-        cmd += [str(p) for p in solution_src_paths]
+        cmd += self._source_compile_args(solution_src_paths)
         cmd += ["-o", str(so_path)]
         cmd += list(solution.spec.link_flags or [])
 

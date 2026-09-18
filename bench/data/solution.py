@@ -38,6 +38,9 @@ class SupportedDatasets(str, Enum):
     LLAMA_CPP = "llama.cpp"
     """Calls the kernel via ggml tensors/graphs linked against llama.cpp's static
     libs. Uses LlamaCppBuilder + LlamaCppDataset."""
+    KLEIDIAI = "kleidiai"
+    """embeds real Arm KleidiAI micro-kernel sources (.c/.h/.S)
+    directly in the solution,  Builds via CandidateBuilder."""
     # Future: XNNPACK, EIGEN, ...
 
 

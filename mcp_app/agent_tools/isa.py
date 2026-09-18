@@ -45,6 +45,12 @@ _ISA_CPUINFO_TOKENS: dict[str, list[str]] = {
     "sve2": ["sve2"],
     "sme2": ["sme2"],
 }
+# raw hardware-capability token (cpuinfo/sysctl) -> semantic isa_features name
+_RAW_FEATURE_TO_SOLUTION_NAME: dict[str, str] = {
+    "asimddp": "dotprod",
+    "svei8mm": "i8mm",
+    # sve/sve2/sme/sme2/asimd/i8mm: raw token already matches the semantic name.
+}
 
 SUPPORTED_ISAS = tuple(_ISA_MARCH)
 
@@ -71,10 +77,39 @@ def march_for_isa(isa: str, *, instance_label: str | None = None) -> MarchInfo:
     return MarchInfo(march_flag, list(isa_features), target_hardware)
 
 
+def _read_darwin_features() -> set[str]:
+    """macOS has no /proc/cpuinfo; probe the equivalent sysctl keys instead.
+
+    The keys are named after the architectural features (FEAT_*), so map them
+    onto the same token vocabulary _ISA_CPUINFO_TOKENS already uses. Apple
+    silicon exposes SME/SME2 but NOT non-streaming SVE, hence no sve/sve2
+    entries here — see the sme2 notes in config/kernel_contracts.yaml.
+    """
+    import platform
+    import subprocess
+
+    if platform.system() != "Darwin":
+        return set()
+    keys = {
+        "asimd": "hw.optional.arm.AdvSIMD",
+        "sme": "hw.optional.arm.FEAT_SME",
+        "sme2": "hw.optional.arm.FEAT_SME2",
+    }
+    found: set[str] = set()
+    for token, key in keys.items():
+        try:
+            r = subprocess.run(["sysctl", "-n", key], capture_output=True, text=True)
+            if r.stdout.strip() == "1":
+                found.add(token)
+        except Exception:  # noqa: BLE001 — absent key/binary just means "no feature"
+            pass
+    return found
+
+
 def _read_cpuinfo_features(cpuinfo_path: Path = Path("/proc/cpuinfo")) -> set[str]:
     """Return the set of tokens in /proc/cpuinfo's first "Features" line."""
     if not cpuinfo_path.exists():
-        return set()
+        return _read_darwin_features()
     for line in cpuinfo_path.read_text().splitlines():
         if line.startswith("Features"):
             _, _, rest = line.partition(":")
@@ -101,4 +136,52 @@ def verify_isa_available(isa: str, *, cpuinfo_path: Path = Path("/proc/cpuinfo")
         )
 
 
-__all__ = ["MarchInfo", "SUPPORTED_ISAS", "march_for_isa", "verify_isa_available"]
+def _read_sve_vector_length_bits(
+    path: Path = Path("/proc/sys/abi/sve_default_vector_length"),
+) -> int | None:
+    """This machine's default SVE vector length in bits, or None if
+    unavailable (non-SVE hardware, or a platform without this sysctl, e.g.
+    Darwin). Not a cpuinfo Features token — SVE width isn't exposed there.
+    """
+    if not path.exists():
+        return None
+    try:
+        return int(path.read_text().strip()) * 8
+    except (OSError, ValueError):
+        return None
+
+
+def detected_solution_features(cpuinfo_path: Path = Path("/proc/cpuinfo")) -> set[str]:
+    """The set of Solution.isa_features-vocabulary tokens this machine
+    actually supports right now — live hardware truth, no kernel_contracts.yaml
+    lookup involved.
+    """
+    raw = _read_cpuinfo_features(cpuinfo_path)
+    features = {_RAW_FEATURE_TO_SOLUTION_NAME.get(tok, tok) for tok in raw}
+    vl_bits = _read_sve_vector_length_bits()
+    if vl_bits:
+        features.add(f"vl{vl_bits}")
+    return features
+
+
+def isa_satisfies(required: list[str], isa: str) -> bool:
+    """True if `isa`'s declared kernel_contracts.yaml feature set covers every
+    token in `required` (typically a Solution's spec.isa_features). This is a safety
+    check before running a real instance and the check is from yaml
+    """
+    if isa not in _ISA_MARCH:
+        raise ValueError(f"Unknown isa {isa!r}. Supported: {sorted(_ISA_MARCH)}")
+    return set(required) <= set(_ISA_MARCH[isa][1])
+
+
+def isa_satisfies_on_host(required: list[str], *, cpuinfo_path: Path = Path("/proc/cpuinfo")) -> bool:
+    """True if THIS machine's live-detected features (detected_solution_features)
+    cover every token in `required`. Real hardware check that detect features from the hardware directly
+    """
+    return set(required) <= detected_solution_features(cpuinfo_path)
+
+
+__all__ = [
+    "MarchInfo", "SUPPORTED_ISAS", "march_for_isa", "verify_isa_available",
+    "isa_satisfies", "isa_satisfies_on_host", "detected_solution_features",
+]

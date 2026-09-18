@@ -82,10 +82,11 @@ Metrics from evaluate():
   ipc_mean               — mean IPC across workloads
   cache_misses_mean      — mean LLC misses
 
-Before every tool call, write 3–5 sentences:
+After each tool result, write 3–5 sentences reflecting on it before your
+next tool call:
   1. Observation: what the last result revealed (speedup numbers, asm pattern, error).
   2. Hypothesis: the specific bottleneck or opportunity you are targeting.
-  3. Change: for compile(), exactly what you changed and why it should help.
+  3. Change: for your next compile(), exactly what you'll change and why it should help.
      e.g. "Switching to 8 accumulators because FMA latency is 4 cycles and IPC=1.3 suggests
      the pipeline stalls waiting for accumulator writeback."
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -122,9 +123,15 @@ class NcnnBuilder(Builder):
         if (cmake_src / "platform.h").exists():
             include_dirs.insert(0, cmake_src)
 
+        # only if sys.platform=="linux" may keep -fopenmp
+        def _platform_flags(flags: List[str]) -> List[str]:
+            if sys.platform == "linux":
+                return list(flags or [])
+            return [f for f in (flags or []) if f != "-fopenmp"]
+
         so_path = build_dir / f"{solution.name[:64]}.so"
         cmd: List[str] = [self._cxx, "-shared", "-fPIC"]
-        cmd += list(solution.spec.compile_flags or [])
+        cmd += _platform_flags(solution.spec.compile_flags)
         for inc in include_dirs:
             cmd += ["-I", str(inc)]
 
@@ -144,7 +151,7 @@ class NcnnBuilder(Builder):
         cmd += ["-o", str(so_path)]
         cmd.append(str(static_lib))
 
-        cmd += list(solution.spec.link_flags or [])
+        cmd += _platform_flags(solution.spec.link_flags)
 
         self._run_clang(cmd, solution)
         return CompileResult(so_path=so_path, build_dir=build_dir, command=cmd)

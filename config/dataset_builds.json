@@ -9,12 +9,12 @@
       },
       {
         "label": "cmake configure ncnn",
-        "cmd": "cd ~/ncnn && CC=clang-18 CXX=clang++-18 cmake -B build -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF -DNCNN_ARM86SVE=OFF -DNCNN_ARM86SVE2=OFF -DNCNN_ARM86SVEBF16=OFF -DNCNN_ARM86SVEI8MM=OFF -DNCNN_ARM86SVEF32MM=OFF",
+        "cmd": "export PATH=\"$HOME/bin:$PATH\" && cd ~/ncnn && CC=$(command -v clang-18 || command -v clang) CXX=$(command -v clang++-18 || command -v clang++) cmake -B build -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_VULKAN=OFF -DNCNN_SHARED_LIB=OFF -DNCNN_ARM86SVE=OFF -DNCNN_ARM86SVE2=OFF -DNCNN_ARM86SVEBF16=OFF -DNCNN_ARM86SVEI8MM=OFF -DNCNN_ARM86SVEF32MM=OFF",
         "timeout": 120
       },
       {
         "label": "cmake build ncnn",
-        "cmd": "cd ~/ncnn && cmake --build build -j$(nproc) --target ncnn",
+        "cmd": "export PATH=\"$HOME/bin:$PATH\" && cd ~/ncnn && cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu) --target ncnn",
         "timeout": 600
       }
     ]
@@ -29,12 +29,12 @@
       },
       {
         "label": "cmake configure llama.cpp (ggml, cpu-only)",
-        "cmd": "cd ~/llama.cpp && CC=clang-18 CXX=clang++-18 cmake -B build -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_ACCELERATE=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF",
+        "cmd": "export PATH=\"$HOME/bin:$PATH\" && cd ~/llama.cpp && CC=$(command -v clang-18 || command -v clang) CXX=$(command -v clang++-18 || command -v clang++) cmake -B build -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_ACCELERATE=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF",
         "timeout": 240
       },
       {
         "label": "cmake build ggml static libs",
-        "cmd": "cd ~/llama.cpp && cmake --build build -j$(nproc) --target ggml ggml-base ggml-cpu",
+        "cmd": "export PATH=\"$HOME/bin:$PATH\" && cd ~/llama.cpp && cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu) --target ggml ggml-base ggml-cpu",
         "timeout": 900
       }
     ]

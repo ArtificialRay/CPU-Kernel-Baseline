@@ -21,7 +21,7 @@ from .sqnr import SqnrEvaluator
 
 _EVALUATORS: List[Type[Evaluator]] = [
     SqnrEvaluator,  # `correctness:sqnr`-tagged defs (e.g. q8_0 MoE)
-    # SamplingEvaluator, LowBitEvaluator, ...  ← add specialized evaluators here
+    # add specialized evaluators here
 ]
 
 

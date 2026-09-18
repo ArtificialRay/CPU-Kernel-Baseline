@@ -180,8 +180,10 @@ def _bind_kernel(
     Definition.simd_loop_meta), regardless of is_baseline. Every non-baseline
     solution (reference-scalar, agent-submitted candidates) routes to
     RawDataset — the slim raw-pointer ABI every candidate builder targets,
-    regardless of its declared dataset. Only a true baseline picks its
-    framework-specific adapter by dataset.
+    regardless of its declared dataset. Most true baselines pick a
+    framework-specific adapter by dataset (llama.cpp/ncnn) — the exception is
+    kleidiai, which is a true baseline but still uses "raw" because it has no
+    framework Mat/Option wrapper of its own (see SupportedDatasets.KLEIDIAI).
     """
     lib = ctypes.CDLL(str(compiled.so_path))
     if solution.dataset.value == "simd-loop":
@@ -192,6 +194,11 @@ def _bind_kernel(
         adapter_name = "llama.cpp"
     elif solution.dataset.value == "ncnn":
         adapter_name = "ncnn"
+    elif solution.dataset.value == "kleidiai":
+        # KleidiAI baselines embed raw float*-ABI sources directly, same calling
+        # convention as every candidate, so "raw" applies here too even
+        # though this is a true baseline.
+        adapter_name = "raw"
     else:
         raise ValueError(f"No baseline adapter for dataset {solution.dataset.value!r}")
     entry = _bind_entry(lib, definition.op_type)
