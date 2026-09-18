@@ -67,6 +67,10 @@ class Performance(BaseModelWithDocstrings):
     """reference_cycles / cycles — only present when perf counters are available."""
     time_speedup: Optional[float] = Field(default=None, ge=0.0)
     """reference_min_ns / min_ns — always available when a baseline trace exists."""
+    inner_iters: Optional[int] = Field(default=None, ge=1)
+    """Inner calls per timed sample. Recorded because the value changes what is
+    measured, not just its resolution, and because "auto" picks it per
+    workload — without it a number cannot be reproduced or compared."""
     repeat: int = Field(ge=1)
     warmup: int = Field(ge=0)
 

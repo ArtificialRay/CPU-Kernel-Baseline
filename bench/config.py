@@ -14,7 +14,7 @@ depending on each other.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from contracts import BASELINE_AUTHORS, EVAL_DEFAULTS, EVAL_DEFINITION_OVERRIDES, EVAL_OP_TYPE_OVERRIDES
 
@@ -23,7 +23,8 @@ from contracts import BASELINE_AUTHORS, EVAL_DEFAULTS, EVAL_DEFINITION_OVERRIDES
 DEFAULT_BASELINE_AUTHOR = BASELINE_AUTHORS["ncnn"]
 DEFAULT_WARMUP = EVAL_DEFAULTS["warmup"]
 DEFAULT_REPEAT = EVAL_DEFAULTS["repeat"]
-DEFAULT_INNER_ITERS = EVAL_DEFAULTS["inner_iters"]
+DEFAULT_INNER_ITERS = EVAL_DEFAULTS["inner_iters"]          # int, or "auto"
+DEFAULT_TARGET_SAMPLE_NS = EVAL_DEFAULTS.get("target_sample_ns", 1_000_000)
 DEFAULT_CPU = EVAL_DEFAULTS["cpu"]
 DEFAULT_WATCHDOG_S = EVAL_DEFAULTS["watchdog_s"]
 DEFAULT_CORRECTNESS_ABS_TOL = EVAL_DEFAULTS["correctness_abs_tol"]
@@ -69,7 +70,8 @@ class BenchmarkConfig:
     """If set, only run these solution names."""
     warmup: int = DEFAULT_WARMUP
     repeat: int = DEFAULT_REPEAT
-    inner_iters: int = DEFAULT_INNER_ITERS
+    inner_iters: Union[int, str] = DEFAULT_INNER_ITERS
+    target_sample_ns: int = DEFAULT_TARGET_SAMPLE_NS
     cpu: Optional[int] = DEFAULT_CPU
     abs_tol: float = DEFAULT_CORRECTNESS_ABS_TOL
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
@@ -131,6 +133,7 @@ class BenchmarkConfig:
             warmup=self.warmup,
             repeat=self.repeat,
             inner_iters=self.inner_iters,
+            target_sample_ns=self.target_sample_ns,
             cpu=self.cpu,
             watchdog_s=self.watchdog_s,
             collect_perf_counters=self.collect_perf_counters,
@@ -154,7 +157,8 @@ class EvalConfig:
     # timing
     warmup: int = DEFAULT_WARMUP
     repeat: int = DEFAULT_REPEAT
-    inner_iters: int = DEFAULT_INNER_ITERS
+    inner_iters: Union[int, str] = DEFAULT_INNER_ITERS
+    target_sample_ns: int = DEFAULT_TARGET_SAMPLE_NS
     cpu: Optional[int] = DEFAULT_CPU
     watchdog_s: float = DEFAULT_WATCHDOG_S
     # perf
