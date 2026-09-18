@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 import litellm
 
 from contracts import AGENT_KERNEL_FILENAME, AGENT_LOOP_DEFAULTS, REFERENCE_SCALAR_AUTHORS
+from eval.llm_call import call_llm
+from eval.llm_providers import resolve_completion_kwargs
 
 if TYPE_CHECKING:
     from eval.mcp_client import MCPKernelClient
@@ -364,14 +366,13 @@ def run_agentic_eval(
                 # OpenRouter can exceed that, so give more headroom.
                 "timeout": AGENT_LOOP_DEFAULTS["completion_timeout_s"],
             }
+            completion_kwargs.update(resolve_completion_kwargs(model))
             if not any(m in model for m in AGENT_LOOP_DEFAULTS["models_without_temperature"]):
                 completion_kwargs["temperature"] = AGENT_LOOP_DEFAULTS["temperature"]
-            if any(m in model for m in AGENT_LOOP_DEFAULTS["models_needing_reasoning_effort_none"]):
-                completion_kwargs["reasoning_effort"] = "none"
 
             for _retry in range(AGENT_LOOP_DEFAULTS["retry_max_attempts"]):
                 try:
-                    response = litellm.completion(**completion_kwargs)
+                    msg = call_llm(completion_kwargs)
                     break
                 except litellm.RateLimitError as e:
                     wait = AGENT_LOOP_DEFAULTS["retry_base_wait_s"] * (2 ** _retry)
@@ -394,7 +395,6 @@ def run_agentic_eval(
             else:
                 raise RuntimeError("Exceeded retry budget for rate/server errors")
 
-            msg = response.choices[0].message
             dumped = msg.model_dump()
             # Sanitize tool-call arguments to valid JSON before storing in history:
             # cheap/flaky models emit valid-JSON-plus-trailing-junk, and the provider
@@ -481,10 +481,9 @@ def run_agentic_eval(
                         cs = perf.get("cycle_speedup_geomean")
                         mae = correctness.get("max_absolute_error")
                         mre = correctness.get("max_relative_error")
-                        perf_str = (
-                            f", time_speedup={ts:.3f}, cycle_speedup={cs:.3f}"
-                            if ts is not None else ""
-                        )
+                        ts_str = f", time_speedup={ts:.3f}" if ts is not None else ""
+                        cs_str = f", cycle_speedup={cs:.3f}" if cs is not None else ""
+                        perf_str = ts_str + cs_str
                         correct_str = (
                             f", max_absolute_error={mae:.2e}, max_relative_error={mre:.2e}"
                             if mae is not None else ""

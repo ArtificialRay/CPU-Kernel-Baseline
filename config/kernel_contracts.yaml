@@ -202,14 +202,15 @@ tool_call_loop:
   # Enforce the model to reasoning and not just calling tools
   models_without_forced_tool_use: ["claude", "anthropic/"]
   # Model strings (substring match) that 400 outright on any tool-calling
-  # request through /v1/chat/completions unless reasoning_effort is
-  # explicitly "none" (confirmed empirically: "Function tools with
-  # reasoning_effort are not supported for gpt-5.6-luna in
-  # /v1/chat/completions. To use function tools, use /v1/responses or set
-  # reasoning_effort to 'none'." — see also harness_adapters.py's
-  # ClineAdapter._provider_id() for the same model's /v1/responses-only fix
-  # on that harness).
-  models_needing_reasoning_effort_none: ["gpt-5.6-luna"]
+  # request through /v1/chat/completions when reasoning is enabled
+  # (confirmed empirically: "Function tools with reasoning_effort are not
+  # supported for gpt-5.6-luna in /v1/chat/completions. To use function
+  # tools, use /v1/responses or set reasoning_effort to 'none'."). Routed
+  # through litellm.responses() instead (eval/llm_call.py) rather than
+  # worked around with reasoning_effort="none" — see also
+  # harness_adapters.py's ClineAdapter._provider_id() for the same model's
+  # /v1/responses-only fix on that harness.
+  models_using_responses_api: ["gpt-5.6-luna"]
   # Retry budget for rate-limit/server-error responses (exponential backoff:
   # retry_base_wait_s * 2**attempt).
   retry_max_attempts: 6

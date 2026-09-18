@@ -37,6 +37,9 @@ traces/*
 # SSH credentials — never commit these
 eval/eval_config.json
 
+# LLM provider api_key/api_base — never commit these
+eval/llm_providers.json
+
 # Large binary/analysis files
 *.pdf
 *.tar.gz
