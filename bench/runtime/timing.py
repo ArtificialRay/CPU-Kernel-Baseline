@@ -90,11 +90,13 @@ def pin_to_cpu(cpu: int) -> Optional[int]:
 
 
 # Window a timed sample should span when inner_iters is chosen automatically.
-# 1 ms against macOS's 1000 ns clock_gettime granularity is 0.1% quantisation
-# error; a candidate 50x faster than the baseline it inherits inner_iters from
-# still sees only 5%. It also bounds the cost: repeat * 1 ms per workload no
-# matter how fast the kernel is.
-DEFAULT_TARGET_SAMPLE_NS = 1_000_000
+# 10 ms against macOS's 1000 ns clock_gettime granularity is 0.01% quantisation
+# error. The binding constraint is not the baseline but a candidate far faster
+# than it: inner_iters is derived from the baseline's min_ns, so a candidate 50x
+# faster sees a 200 us window (0.5%) and one 200x faster still sees 50 us (2%).
+# 1 ms left those at 5% and 20%. It also bounds the cost: repeat * 10 ms = 500 ms
+# per workload no matter how fast the kernel is.
+DEFAULT_TARGET_SAMPLE_NS = 10_000_000
 
 
 def round_pow2(n: int) -> int:
