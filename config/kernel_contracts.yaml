@@ -35,7 +35,7 @@ baseline_authors:
   ncnn: "baseline-ncnn-arm"
   simd-loop: "baseline-sve"
   llama.cpp: "baseline-llamacpp-arm"
-  kleidiai: "baseline-kleidiai-sve"
+  kleidiai: "baseline-kleidiai-arm"
 
 # bench/config.py's BenchmarkConfig/EvalConfig field defaults. baseline_author
 # intentionally isn't duplicated here — it reuses baseline_authors.ncnn above.
