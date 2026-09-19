@@ -479,7 +479,7 @@ def get_or_provision(
         on_demand: Only takes effect when you want a long-run job.
     """
     handle = get_running_instance(label)
-    if handle and _is_reachable(handle):
+    if handle and _is_reachable(handle, attempts=3):
         print(f"[provision] Reusing existing instance at {handle.host} (label={label!r})")
         if dataset:
             ensure_dataset_ready(handle, dataset)
@@ -513,12 +513,19 @@ def _wait_for_ssh(handle: InstanceHandle, max_wait: int | None = None, interval:
     raise TimeoutError(f"SSH not available on {handle.host} after {max_wait}s")
 
 
-def _is_reachable(handle: InstanceHandle) -> bool:
-    try:
-        rc, _, _ = handle.run("echo ok", timeout=15)
-        return rc == 0
-    except Exception:
-        return False
+def _is_reachable(handle: InstanceHandle, attempts: int = 3, retry_wait: int = 10) -> bool:
+    """One `echo ok` probe per attempt. The reuse-vs-provision decisions pass attempts>1: a
+    single failed probe there sends a healthy instance into terraform so one transient SSH blip must not decide it."""
+    for attempt in range(attempts):
+        try:
+            rc, _, _ = handle.run("echo ok", timeout=15)
+            if rc == 0:
+                return True
+        except Exception:
+            pass
+        if attempt < attempts - 1:
+            time.sleep(retry_wait)
+    return False
 
 
 def _update_config(mutate):
@@ -611,7 +618,7 @@ if __name__ == "__main__":
         # provision a fresh one. To force a genuinely new instance, run with
         # --teardown --label <label> first.
         handle = get_running_instance(label)
-        if handle and _is_reachable(handle):
+        if handle and _is_reachable(handle, attempts=3):
             print(f"[provision] Reusing existing instance at {handle.host} (label={label!r})")
             if args.dataset:
                 ensure_dataset_ready(handle, args.dataset)
