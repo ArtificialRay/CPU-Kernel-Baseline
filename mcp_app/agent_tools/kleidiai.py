@@ -9,10 +9,7 @@ in content shape (just the baked N/K-style constants), so there's no
 per-definition harness generator involved; reference-scalar's own copy
 already has the exact files a candidate needs.
 
-Deliberately NOT lifted from `self._bench_cfg.baseline_author` (that's
-`baseline-kleidiai-arm`, the real KleidiAI kernel — its sources are vendored
-kai_*.c/.S files, not a gemm.h/gemm.cpp shim, and are useless as a candidate
-harness).
+Deliberately NOT lifted from `self._bench_cfg.baseline_author`.
 """
 
 from __future__ import annotations
