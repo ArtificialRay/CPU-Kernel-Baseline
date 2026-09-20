@@ -74,14 +74,66 @@ def _gen_random_tensor(
         return rng.integers(0, 2, shape, dtype=np.uint8).astype(np.bool_)
 
 
+_GGML_KQUANT_BLOCK_BYTES = {"ggml_q4_K": 144, "ggml_q5_K": 176, "ggml_q6_K": 210}
+
+
+def _gen_ggml_kquant_rows(shape: tuple, layout: str, rng: np.random.Generator) -> np.ndarray:
+    """Realistic random k-quant weight rows in ggml's packed block layout.
+
+    `shape` is [N, K_bytes] with K_bytes = K/256 * sizeof(block_qX_K). Flat
+    quant integers are drawn uniform over the type's range and the per-sub-
+    block scales/mins uniform in [0.001, 0.02] (Q5_K: [0.0005, 0.01], its
+    values reach 31 not 15; Q6_K: int8 scales uniform in [-64, 64] with a
+    per-super-block fp16 `d` in [8e-5, 1.6e-4]), so the dequantized weights
+    are O(0.01-0.1) (|w| <= ~0.3 for all three types) and a K~10k dot with
+    uniform(-1, 1) activations stays O(1-10) -- same spirit as the q8_0
+    special case in gen_inputs_for_workload. The rows are then packed with the same
+    LlamaCppDataset repack helpers the flat k-quant definitions use at run
+    time (imported lazily: bench.datasets pulls in ctypes adapters).
+    """
+    from bench.datasets.llama_cpp import _repack_q4_k, _repack_q5_k, _repack_q6_k
+
+    if len(shape) != 2:
+        raise ValueError(f"bytes layout {layout!r} needs a 2-D [N, K_bytes] shape, got {shape}")
+    n_rows, k_bytes = int(shape[0]), int(shape[1])
+    blk = _GGML_KQUANT_BLOCK_BYTES[layout]
+    if k_bytes % blk != 0:
+        raise ValueError(
+            f"bytes layout {layout!r}: last dim {k_bytes} is not a multiple of the "
+            f"{blk}-byte block size"
+        )
+    nb = k_bytes // blk
+    k = nb * 256
+    if layout == "ggml_q4_K":
+        q = rng.integers(0, 256, (n_rows, k // 2), dtype=np.uint8)  # two uniform nibbles
+        sc = rng.uniform(0.001, 0.02, (n_rows, k // 32)).astype(np.float16)
+        mn = rng.uniform(0.001, 0.02, (n_rows, k // 32)).astype(np.float16)
+        packed = _repack_q4_k(q, sc, mn)
+    elif layout == "ggml_q5_K":
+        q = rng.integers(0, 32, (n_rows, k), dtype=np.uint8)
+        sc = rng.uniform(0.0005, 0.01, (n_rows, k // 32)).astype(np.float16)
+        mn = rng.uniform(0.0005, 0.01, (n_rows, k // 32)).astype(np.float16)
+        packed = _repack_q5_k(q, sc, mn)
+    else:  # ggml_q6_K
+        q = rng.integers(0, 64, (n_rows, k), dtype=np.uint8)
+        sc = rng.integers(-64, 65, (n_rows, k // 16)).astype(np.int8)
+        d = rng.uniform(8e-5, 1.6e-4, (n_rows, nb)).astype(np.float16)
+        packed = _repack_q6_k(q, sc, d)
+    return np.ascontiguousarray(packed.reshape(n_rows, k_bytes))
+
+
 def _gen_byte_buffer(shape: tuple, layout: str, rng: np.random.Generator) -> np.ndarray:
-    """Generate a 1-D uint8 byte buffer for sentinel/string loops.
+    """Generate a uint8 byte buffer for sentinel/string loops or packed weights.
 
     ``raw`` — random bytes in [1, 100] (no NUL).
     ``cstrings`` — random non-NUL bytes with NUL terminators sprinkled in plus a
     guaranteed trailing NUL, so the buffer is a run of null-terminated strings that
     always terminates at/before the sentinel `lmt`/`end` pointer.
+    ``ggml_q4_K`` / ``ggml_q5_K`` / ``ggml_q6_K`` — 2-D [N, K_bytes] ggml block
+    rows of realistic random k-quant weights (see `_gen_ggml_kquant_rows`).
     """
+    if layout in _GGML_KQUANT_BLOCK_BYTES:
+        return _gen_ggml_kquant_rows(shape, layout, rng)
     n = int(np.prod(shape)) if shape else 0
     buf = rng.integers(1, 101, n, dtype=np.uint8)
     if layout == "cstrings" and n > 0:

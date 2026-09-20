@@ -1,6 +1,6 @@
 # E2E: agent-optimized kernels → end-to-end tokens/s on Qwen3.5-4B (llama.cpp, Graviton4)
 
-Branch `feat/e2e-qwen35`. Status: **scaffold** — nothing has been launched or spent.
+Branch `feat/e2e-qwen35`. Status: **scaffold, locally tested** (templates/repack/override hook on macOS arm64 against v0.4.1; nothing run on a Graviton yet) — nothing has been launched or spent.
 
 ## Question
 Take one real model, let the agent optimize every kernel family that matters for
@@ -43,12 +43,32 @@ bandwidth floor on a c8g.4xlarge (~60 GB/s usable) is ~22 ms/token ≈ 45 tok/s
 for pure weight streaming; the stock build's measured tg128 will show how far
 above that floor it sits (that gap is what kernels can recover).
 
-**Kernel definitions needed (13 gemm shapes, 3 quant types):**
-- Q4_K (existing ABI): `n9216_k2560` ×2 roles, `n2560_k9216`, `n4096_k2560`, `n8192_k2560`, `n2560_k4096`, `n1024_k2560`
-- Q5_K (new ABI): `n8192_k2560`, `n2560_k4096`
-- Q6_K (new ABI): `n248320_k2560` (lm_head), `n2560_k9216`, `n1024_k2560`
-plus the existing `rms_norm_fp32_d2560`. Workloads: M ∈ {1, 2, 4, 8, 16, 32, 64, 128, 256, 512} —
-M=1 is decode (tg), M=512 is prefill (pp); both are reported.
+**Kernel definitions (11 unique shapes, packed ggml block ABI, names `gemm_ggml_<type>_n<N>_k<K>`):**
+
+| definition | share | roles |
+|---|---|---|
+| gemm_ggml_q4_K_n9216_k2560 | 31.1% | ffn_gate ×32, ffn_up ×32 |
+| gemm_ggml_q6_K_n248320_k2560 | 19.1% | token_embd (tied lm_head) |
+| gemm_ggml_q5_K_n8192_k2560 | 12.7% | attn_qkv (GDN in-proj) ×24 |
+| gemm_ggml_q6_K_n2560_k9216 | 11.3% | ffn_down ×16 |
+| gemm_ggml_q4_K_n2560_k9216 | 7.8% | ffn_down ×16 |
+| gemm_ggml_q5_K_n2560_k4096 | 6.3% | ssm_out ×24 |
+| gemm_ggml_q4_K_n4096_k2560 | 5.2% | attn_gate (GDN z) ×24 |
+| gemm_ggml_q4_K_n8192_k2560 | 3.5% | attn_q ×8 |
+| gemm_ggml_q4_K_n2560_k4096 | 1.7% | attn_output ×8 |
+| gemm_ggml_q4_K_n1024_k2560 | 0.6% | attn_k ×8, attn_v ×3 |
+| gemm_ggml_q6_K_n1024_k2560 | 0.4% | attn_v ×5 |
+
+plus the existing `rms_norm_fp32_d2560`. **ABI decision:** these definitions hand the kernel
+the raw ggml block rows (`B` uint8 `[N, K/256·{144,176,210}]`), not the benchmark's flat
+nibble/scale layout — flat Q5_K/Q6_K would read 45–55% more bytes per token than stock
+ggml and sink the memory-bound decode; with the packed ABI the agent kernel is spliced
+into llama.cpp with zero data conversion (only the f32→bf16 activation cast). Kernel
+entry: `armbench_entry_gemm(const uint16_t* A_bf16, float* out, const uint8_t* B_blocks, int M)`,
+N and K baked. Workloads: M ∈ {1, 2, 4, 8, 16, 32} (M=8 max for the lm_head, which
+llama.cpp evaluates for the last token only) — decode-sized like the existing gemm
+definitions; prefill (pp512) is measured end to end only. The numpy references dequantize
+in row chunks (lm_head reference: ~7 s/workload, 2 GB peak).
 
 Not in scope for phase 1 (no dataset op type yet, ~0.3% of decode bytes but
 compute-visible in prefill): `gated_delta_net` (ggml's CPU version is explicitly
@@ -69,10 +89,16 @@ measures their real share with perf; add them as phase 2 if prefill share is mat
    (`bench/compile/builders/llama_cpp.py` flags) into a `.so`; `override/manifest.json` maps
    (op, type, K, N) → `.so` + symbol. The override hook (`scripts/e2e/override/`) is patched
    into ggml-cpu's `GGML_OP_MUL_MAT` dispatch; unmatched shapes fall through to stock ggml.
-5. **Measure** — `provision_e2e.py --label <box> --agent-build`, then
-   `measure_e2e.py --build stock=… --build agent=… --overrides agent=manifest.json --threads 4 16 --reps 5`
-   (interleaved stock/agent runs, medians, plus `--perplexity` as the acceptance check).
-   Report tg128 and pp512 separately; expect tg to compress toward the bandwidth floor.
+5. **Measure** — `provision_e2e.py --label <box> --agent-build` builds three trees
+   (`build_agent_llamacpp.sh`): **stock** (upstream, repack on — what users run), **norepack**
+   (upstream with `GGML_CPU_REPACK=OFF`/`KLEIDIAI=OFF` — the same dispatch path the agent
+   kernels replace), **agent** (norepack + override hook + manifest). Then
+   `measure_e2e.py --build stock=… --build norepack=… --build agent=… --overrides agent=manifest.json --threads 1 4 16 --reps 5`
+   (interleaved runs, medians, plus `--perplexity` as the acceptance check). Report tg128 and
+   pp512 separately and `-t 1` as the apples-to-apples row (override kernels are single-threaded);
+   expect tg to compress toward the bandwidth floor. Verified in v0.4.1: NEON+i8mm repacks every
+   q4_K weight with N % 8 == 0 and repacked tensors never reach the dispatch switch, so the
+   stock-vs-agent gap includes ggml's interleaved fast path — the norepack row isolates the kernel effect.
 6. **Attribution** — rerun with the manifest restricted to one quant type / one role at a
    time to get per-kernel end-to-end contributions (Amdahl check against the byte shares).
 
