@@ -23,8 +23,8 @@
     "ready_check": "test -f ~/llama.cpp/build/ggml/src/libggml.a",
     "steps": [
       {
-        "label": "clone llama.cpp",
-        "cmd": "cd ~ && rm -rf llama.cpp && git clone --depth=1 https://github.com/ggml-org/llama.cpp llama.cpp",
+        "label": "clone llama.cpp (pinned v0.4.1)",
+        "cmd": "cd ~ && rm -rf llama.cpp && git clone --depth=1 --branch v0.4.1 https://github.com/ggml-org/llama.cpp llama.cpp",
         "timeout": 180
       },
       {
@@ -36,6 +36,35 @@
         "label": "cmake build ggml static libs",
         "cmd": "cd ~/llama.cpp && cmake --build build -j$(nproc) --target ggml ggml-base ggml-cpu",
         "timeout": 900
+      }
+    ],
+    "pin": "v0.4.1",
+    "_comment": "Kernel dataset build (ggml static libs only). Pinned to a release tag so every solution/baseline trace across a sweep sees the same ggml; bump deliberately and re-collect baselines."
+  },
+  "llama.cpp-e2e": {
+    "_comment": "End-to-end build for scripts/e2e: full llama.cpp tools (llama-bench, llama-cli, llama-perplexity) at the same pin, in a separate tree so the kernel-dataset build above is untouched, plus the Qwen3.5-4B Q4_K_M GGUF. 'stock' = upstream CPU backend as shipped (the baseline tokens/s); scripts/e2e/build_agent_llamacpp.sh derives the 'agent' build (override hook applied) from this tree.",
+    "pin": "v0.4.1",
+    "ready_check": "test -x ~/llama.cpp-e2e/build-stock/bin/llama-bench && test -f ~/models/Qwen3.5-4B-Q4_K_M.gguf",
+    "steps": [
+      {
+        "label": "clone llama.cpp (pinned v0.4.1) for e2e",
+        "cmd": "cd ~ && rm -rf llama.cpp-e2e && git clone --depth=1 --branch v0.4.1 https://github.com/ggml-org/llama.cpp llama.cpp-e2e",
+        "timeout": 180
+      },
+      {
+        "label": "cmake configure stock build (cpu-only, tools on)",
+        "cmd": "cd ~/llama.cpp-e2e && CC=clang-18 CXX=clang++-18 cmake -B build-stock -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_ACCELERATE=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=OFF -DLLAMA_CURL=OFF",
+        "timeout": 240
+      },
+      {
+        "label": "cmake build stock llama-bench/llama-cli/llama-perplexity",
+        "cmd": "cd ~/llama.cpp-e2e && cmake --build build-stock -j$(nproc) --target llama-bench llama-cli llama-perplexity",
+        "timeout": 1500
+      },
+      {
+        "label": "fetch Qwen3.5-4B Q4_K_M gguf (unsloth, 2.74 GB)",
+        "cmd": "mkdir -p ~/models && cd ~/models && test -f Qwen3.5-4B-Q4_K_M.gguf || curl -sSL -o Qwen3.5-4B-Q4_K_M.gguf.part https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf && mv -f Qwen3.5-4B-Q4_K_M.gguf.part Qwen3.5-4B-Q4_K_M.gguf; ls -la ~/models",
+        "timeout": 1200
       }
     ]
   }
