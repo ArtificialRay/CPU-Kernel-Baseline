@@ -1,0 +1,23 @@
+{
+  "kernels": [
+    {
+      "op": "mul_mat",
+      "type": "q4_K",
+      "K": 2560,
+      "N": 9216,
+      "so": "/abs/path/libagent_gemm_q4_k_m_n9216_k2560.so",
+      "symbol": "armbench_llamacpp_gemm",
+      "abi": "llamacpp",
+      "threads": 1
+    },
+    {
+      "op": "mul_mat",
+      "type": "q4_K",
+      "K": 9216,
+      "N": 2560,
+      "so": "/abs/path/libagent_gemm_q4_k_m_n2560_k9216.so",
+      "symbol": "armbench_entry_gemm",
+      "abi": "entry"
+    }
+  ]
+}
