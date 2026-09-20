@@ -353,6 +353,17 @@ class NanobotAdapter(HarnessAdapter):
         if model:
             cfg["agents"]["defaults"]["model"] = model
             self.model = model
+            # An OpenRouter model id is "<vendor>/<model>" (e.g. openai/gpt-5.6-sol);
+            # nanobot picks the provider from config, not from the id, so switch
+            # it here rather than requiring a second base config per provider.
+            # The key still comes from the (private) base config's providers block.
+            if "/" in model and cfg["agents"]["defaults"].get("provider") != "openrouter":
+                if "openrouter" not in cfg.get("providers", {}):
+                    raise RuntimeError(
+                        f"model {model!r} looks like an OpenRouter id but the nanobot base "
+                        f"config {NANOBOT_CONFIG_BASE} has no providers.openrouter entry"
+                    )
+                cfg["agents"]["defaults"]["provider"] = "openrouter"
         else:
             self.model = cfg["agents"]["defaults"]["model"]
         cfg["tools"]["mcpServers"][server_name]["url"] = f"http://127.0.0.1:{local_port}/mcp"
