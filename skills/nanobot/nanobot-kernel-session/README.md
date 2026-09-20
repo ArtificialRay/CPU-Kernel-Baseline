@@ -8,7 +8,16 @@ nanobot-specific.
 
 nanobot loads skills from `<workspace>/skills/<name>/SKILL.md`
 (`agents.defaults.workspace` in `~/.nanobot/config.json`, default
-`~/.nanobot/workspace`). Symlink this directory in:
+`~/.nanobot/workspace`).
+
+**`test_scripts/bench_fleet.py --harness nanobot` does this for you:**
+`NanobotAdapter.prepare_workspace()` copies this `SKILL.md` into every job
+workspace's `skills/nanobot-kernel-session/`. That matters because nanobot
+falls back to a builtin copy of this skill (in the nanobot package) when the
+workspace has none, and that copy goes stale.
+
+Only for direct `nanobot agent` runs outside `bench_fleet.py`, symlink this
+directory in yourself:
 
 ```bash
 ln -s <repo>/skills/nanobot/nanobot-kernel-session \

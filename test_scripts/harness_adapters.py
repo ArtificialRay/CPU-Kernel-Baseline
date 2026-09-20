@@ -63,6 +63,9 @@ CLINE_MCP_SERVER_NAME = "cpu-kernel-baseline"
 CLINE_WORKSPACE_DIR = Path.home() / ".cline-fleet" / "workspace"
 NANOBOT_WORKSPACE = Path.home() / ".nanobot" / "workspace"
 NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
+# nanobot prefers <workspace>/skills/<name>/ over its own stale builtin copy; SKILL.md only 
+NANOBOT_SKILL_FILE = REPO_ROOT / "skills" / "nanobot" / "nanobot-kernel-session" / "SKILL.md"
+NANOBOT_SKILL_NAME = "nanobot-kernel-session"
 
 # dataset -> the mcpServers key nanobot's config.json wires to a fixed
 # local port (always overwritten per-run below, so the base config's port
@@ -340,6 +343,8 @@ class NanobotAdapter(HarnessAdapter):
                 "'nanobot agent -m \"hi\"' once to bootstrap AGENTS.md/SOUL.md/skills/ "
                 "before using this script."
             )
+        if not NANOBOT_SKILL_FILE.exists():
+            raise RuntimeError(f"SKILL_FILE not found: {NANOBOT_SKILL_FILE}")
         server_name = NANOBOT_SERVER_NAME_BY_DATASET.get(dataset)
         if server_name is None:
             raise RuntimeError(
@@ -387,6 +392,11 @@ class NanobotAdapter(HarnessAdapter):
                     ["rsync", "-a", "--delete", "--exclude=.git", str(src), f"{job_ws}/"],
                     check=True,
                 )
+        skill_dir = job_ws / "skills" / NANOBOT_SKILL_NAME
+        if skill_dir.is_symlink():
+            skill_dir.unlink()
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(NANOBOT_SKILL_FILE, skill_dir / "SKILL.md")
         yield job_ws
 
     def cleanup_workspace(self, job: Job) -> None:
