@@ -16,8 +16,9 @@ Checks (every one asserts; the script exits non-zero on the first failure):
      (fp16 d/dmin + 6-bit sc/m, same lossy step real Q5_K quantization does)
      and loosely against the raw flat dequant; Q6_K exactly (lossless repack).
   B. packed numpy dequant (kquant_templates.dequant_ggml_blocks, the code the
-     layout="ggml" Definition reference embeds) vs ggml, all three types.
-  C. reference-scalar kernels (flat q5_k/q6_k, packed q4_k_m/q5_k/q6_k)
+     layout="ggml" Definition reference embeds) vs ggml, all four packed
+     types (q4_k_m, q5_k, q6_k, q8_0).
+  C. reference-scalar kernels (flat q5_k/q6_k, packed q4_k_m/q5_k/q6_k/q8_0)
      compiled with clang++ -O2 -std=c++14 vs the numpy Definition reference
      at N=64, K=512, M=3 under the harness's gate for these definitions:
      they are tagged `correctness:sqnr`, so bench.runtime.correctness.
@@ -65,6 +66,7 @@ from bench.datasets.llama_cpp import (  # noqa: E402
     _repack_q4_k,
     _repack_q5_k,
     _repack_q6_k,
+    _repack_q8_0,
 )
 from bench.runtime.correctness import compare_sqnr  # noqa: E402
 from bench.runtime.inputs import gen_inputs_for_workload  # noqa: E402
@@ -169,10 +171,16 @@ def flat_inputs(qt: str, rng: np.random.Generator, n: int, k: int) -> dict:
             "B_scales": rng.uniform(0.01, 1.0, (n, k // 32)).astype(np.float16),
             "B_mins": rng.uniform(0.01, 1.0, (n, k // 32)).astype(np.float16),
         }
+    if qt == "q6_k":
+        return {
+            "B_q6": rng.integers(0, 256, (n, k), dtype=np.uint8),  # low 6 bits used
+            "B_scales": rng.integers(1, 101, (n, k // 16)).astype(np.int8),
+            "B_d": rng.uniform(-1.0, 1.0, (n, k // 256)).astype(np.float16),
+        }
+    # q8_0 (packed-only here; the flat q8_0 ABI lives elsewhere in the repo)
     return {
-        "B_q6": rng.integers(0, 256, (n, k), dtype=np.uint8),  # low 6 bits used
-        "B_scales": rng.integers(1, 101, (n, k // 16)).astype(np.int8),
-        "B_d": rng.uniform(-1.0, 1.0, (n, k // 256)).astype(np.float16),
+        "B_q8": rng.integers(-127, 128, (n, k)).astype(np.int8),
+        "B_scales": rng.uniform(1.0 / 255.0, 1.0 / 64.0, (n, k // 32)).astype(np.float16),
     }
 
 
@@ -181,7 +189,9 @@ def repack(qt: str, fi: dict) -> np.ndarray:
         return _repack_q4_k(fi["B_q4"], fi["B_scales"], fi["B_mins"])
     if qt == "q5_k":
         return _repack_q5_k(fi["B_q5"], fi["B_scales"], fi["B_mins"])
-    return _repack_q6_k(fi["B_q6"], fi["B_scales"], fi["B_d"])
+    if qt == "q6_k":
+        return _repack_q6_k(fi["B_q6"], fi["B_scales"], fi["B_d"])
+    return _repack_q8_0(fi["B_q8"], fi["B_scales"])
 
 
 def run_reference(src: str, **inputs) -> np.ndarray:
@@ -200,13 +210,15 @@ def build_shim() -> ctypes.CDLL:
         "void dequantize_row_q4_K(const void*, float*, int64_t);\n"
         "void dequantize_row_q5_K(const void*, float*, int64_t);\n"
         "void dequantize_row_q6_K(const void*, float*, int64_t);\n"
+        "void dequantize_row_q8_0(const void*, float*, int64_t);\n"
         "void kq_dq_q4_K(const void* x, float* y, int64_t k) { dequantize_row_q4_K(x, y, k); }\n"
         "void kq_dq_q5_K(const void* x, float* y, int64_t k) { dequantize_row_q5_K(x, y, k); }\n"
         "void kq_dq_q6_K(const void* x, float* y, int64_t k) { dequantize_row_q6_K(x, y, k); }\n"
+        "void kq_dq_q8_0(const void* x, float* y, int64_t k) { dequantize_row_q8_0(x, y, k); }\n"
         "}\n"
     )
     lib = compile_shared(BUILD / f"shim{DYLIB_EXT}", [shim], flags=["-O2"], link=GGML_LIBS)
-    for fn in ("kq_dq_q4_K", "kq_dq_q5_K", "kq_dq_q6_K"):
+    for fn in ("kq_dq_q4_K", "kq_dq_q5_K", "kq_dq_q6_K", "kq_dq_q8_0"):
         getattr(lib, fn).argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
         getattr(lib, fn).restype = None
     return lib
@@ -214,11 +226,12 @@ def build_shim() -> ctypes.CDLL:
 
 def ggml_dequant(lib: ctypes.CDLL, qt: str, packed: np.ndarray) -> np.ndarray:
     """packed [rows, nb, bytes] -> float32 [rows, nb*256] via ggml."""
-    rows, nb, _ = packed.shape
-    k = nb * 256
+    rows, nb, blk_bytes = packed.shape
+    k = nb * (32 if blk_bytes == 34 else 256)
     packed = np.ascontiguousarray(packed)
     out = np.empty((rows, k), dtype=np.float32)
-    fn = getattr(lib, {"q4_k_m": "kq_dq_q4_K", "q5_k": "kq_dq_q5_K", "q6_k": "kq_dq_q6_K"}[qt])
+    fn = getattr(lib, {"q4_k_m": "kq_dq_q4_K", "q5_k": "kq_dq_q5_K", "q6_k": "kq_dq_q6_K",
+                       "q8_0": "kq_dq_q8_0"}[qt])
     for r in range(rows):
         fn(packed[r].ctypes.data, out[r].ctypes.data, k)
     return out
@@ -260,7 +273,7 @@ def test_repack_vs_ggml(lib: ctypes.CDLL, rng: np.random.Generator) -> None:
 
 def test_packed_dequant_vs_ggml(lib: ctypes.CDLL, rng: np.random.Generator) -> None:
     rows, k = 8, 1024
-    for qt in kt.QTYPES:
+    for qt in kt.PACKED_QUANTS:
         packed = repack(qt, flat_inputs(qt, rng, rows, k))
         got = ggml_dequant(lib, qt, packed)
         mine = kt.dequant_ggml_blocks(qt, packed.reshape(rows, -1))
@@ -355,7 +368,7 @@ def test_q4_regression() -> None:
 # ─── F: Definition-level round trip through the harness input generator ──────
 
 def test_definition_roundtrip() -> None:
-    for qt in kt.QTYPES:
+    for qt in kt.PACKED_QUANTS:
         tag = kt.quant_tag(qt, "ggml")
         d = Definition.model_validate(
             kt.definition_json(qt, N, K, description="test", tags=[], layout="ggml")
@@ -365,7 +378,8 @@ def test_definition_roundtrip() -> None:
             "inputs": {"A": {"type": "random"}, "B": {"type": "bytes", "layout": tag}},
         })
         inputs = gen_inputs_for_workload(d, w)
-        k_bytes = K // 256 * {"q4_k_m": 144, "q5_k": 176, "q6_k": 210}[qt]
+        k_bytes = {"q4_k_m": K // 256 * 144, "q5_k": K // 256 * 176,
+                   "q6_k": K // 256 * 210, "q8_0": K // 32 * 34}[qt]
         assert inputs["B"].dtype == np.uint8 and inputs["B"].shape == (N, k_bytes), inputs["B"].shape
         assert inputs["A"].shape == (2, K)
         out = run_reference(d.reference, **inputs)
@@ -383,10 +397,10 @@ def main() -> int:
     shim = build_shim()
     test_repack_vs_ggml(shim, rng)
     test_packed_dequant_vs_ggml(shim, rng)
-    for layout, qts in (("flat", ("q5_k", "q6_k")), ("ggml", kt.QTYPES)):
+    for layout, qts in (("flat", ("q5_k", "q6_k")), ("ggml", kt.PACKED_QUANTS)):
         for qt in qts:
             test_reference_scalar(qt, layout, rng)
-    for layout, qts in (("flat", ("q5_k", "q6_k")), ("ggml", kt.QTYPES)):
+    for layout, qts in (("flat", ("q5_k", "q6_k")), ("ggml", kt.PACKED_QUANTS)):
         for qt in qts:
             test_baseline(qt, layout, rng)
     test_q4_regression()

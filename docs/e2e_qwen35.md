@@ -138,7 +138,7 @@ measurement needs the 4xlarge (tg128 ≈ 40 s/run → `--reps 5` over three buil
 | gemm_ggml_q6_K_n248320_k5120 | 6.3% | output (lm_head) |
 | gemm_ggml_q6_K_n5120_k6144 | 5.6% | ssm_out ×36 |
 | gemm_ggml_q4_K_n6144_k5120 | 3.8% | attn_gate ×35 |
-| gemm_ggml_q8_0_n5120_k6144 | 5.7% | attn_output ×16, ssm_out ×12 (Q8_0 packed template pending) |
+| gemm_ggml_q8_0_n5120_k6144 | 5.7% | attn_output ×16, ssm_out ×12 |
 | gemm_ggml_q4_K_n12288_k5120 | 3.2% | attn_q ×15 |
 | gemm_ggml_q6_K_n10240_k5120 | 2.9% | attn_qkv ×11 |
 | gemm_ggml_q6_K_n6144_k5120 | 1.9% | attn_gate ×12 |

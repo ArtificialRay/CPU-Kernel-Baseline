@@ -48,6 +48,9 @@ from string import Template
 from typing import Any, Dict, List
 
 QTYPES = ("q4_k_m", "q5_k", "q6_k")
+# Quant types with a layout="ggml" (packed block rows) variant. q8_0 is packed-
+# only: its flat Definition ABI already exists elsewhere in the repo.
+PACKED_QUANTS = ("q4_k_m", "q5_k", "q6_k", "q8_0")
 
 # Tags every k-quant gemm definition must carry (pass them in `tags` to
 # definition_json, alongside status:/model: tags): the llama.cpp baseline and
@@ -55,19 +58,24 @@ QTYPES = ("q4_k_m", "q5_k", "q6_k")
 # an elementwise float tolerance; the harness gates these on SQNR >= 20 dB).
 REQUIRED_TAGS = ("baseline-solution:llama.cpp", "correctness:sqnr")
 
-_GGML = {"q4_k_m": "Q4_K", "q5_k": "Q5_K", "q6_k": "Q6_K"}
+_GGML = {"q4_k_m": "Q4_K", "q5_k": "Q5_K", "q6_k": "Q6_K", "q8_0": "Q8_0"}
 _QUANT_TENSOR = {"q4_k_m": "B_q4", "q5_k": "B_q5", "q6_k": "B_q6"}
 _SIDE_TENSORS = {
     "q4_k_m": ("B_scales", "B_mins"),
     "q5_k": ("B_scales", "B_mins"),
     "q6_k": ("B_scales", "B_d"),
 }
-_BLOCK_BYTES = {"q4_k_m": 144, "q5_k": 176, "q6_k": 210}
-_BLOCK_NAME = {"q4_k_m": "q4_K", "q5_k": "q5_K", "q6_k": "q6_K"}  # ggml block_<name>
+_BLOCK_BYTES = {"q4_k_m": 144, "q5_k": 176, "q6_k": 210, "q8_0": 34}
+_BLOCK_ELEMS = {"q4_k_m": 256, "q5_k": 256, "q6_k": 256, "q8_0": 32}  # elements per block
+_BLOCK_NAME = {"q4_k_m": "q4_K", "q5_k": "q5_K", "q6_k": "q6_K", "q8_0": "q8_0"}  # ggml block_<name>
+# ggml's vec_dot_type for the weight type (what the activation is quantized to).
+_VEC_DOT_TYPE = {"q4_k_m": "Q8_K", "q5_k": "Q8_K", "q6_k": "Q8_K", "q8_0": "Q8_0"}
+_QUANT_KIND = {"q4_k_m": "k-quant", "q5_k": "k-quant", "q6_k": "k-quant", "q8_0": "block-quant"}
 _BLOCK_STRUCT = {
     "q4_k_m": "{fp16 d; fp16 dmin; uint8 scales[12]; uint8 qs[128]}",
     "q5_k": "{fp16 d; fp16 dmin; uint8 scales[12]; uint8 qh[32]; uint8 qs[128]}",
     "q6_k": "{uint8 ql[128]; uint8 qh[64]; int8 scales[16]; fp16 d}",
+    "q8_0": "{fp16 d; int8 qs[32]}",
 }
 _FLAT_DESC = {  # for the flat baseline's "repacked from ..." comment
     "q4_k_m": "flat nibble/scale/min",
@@ -78,23 +86,26 @@ _SUPERBLOCK = 256
 LAYOUTS = ("flat", "ggml")
 
 
-def _check(qt: str, N: int, K: int, layout: str = "flat") -> None:
-    if qt not in QTYPES:
-        raise ValueError(f"unknown k-quant type {qt!r} (expected one of {QTYPES})")
+def _check_qt_layout(qt: str, layout: str) -> None:
     if layout not in LAYOUTS:
         raise ValueError(f"unknown layout {layout!r} (expected one of {LAYOUTS})")
-    if K % _SUPERBLOCK != 0 or K <= 0:
-        raise ValueError(f"K={K} must be a positive multiple of {_SUPERBLOCK}")
+    allowed = QTYPES if layout == "flat" else PACKED_QUANTS
+    if qt not in allowed:
+        raise ValueError(f"unknown quant type {qt!r} for layout {layout!r} (expected one of {allowed})")
+
+
+def _check(qt: str, N: int, K: int, layout: str = "flat") -> None:
+    _check_qt_layout(qt, layout)
+    blk = _BLOCK_ELEMS[qt]
+    if K % blk != 0 or K <= 0:
+        raise ValueError(f"K={K} must be a positive multiple of {blk}")
     if N <= 0:
         raise ValueError(f"N={N} must be positive")
 
 
 def quant_tag(qt: str, layout: str = "flat") -> str:
     """Quant tag used in definition/solution names: q4_k_m (flat) / ggml_q4_K (packed)."""
-    if qt not in QTYPES:
-        raise ValueError(f"unknown k-quant type {qt!r} (expected one of {QTYPES})")
-    if layout not in LAYOUTS:
-        raise ValueError(f"unknown layout {layout!r} (expected one of {LAYOUTS})")
+    _check_qt_layout(qt, layout)
     return qt if layout == "flat" else f"ggml_{_BLOCK_NAME[qt]}"
 
 
@@ -107,7 +118,8 @@ def _consts(qt: str, N: int, K: int, layout: str = "flat") -> Dict[str, int]:
     """Const axes (in declaration order) the ABI of `qt`/`layout` needs."""
     _check(qt, N, K, layout)
     if layout == "ggml":
-        return {"N": N, "K": K, "K_blk": K // 256, "K_bytes": K // 256 * _BLOCK_BYTES[qt]}
+        nblk = K // _BLOCK_ELEMS[qt]
+        return {"N": N, "K": K, "K_blk": nblk, "K_bytes": nblk * _BLOCK_BYTES[qt]}
     if qt == "q4_k_m":
         return {"N": N, "K": K, "K_half": K // 2, "K_sub": K // 32}
     if qt == "q5_k":
@@ -342,15 +354,48 @@ def run(A, B):
 """,
 }
 
-_DEQUANT_FN_NAME = {"q4_k_m": "dequant_ggml_q4_K", "q5_k": "dequant_ggml_q5_K", "q6_k": "dequant_ggml_q6_K"}
+_GGML_DEQUANT["q8_0"] = """def f16(b):
+    # little-endian fp16 bytes [..., 2] -> float32 [...]
+    return np.ascontiguousarray(b).view("<f2")[..., 0].astype(np.float32)
+
+
+def dequant_ggml_q8_0(B):
+    # B: uint8 [N, K/32 * 34] rows of ggml block_q8_0 {fp16 d; int8 qs[32]}
+    n_rows, k_bytes = B.shape
+    nb = k_bytes // 34
+    blk = np.ascontiguousarray(B).reshape(n_rows, nb, 34)
+    d = f16(blk[:, :, 0:2])
+    qs = np.ascontiguousarray(blk[:, :, 2:34]).view(np.int8).astype(np.float32)
+    w = qs * d[..., None]
+    return w.reshape(n_rows, nb * 32)
+
+
+def run(A, B):
+    # Chunk over weight rows: dequantizing all of B at once needs ~4x N*K*4
+    # bytes of temporaries (10+ GB for a 248320 x 2560 lm_head), which does
+    # not fit an 8 GB box. ~128 MB of fp32 weights per chunk keeps the peak
+    # under ~1 GB regardless of N.
+    A_f = A.astype(np.float32)
+    n_rows, k_bytes = B.shape
+    K = (k_bytes // 34) * 32
+    step = max(256, ((128 << 20) // (K * 4)) // 256 * 256)
+    out = np.empty((A_f.shape[0], n_rows), dtype=np.float32)
+    for i in range(0, n_rows, step):
+        out[:, i:i + step] = A_f @ dequant_ggml_q8_0(B[i:i + step]).T
+    return out
+"""
+
+_DEQUANT_FN_NAME = {
+    "q4_k_m": "dequant_ggml_q4_K",
+    "q5_k": "dequant_ggml_q5_K",
+    "q6_k": "dequant_ggml_q6_K",
+    "q8_0": "dequant_ggml_q8_0",
+}
 _dequant_cache: Dict[str, Any] = {}
 
 
 def def_reference(qt: str, layout: str = "flat") -> str:
-    if qt not in QTYPES:
-        raise ValueError(f"unknown k-quant type {qt!r} (expected one of {QTYPES})")
-    if layout not in LAYOUTS:
-        raise ValueError(f"unknown layout {layout!r} (expected one of {LAYOUTS})")
+    _check_qt_layout(qt, layout)
     if layout == "ggml":
         return "import numpy as np\n\n\n" + _GGML_DEQUANT[qt]
     return _REFERENCE[qt]
@@ -842,6 +887,15 @@ _RS_GGML_LAYOUT_COMMENT = {
 """,
 }
 
+_RS_GGML_LAYOUT_COMMENT["q8_0"] = """// B is ggml's real block_q8_0 layout: K/32 consecutive 34-byte blocks per row
+// (K_bytes = K/32 * 34), each
+//   struct block_q8_0 {
+//     fp16   d;      // [0:2]  block scale
+//     int8_t qs[32]; // [2:34] one signed 8-bit value per element, sequential
+//   };
+// Block j (32 elements) dequantizes as w = d*qs.
+"""
+
 _RS_GGML_GEMM_H = """#pragma once
 #include <cstdint>
 
@@ -850,7 +904,7 @@ _RS_GGML_GEMM_H = """#pragma once
 // C[m, n] = sum_k A[m, k] * B[n, k]  (B is the [N, K] "weight" matrix, transposed)
 // A is a raw bf16 bit pattern (uint16_t) -- activations stay at the bf16
 // baseline tier (real GGML never stores activations statically in a
-// k-quant format either -- see kernel.cpp for the dynamic quantization this
+// ${KIND} format either -- see kernel.cpp for the dynamic quantization this
 // implies).
 ${LAYOUT_COMMENT}// Output accumulates/returns in fp32.
 namespace gemm_def {
@@ -1145,6 +1199,95 @@ extern "C" void inner_gemm(const uint16_t* A, float* output, const uint8_t* B_bl
 }
 
 
+_RS_GGML_KERNEL["q8_0"] = ("""// Reference-scalar gemm Q8_0 over ggml's packed block_q8_0 rows (weight-only,
+// genuine int8 dot product).
+// LLM target: replace this file with an optimised inner_gemm (NEON/SVE int8
+// dot-product intrinsics are the intended optimization surface here; gemm.h
+// documents the block layout).
+//
+// Unlike Definition.reference (which computes a clean, implementation-
+// agnostic dequant-then-fp32-multiply ground truth), this kernel is a plain
+// scalar port of real GGML's generic ggml_vec_dot_q8_0_q8_0: the bf16
+// activation is dynamically quantized into 32-element Q8_0 blocks (port of
+// quantize_row_q8_0_ref: d = amax/127 rounded to fp16, q = round(x/d)), then
+// per block the int8 dot product is scaled by d_weight * d_act and
+// accumulated into a running fp32 total.
+//
+"""
++ _RS_KERNEL_HELPERS
++ """namespace {
+
+// IEEE-754 single->half (round-to-nearest-even), so the activation block
+// scale is rounded exactly like ggml's block_q8_0::d (which is fp16).
+inline uint16_t f32_to_f16(float f) {
+    uint32_t x;
+    std::memcpy(&x, &f, sizeof(x));
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    int32_t exp = (int32_t)((x >> 23) & 0xFF) - 127 + 15;
+    uint32_t mant = x & 0x7FFFFFu;
+    if (((x >> 23) & 0xFF) == 0xFF) return (uint16_t)(sign | 0x7C00u | (mant ? 0x200u : 0));
+    if (exp >= 0x1F) return (uint16_t)(sign | 0x7C00u);
+    if (exp <= 0) {
+        if (exp < -10) return (uint16_t)sign;
+        mant |= 0x800000u;
+        const uint32_t shift = (uint32_t)(14 - exp);
+        uint32_t half = mant >> shift;
+        const uint32_t rem = mant & ((1u << shift) - 1u);
+        const uint32_t halfway = 1u << (shift - 1);
+        if (rem > halfway || (rem == halfway && (half & 1u))) ++half;
+        return (uint16_t)(sign | half);
+    }
+    uint32_t half = sign | ((uint32_t)exp << 10) | (mant >> 13);
+    const uint32_t rem = mant & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (half & 1u))) ++half;
+    return (uint16_t)half;
+}
+
+} // namespace
+
+extern "C" void inner_gemm(const uint16_t* A, float* output, const uint8_t* B_blocks, int M)
+{
+    std::vector<float> h(K);
+    std::vector<float> d_act(K_blk);
+    std::vector<int8_t> q8(K);
+
+    for (int m = 0; m < M; ++m) {
+        const uint16_t* a_row = A + (long)m * K;
+        for (int k = 0; k < K; ++k) h[k] = bf16_to_f32(a_row[k]);
+
+        // Dynamically quantize the activation row into 32-element Q8_0 blocks
+        // (port of ggml's quantize_row_q8_0_ref).
+        for (int b = 0; b < K_blk; ++b) {
+            const float* x = h.data() + b * 32;
+            float amax = 0.0f;
+            for (int l = 0; l < 32; ++l) amax = std::fmax(amax, std::fabs(x[l]));
+            const float d = amax / 127.0f;
+            const float id = d != 0.0f ? 1.0f / d : 0.0f;
+            d_act[b] = f16_to_f32(f32_to_f16(d));
+            for (int l = 0; l < 32; ++l) q8[b * 32 + l] = (int8_t)std::lround(x[l] * id);
+        }
+
+        float* out_row = output + (long)m * N;
+        for (int n = 0; n < N; ++n) {
+            const uint8_t* b_row = B_blocks + (long)n * K_bytes;
+
+            float sumf = 0.0f;
+            for (int b = 0; b < K_blk; ++b) {
+                const uint8_t* blk = b_row + b * 34;
+                const float d = f16_to_f32(*(const uint16_t*)(blk + 0));
+                const int8_t* xq = (const int8_t*)(blk + 2);
+                const int8_t* yq = q8.data() + b * 32;
+                int32_t sumi = 0;
+                for (int l = 0; l < 32; ++l) sumi += (int32_t)xq[l] * (int32_t)yq[l];
+                sumf += (float)sumi * (d * d_act[b]);
+            }
+            out_row[n] = sumf;
+        }
+    }
+}
+""")
+
+
 def reference_scalar_sources(qt: str, N: int, K: int, layout: str = "flat") -> List[Dict[str, str]]:
     consts = _consts(qt, N, K, layout)
     if layout == "ggml":
@@ -1152,6 +1295,7 @@ def reference_scalar_sources(qt: str, N: int, K: int, layout: str = "flat") -> L
             consts,
             GGML=_GGML[qt],
             ggml=_BLOCK_NAME[qt],
+            KIND=_QUANT_KIND[qt],
             F16_TENSORS=_F16_TENSORS["ggml"],
             LAYOUT_COMMENT=_RS_GGML_LAYOUT_COMMENT[qt],
         )
@@ -1179,7 +1323,7 @@ _BL_GEMM_H = """#pragma once
 // A is row-major [M, K], B is row-major [N, K], C = A . B^T row-major [M, N].
 // A is bf16 (raw uint16 bit pattern, one value per K element -- NOT
 // block-quantized; weight-only ${GGML} design keeps activations at the bf16
-// baseline tier). B is a ggml block_${ggml} row: (K/256) ${BLOCK_BYTES}-byte blocks per
+// baseline tier). B is a ggml block_${ggml} row: (K/${BLOCK_ELEMS}) ${BLOCK_BYTES}-byte blocks per
 // row, ${BLOCK_STRUCT} (${B_ORIGIN}).
 int armbench_llamacpp_gemm(const void* A, const void* B, float* C,
                            int64_t M, int64_t N, int64_t K);
@@ -1193,7 +1337,7 @@ constexpr int64_t kK = ${K};
 } // namespace
 
 extern "C" {
-// inputs: [0]=A bf16 [M,K], [1]=B block_${ggml} [N, K/256 blocks]${INPUT_TAIL}
+// inputs: [0]=A bf16 [M,K], [1]=B block_${ggml} [N, K/${BLOCK_ELEMS} blocks]${INPUT_TAIL}
 // var_axes: [0]=M
 int armbench_entry_gemm(const void* const* inputs, void* output,
                         const int64_t* var_axes)
@@ -1227,9 +1371,9 @@ inline float bf16_to_f32(uint16_t bits) {
 // C = A . B^T via ggml_mul_mat(B, A). B is a real ${GGML} weight tensor; A
 // arrives as bf16 and is widened to F32 up front (plain scalar loop, outside
 // ggml) because ggml_compute_forward_mul_mat asserts src1->type == F32
-// whenever src0 is a k-quant type (${GGML}'s paired vec_dot_type is Q8_K, not
+// whenever src0 is a ${KIND} type (${GGML}'s paired vec_dot_type is ${VEC_DOT}, not
 // bf16 or ${GGML} itself). ggml's own library code then dynamically quantizes
-// this F32 activation to Q8_K internally -- nothing else to write here.
+// this F32 activation to ${VEC_DOT} internally -- nothing else to write here.
 //
 // The graph topology (and the widened-A buffer) depends only on M -- and,
 // like llama.cpp's own graph-reuse (llama_context::process_ubatch /
@@ -1272,7 +1416,7 @@ int armbench_llamacpp_gemm(const void* A_bf16, const void* B, float* C,
 
         const size_t mem =
             (size_t)N * M * sizeof(float)   // C
-            + (size_t)M * K * sizeof(float) * 2  // cplan: A -> Q8_K scratch (generous)
+            + (size_t)M * K * sizeof(float) * 2  // cplan: A -> ${VEC_DOT} scratch (generous)
             + 16 * ggml_tensor_overhead()
             + ggml_graph_overhead()
             + (1u << 20);                   // slack
@@ -1305,7 +1449,7 @@ int armbench_llamacpp_gemm(const void* A_bf16, const void* B, float* C,
 
 def baseline_sources(qt: str, N: int, K: int, layout: str = "flat") -> List[Dict[str, str]]:
     consts = _consts(qt, N, K, layout)
-    side1, side2 = _SIDE_TENSORS[qt]
+    side1, side2 = _SIDE_TENSORS.get(qt, ("", ""))
     if layout == "ggml":
         b_origin = "passed through\n// as-is by the Python adapter: the Definition's B tensor is the block rows"
         input_tail = " (the Definition's uint8 B rows, passed\n// through as-is: no repack, no NULL slots);"
@@ -1318,6 +1462,9 @@ def baseline_sources(qt: str, N: int, K: int, layout: str = "flat") -> List[Dict
         consts,
         GGML=_GGML[qt],
         ggml=_BLOCK_NAME[qt],  # block_q4_K spelling
+        KIND=_QUANT_KIND[qt],
+        VEC_DOT=_VEC_DOT_TYPE[qt],
+        BLOCK_ELEMS=_BLOCK_ELEMS[qt],
         BLOCK_BYTES=_BLOCK_BYTES[qt],
         BLOCK_STRUCT=_BLOCK_STRUCT[qt],
         B_ORIGIN=b_origin,
@@ -1362,8 +1509,8 @@ def _check_author(author: str) -> None:
 
 
 def spec(qt: str, author: str) -> Dict[str, Any]:
-    if qt not in QTYPES:
-        raise ValueError(f"unknown k-quant type {qt!r} (expected one of {QTYPES})")
+    if qt not in PACKED_QUANTS:
+        raise ValueError(f"unknown quant type {qt!r} (expected one of {PACKED_QUANTS})")
     _check_author(author)
     import copy
 
@@ -1409,6 +1556,7 @@ def solution_json(qt: str, author: str, N: int, K: int, layout: str = "flat") ->
 
 __all__ = [
     "QTYPES",
+    "PACKED_QUANTS",
     "REQUIRED_TAGS",
     "AUTHORS",
     "LAYOUTS",

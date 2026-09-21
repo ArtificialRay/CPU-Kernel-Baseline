@@ -29,14 +29,15 @@ class BytesInput(BaseModelWithDocstrings):
     - ``cstrings``: random non-NUL bytes [1, 100] with NUL terminators sprinkled in
       and a guaranteed trailing NUL — concatenated null-terminated strings for
       strlen/strcmp-style loops that walk to a sentinel `lmt`/`end` pointer.
-    - ``ggml_q4_K`` / ``ggml_q5_K`` / ``ggml_q6_K``: a 2-D [N, K_bytes] weight
-      matrix of real ggml block rows (K_bytes = K/256 * {144, 176, 210}) --
+    - ``ggml_q4_K`` / ``ggml_q5_K`` / ``ggml_q6_K`` / ``ggml_q8_0``: a 2-D
+      [N, K_bytes] weight matrix of real ggml block rows (K_bytes = K/256 *
+      {144, 176, 210}, or K/32 * 34 for Q8_0) --
       realistic random k-quant weights (dequantized values O(0.01-0.1)) built
       by the LlamaCppDataset repack helpers, for layout=ggml gemm definitions.
     """
 
     type: Literal["bytes"]
-    layout: Literal["raw", "cstrings", "ggml_q4_K", "ggml_q5_K", "ggml_q6_K"] = "raw"
+    layout: Literal["raw", "cstrings", "ggml_q4_K", "ggml_q5_K", "ggml_q6_K", "ggml_q8_0"] = "raw"
 
 
 WorkloadInput = Annotated[
