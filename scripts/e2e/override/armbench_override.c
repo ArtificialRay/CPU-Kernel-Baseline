@@ -39,6 +39,10 @@ typedef int (*armbench_gemm_fn)(const void * A, const void * B, float * C, int64
 // baked in as constexpr on the kernel side (must equal the manifest's N/K), B_blocks is
 // the raw ggml block rows (src0->data as-is), output is row-major f32 [M,N].
 typedef int (*armbench_entry_gemm_fn)(const uint16_t * A_bf16, float * output, const uint8_t * B_blocks, int M);
+// "entry_rows" ABI: the .so exports BOTH armbench_entry_gemm (N baked = full N) and this
+// row-range variant: computes only weight rows [0, n_rows) relative to the given B pointer
+// and writes output[m*n_rows + n] (output row stride == n_rows, NOT the full N).
+typedef int (*armbench_entry_gemm_rows_fn)(const uint16_t * A_bf16, float * output, const uint8_t * B_blocks, int M, int n_rows);
 //   x: [M,D] input, weight: [D], out: [M,D]        (unused: see rms_norm stub)
 typedef int (*armbench_rms_norm_fn)(const void * x, const void * weight, float * out, int64_t M, int64_t D, float eps);
 
@@ -51,13 +55,18 @@ enum armbench_op {
 enum armbench_abi {
     ARMBENCH_ABI_LLAMACPP,  // "llamacpp" (default): armbench_llamacpp_gemm(A, B, C, M, N, K)
     ARMBENCH_ABI_ENTRY,     // "entry":              armbench_entry_gemm(A_bf16, output, B_blocks, M)
+    ARMBENCH_ABI_ENTRY_ROWS,// "entry_rows":         "entry" + armbench_entry_gemm_rows(..., M, n_rows); multithreaded dispatch
     ARMBENCH_ABI_COUNT,
 };
 
 static const char * const armbench_abi_names[ARMBENCH_ABI_COUNT] = {
-    [ARMBENCH_ABI_LLAMACPP] = "llamacpp",
-    [ARMBENCH_ABI_ENTRY]    = "entry",
+    [ARMBENCH_ABI_LLAMACPP]   = "llamacpp",
+    [ARMBENCH_ABI_ENTRY]      = "entry",
+    [ARMBENCH_ABI_ENTRY_ROWS] = "entry_rows",
 };
+
+#define ARMBENCH_ROWS_SYMBOL_DEFAULT "armbench_entry_gemm_rows"
+#define ARMBENCH_N_CHUNK 64   // decode N-split granularity (rows)
 
 // op name table: adding an op = add an enum value + a row here + a hook function.
 static const char * const armbench_op_names[ARMBENCH_OP_COUNT] = {
@@ -74,7 +83,9 @@ struct armbench_kernel {
     int              threads;  // reserved, parsed but unused
     char *           so;
     char *           symbol;
+    char *           symbol_rows;  // entry_rows only ("symbol_rows", default armbench_entry_gemm_rows)
     void *           fn;
+    void *           fn_rows;      // entry_rows only
     uint64_t         hits;
 };
 
@@ -82,6 +93,7 @@ static struct armbench_kernel * g_kernels   = NULL;
 static int                      g_nkernels  = 0;
 static bool                     g_enabled   = false;  // fast path: false unless a manifest loaded
 static bool                     g_log       = false;
+static bool                     g_force_single = false;  // ARMBENCH_OVERRIDE_THREADS=1
 static uint64_t                 g_total_hits = 0;
 
 // ---------------------------------------------------------------------------
@@ -200,7 +212,7 @@ static bool lookup_op(const char * name, enum armbench_op * out) {
 // parse one {...} kernel object; returns false on hard parse error
 static bool parse_kernel(struct js * s, const char * manifest_path) {
     if (!js_expect(s, '{')) return false;
-    char * op = NULL, * type = NULL, * so = NULL, * symbol = NULL, * abi = NULL;
+    char * op = NULL, * type = NULL, * so = NULL, * symbol = NULL, * abi = NULL, * symbol_rows = NULL;
     int64_t K = -1, N = -1, threads = 1;
     bool ok = true;
     js_ws(s);
@@ -213,6 +225,7 @@ static bool parse_kernel(struct js * s, const char * manifest_path) {
         else if (strcmp(key, "so")      == 0) { free(so);     so     = js_string(s); ok = so     != NULL; }
         else if (strcmp(key, "symbol")  == 0) { free(symbol); symbol = js_string(s); ok = symbol != NULL; }
         else if (strcmp(key, "abi")     == 0) { free(abi);    abi    = js_string(s); ok = abi    != NULL; }
+        else if (strcmp(key, "symbol_rows") == 0) { free(symbol_rows); symbol_rows = js_string(s); ok = symbol_rows != NULL; }
         else if (strcmp(key, "K")       == 0) { ok = js_number(s, &K); }
         else if (strcmp(key, "N")       == 0) { ok = js_number(s, &N); }
         else if (strcmp(key, "threads") == 0) { ok = js_number(s, &threads); }
@@ -244,12 +257,16 @@ static bool parse_kernel(struct js * s, const char * manifest_path) {
         } else {
             k.K = K; k.N = N; k.threads = (int) threads;
             k.so = so; k.symbol = symbol; so = symbol = NULL;
+            if (k.abi == ARMBENCH_ABI_ENTRY_ROWS) {
+                k.symbol_rows = symbol_rows ? symbol_rows : strdup(ARMBENCH_ROWS_SYMBOL_DEFAULT);
+                symbol_rows = NULL;
+            }
             struct armbench_kernel * t = realloc(g_kernels, (size_t) (g_nkernels + 1) * sizeof(*t));
             if (t) { g_kernels = t; g_kernels[g_nkernels++] = k; }
             else   { free(k.so); free(k.symbol); ok = false; }
         }
     }
-    free(op); free(type); free(so); free(symbol); free(abi);
+    free(op); free(type); free(so); free(symbol); free(abi); free(symbol_rows);
     return ok;
 }
 
@@ -290,6 +307,8 @@ static void armbench_override_init_impl(void) {
     if (!path || !*path) return;
     const char * lg = getenv("ARMBENCH_OVERRIDE_LOG");
     g_log = lg && *lg && strcmp(lg, "0") != 0;
+    const char * th = getenv("ARMBENCH_OVERRIDE_THREADS");
+    g_force_single = th && strcmp(th, "1") == 0;
 
     size_t len = 0;
     char * buf = read_file(path, &len);
@@ -321,13 +340,22 @@ static void armbench_override_init_impl(void) {
             g_nkernels = 0;
             return;
         }
+        if (k->abi == ARMBENCH_ABI_ENTRY_ROWS) {
+            k->fn_rows = dlsym(h, k->symbol_rows);
+            if (!k->fn_rows) {
+                fprintf(stderr, "[armbench-override] dlsym(%s, %s) failed: %s; overrides disabled\n", k->so, k->symbol_rows, dlerror());
+                g_nkernels = 0;
+                return;
+            }
+        }
         if (k->op == ARMBENCH_OP_RMS_NORM) {
             fprintf(stderr, "[armbench-override] note: rms_norm override is a stub in this build; entry %s will never be hit\n", k->so);
         }
     }
     g_enabled = g_nkernels > 0;
     if (g_log) {
-        fprintf(stderr, "[armbench-override] loaded %d kernel(s) from %s\n", g_nkernels, path);
+        fprintf(stderr, "[armbench-override] loaded %d kernel(s) from %s%s\n", g_nkernels, path,
+                g_force_single ? " (ARMBENCH_OVERRIDE_THREADS=1: single-thread dispatch forced)" : "");
         for (int i = 0; i < g_nkernels; i++) {
             const struct armbench_kernel * k = &g_kernels[i];
             fprintf(stderr, "[armbench-override]   %s type=%s K=%" PRId64 " N=%" PRId64 " abi=%s threads=%d -> %s:%s\n",
@@ -389,6 +417,24 @@ static struct armbench_kernel * find_mul_mat(enum ggml_type type, int64_t K, int
     return NULL;
 }
 
+// hit accounting + first-hit log; called from thread 0 only (once per op)
+static void note_hit(struct armbench_kernel * k, const struct ggml_tensor * src0, int64_t K, int64_t N, int64_t M, int nth, const char * mode) {
+    if (g_log && k->hits == 0) {
+        fprintf(stderr, "[armbench-override] hit mul_mat type=%s K=%" PRId64 " N=%" PRId64 " (M=%" PRId64 ", nth=%d, abi=%s, dispatch=%s) -> %s:%s\n",
+                ggml_type_name(src0->type), K, N, M, nth, armbench_abi_names[k->abi], mode, k->so, k->symbol);
+    }
+    k->hits++;
+    g_total_hits++;
+}
+
+// Threads that already returned cannot be recalled, so there is no fallback to the
+// stock path for this op: fail loudly rather than emit garbage.
+static void kernel_failed(const struct armbench_kernel * k, int rc, const struct ggml_tensor * src0, int64_t K, int64_t N, int64_t M) {
+    fprintf(stderr, "[armbench-override] kernel %s:%s returned %d for mul_mat type=%s K=%" PRId64 " N=%" PRId64 " M=%" PRId64 "\n",
+            k->so, k->symbol, rc, ggml_type_name(src0->type), K, N, M);
+    abort();
+}
+
 bool armbench_override_mul_mat(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
     if (!armbench_override_ready()) return false;
 
@@ -411,10 +457,51 @@ bool armbench_override_mul_mat(const struct ggml_compute_params * params, struct
     const int64_t K = src0->ne[0], N = src0->ne[1], M = src1->ne[1];
     struct armbench_kernel * k = find_mul_mat(src0->type, K, N);
     if (!k) return false;
-    if (k->abi == ARMBENCH_ABI_ENTRY && M > INT_MAX) return false;  // 4-arg ABI takes int M
+    if (k->abi != ARMBENCH_ABI_LLAMACPP && (M > INT_MAX || N > INT_MAX)) return false;  // 4/5-arg ABIs take int
 
-    // Single-threaded override kernels: thread 0 does all the work, the others
-    // return immediately and wait at the per-node barrier in ggml_graph_compute_thread.
+    // ---- multithreaded dispatch (abi "entry_rows" only) -------------------------------
+    // Barrier-free: each thread computes a disjoint slice of dst from its own thread-local
+    // bf16 copy of the activations it needs; ggml barriers after the op.
+    if (k->abi == ARMBENCH_ABI_ENTRY_ROWS && !g_force_single && params->nth > 1) {
+        const int ith = params->ith, nth = params->nth;
+        int rc = 0;
+        if (M == 1) {
+            // decode: split N across threads in chunks that are multiples of ARMBENCH_N_CHUNK rows
+            const int64_t chunk = ((N + nth - 1) / nth + ARMBENCH_N_CHUNK - 1) / ARMBENCH_N_CHUNK * ARMBENCH_N_CHUNK;
+            const int64_t r0 = (int64_t) ith * chunk;
+            if (r0 >= N) return true;
+            const int64_t n_i = (r0 + chunk < N ? r0 + chunk : N) - r0;
+            uint16_t * A = scratch_get((size_t) K * sizeof(uint16_t));
+            if (!A) goto oom;
+            ggml_cpu_fp32_to_bf16((const float *) src1->data, (ggml_bf16_t *) A, K);
+            if (ith == 0) note_hit(k, src0, K, N, M, params->nth, "N-split");
+            rc = ((armbench_entry_gemm_rows_fn) k->fn_rows)(A, (float *) dst->data + r0,
+                     (const uint8_t *) src0->data + r0 * src0->nb[1], 1, (int) n_i);
+        } else {
+            // prefill: split M across threads; full-N entry (output row stride N is correct there)
+            const int64_t mpt = (M + nth - 1) / nth;
+            const int64_t m0  = (int64_t) ith * mpt;
+            if (m0 >= M) return true;
+            const int64_t M_i = (m0 + mpt < M ? m0 + mpt : M) - m0;
+            uint16_t * A = scratch_get((size_t) M_i * (size_t) K * sizeof(uint16_t));
+            if (!A) goto oom;
+            for (int64_t m = 0; m < M_i; m++) {
+                const float * row = (const float *) ((const char *) src1->data + (m0 + m) * src1->nb[1]);
+                ggml_cpu_fp32_to_bf16(row, (ggml_bf16_t *) (A + m * K), K);
+            }
+            if (ith == 0) note_hit(k, src0, K, N, M, params->nth, "M-split");
+            rc = ((armbench_entry_gemm_fn) k->fn)(A, (float *) dst->data + m0 * N, (const uint8_t *) src0->data, (int) M_i);
+        }
+        if (rc != 0) kernel_failed(k, rc, src0, K, N, M);
+        return true;
+    oom:
+        fprintf(stderr, "[armbench-override] out of memory for bf16 scratch (M=%" PRId64 " K=%" PRId64 ")\n", M, K);
+        abort();
+    }
+
+    // ---- single-threaded dispatch ("llamacpp", "entry", or forced) ---------------------
+    // Thread 0 does all the work; the others return immediately and wait at the
+    // per-node barrier in ggml_graph_compute_thread.
     if (params->ith != 0) return true;
 
     // src1 f32 [K,M] -> bf16 row-major [M,K] (round-to-nearest-even via ggml_cpu_fp32_to_bf16)
@@ -427,17 +514,12 @@ bool armbench_override_mul_mat(const struct ggml_compute_params * params, struct
         const float * row = (const float *) ((const char *) src1->data + m * src1->nb[1]);
         ggml_cpu_fp32_to_bf16(row, (ggml_bf16_t *) (A + m * K), K);
     }
-
-    if (g_log && k->hits == 0) {
-        fprintf(stderr, "[armbench-override] hit mul_mat type=%s K=%" PRId64 " N=%" PRId64 " (M=%" PRId64 ", nth=%d, abi=%s) -> %s:%s\n",
-                ggml_type_name(src0->type), K, N, M, params->nth, armbench_abi_names[k->abi], k->so, k->symbol);
-    }
-    k->hits++;
-    g_total_hits++;
+    note_hit(k, src0, K, N, M, params->nth, "single");
 
     int rc;
     switch (k->abi) {
         case ARMBENCH_ABI_ENTRY:
+        case ARMBENCH_ABI_ENTRY_ROWS:
             rc = ((armbench_entry_gemm_fn) k->fn)(A, (float *) dst->data, (const uint8_t *) src0->data, (int) M);
             break;
         case ARMBENCH_ABI_LLAMACPP:
@@ -445,13 +527,7 @@ bool armbench_override_mul_mat(const struct ggml_compute_params * params, struct
             rc = ((armbench_gemm_fn) k->fn)(A, src0->data, (float *) dst->data, M, N, K);
             break;
     }
-    if (rc != 0) {
-        // Other threads have already returned; there is no way to fall back to the
-        // stock path for this op, so fail loudly rather than emit garbage.
-        fprintf(stderr, "[armbench-override] kernel %s:%s returned %d for mul_mat type=%s K=%" PRId64 " N=%" PRId64 " M=%" PRId64 "\n",
-                k->so, k->symbol, rc, ggml_type_name(src0->type), K, N, M);
-        abort();
-    }
+    if (rc != 0) kernel_failed(k, rc, src0, K, N, M);
     return true;
 }
 

@@ -26,8 +26,9 @@ ARMBENCH_OVERRIDES=/abs/manifest.json ARMBENCH_OVERRIDE_LOG=1 build/bin/llama-be
 
 * `ARMBENCH_OVERRIDES` — path to the JSON manifest. Unset = hook is a single static-bool check per op.
 * `ARMBENCH_OVERRIDE_LOG=1` — at load: one line per manifest entry; then one stderr line per
-  matched key on its first hit (`[armbench-override] hit mul_mat type=q4_K K=.. N=.. (M=.., nth=..)`),
+  matched key on its first hit (`[armbench-override] hit mul_mat type=q4_K K=.. N=.. (M=.., nth=.., abi=.., dispatch=single|N-split|M-split)`),
   so coverage can be verified against the model's matmul shapes.
+* `ARMBENCH_OVERRIDE_THREADS=1` — force the thread-0-only dispatch for every ABI (ablation row).
 * Load failures (unreadable manifest, parse error, `dlopen`/`dlsym` failure) always print to
   stderr and **disable all overrides** (a partially-overridden run would be a misleading number).
 * A kernel returning non-zero aborts the process (other threads have already passed the op;
@@ -38,18 +39,20 @@ ARMBENCH_OVERRIDES=/abs/manifest.json ARMBENCH_OVERRIDE_LOG=1 build/bin/llama-be
 ```json
 {"kernels":[
   {"op":"mul_mat","type":"q4_K","K":2560,"N":9216,"so":"/abs/lib.so","symbol":"armbench_llamacpp_gemm","abi":"llamacpp","threads":1},
-  {"op":"mul_mat","type":"q4_K","K":9216,"N":2560,"so":"/abs/lib2.so","symbol":"armbench_entry_gemm","abi":"entry"}
+  {"op":"mul_mat","type":"q4_K","K":9216,"N":2560,"so":"/abs/lib2.so","symbol":"armbench_entry_gemm","abi":"entry"},
+  {"op":"mul_mat","type":"q4_K","K":2560,"N":2560,"so":"/abs/lib3.so","symbol":"armbench_entry_gemm","symbol_rows":"armbench_entry_gemm_rows","abi":"entry_rows"}
 ]}
 ```
 
 Match key for `mul_mat` = (`type` = ggml type name of `src0`, e.g. `q4_K`; `K` = `ne00`; `N` = `ne01`).
-`threads` is parsed and stored but **reserved/unused** (kernels run single-threaded, see below).
-`abi` selects the entry-point signature:
+`threads` is parsed and stored but **reserved/unused** (the thread count comes from ggml's `nth`).
+`abi` selects the entry-point signature(s):
 
-| `abi` | signature | notes |
+| `abi` | signature | dispatch |
 |---|---|---|
-| `llamacpp` (default) | `int armbench_llamacpp_gemm(const void* A, const void* B, float* C, int64_t M, int64_t N, int64_t K)` | N, K passed at runtime |
-| `entry` | `int armbench_entry_gemm(const uint16_t* A_bf16, float* output, const uint8_t* B_blocks, int M)` | reference-scalar harness entry; N and K are `constexpr` in the kernel and must equal the manifest's `N`/`K`; `M` is `int` |
+| `llamacpp` (default) | `int armbench_llamacpp_gemm(const void* A, const void* B, float* C, int64_t M, int64_t N, int64_t K)` | thread 0 only |
+| `entry` | `int armbench_entry_gemm(const uint16_t* A_bf16, float* output, const uint8_t* B_blocks, int M)` — reference-scalar harness entry; N and K baked in as `constexpr`, must equal the manifest's `N`/`K`; `M` is `int` | thread 0 only |
+| `entry_rows` | the .so exports **both** `armbench_entry_gemm` (`symbol`, N baked = full N) and `int armbench_entry_gemm_rows(const uint16_t* A_bf16, float* output, const uint8_t* B_blocks, int M, int n_rows)` (`symbol_rows`, default `armbench_entry_gemm_rows`): computes weight rows `[0, n_rows)` relative to `B_blocks` and writes `output[m*n_rows + n]` (output row stride `n_rows`, **not** N) | **multithreaded** (below) |
 
 In both: `A` = row-major bf16 `[M,K]` (raw uint16 bits, converted from f32 by the hook with
 round-to-nearest-even via `ggml_cpu_fp32_to_bf16`), `B` = the raw ggml quantized weight rows
@@ -78,13 +81,31 @@ case GGML_OP_MUL_MAT:
     } break;
 ```
 
-Threading: the CPU backend calls `ggml_compute_forward` on every worker thread with
-`params->ith/nth` and places `ggml_barrier` after every node (`ggml_graph_compute_thread`,
-ggml-cpu.c:3157). The override runs the kernel on `ith == 0` only; other threads return `true`
-immediately and wait at that barrier. The standalone ABI has no threading, so **override kernels
-are single-threaded** even when llama.cpp runs with `-t 8`; the stock path for non-overridden
-ops still uses all threads. (For a fair comparison, note the agent kernel's own internal
-parallelism — none today — vs ggml's chunked multi-threaded mul_mat.)
+## Threading
+
+The CPU backend calls `ggml_compute_forward` on every worker thread with `params->ith/nth` and
+places `ggml_barrier` after every node (`ggml_graph_compute_thread`, ggml-cpu.c:3157), so the
+override is barrier-free: no shared mutable state, each thread writes a disjoint slice of `dst`
+from its own thread-local bf16 scratch (`_Thread_local`, grown on demand), then returns.
+
+* `llamacpp` / `entry`: thread 0 runs the whole kernel; other threads return `true` immediately
+  and wait at the node barrier. (Measured: 5.5 tok/s flat at 1/4/16 threads vs stock 36.6 at 16 —
+  hence `entry_rows`.)
+* `entry_rows`, **M == 1 (decode)** — N-split: `chunk = ceil(N/nth/64)*64`; thread `i` handles
+  weight rows `[i*chunk, min(N,(i+1)*chunk))` and calls
+  `entry_gemm_rows(A_bf16, dst + r0, src0->data + r0*nb01, 1, n_i)` (`nb01 == ggml_row_size(type,K)`).
+  Because `dst` has a single row, `output[0*n_i + n]` lands at `dst[r0 + n]` — the `n_rows`
+  stride is exactly right. Each thread casts the one activation row to bf16 itself (K elements).
+  Threads with an empty range return.
+* `entry_rows`, **M >= 2 (prefill)** — M-split: `mpt = ceil(M/nth)`; thread `i` casts rows
+  `[m0, m0+M_i)` and calls `entry_gemm(A + 0, dst + m0*N, src0->data, M_i)` with the full-N entry
+  (output row stride N is correct there). Threads with no rows return.
+* `ARMBENCH_OVERRIDE_THREADS=1` forces the thread-0 path for all ABIs.
+* Remaining limitation: for `M` in `[2, nth)` only `M` threads do work (M-split cannot go below
+  one activation row per thread; an N-split for small M would need `entry_gemm_rows` with M>1
+  and stride `n_rows`, which the current dispatcher does not use). Batched decode with a handful
+  of sequences therefore under-utilises the cores; single-sequence decode (M=1) and real prefill
+  (M >= nth) are fully parallel.
 
 Op fusion: `ggml_cpu_try_fuse_ops` (ggml-cpu.c:3079) only fuses `RMS_NORM+MUL`; `MUL_MAT` is
 never fused, so the patched `case` is the sole path for plain-buffer matmuls.
@@ -135,18 +156,30 @@ Also note `GGML_USE_LLAMAFILE` (default ON): `llamafile_sgemm` is called *inside
 scripts/e2e/override/test_override.sh /path/to/llama.cpp [build dir]
 ```
 Requires the patch applied and `cmake --build build --target ggml ggml-base ggml-cpu` done
-(static libs). It builds `libtest_kernel.$SOEXT` (dylib on macOS, so on Linux) exposing both ABIs
-(dequantize `block_q4_K` via ggml's `dequantize_row_q4_K` + plain fp32 dot from the bf16 A), and
-a harness that runs a graph with `C1 = mul_mat(q4_K [K=512,N=64], f32 [K=512,M=3])` (llamacpp ABI)
-and `C2 = mul_mat(q4_K [K=256,N=32], f32 [K=256,M=3])` (entry ABI) on 4 threads, once without
-the env var (dumps reference), once with. Asserts: outputs agree (abs 1e-2 + rel 1e-2; the stock
-path quantizes activations to Q8_K, the override rounds them to bf16), 2 kernels loaded, 2
-override hits, each test-kernel entry called exactly once, and two `hit mul_mat` log lines.
+(static libs). It builds `test_kernel.c` twice (dylib on macOS, so on Linux; dequantize
+`block_q4_K` via ggml's `dequantize_row_q4_K` + plain fp32 dot from the bf16 A, per-call malloc
+scratch so it is thread-safe, atomic call counters + distinct-thread counter):
+`libtest_kernel` (N=32,K=256 baked) and `libtest_kernel_rows` (N=512,K=256 baked, also exports
+`armbench_entry_gemm_rows`). The harness runs one graph on 4 threads:
+
+| op | shape | manifest abi | expected dispatch |
+|---|---|---|---|
+| C1 | q4_K [K=512,N=64] x f32 [512,M=3] | `llamacpp` | thread 0 |
+| C2 | q4_K [K=256,N=32] x f32 [256,M=3] | `entry` | thread 0 |
+| C3 | q4_K [K=256,N=512] x f32 [256,M=1] | `entry_rows` | N-split: 4 x 128 rows -> 4 `entry_gemm_rows` calls |
+| C4 | q4_K [K=256,N=512] x f32 [256,M=6] | `entry_rows` | M-split: 2 rows/thread -> 3 `entry_gemm` calls |
+
+Run 1 (no env) dumps the stock outputs; run 2 (`ARMBENCH_OVERRIDES`, nth=4) and run 3
+(`ARMBENCH_OVERRIDE_THREADS=1`) compare against them (abs 1e-2 + rel 1e-2; the stock path
+quantizes activations to Q8_K, the override rounds them to bf16) and assert 3 kernels loaded,
+4 hits, the exact call counts above, >= 2 distinct threads in the rows kernel for run 2
+(observed 4) and exactly 1 for run 3, plus the `hit`/`dispatch=N-split` log lines.
 Result on this Mac (M2 Pro, v0.4.1): PASS, max abs diff 3.9e-3.
 
 ## Known limitations / TODO
 
-* **Single-threaded override kernels** (see Threading). `threads` field reserved.
+* `llamacpp`/`entry` ABIs are single-threaded; `entry_rows` is parallel except for `M` in
+  `[2, nth)` (see Threading). `threads` field reserved.
 * **rms_norm is a stub** (`armbench_override_rms_norm` always returns false; not wired into the
   patch). ggml's `GGML_OP_RMS_NORM` has no weight — llama.cpp emits `rms_norm` then `mul`, and the
   CPU backend fuses the pair in `ggml_cpu_try_fuse_ops`. The standalone

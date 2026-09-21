@@ -18,6 +18,16 @@
       "so": "/abs/path/libagent_gemm_q4_k_m_n2560_k9216.so",
       "symbol": "armbench_entry_gemm",
       "abi": "entry"
+    },
+    {
+      "op": "mul_mat",
+      "type": "q4_K",
+      "K": 2560,
+      "N": 2560,
+      "so": "/abs/path/libagent_gemm_q4_k_m_n2560_k2560.so",
+      "symbol": "armbench_entry_gemm",
+      "symbol_rows": "armbench_entry_gemm_rows",
+      "abi": "entry_rows"
     }
   ]
 }

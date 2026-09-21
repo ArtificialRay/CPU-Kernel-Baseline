@@ -1,10 +1,13 @@
 // test_override.cpp - end-to-end check of the armbench kernel-override hook.
 //
-//   test_override ref   <ref.bin>                 run the graph with the stock path, dump dst
-//   test_override check <ref.bin> <test_kernel.so> run with ARMBENCH_OVERRIDES set, compare
+//   test_override ref   <ref.bin>                              stock path, dump dst
+//   test_override check <ref.bin> <test_kernel.so> <rows_kernel.so> [expect_threads]
+//                                                              with ARMBENCH_OVERRIDES set, compare
 //
-// Graph: C1 = mul_mat(B1 q4_K [K=512,N=64], A1 f32 [K=512,M=3])   -> "llamacpp" ABI kernel
-//        C2 = mul_mat(B2 q4_K [K=256,N=32], A2 f32 [K=256,M=3])   -> "entry"    ABI kernel
+// Graph: C1 = mul_mat(B1 q4_K [K=512,N=64],  A1 f32 [K=512,M=3])  -> "llamacpp"   ABI kernel
+//        C2 = mul_mat(B2 q4_K [K=256,N=32],  A2 f32 [K=256,M=3])  -> "entry"      ABI kernel
+//        C3 = mul_mat(B3 q4_K [K=256,N=512], A3 f32 [K=256,M=1])  -> "entry_rows" N-split (4 x 128 rows)
+//        C4 = mul_mat(B4 q4_K [K=256,N=512], A4 f32 [K=256,M=6])  -> "entry_rows" M-split (2 rows/thread)
 // A is drawn as k/127 with a +-1 in every 256-block so the stock path's Q8_K activation
 // quantization is exact; the remaining stock-vs-override difference is bf16 rounding of A.
 #include "ggml.h"
@@ -71,12 +74,13 @@ int main(int argc, char ** argv) {
     const bool check = strcmp(argv[1], "check") == 0;
     const char * ref_path = argv[2];
 
-    mm m1 { 512, 64, 3 }, m2 { 256, 32, 3 };
-    fill(m1); fill(m2);
+    mm m1 { 512, 64, 3 }, m2 { 256, 32, 3 }, m3 { 256, 512, 1 }, m4 { 256, 512, 6 };
+    mm * all[] = { &m1, &m2, &m3, &m4 };
+    for (mm * x : all) fill(*x);
 
     ggml_init_params ip = { ggml_tensor_overhead() * 16 + ggml_graph_overhead(), nullptr, true };
     ggml_context * ctx = ggml_init(ip);
-    for (mm * x : { &m1, &m2 }) {
+    for (mm * x : all) {
         x->b = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, x->K, x->N);
         x->a = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, x->K, x->M);
         x->c = ggml_mul_mat(ctx, x->b, x->a);   // [N, M]
@@ -85,51 +89,63 @@ int main(int argc, char ** argv) {
     ggml_backend_cpu_set_n_threads(backend, 4);  // exercise the ith != 0 early-return path
     ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);   // plain CPU buffer: src0->extra == NULL
     if (!buf) { fprintf(stderr, "alloc failed\n"); return 2; }
-    for (mm * x : { &m1, &m2 }) {
+    for (mm * x : all) {
         ggml_backend_tensor_set(x->b, x->Bq.data(), 0, x->Bq.size());
         ggml_backend_tensor_set(x->a, x->A.data(), 0, x->A.size() * sizeof(float));
     }
     ggml_cgraph * gf = ggml_new_graph(ctx);
-    ggml_build_forward_expand(gf, m1.c);
-    ggml_build_forward_expand(gf, m2.c);
+    for (mm * x : all) ggml_build_forward_expand(gf, x->c);
 
     uint64_t hits_before = armbench_override_hit_count();
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) { fprintf(stderr, "graph compute failed\n"); return 2; }
     uint64_t hits = armbench_override_hit_count() - hits_before;
 
-    std::vector<float> out1(m1.M * m1.N), out2(m2.M * m2.N);
-    ggml_backend_tensor_get(m1.c, out1.data(), 0, out1.size() * sizeof(float));
-    ggml_backend_tensor_get(m2.c, out2.data(), 0, out2.size() * sizeof(float));
+    std::vector<std::vector<float>> out(4);
+    for (int i = 0; i < 4; i++) {
+        out[i].resize(all[i]->M * all[i]->N);
+        ggml_backend_tensor_get(all[i]->c, out[i].data(), 0, out[i].size() * sizeof(float));
+    }
 
     bool ok = true;
     printf("[%s] kernels loaded=%d override hits=%llu\n", check ? "override" : "stock", armbench_override_num_kernels(), (unsigned long long) hits);
-    ok &= compare("C1 vs fp32 reference", out1, m1.ref);
-    ok &= compare("C2 vs fp32 reference", out2, m2.ref);
+    const char * names[] = { "C1 (llamacpp, M=3)", "C2 (entry, M=3)", "C3 (entry_rows, M=1)", "C4 (entry_rows, M=6)" };
+    for (int i = 0; i < 4; i++) ok &= compare((std::string(names[i]) + " vs fp32 ref").c_str(), out[i], all[i]->ref);
 
     if (!check) {
         if (hits != 0) { printf("  expected 0 override hits in stock run\n"); ok = false; }
         FILE * f = fopen(ref_path, "wb");
-        fwrite(out1.data(), sizeof(float), out1.size(), f);
-        fwrite(out2.data(), sizeof(float), out2.size(), f);
+        for (auto & o : out) fwrite(o.data(), sizeof(float), o.size(), f);
         fclose(f);
         printf("  wrote %s\n", ref_path);
     } else {
-        std::vector<float> ref1(out1.size()), ref2(out2.size());
         FILE * f = fopen(ref_path, "rb");
-        if (!f || fread(ref1.data(), sizeof(float), ref1.size(), f) != ref1.size() || fread(ref2.data(), sizeof(float), ref2.size(), f) != ref2.size()) {
-            fprintf(stderr, "cannot read %s (run 'ref' first)\n", ref_path); return 2;
+        if (!f) { fprintf(stderr, "cannot read %s (run 'ref' first)\n", ref_path); return 2; }
+        for (int i = 0; i < 4; i++) {
+            std::vector<float> ref(out[i].size());
+            if (fread(ref.data(), sizeof(float), ref.size(), f) != ref.size()) { fprintf(stderr, "short read %s\n", ref_path); return 2; }
+            ok &= compare((std::string(names[i]) + " vs stock").c_str(), out[i], ref);
         }
         fclose(f);
-        ok &= compare("C1 override vs stock", out1, ref1);
-        ok &= compare("C2 override vs stock", out2, ref2);
-        if (armbench_override_num_kernels() != 2) { printf("  expected 2 kernels loaded\n"); ok = false; }
-        if (hits != 2) { printf("  expected 2 override hits, got %llu\n", (unsigned long long) hits); ok = false; }
-        if (argc > 3) {   // read the test kernel's own call counters
+        if (armbench_override_num_kernels() != 3) { printf("  expected 3 kernels loaded\n"); ok = false; }
+        if (hits != 4) { printf("  expected 4 override hits, got %llu\n", (unsigned long long) hits); ok = false; }
+        auto counter = [](void * h, const char * sym) { int * p = h ? (int *) dlsym(h, sym) : nullptr; return p ? *p : -1; };
+        if (argc > 3) {   // "llamacpp"/"entry" test kernel: exactly one call per ABI, thread 0 only
             void * h = dlopen(argv[3], RTLD_NOW);
-            int * c_ll = h ? (int *) dlsym(h, "test_kernel_calls_llamacpp") : nullptr;
-            int * c_en = h ? (int *) dlsym(h, "test_kernel_calls_entry")    : nullptr;
-            printf("  test kernel calls: llamacpp=%d entry=%d\n", c_ll ? *c_ll : -1, c_en ? *c_en : -1);
-            if (!c_ll || !c_en || *c_ll != 1 || *c_en != 1) { printf("  expected exactly one call per ABI\n"); ok = false; }
+            int c_ll = counter(h, "test_kernel_calls_llamacpp"), c_en = counter(h, "test_kernel_calls_entry"), th = counter(h, "test_kernel_distinct_threads");
+            printf("  single-thread kernel: calls llamacpp=%d entry=%d distinct_threads=%d\n", c_ll, c_en, th);
+            if (c_ll != 1 || c_en != 1 || th != 1) { printf("  expected one call per ABI on one thread\n"); ok = false; }
+        }
+        if (argc > 4) {   // "entry_rows" test kernel: N-split (M=1) + M-split (M=6)
+            int expect_threads = argc > 5 ? atoi(argv[5]) : 4;
+            void * h = dlopen(argv[4], RTLD_NOW);
+            int c_rows = counter(h, "test_kernel_calls_rows"), c_en = counter(h, "test_kernel_calls_entry"), th = counter(h, "test_kernel_distinct_threads");
+            printf("  entry_rows kernel: calls rows=%d entry=%d distinct_threads=%d (expect threads=%d)\n", c_rows, c_en, th, expect_threads);
+            if (expect_threads > 1) {
+                // nth=4: M=1,N=512 -> chunk 128 -> 4 rows calls; M=6 -> 2 rows/thread -> 3 entry calls
+                if (c_rows != 4 || c_en != 3 || th < 2) { printf("  expected rows=4 entry=3 distinct_threads>=2\n"); ok = false; }
+            } else {
+                if (c_rows != 0 || c_en != 2 || th != 1) { printf("  expected rows=0 entry=2 distinct_threads=1 (forced single)\n"); ok = false; }
+            }
         }
     }
     ggml_backend_buffer_free(buf);

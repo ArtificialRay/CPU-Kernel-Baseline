@@ -14,15 +14,21 @@
 //   "entry":              int armbench_entry_gemm(const uint16_t* A_bf16, float* output,
 //                                                  const uint8_t* B_blocks, int M)
 //                         (N and K baked into the kernel; must equal the manifest's N/K)
+//   "entry_rows":         the .so exports the "entry" symbol AND
+//                         int armbench_entry_gemm_rows(const uint16_t* A_bf16, float* output,
+//                                                       const uint8_t* B_blocks, int M, int n_rows)
+//                         computing weight rows [0,n_rows) relative to B_blocks with output row
+//                         stride n_rows. Only this ABI is dispatched multithreaded (see below).
 // In both: A = row-major bf16 [M,K] (raw bits), B = raw ggml quantized weight rows
 // (src0->data as-is), C/output = row-major f32 [M,N], return 0 on success.
 //
 // Threading: ggml calls ggml_compute_forward on every worker thread with
-// params->ith / params->nth. The override runs the standalone kernel on thread 0
-// only; all other threads return true immediately and wait at the barrier that
-// the graph loop places after every node. Override kernels are therefore
-// single-threaded (the standalone ABI has no threading); the manifest field
-// "threads" is parsed and stored but currently unused.
+// params->ith / params->nth; the graph loop barriers after every node, so the
+// override is barrier-free. "llamacpp"/"entry" kernels run on thread 0 only (the
+// others return true immediately). "entry_rows" kernels are dispatched on all
+// threads: M==1 (decode) splits N in 64-row chunks via entry_gemm_rows; M>=2
+// (prefill) splits M via entry_gemm. ARMBENCH_OVERRIDE_THREADS=1 forces the
+// thread-0-only path for every ABI. The manifest field "threads" is reserved.
 #pragma once
 
 #include <stdbool.h>
