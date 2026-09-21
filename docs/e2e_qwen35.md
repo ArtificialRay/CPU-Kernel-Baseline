@@ -1,6 +1,8 @@
-# E2E: agent-optimized kernels → end-to-end tokens/s on Qwen3.5-4B (llama.cpp, Graviton4)
+# E2E: agent-optimized kernels → end-to-end tokens/s on Qwen (llama.cpp, Graviton4)
 
-Branch `feat/e2e-qwen35`. Status: **scaffold, locally tested** (templates/repack/override hook on macOS arm64 against v0.4.1; nothing run on a Graviton yet) — nothing has been launched or spent.
+Models are entries in `config/e2e_models.json`; everything below is derived from the GGUF header, so the pipeline is the same for each. Primary: **Qwen3.8-27B** (this branch); the 4B walkthrough below is the worked example.
+
+Branches `feat/e2e-qwen35` (4B) → `feat/e2e-qwen38-27b` (adds the 27B + model registry). Status: **scaffold, locally tested** (templates/repack/override hook on macOS arm64 against v0.4.1; nothing run on a Graviton yet) — nothing has been launched or spent.
 
 ## Question
 Take one real model, let the agent optimize every kernel family that matters for
@@ -114,3 +116,37 @@ measures their real share with perf; add them as phase 2 if prefill share is mat
   gap costs. Multi-threading the override (splitting N across ggml's threads) is a later step.
 - Stock llama.cpp on Graviton may route Q4_K through repacked/KleidiAI paths; the measurement
   builds and flags are documented in `scripts/e2e/override/README.md`.
+
+## Qwen3.8-27B (branch feat/e2e-qwen38-27b)
+Newest dense Qwen (2026-08-13, Apache-2.0, `bartowski/Qwen3.8-27B-GGUF` Q4_K_M, 17 GB). Same
+`qwen35` architecture as the 4B: 64 decode layers (+1 MTP layer llama.cpp skips), d=5120,
+ff=17408, GDN inner 6144, 24/4 attention heads, untied Q6_K lm_head. Qwen3.6-27B is
+shape-identical; Qwen3.6-35B-A3B (MoE) is registered but not supported — its 8-of-256 expert
+`mul_mat_id` ops carry ~30% of decode bytes and the override hook only intercepts 2-D mul_mat.
+
+Per-token weight traffic **16.5 GB** (Q4_K 65%, Q6_K 25%, Q8_0 8.5%, Q5_K 0.7%): bandwidth-bound
+decode ≈ 3–4 tok/s on a c8g.4xlarge (32 GB RAM needed for the 17 GB file; **xlarge cannot run it**).
+Kernel evaluation boxes never load the model, so agent runs still use c8g.xlarge; only
+measurement needs the 4xlarge (tg128 ≈ 40 s/run → `--reps 5` over three builds ≈ 15 min/thread-count).
+
+| definition | share | roles |
+|---|---|---|
+| gemm_ggml_q4_K_n17408_k5120 | 33.5% | ffn_gate ×63, ffn_up ×47 |
+| gemm_ggml_q4_K_n5120_k17408 | 18.3% | ffn_down ×60 |
+| gemm_ggml_q6_K_n17408_k5120 | 7.5% | ffn_up ×16, ffn_gate ×1 |
+| gemm_ggml_q4_K_n10240_k5120 | 6.4% | attn_qkv ×36 |
+| gemm_ggml_q6_K_n248320_k5120 | 6.3% | output (lm_head) |
+| gemm_ggml_q6_K_n5120_k6144 | 5.6% | ssm_out ×36 |
+| gemm_ggml_q4_K_n6144_k5120 | 3.8% | attn_gate ×35 |
+| gemm_ggml_q8_0_n5120_k6144 | 5.7% | attn_output ×16, ssm_out ×12 (Q8_0 packed template pending) |
+| gemm_ggml_q4_K_n12288_k5120 | 3.2% | attn_q ×15 |
+| gemm_ggml_q6_K_n10240_k5120 | 2.9% | attn_qkv ×11 |
+| gemm_ggml_q6_K_n6144_k5120 | 1.9% | attn_gate ×12 |
+| others (Q8_0 k/v/up/down, Q5_K up, Q6_K q/down) | <1% each | |
+
+Cost scales with the number of distinct shapes (≈20 definitions here vs 11 for the 4B), not
+with model size: ≈ $200–300 per seed at Sol rates. lm_head reference: 248320×5120 chunked.
+
+Runbook: `provision_e2e.py --label <4xl box> --model qwen3.8-27b --agent-build`, then `measure_e2e.py`
+with `--threads 1 16`. Regenerate definitions: `qwen35_inventory.py <header> --json inv.json && gen_qwen35_definitions.py inv.json --model-tag qwen3.8-27b`.
+

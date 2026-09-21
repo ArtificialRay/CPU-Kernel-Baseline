@@ -71,36 +71,60 @@ def main() -> None:
         if k.startswith(f"{arch}.") and not isinstance(kv[k], str) or k in ("general.name", "general.file_type"):
             print(f"  {k} = {kv[k]}")
 
+    # Per-token weight traffic rules (all verified against llama.cpp's graph):
+    #  - token_embd is a get_rows (one row) unless the lm_head is tied (no output.weight),
+    #    in which case it is also the final mul_mat and is read in full once per token.
+    #  - a trailing "nextn" (MTP) layer, if present, is skipped by normal decode.
+    #  - 3-D expert tensors [K, N, n_expert] are mul_mat_id: only expert_used of
+    #    expert_count experts are read per token (listed separately; the 2-D gemm
+    #    definitions do not cover them).
+    tied = not any(name == "output.weight" for name, _, _, _ in tensors)
+    n_block = int(kv.get(f"{arch}.block_count", 0) or 0)
+    n_nextn = int(kv.get(f"{arch}.nextn_predict_layers", 0) or 0)
+    n_exp = int(kv.get(f"{arch}.expert_count", 0) or 0)
+    n_used = int(kv.get(f"{arch}.expert_used_count", 0) or 0)
+    skipped_layers = set(range(n_block - n_nextn, n_block)) if n_nextn else set()
+    print(f"lm_head tied={tied}  blocks={n_block} (skipping MTP layers {sorted(skipped_layers) or 'none'})"
+          + (f"  experts {n_used}/{n_exp} used per token" if n_exp else ""))
+
     rows = collections.OrderedDict()
     for name, dims, ty, _ in tensors:
+        m = re.match(r"blk\.(\d+)\.", name)
+        if m and int(m.group(1)) in skipped_layers:
+            continue
+        if name == "token_embd.weight" and not tied:
+            continue   # get_rows only
         role = re.sub(r"blk\.\d+\.", "blk.N.", name)
         tname, bpw = GGML_TYPES.get(ty, (str(ty), 0.0))
         key = (role, tname, tuple(dims))
         n = 1
         for d in dims: n *= d
-        r = rows.setdefault(key, {"count": 0, "params": 0, "bytes": 0.0})
-        r["count"] += 1; r["params"] += n; r["bytes"] += n * bpw / 8
-    # Per-token traffic: every weight tensor is read once per token except
-    # token_embd, which is read once as the tied lm_head (mul_mat) and once as
-    # a single get_rows row (negligible). Count it once.
+        frac = (n_used / n_exp) if (len(dims) == 3 and n_exp and dims[2] == n_exp) else 1.0
+        r = rows.setdefault(key, {"count": 0, "params": 0, "bytes": 0.0, "moe": frac != 1.0})
+        r["count"] += 1; r["params"] += n; r["bytes"] += n * bpw / 8 * frac
     total = sum(r["bytes"] for r in rows.values())
-    print(f"\n{'n':>3} {'role':34} {'type':5} {'shape [K, N]':16} {'MB/token':>9} {'share':>6}")
-    inv = []
+    print(f"\n{'n':>3} {'role':34} {'type':5} {'shape [K, N(, E)]':20} {'MB/token':>9} {'share':>6}")
+    inv, moe = [], []
     for (role, tname, dims), r in sorted(rows.items(), key=lambda kv: -kv[1]["bytes"]):
         share = r["bytes"] / total
-        print(f"{r['count']:>3} {role:34} {tname:5} {str(list(dims)):16} {r['bytes']/1e6:9.1f} {share:6.1%}")
-        if len(dims) == 2 and DATASET_QUANT.get(tname) and dims[0] >= 256 and dims[1] >= 32:
-            inv.append({"role": role, "ggml_type": tname, "quant": DATASET_QUANT[tname],
-                        "K": int(dims[0]), "N": int(dims[1]), "layers": r["count"],
-                        "share_per_token": round(share, 4)})
+        print(f"{r['count']:>3} {role:34} {tname:5} {str(list(dims)):20} {r['bytes']/1e6:9.1f} {share:6.1%}"
+              + ("  [mul_mat_id]" if r["moe"] else ""))
+        if len(dims) < 2:
+            continue   # norms, biases, A/dt vectors: not matmul weights
+        entry = {"role": role, "ggml_type": tname, "quant": DATASET_QUANT.get(tname),
+                 "K": int(dims[0]), "N": int(dims[1]), "layers": r["count"], "share_per_token": round(share, 4)}
+        if r["moe"]:
+            entry["experts"] = int(dims[2]); moe.append(entry)
+        elif len(dims) == 2 and DATASET_QUANT.get(tname) and dims[0] >= 256 and dims[1] >= 32:
+            inv.append(entry)
     by_type = collections.Counter()
     for (_, tname, _), r in rows.items(): by_type[tname] += r["bytes"]
     print("\nper-token weight bytes by type: " + ", ".join(f"{t} {b/total:.1%}" for t, b in by_type.most_common()))
     print(f"total {total/1e6:.0f} MB/token")
     if args.json:
-        json.dump({"arch": arch, "file": args.gguf, "total_bytes_per_token": total,
-                   "mul_mat": inv}, open(args.json, "w"), indent=1)
-        print(f"wrote {args.json} ({len(inv)} mul_mat shapes)")
+        json.dump({"arch": arch, "name": kv.get("general.name"), "file": args.gguf, "tied_lm_head": tied,
+                   "total_bytes_per_token": total, "mul_mat": inv, "mul_mat_id": moe}, open(args.json, "w"), indent=1)
+        print(f"wrote {args.json} ({len(inv)} mul_mat shapes" + (f", {len(moe)} mul_mat_id expert shapes NOT covered)" if moe else ")"))
 
 
 if __name__ == "__main__":

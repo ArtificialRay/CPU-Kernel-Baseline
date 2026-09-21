@@ -1,0 +1,18 @@
+{
+  "_comment": "Models for the end-to-end tokens/s experiment (scripts/e2e). Keys are the --model tags; gguf is fetched by scripts/e2e/fetch_model.sh into ~/models/<file>. bytes_per_token from scripts/e2e/qwen35_inventory.py (Q4_K_M, decode).",
+  "qwen3.5-4b": {
+    "repo": "unsloth/Qwen3.5-4B-GGUF", "file": "Qwen3.5-4B-Q4_K_M.gguf", "size_gb": 2.74,
+    "arch": "qwen35", "released": "2026-02", "lm_head": "tied Q6_K", "bytes_per_token_gb": 2.73,
+    "min_measure_instance": "c8g.xlarge", "note": "smallest hybrid-GDN Qwen; ~24 tok/s @4 threads class"
+  },
+  "qwen3.8-27b": {
+    "repo": "bartowski/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-Q4_K_M.gguf", "size_gb": 17.0,
+    "arch": "qwen35", "released": "2026-08-13", "lm_head": "untied Q6_K", "bytes_per_token_gb": 16.4,
+    "min_measure_instance": "c8g.4xlarge", "note": "newest dense Qwen; same qwen35 arch (64 layers + 1 MTP layer skipped in decode); ~3-4 tok/s bandwidth-bound on 16 cores"
+  },
+  "qwen3.6-35b-a3b": {
+    "repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "file": "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf", "size_gb": 21.0,
+    "arch": "qwen35moe", "released": "2026-04", "lm_head": "untied Q6_K", "bytes_per_token_gb": 2.2,
+    "min_measure_instance": "c8g.4xlarge", "note": "NOT supported yet: 8/256-expert mul_mat_id ops carry ~30% of decode bytes and the override hook only intercepts 2-D mul_mat"
+  }
+}

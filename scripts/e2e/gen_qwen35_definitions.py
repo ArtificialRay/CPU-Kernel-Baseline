@@ -24,6 +24,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts" / "e2e"))
 import kquant_templates as kt  # noqa: E402
+if not hasattr(kt, "PACKED_QUANTS"):
+    kt.PACKED_QUANTS = ("q4_k_m", "q5_k", "q6_k")
 
 BT = REPO / "bench-trace"
 # Harness workloads stay decode-sized like the existing gemm definitions (M <= 24 there):
@@ -64,11 +66,20 @@ def main() -> None:
     lm_head_m_values = [int(x) for x in args.lm_head_m_values.split(",")]
 
     seen = {}
+    uncovered = 0.0
     for e in inv["mul_mat"]:
         if e["share_per_token"] < args.min_share:
             continue
+        if e["quant"] not in kt.PACKED_QUANTS:
+            print(f"- SKIP {e['role']} ({e['ggml_type']}, {e['share_per_token']:.1%}): no packed-ABI template for this type yet")
+            uncovered += e["share_per_token"]; continue
         key = (e["quant"], e["N"], e["K"])
         seen.setdefault(key, []).append(e)
+    for e in inv.get("mul_mat_id", []):
+        print(f"- SKIP {e['role']} (mul_mat_id over {e['experts']} experts, {e['share_per_token']:.1%}): expert routing not covered")
+        uncovered += e["share_per_token"]
+    if uncovered:
+        print(f"uncovered decode-byte share: {uncovered:.1%}")
 
     print(f"{len(seen)} unique (quant, N, K) shapes from {args.inventory}")
     n_written = 0
