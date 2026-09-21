@@ -2,7 +2,7 @@
 
 Models are entries in `config/e2e_models.json`; everything below is derived from the GGUF header, so the pipeline is the same for each. Primary: **Qwen3.8-27B** (this branch); the 4B walkthrough below is the worked example.
 
-Branches `feat/e2e-qwen35` (4B) → `feat/e2e-qwen38-27b` (adds the 27B + model registry). Status: **scaffold, locally tested** (templates/repack/override hook on macOS arm64 against v0.4.1; nothing run on a Graviton yet) — nothing has been launched or spent.
+Branches `feat/e2e-qwen35` (4B) → `feat/e2e-qwen38-27b` (adds the 27B + model registry). Status: **4B run complete (2026-09-21)** — see Results at the end.
 
 ## Question
 Take one real model, let the agent optimize every kernel family that matters for
@@ -149,4 +149,54 @@ with model size: ≈ $200–300 per seed at Sol rates. lm_head reference: 248320
 
 Runbook: `provision_e2e.py --label <4xl box> --model qwen3.8-27b --agent-build`, then `measure_e2e.py`
 with `--threads 1 16`. Regenerate definitions: `qwen35_inventory.py <header> --json inv.json && gen_qwen35_definitions.py inv.json --model-tag qwen3.8-27b`.
+
+## Results — Qwen3.5-4B, Claude Code + Claude Fable 5.1, 2026-09-21
+
+**Agent runs.** One lane, c8g.xlarge, Claude Code headless (Max plan), `--min-iterations 40 --max-iterations 50`,
+isa sve2, 11 packed-ABI definitions (99.7% of decode bytes), ~45 min/kernel, ~10.5 h total. Every kernel
+met the 40-call floor after the prompt fix (see `test_scripts/harness_adapters.py`). Per-kernel best vs
+`baseline-llamacpp-arm` (= `ggml_mul_mat` on the plain layout, i.e. ggml's generic dot-product path):
+
+| definition | share | best |
+|---|---|---|
+| gemm_ggml_q4_K_n9216_k2560 (ffn gate/up) | 31.1% | 3.00x |
+| gemm_ggml_q6_K_n248320_k2560 (lm_head) | 19.1% | 2.25x |
+| gemm_ggml_q5_K_n8192_k2560 (GDN qkv) | 12.7% | 3.42x |
+| gemm_ggml_q6_K_n2560_k9216 (ffn down) | 11.3% | 2.74x |
+| gemm_ggml_q4_K_n2560_k9216 (ffn down) | 7.8% | 2.87x |
+| gemm_ggml_q5_K_n2560_k4096 (GDN out) | 6.3% | 3.39x |
+| gemm_ggml_q4_K_n4096_k2560 (GDN z) | 5.2% | 3.03x |
+| gemm_ggml_q4_K_n8192_k2560 (attn q) | 3.5% | 2.99x |
+| gemm_ggml_q4_K_n2560_k4096 (attn out) | 1.7% | 2.95x |
+| gemm_ggml_q4_K_n1024_k2560 (attn k/v) | 0.6% | 3.11x |
+| gemm_ggml_q6_K_n1024_k2560 (attn v) | 0.4% | 2.70x |
+
+Geomean 2.93x. Kernels: HF `solutions/llama.cpp/claude-code-claude-fable-5-1-sve2/`; runs under `runs/e2e-qwen3.5-4b/`.
+Every kernel is a genuine Q*_K × Q8 int8 matmul (i8mm `usmmla` tiles + dynamic activation quantization) — the
+same idea as llama.cpp's own repack path, rediscovered for the unpacked layout.
+
+**End-to-end** (c8g.4xlarge, llama.cpp v0.4.1, Q4_K_M, llama-bench pp512/tg128, medians of 5 interleaved reps,
+spreads < 1%; `stock` = upstream with repack ON (what users run), `norepack` = upstream with
+`GGML_CPU_REPACK=OFF`/`KLEIDIAI=OFF` (the dispatch path the agent kernels replace), `agent` = norepack + override
+hook + the 11 kernels with the threaded `entry_rows` dispatch, `agent1t` = same kernels forced to one thread):
+
+| threads | kind | stock | norepack | agent | agent1t | agent/stock | agent/norepack |
+|---|---|---|---|---|---|---|---|
+| 1 | pp512 | 13.7 | 6.6 | **19.6** | 19.7 | **1.43x** | 2.98x |
+| 1 | tg128 | 5.31 | 4.01 | **5.78** | 5.78 | **1.09x** | 1.44x |
+| 4 | pp512 | 53.3 | 26.2 | **75.3** | 27.5 | **1.41x** | 2.87x |
+| 4 | tg128 | 17.7 | 13.1 | **19.1** | 6.1 | **1.08x** | 1.46x |
+| 16 | pp512 | 158.0 | 86.0 | **213.1** | 23.3 | **1.35x** | 2.48x |
+| 16 | tg128 | 38.7 | 33.9 | **41.9** | 5.0 | **1.08x** | 1.24x |
+
+Reading: (1) the agent kernels beat the code path users actually run (stock, repack on) at every thread count:
++35–43% prefill, +8–9% decode. (2) Against the generic path they replace, 2.5–3.0x prefill and 1.24–1.46x decode.
+(3) The 2.93x per-kernel geomean compresses to 1.24–1.46x on decode because decode is DRAM-bandwidth bound
+(2.73 GB of weights per token; 16-thread stock already streams at ~106 GB/s-equivalent) — the microbenchmark's
+hot-L2, single-thread setting overstates what a memory-bound loop can deliver. (4) `agent1t` shows why the
+override had to be threaded: single-threaded kernels cap decode at 5–6 tok/s regardless of thread count.
+(5) Caveats: only mul_mat is overridden (norms, GDN recurrence, attention, activations stay stock — ~0.3% of
+decode bytes but more of prefill compute); the override casts activations f32→bf16 per call; perplexity was
+not captured in this run (per-kernel SQNR gates passed; a perplexity-only rerun is the pending acceptance check).
+Raw numbers: HF `runs/e2e-qwen3.5-4b/measurements/`.
 
