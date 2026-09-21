@@ -52,6 +52,7 @@ def llama_bench(bench_bin: Path, model: Path, threads: int, pp: int, tg: int, en
 
 
 def main() -> None:
+    sys.stdout.reconfigure(line_buffering=True)   # never lose progress lines to a pipe buffer
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, type=Path)
     ap.add_argument("--build", action="append", required=True, metavar="NAME=BUILD_DIR")
