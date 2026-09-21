@@ -196,7 +196,24 @@ Reading: (1) the agent kernels beat the code path users actually run (stock, rep
 hot-L2, single-thread setting overstates what a memory-bound loop can deliver. (4) `agent1t` shows why the
 override had to be threaded: single-threaded kernels cap decode at 5–6 tok/s regardless of thread count.
 (5) Caveats: only mul_mat is overridden (norms, GDN recurrence, attention, activations stay stock — ~0.3% of
-decode bytes but more of prefill compute); the override casts activations f32→bf16 per call; perplexity was
-not captured in this run (per-kernel SQNR gates passed; a perplexity-only rerun is the pending acceptance check).
-Raw numbers: HF `runs/e2e-qwen3.5-4b/measurements/`.
+decode bytes but more of prefill compute); the override casts activations f32→bf16 per call.
+Raw numbers: HF `runs/e2e-qwen3.5-4b/measurements/`, W&B run `e2e_qwen3.5-4b_fable_c8g4xl_20260921T1845Z`.
+
+### Perplexity acceptance check — FAILED for prefill, marginal for decode
+wikitext-2 test, 8 chunks, 16 threads: stock **10.06** ± 0.61, norepack 10.07, **agent 14.45** ± 0.90, agent1t 14.58.
+Attribution (override restricted to one kernel at a time, ub=512): ffn gate/up q4_K 11.51, GDN in-proj q5_K 11.23,
+GDN z-gate q4_K 10.87, attn q 10.23; all others ≤ 10.14 (lm_head 10.09, every Q6_K clean). The three costly kernels
+are exactly the ones fed the normalized hidden state, where LLM activations carry large channel outliers.
+Per-call M dependence (2 chunks, stock 8.56): M=1 → 8.80 (+3%), M=32 → 12.7 (+49%), M=2…8 → ~85 (catastrophic).
+**Control:** the reference-scalar kernels spliced through the same override reproduce stock (8.54/8.55 at ub32/ub512),
+so the splice is correct and the defect is in the agent kernels' numerics. On the Mac the Fable q4_K kernel is
+correct at every M on random data (41 dB SQNR) but drops to 17 dB with channel outliers because it uses one
+activation scale per row (ggml: one per 256-element block); the M=2…8 collapse is not reproduced with synthetic
+data and its mechanism is still open.
+
+**What this means.** The per-kernel harness — random inputs, 20 dB SQNR gate, M ≤ 32 — accepted kernels that are
+unusable in the real model. Paper-safe statement today: decode (M=1) +8% tokens/s at a +1–3% perplexity cost;
+the prefill numbers are not valid. Fixes for the benchmark: (a) workloads drawn from real activations (dump
+from llama.cpp), (b) a gate relative to the baseline's own SQNR instead of an absolute 20 dB, (c) end-to-end
+perplexity as the acceptance test for any e2e claim. Attribution logs: HF `runs/e2e-qwen3.5-4b/measurements/attrib/`.
 
