@@ -14,7 +14,7 @@ CC_="${CC:-clang-18}"; CXX_="${CXX:-clang++-18}"
 COMMON=(-DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_ACCELERATE=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF
         -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=OFF -DLLAMA_CURL=OFF)
 NOREPACK=(-DGGML_CPU_REPACK=OFF -DGGML_CPU_KLEIDIAI=OFF)
-TARGETS=(llama-bench llama-cli llama-perplexity)
+TARGETS=(llama-bench llama-perplexity)
 
 echo "[agent-build] applying override hook to $L"
 bash "$HERE/override/apply.sh" "$L"

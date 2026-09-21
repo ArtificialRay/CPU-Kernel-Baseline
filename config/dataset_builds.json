@@ -42,7 +42,7 @@
     "_comment": "Kernel dataset build (ggml static libs only). Pinned to a release tag so every solution/baseline trace across a sweep sees the same ggml; bump deliberately and re-collect baselines."
   },
   "llama.cpp-e2e": {
-    "_comment": "End-to-end build for scripts/e2e: full llama.cpp tools (llama-bench, llama-cli, llama-perplexity) at the same pin, in a separate tree so the kernel-dataset build above is untouched; the model GGUF is fetched separately by scripts/e2e/fetch_model.sh from config/e2e_models.json. 'stock' = upstream CPU backend as shipped (the baseline tokens/s); scripts/e2e/build_agent_llamacpp.sh derives the 'agent' build (override hook applied) from this tree.",
+    "_comment": "End-to-end build for scripts/e2e: full llama.cpp tools (llama-bench, llama-perplexity; v0.4.1 has no llama-cli target) at the same pin, in a separate tree so the kernel-dataset build above is untouched; the model GGUF is fetched separately by scripts/e2e/fetch_model.sh from config/e2e_models.json. 'stock' = upstream CPU backend as shipped (the baseline tokens/s); scripts/e2e/build_agent_llamacpp.sh derives the 'agent' build (override hook applied) from this tree.",
     "pin": "v0.4.1",
     "ready_check": "test -x ~/llama.cpp-e2e/build-stock/bin/llama-bench",
     "steps": [
@@ -57,8 +57,8 @@
         "timeout": 240
       },
       {
-        "label": "cmake build stock llama-bench/llama-cli/llama-perplexity",
-        "cmd": "cd ~/llama.cpp-e2e && cmake --build build-stock -j$(nproc) --target llama-bench llama-cli llama-perplexity",
+        "label": "cmake build stock llama-bench/llama-perplexity",
+        "cmd": "cd ~/llama.cpp-e2e && cmake --build build-stock -j$(nproc) --target llama-bench llama-perplexity",
         "timeout": 1500
       }
     ]

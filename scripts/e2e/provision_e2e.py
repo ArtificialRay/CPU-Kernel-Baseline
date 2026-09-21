@@ -61,6 +61,7 @@ def main() -> None:
 
     if args.agent_build:
         src = REPO_ROOT / "scripts" / "e2e"
+        target.run("mkdir -p ~/arm-bench-e2e/scripts/e2e", timeout=30)   # rsync only creates the last path component
         rc = subprocess.run(["rsync", "-az", "--exclude", "__pycache__", f"{src}/",
                              f"{target.user}@{target.host}:arm-bench-e2e/scripts/e2e/",
                              "-e", f"ssh -i {target.key_file} -o StrictHostKeyChecking=accept-new"]).returncode
