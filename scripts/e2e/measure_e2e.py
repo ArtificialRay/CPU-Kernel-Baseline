@@ -56,6 +56,8 @@ def main() -> None:
     ap.add_argument("--model", required=True, type=Path)
     ap.add_argument("--build", action="append", required=True, metavar="NAME=BUILD_DIR")
     ap.add_argument("--overrides", action="append", default=[], metavar="NAME=MANIFEST_JSON")
+    ap.add_argument("--env", action="append", default=[], metavar="NAME=KEY=VALUE",
+                    help="extra environment variable for one build (e.g. agent1t=ARMBENCH_OVERRIDE_THREADS=1 for the single-thread ablation)")
     ap.add_argument("--threads", nargs="+", type=int, default=[4])
     ap.add_argument("--pp", type=int, default=512)
     ap.add_argument("--tg", type=int, default=128)
@@ -68,12 +70,18 @@ def main() -> None:
     builds = {}
     for spec in args.build:
         name, _, path = spec.partition("=")
-        builds[name] = {"dir": Path(path).expanduser(), "manifest": None}
+        builds[name] = {"dir": Path(path).expanduser(), "manifest": None, "env": {}}
     for spec in args.overrides:
         name, _, path = spec.partition("=")
         if name not in builds:
             raise SystemExit(f"--overrides names unknown build {name!r}")
         builds[name]["manifest"] = str(Path(path).expanduser())
+    for spec in args.env:
+        name, _, kv = spec.partition("=")
+        k, _, v = kv.partition("=")
+        if name not in builds:
+            raise SystemExit(f"--env names unknown build {name!r}")
+        builds[name]["env"][k] = v
     for name, b in builds.items():
         if not (b["dir"] / "bin" / "llama-bench").exists():
             raise SystemExit(f"{name}: {b['dir']}/bin/llama-bench not found")
@@ -87,6 +95,7 @@ def main() -> None:
                 if b["manifest"]:
                     env["ARMBENCH_OVERRIDES"] = b["manifest"]
                     env.setdefault("ARMBENCH_OVERRIDE_LOG", "0")
+                env.update(b["env"])
                 for r in llama_bench(b["dir"] / "bin" / "llama-bench", args.model, threads, args.pp, args.tg, env):
                     kind = "pp" if r.get("n_prompt", 0) > 0 else "tg"
                     samples.append({"build": name, "threads": threads, "rep": rep, "kind": kind,
@@ -109,22 +118,8 @@ def main() -> None:
             if base and name != "stock":
                 v["speedup_vs_stock_median"] = v["median"] / base["median"]
 
-    ppl = {}
-    if args.perplexity:
-        for name, b in builds.items():
-            env = dict(os.environ)
-            if b["manifest"]:
-                env["ARMBENCH_OVERRIDES"] = b["manifest"]
-            out = run([str(b["dir"] / "bin" / "llama-perplexity"), "-m", str(args.model), "-f", str(args.perplexity),
-                       "--chunks", str(args.ppl_chunks), "-t", str(max(args.threads))], env=env, timeout=7200)
-            line = [l for l in out.splitlines() if "estimate" in l.lower() or "PPL" in l]
-            ppl[name] = line[-1] if line else out[-500:]
-            print(f"perplexity {name}: {ppl[name]}")
-
-    result = {"model": str(args.model), "pp": args.pp, "tg": args.tg, "reps": args.reps,
-              "builds": {n: {"dir": str(b["dir"]), "manifest": b["manifest"]} for n, b in builds.items()},
-              "host": os.uname().nodename, "summary": summary, "perplexity": ppl, "samples": samples}
-    args.out.write_text(json.dumps(result, indent=1))
+    def dump(ppl):
+        dump(ppl)
     print(f"\n{'config':28} {'median tok/s':>13} {'vs stock':>9}")
     for k, v in summary.items():
         print(f"{k:28} {v['median']:13.2f} {v.get('speedup_vs_stock_median', float('nan')):9.3f}")
