@@ -128,11 +128,15 @@ class ClaudeCodeAdapter(HarnessAdapter):
     name = "claude-code"
     prompt_template = (
         'Optimize the "%s" kernel definition (dataset: %s, baseline solution source: %s) '
-        'in ISA %s. You must spend at least %s tool calls but not exceed %s tool calls to '
-        'explore genuinely different optimization attempts before you are allowed to submit. '
-        'once you hit that ceiling, stop iterating and submit your best version immediately, '
-        'since every iteration spends real model API budget. Follow the ground rules and '
-        'workflow in your system prompt.'
+        'in ISA %s. Budget rule: you must make at least %s calls to the kernel server\'s '
+        'compile/evaluate/disassemble tools (only those count -- file reads, greps, resource '
+        'reads and other local tools do NOT count) exploring genuinely different optimization '
+        'attempts before you are done, and at most %s such calls in total. Submitting early is '
+        'fine as a checkpoint, but keep iterating and re-submitting improvements until you reach '
+        'the floor; do not stop before it even if an attempt already looks good. Once you '
+        'approach the ceiling, stop iterating and submit your best version immediately, since '
+        'the server rejects further compile/evaluate calls past it and every iteration spends '
+        'real model API budget. Follow the ground rules and workflow in your system prompt.'
     )
     template_args = 6
 
