@@ -87,6 +87,8 @@ struct armbench_kernel {
     void *           fn;
     void *           fn_rows;      // entry_rows only
     uint64_t         hits;
+    int              dumped;       // ARMBENCH_DUMP_DIR: calls written so far
+    int              seen;         // ARMBENCH_DUMP_DIR: calls observed (for striding)
 };
 
 static struct armbench_kernel * g_kernels   = NULL;
@@ -94,6 +96,10 @@ static int                      g_nkernels  = 0;
 static bool                     g_enabled   = false;  // fast path: false unless a manifest loaded
 static bool                     g_log       = false;
 static bool                     g_force_single = false;  // ARMBENCH_OVERRIDE_THREADS=1
+static const char *             g_dump_dir     = NULL;   // ARMBENCH_DUMP_DIR
+static int                      g_dump_calls   = 4;      // ARMBENCH_DUMP_CALLS
+static bool                     g_dump_weights = false;  // ARMBENCH_DUMP_WEIGHTS
+static int                      g_dump_stride  = 8;      // ARMBENCH_DUMP_STRIDE (layer spread)
 static uint64_t                 g_total_hits = 0;
 
 // ---------------------------------------------------------------------------
@@ -309,6 +315,24 @@ static void armbench_override_init_impl(void) {
     g_log = lg && *lg && strcmp(lg, "0") != 0;
     const char * th = getenv("ARMBENCH_OVERRIDE_THREADS");
     g_force_single = th && strcmp(th, "1") == 0;
+    // ARMBENCH_DUMP_DIR: capture real activations (and the real weight rows once) per
+    // intercepted shape, so definition workloads can be built from what the model
+    // actually computes instead of synthetic random tensors. Forces single-thread
+    // dispatch so A is the whole ubatch, not one thread's row slice.
+    g_dump_dir = getenv("ARMBENCH_DUMP_DIR");
+    if (g_dump_dir && !*g_dump_dir) g_dump_dir = NULL;
+    if (g_dump_dir) {
+        const char * nc = getenv("ARMBENCH_DUMP_CALLS");
+        if (nc && *nc) g_dump_calls = atoi(nc);
+        const char * db = getenv("ARMBENCH_DUMP_WEIGHTS");
+        g_dump_weights = db && strcmp(db, "0") != 0;
+        const char * st = getenv("ARMBENCH_DUMP_STRIDE");
+        if (st && *st) g_dump_stride = atoi(st);
+        if (g_dump_stride < 1) g_dump_stride = 1;
+        g_force_single = true;
+        fprintf(stderr, "[armbench-override] dumping %d call(s) per shape to %s (weights=%d)\n",
+                g_dump_calls, g_dump_dir, (int) g_dump_weights);
+    }
 
     size_t len = 0;
     char * buf = read_file(path, &len);
@@ -435,6 +459,42 @@ static void kernel_failed(const struct armbench_kernel * k, int rc, const struct
     abort();
 }
 
+
+// ---------------------------------------------------------------------------
+// Activation / weight capture (ARMBENCH_DUMP_DIR)
+// ---------------------------------------------------------------------------
+// Writes raw little-endian tensors next to a one-line .meta descriptor:
+//   <type>_K<K>_N<N>.call<i>.a.bin   bf16 activations, row-major [M, K]
+//   <type>_K<K>_N<N>.b.bin           the tensor's own ggml block rows [N, K_bytes]
+// scripts/e2e/dump_to_workloads.py turns these into bench-trace workloads.
+static void armbench_dump(struct armbench_kernel * k, const struct ggml_tensor * src0,
+                          const uint16_t * A, int64_t M, int64_t N, int64_t K) {
+    char path[2048], meta[2048];
+    const char * tn = ggml_type_name(src0->type);
+    snprintf(path, sizeof path, "%s/%s_K%lld_N%lld.call%d.a.bin",
+             g_dump_dir, tn, (long long) K, (long long) N, k->dumped);
+    FILE * f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "[armbench-override] dump: cannot write %s\n", path); return; }
+    fwrite(A, sizeof(uint16_t), (size_t) M * (size_t) K, f);
+    fclose(f);
+    snprintf(meta, sizeof meta, "%s/%s_K%lld_N%lld.call%d.a.meta",
+             g_dump_dir, tn, (long long) K, (long long) N, k->dumped);
+    f = fopen(meta, "w");
+    if (f) {
+        fprintf(f, "{\"type\":\"%s\",\"K\":%lld,\"N\":%lld,\"M\":%lld,\"dtype\":\"bfloat16\",\"call\":%d}\n",
+                tn, (long long) K, (long long) N, (long long) M, k->dumped);
+        fclose(f);
+    }
+    if (g_dump_weights && k->dumped == 0) {
+        const size_t nb = (size_t) src0->nb[1] * (size_t) N;
+        snprintf(path, sizeof path, "%s/%s_K%lld_N%lld.b.bin",
+                 g_dump_dir, tn, (long long) K, (long long) N);
+        f = fopen(path, "wb");
+        if (f) { fwrite(src0->data, 1, nb, f); fclose(f); }
+    }
+    k->dumped++;
+}
+
 bool armbench_override_mul_mat(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
     if (!armbench_override_ready()) return false;
 
@@ -515,6 +575,10 @@ bool armbench_override_mul_mat(const struct ggml_compute_params * params, struct
         ggml_cpu_fp32_to_bf16(row, (ggml_bf16_t *) (A + m * K), K);
     }
     note_hit(k, src0, K, N, M, params->nth, "single");
+    // One dump every g_dump_stride calls: the same (type,K,N) shape recurs once per
+    // layer, and early and late layers have very different activation statistics.
+    if (g_dump_dir && k->dumped < g_dump_calls && (k->seen++ % g_dump_stride) == 0)
+        armbench_dump(k, src0, A, M, N, K);
 
     int rc;
     switch (k->abi) {

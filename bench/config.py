@@ -67,9 +67,17 @@ class BenchmarkConfig:
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
     required_matched_ratio: float = DEFAULT_REQUIRED_MATCHED_RATIO
     min_sqnr_db: float = 20.0
-    """SQNR pass threshold (dB) for definitions tagged `correctness:sqnr` (e.g. q8_0
+    """Absolute SQNR floor (dB) for definitions tagged `correctness:sqnr` (e.g. q8_0
     MoE, whose real quantized arithmetic can't match a full-precision reference on
-    an elementwise tolerance). ggml scores ~44 dB; garbage/overflow ~0 dB."""
+    an elementwise tolerance). ggml scores ~44 dB; garbage/overflow ~0 dB. Used only
+    when the workload carries no `baseline_sqnr_db` tag -- see sqnr_margin_db."""
+    sqnr_margin_db: float = 1.0
+    """How far below the *baseline's own* SQNR a candidate may fall, when the workload
+    carries a `baseline_sqnr_db` tag (written by scripts/e2e/calibrate_sqnr_floor.py).
+    A fixed absolute floor is the wrong gate for a quantized kernel: ggml's own q4_K
+    arithmetic sits near 44 dB on real activations, so a 20 dB floor accepts a kernel
+    that throws away 24 dB of signal the reference keeps. The 2026-09-21 Fable kernels
+    did exactly that and cost 3.9 perplexity end to end."""
     op_type_config: Dict[str, EvalOverride] = field(
         default_factory=lambda: dict(DEFAULT_OP_TYPE_CONFIG)
     )
@@ -102,6 +110,7 @@ class BenchmarkConfig:
             rel_tol=rtol,
             required_matched_ratio=ratio,
             min_sqnr_db=self.min_sqnr_db,
+            sqnr_margin_db=self.sqnr_margin_db,
             warmup=self.warmup,
             repeat=self.repeat,
             inner_iters=self.inner_iters,
@@ -125,6 +134,7 @@ class EvalConfig:
     rel_tol: float = DEFAULT_CORRECTNESS_REL_TOL
     required_matched_ratio: float = DEFAULT_REQUIRED_MATCHED_RATIO
     min_sqnr_db: float = 20.0
+    sqnr_margin_db: float = 1.0
     # timing
     warmup: int = DEFAULT_WARMUP
     repeat: int = DEFAULT_REPEAT

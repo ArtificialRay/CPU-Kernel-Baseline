@@ -24,6 +24,14 @@ from .trace import EvaluationStatus, Trace
 from .workload import Workload
 
 
+def set_trace_root(root):  # late import: bench.runtime imports bench.data
+    try:
+        from bench.runtime.inputs import set_trace_root as _s
+    except Exception:  # numpy/ml_dtypes absent: schema-only callers still work
+        return
+    _s(root)
+
+
 @dataclass
 class TraceSet:
     """Warehouse for definitions, solutions, workloads, and traces under one root.
@@ -102,6 +110,8 @@ class TraceSet:
         """
         root = Path(root)
         root.mkdir(parents=True, exist_ok=True)
+        # Let `{"type": "tensor"}` workload inputs resolve their paths against this root.
+        set_trace_root(root)
         ts = cls(root=root)
 
         # Definitions

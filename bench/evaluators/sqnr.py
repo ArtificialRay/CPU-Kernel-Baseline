@@ -62,23 +62,37 @@ class SqnrEvaluator(DefaultEvaluator):
                 f"kernel call failed: {e}\n{traceback.format_exc()}",
             )
 
+        floor = baseline.sqnr_floor_db
+        relative = floor is not None
+        if not relative:
+            floor = cfg.min_sqnr_db
         c = compare_sqnr(
             candidate_np, baseline.ref_np,
-            min_sqnr_db=cfg.min_sqnr_db, abs_tol=cfg.abs_tol, rel_tol=cfg.rel_tol,
+            min_sqnr_db=floor, abs_tol=cfg.abs_tol, rel_tol=cfg.rel_tol,
         )
         corr = Correctness(
             max_absolute_error=c.max_absolute_error,
             max_relative_error=c.max_relative_error,
             matched_ratio=c.matched_ratio,
-            extra={"sqnr_db": c.sqnr_db, "checked_against": "sqnr"},
+            extra={
+                "sqnr_db": c.sqnr_db,
+                "checked_against": "sqnr",
+                "sqnr_floor_db": floor,
+                "sqnr_floor_kind": "baseline-relative" if relative else "absolute",
+            },
         )
         if not c.passed:
             status = (
                 EvaluationStatus.INCORRECT_SHAPE if c.fail_reason == "shape"
                 else EvaluationStatus.INCORRECT_NUMERICAL
             )
+            how = (
+                f"the {cfg.baseline_author} baseline scores {floor + cfg.sqnr_margin_db:.1f} dB "
+                f"on this workload, so the floor is {floor:.1f} dB"
+                if relative else f"absolute floor {floor:.1f} dB"
+            )
             log = (
-                f"correctness sqnr: SQNR={c.sqnr_db:.1f} dB < {cfg.min_sqnr_db:.1f} dB "
+                f"correctness sqnr: SQNR={c.sqnr_db:.1f} dB < {floor:.1f} dB ({how}) "
                 f"(max_abs={c.max_absolute_error:.3e} max_rel={c.max_relative_error:.3e} "
                 f"matched={c.matched_ratio:.4f})"
             )

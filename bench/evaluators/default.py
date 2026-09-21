@@ -60,7 +60,16 @@ class DefaultEvaluator(Evaluator):
         except Exception as e:
             raise RuntimeError(f"reference run() failed: {e}\n{traceback.format_exc()}") from e
 
-        return RefBaseline(np_inputs=np_inputs, ref_np=ref_np)
+        # A calibrated workload states what the *baseline* kernel scores on these
+        # exact inputs; the candidate is then held to that, not to a fixed floor.
+        floor = None
+        raw = (workload.tags or {}).get("baseline_sqnr_db")
+        if raw is not None:
+            try:
+                floor = float(raw) - cfg.sqnr_margin_db
+            except (TypeError, ValueError):
+                floor = None
+        return RefBaseline(np_inputs=np_inputs, ref_np=ref_np, sqnr_floor_db=floor)
 
     # ── Phase 1: correctness ──────────────────────────────────────────────────
 

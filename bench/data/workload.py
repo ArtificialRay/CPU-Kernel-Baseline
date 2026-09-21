@@ -40,8 +40,27 @@ class BytesInput(BaseModelWithDocstrings):
     layout: Literal["raw", "cstrings", "ggml_q4_K", "ggml_q5_K", "ggml_q6_K", "ggml_q8_0"] = "raw"
 
 
+class TensorInput(BaseModelWithDocstrings):
+    """Input tensor read from a file in the trace warehouse instead of generated.
+
+    For definitions whose numerics depend on the *distribution* of the input, not just
+    its shape — k-quant gemms are the canonical case: a real LLM hidden state has a few
+    channels one to two orders of magnitude larger than the rest, and a kernel that
+    quantizes activations per row rather than per block loses those small values. Random
+    inputs hide that completely, so a kernel can pass an SQNR gate on random data and
+    still wreck the model. `path` is relative to the trace root (e.g.
+    "tensors/gemm/<definition>/act_M64_call0.npy"); the loaded array must match the
+    definition's declared shape and dtype for the workload's axes.
+    """
+
+    type: Literal["tensor"]
+    path: NonEmptyString
+    source: Optional[str] = None
+    """Free-text provenance, e.g. "Qwen3.5-4B-Q4_K_M blk.8.ffn_gate, wikitext-2 chunk 0"."""
+
+
 WorkloadInput = Annotated[
-    Union[RandomInput, ScalarInput, BytesInput], Field(discriminator="type")
+    Union[RandomInput, ScalarInput, BytesInput, TensorInput], Field(discriminator="type")
 ]
 
 
@@ -51,6 +70,7 @@ class Workload(BaseModelWithDocstrings):
     Every entry in `definition.inputs` must appear in `self.inputs`:
     - `{"type": "random"}` — tensor generated deterministically from uuid seed
     - `{"type": "scalar", "value": v}` — scalar constant (matches definition's shape=null)
+    - `{"type": "tensor", "path": p}` — real tensor loaded from the trace warehouse
 
     Raises at input-generation time if any definition input is missing.
     """
@@ -65,4 +85,4 @@ class Workload(BaseModelWithDocstrings):
     description: Optional[str] = None
 
 
-__all__ = ["RandomInput", "ScalarInput", "BytesInput", "WorkloadInput", "Workload"]
+__all__ = ["RandomInput", "ScalarInput", "BytesInput", "TensorInput", "WorkloadInput", "Workload"]

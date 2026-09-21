@@ -9,7 +9,9 @@ kept for standalone testing but are no longer called by the harness.
 """
 
 import hashlib
-from typing import Dict, Iterable, Tuple
+import os
+from pathlib import Path
+from typing import Dict, Iterable, Optional, Tuple
 
 import ml_dtypes
 import numpy as np
@@ -79,19 +81,28 @@ _GGML_KQUANT_BLOCK_ELEMS = {"ggml_q4_K": 256, "ggml_q5_K": 256, "ggml_q6_K": 256
 
 
 def _gen_ggml_kquant_rows(shape: tuple, layout: str, rng: np.random.Generator) -> np.ndarray:
-    """Realistic random k-quant weight rows in ggml's packed block layout.
+    """Random k-quant weight rows in ggml's packed block layout, produced the way
+    ggml produces them: draw Gaussian float weights, then actually quantize them.
 
     `shape` is [N, K_bytes] with K_bytes = K/256 * sizeof(block_qX_K) (Q8_0:
-    K/32 * 34). Flat
-    quant integers are drawn uniform over the type's range and the per-sub-
-    block scales/mins uniform in [0.001, 0.02] (Q5_K: [0.0005, 0.01], its
-    values reach 31 not 15; Q6_K: int8 scales uniform in [-64, 64] with a
-    per-super-block fp16 `d` in [8e-5, 1.6e-4]), so the dequantized weights
-    are O(0.01-0.1) (|w| <= ~0.3 for all three types) and a K~10k dot with
-    uniform(-1, 1) activations stays O(1-10) -- same spirit as the q8_0
-    special case in gen_inputs_for_workload. The rows are then packed with the same
-    LlamaCppDataset repack helpers the flat k-quant definitions use at run
-    time (imported lazily: bench.datasets pulls in ctypes adapters).
+    K/32 * 34).
+
+    This used to draw the quant integers uniform over the type's range and the
+    per-sub-block scale and min *independently from the same distribution*. That
+    produces block layouts no quantizer would ever emit. In a real Q4_K tensor the
+    sub-block min is about 2.7 sigma of the weight distribution while one quant step
+    is about 0.36 sigma, so `dmin` runs ~8x `d` and the 6-bit mins sit near 46/63 --
+    the min-correction term carries far more of the weight value than the scaled
+    quants do. Under the old uniform draw `dmin/d` was 1.0 and mins averaged 37, which
+    made the min term a minor correction and hid any kernel that mishandled it. The
+    2026-09-21 Fable kernels did mishandle it (int8 block sums under a batch-shared
+    exponent) and the harness could not see it; see docs/e2e_qwen35.md.
+
+    Quantizing real weights reproduces the true relationship for free: per 32-element
+    sub-block take min/max, step = (max-min)/levels, and let the repack helpers do
+    ggml's own 6-bit encode of the per-sub-block scales and mins. Q6_K and Q8_0 have
+    no min term and are quantized symmetrically about zero the way ggml does.
+    sigma is chosen so dequantized weights land at O(0.01-0.1), matching a real GGUF.
     """
     from bench.datasets.llama_cpp import _repack_q4_k, _repack_q5_k, _repack_q6_k, _repack_q8_0
 
@@ -106,27 +117,54 @@ def _gen_ggml_kquant_rows(shape: tuple, layout: str, rng: np.random.Generator) -
         )
     nb = k_bytes // blk
     k = nb * _GGML_KQUANT_BLOCK_ELEMS[layout]
+    SIGMA = 0.009  # weight std dev, matched to a real Qwen3.5-4B Q4_K_M tensor
+    w = rng.normal(0.0, SIGMA, (n_rows, k)).astype(np.float32)
+
+    def _asym(levels: int, group: int):
+        """ggml's asymmetric k-quant of `group`-element sub-blocks onto [0, levels].
+
+        Returns (q, scale, min_mag) with w ~= scale * q - min_mag, which is exactly
+        the (d*sc, dmin*m) pair the Q4_K/Q5_K repack helpers expect.
+        """
+        sub = w.reshape(n_rows, -1, group)
+        lo = sub.min(axis=-1)
+        hi = sub.max(axis=-1)
+        step = np.maximum((hi - lo) / levels, 1e-12)
+        q = np.clip(np.rint((sub - lo[..., None]) / step[..., None]), 0, levels)
+        return q.astype(np.uint8), step.astype(np.float32), (-lo).astype(np.float32)
+
     if layout == "ggml_q8_0":
-        # block_q8_0 {fp16 d; int8 qs[32]}: signed int8 quants, d in
-        # [0.0005, 0.0025] so |w| <= ~0.32 like the k-quant layouts.
-        q = rng.integers(-127, 128, (n_rows, k)).astype(np.int8)
-        d = rng.uniform(0.0005, 0.0025, (n_rows, nb)).astype(np.float16)
-        packed = _repack_q8_0(q, d)
+        # block_q8_0 {fp16 d; int8 qs[32]}: symmetric, d = max|w| / 127.
+        sub = w.reshape(n_rows, nb, 32)
+        d = np.maximum(np.abs(sub).max(axis=-1) / 127.0, 1e-12)
+        q = np.clip(np.rint(sub / d[..., None]), -127, 127).astype(np.int8)
+        packed = _repack_q8_0(q.reshape(n_rows, k), d.astype(np.float16))
     elif layout == "ggml_q4_K":
-        q = rng.integers(0, 256, (n_rows, k // 2), dtype=np.uint8)  # two uniform nibbles
-        sc = rng.uniform(0.001, 0.02, (n_rows, k // 32)).astype(np.float16)
-        mn = rng.uniform(0.001, 0.02, (n_rows, k // 32)).astype(np.float16)
-        packed = _repack_q4_k(q, sc, mn)
+        q, sc, mn = _asym(15, 32)
+        nib = q.reshape(n_rows, k)
+        packed = _repack_q4_k(
+            (nib[:, 0::2] | (nib[:, 1::2] << 4)).astype(np.uint8),
+            sc.reshape(n_rows, k // 32).astype(np.float16),
+            mn.reshape(n_rows, k // 32).astype(np.float16),
+        )
     elif layout == "ggml_q5_K":
-        q = rng.integers(0, 32, (n_rows, k), dtype=np.uint8)
-        sc = rng.uniform(0.0005, 0.01, (n_rows, k // 32)).astype(np.float16)
-        mn = rng.uniform(0.0005, 0.01, (n_rows, k // 32)).astype(np.float16)
-        packed = _repack_q5_k(q, sc, mn)
-    else:  # ggml_q6_K
-        q = rng.integers(0, 64, (n_rows, k), dtype=np.uint8)
-        sc = rng.integers(-64, 65, (n_rows, k // 16)).astype(np.int8)
-        d = rng.uniform(8e-5, 1.6e-4, (n_rows, nb)).astype(np.float16)
-        packed = _repack_q6_k(q, sc, d)
+        q, sc, mn = _asym(31, 32)
+        packed = _repack_q5_k(
+            q.reshape(n_rows, k),
+            sc.reshape(n_rows, k // 32).astype(np.float16),
+            mn.reshape(n_rows, k // 32).astype(np.float16),
+        )
+    else:  # ggml_q6_K — symmetric, w = d * sc * (q - 32), int8 sc per 16 elements
+        sub = w.reshape(n_rows, k // 16, 16)
+        step16 = np.maximum(np.abs(sub).max(axis=-1) / 32.0, 1e-12)
+        per_sb = step16.reshape(n_rows, nb, 16)
+        d = np.maximum(per_sb.max(axis=-1) / 127.0, 1e-12)
+        sc = np.clip(np.rint(per_sb / d[..., None]), 1, 127).astype(np.int8)
+        eff = (d[..., None] * sc.astype(np.float32)).reshape(n_rows, k // 16)
+        q = np.clip(np.rint(sub / eff[..., None]) + 32, 0, 63).astype(np.uint8)
+        packed = _repack_q6_k(
+            q.reshape(n_rows, k), sc.reshape(n_rows, k // 16), d.astype(np.float16)
+        )
     return np.ascontiguousarray(packed.reshape(n_rows, k_bytes))
 
 
@@ -219,12 +257,55 @@ def _dtype_to_np(dt: DType):
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
+_TRACE_ROOT: Optional[Path] = None
+
+
+def set_trace_root(root) -> None:
+    """Record the warehouse root so `{"type": "tensor"}` workload inputs resolve.
+
+    TraceSet.from_path calls this; ARMBENCH_TRACE_ROOT overrides it for callers that
+    build a Definition/Workload pair by hand (the e2e scripts do).
+    """
+    global _TRACE_ROOT
+    _TRACE_ROOT = Path(root)
+
+
+def _trace_root() -> Path:
+    env = os.environ.get("ARMBENCH_TRACE_ROOT")
+    if env:
+        return Path(env)
+    if _TRACE_ROOT is not None:
+        return _TRACE_ROOT
+    return Path(__file__).resolve().parent.parent.parent / "bench-trace"
+
+
+def _load_tensor_input(name: str, rel: str, shape, np_dtype) -> np.ndarray:
+    root = _trace_root()
+    path = (root / rel).resolve()
+    if root.resolve() not in path.parents and path != root.resolve():
+        raise ValueError(f"tensor input '{name}' path escapes the trace root: {rel}")
+    if not path.exists():
+        raise FileNotFoundError(
+            f"tensor input '{name}' missing: {path} (regenerate with "
+            f"scripts/e2e/dump_to_workloads.py, or re-pull bench-trace)"
+        )
+    arr = np.load(path)
+    if tuple(arr.shape) != tuple(shape):
+        raise ValueError(
+            f"tensor input '{name}' has shape {tuple(arr.shape)}, workload axes need {tuple(shape)}"
+        )
+    if arr.dtype != np_dtype:
+        arr = arr.astype(np_dtype)
+    return arr
+
+
 def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
     """Build the input dict for `Definition.reference.run(**inputs)`.
 
     Every entry in `d.inputs` must have a corresponding entry in `w.inputs`:
     - `{"type": "random"}` → numpy array generated from uuid-seeded rng
     - `{"type": "scalar", "value": v}` → Python scalar (int / float / bool)
+    - `{"type": "tensor", "path": p}` → real tensor loaded from the trace warehouse
 
     Raises ValueError if any definition input is absent from the workload.
     """
@@ -264,6 +345,9 @@ def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
         shape = tuple(axes[a] for a in tspec.shape)
         if wi.type == "bytes":
             out[tname] = _gen_byte_buffer(shape, wi.layout, rng)
+            continue
+        if wi.type == "tensor":
+            out[tname] = _load_tensor_input(tname, wi.path, shape, _dtype_to_np(tspec.dtype))
             continue
         # type == "random"
         if _q8 and tspec.dtype == DType.INT8:
