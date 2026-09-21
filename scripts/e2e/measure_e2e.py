@@ -120,12 +120,37 @@ def main() -> None:
                 v["speedup_vs_stock_median"] = v["median"] / base["median"]
 
     def dump(ppl):
+        result = {"model": str(args.model), "pp": args.pp, "tg": args.tg, "reps": args.reps,
+                  "builds": {n: {"dir": str(b["dir"]), "manifest": b["manifest"], "env": b["env"]} for n, b in builds.items()},
+                  "host": os.uname().nodename, "summary": summary, "perplexity": ppl, "samples": samples}
+        args.out.write_text(json.dumps(result, indent=1))
+
+    dump({})   # bench results are safe on disk before the (slow, optional) quality check
+    print(f"wrote {args.out} (bench only)", flush=True)
+
+    ppl = {}
+    if args.perplexity:
+        for name, b in builds.items():
+            env = dict(os.environ)
+            if b["manifest"]:
+                env["ARMBENCH_OVERRIDES"] = b["manifest"]
+            env.update(b["env"])
+            try:
+                p = subprocess.run([str(b["dir"] / "bin" / "llama-perplexity"), "-m", str(args.model), "-f", str(args.perplexity),
+                                    "--chunks", str(args.ppl_chunks), "-t", str(max(args.threads))],
+                                   capture_output=True, text=True, env=env, timeout=7200)
+                out = p.stdout + p.stderr
+                line = [l for l in out.splitlines() if "estimate" in l.lower() or "PPL" in l or "Final" in l]
+                ppl[name] = (line[-1] if line else out[-300:]).strip() if p.returncode == 0 else f"FAILED rc={p.returncode}: {out[-300:].strip()}"
+            except Exception as e:  # never lose the bench results to the quality check
+                ppl[name] = f"FAILED: {e}"
+            print(f"perplexity {name}: {ppl[name]}", flush=True)
         dump(ppl)
+
     print(f"\n{'config':28} {'median tok/s':>13} {'vs stock':>9}")
     for k, v in summary.items():
         print(f"{k:28} {v['median']:13.2f} {v.get('speedup_vs_stock_median', float('nan')):9.3f}")
-    print(f"wrote {args.out}")
-
+    print(f"wrote {args.out}", flush=True)
 
 if __name__ == "__main__":
     main()
