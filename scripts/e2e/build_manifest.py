@@ -106,6 +106,9 @@ def main() -> None:
     ap.add_argument("--only-types", nargs="*", default=None)
     ap.add_argument("--only-roles", nargs="*", default=None)
     ap.add_argument("--cxx", default="clang++-18")
+    ap.add_argument("--march", default=None,
+                    help="override the ISA's -march (e.g. -march=armv8.6-a+i8mm+bf16 to reproduce a "
+                         "Graviton run locally on an Apple-silicon Mac)")
     ap.add_argument("--rows-abi", action="store_true",
                     help="recompile each kernel with N as a runtime thread_local and export "
                          "armbench_entry_gemm_rows(A,out,B,M,n_rows) too (manifest abi 'entry_rows'), so the "
@@ -114,7 +117,7 @@ def main() -> None:
     args = ap.parse_args()
     out_dir = args.out.parent.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    march = _isa_table()[args.isa].march
+    march = args.march or _isa_table()[args.isa].march
 
     found = {}
     for root in args.runs:
