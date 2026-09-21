@@ -55,7 +55,7 @@ def pick_version(traj: Path, best: bool):
     if not sub:
         return None, None
     r = sub[-1]
-    return r.get("source_file") or r["metrics"].get("source_file"), r["metrics"].get("time_speedup_geomean")
+    return r.get("source_file") or r["metrics"].get("source_file"), r["metrics"].get("time_speedup_geomean") or r["metrics"].get("time_speedup")
 
 
 def main() -> None:
