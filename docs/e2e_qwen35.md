@@ -217,3 +217,75 @@ the prefill numbers are not valid. Fixes for the benchmark: (a) workloads drawn 
 from llama.cpp), (b) a gate relative to the baseline's own SQNR instead of an absolute 20 dB, (c) end-to-end
 perplexity as the acceptance test for any e2e claim. Attribution logs: HF `runs/e2e-qwen3.5-4b/measurements/attrib/`.
 
+
+### Root cause — the M>=2 batched path requantizes the Q8_K block sums (2026-09-21, reproduced locally)
+
+Reproduced end to end on an Apple M2 Pro with no cloud box. Recipe: clone llama.cpp
+v0.4.1, `scripts/e2e/override/apply.sh`, cmake with `-DGGML_METAL=OFF
+-DGGML_CPU_REPACK=OFF -DGGML_CPU_KLEIDIAI=OFF`, and rebuild the Fable kernels with the
+new `build_manifest.py --march='-march=armv8.6-a+i8mm+bf16'`. The two q6_K kernels use
+SVE only for a 4-byte sign-extending load
+(`svget_neonq_s32(svld1sb_s32(svptrue_b32(), p))`); substituting
+`vmovl_s16(vget_low_s16(vmovl_s8(vld1_s8(p))))` makes all 11 build and run on NEON+i8mm.
+wikitext-2 now comes from `https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip`
+(the old S3 link is dead). All perplexities below: 2 chunks, `-c 512`, `-t 8`.
+
+Every Fable gemm has two paths. `M == 1` keeps the activation block sums **exact**,
+splitting each int16 sum into lo/hi bytes and recombining with `kMinMul {1,128,1,128}`.
+`M >= 2` instead requantizes those sums to **int8 under a single shared exponent `sh`
+computed from `maxabs` over the whole batch** (`mscale = 1 << sh`), so the Q4_K/Q5_K
+min-correction term fits one `usmmla`. That shared exponent is the defect: it is a
+batch-global scale applied to a quantity whose per-row spread is large on real hidden
+states.
+
+Proof by construction. Mechanically rewriting `if (M == 1) { ... }` into a per-row loop
+in all 11 kernels (M=1 semantics at every M) restores perplexity:
+
+| configuration | ub512 | ub64 |
+|---|---|---|
+| stock (norepack) | 8.59 | 8.59 |
+| Fable, per-row loop (exact block sums) | 8.77 | 8.81 |
+| Fable as submitted (batched path) | 12.68 | 12.89 |
+
+The residual +2.2% of the per-row variant is the *second*, smaller defect: one activation
+scale per row of K elements where ggml's Q8_K uses one per 256-element block. In isolation
+that costs ~3 dB SQNR on activations with channel outliers.
+
+Per-kernel attribution (that kernel batched, the other ten row-at-a-time, ub512; the
+deltas sum to +3.87 against an observed +3.91, so contributions are additive):
+
+| kernel | role | PPL | delta |
+|---|---|---|---|
+| gemm_ggml_q4_K_n9216_k2560 | ffn gate/up | 10.45 | +1.67 |
+| gemm_ggml_q5_K_n8192_k2560 | GDN in-projection | 9.97 | +1.19 |
+| gemm_ggml_q4_K_n4096_k2560 | GDN z-gate | 9.38 | +0.61 |
+| gemm_ggml_q4_K_n8192_k2560 | attention qkv | 8.99 | +0.22 |
+| the other seven | | <= 8.87 | <= +0.10 each |
+
+Three kernels carry 89% of the damage, and they are exactly the three fed the normalized
+hidden state. This matches the c8g.4xlarge attribution independently.
+
+**The fix is cheap and was verified.** Storing the block sums as exact lo/hi (32 B per
+pair-block instead of 16), two `usmmla` plus `vmlaq_n_s32(mlo, mhi, 128)`, and
+`mscale = 1`, applied to `gemm_ggml_q4_K_n9216_k2560` alone:
+
+| manifest | PPL (ub512) |
+|---|---|
+| ten row-at-a-time + this kernel fixed | 8.79 (vs 8.77 all row-at-a-time) |
+| ten as submitted + this kernel fixed | 10.82 (vs 12.68 all as submitted) |
+
+so the fix removes that kernel's entire contribution while keeping the batched i8mm path.
+It costs about 15% of pp512 on this host (105 -> 89 tok/s, whole model, two interleaved
+5-rep runs), and nothing on decode, which never leaves the M=1 path.
+
+**The 80-87 perplexities in `attrib/ppl_diag2.log` do not reproduce.** With all 11 kernels
+locally, every ubatch from 4 to 512 lands between 8.81 and 12.89. That diagnostic's script
+died with its box; treat those three numbers as an artifact of the run, not a finding. The
+reproducible claim is: decode (M=1) +2.6% perplexity, prefill (M>=2) +30-50%.
+
+**What this says about the benchmark.** The submitted and the fixed kernel differ by 0.3 dB
+SQNR on the harness's random-input workloads, and by 3.9 perplexity in the model. A fixed
+20 dB SQNR floor over synthetic activations cannot separate them. Before any re-run:
+workloads built from activations dumped out of llama.cpp, a gate set relative to the
+baseline's own SQNR rather than an absolute floor, and end-to-end perplexity as the
+acceptance test for any model-level claim.
