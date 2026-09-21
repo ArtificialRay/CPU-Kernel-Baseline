@@ -368,8 +368,11 @@ class NanobotAdapter(HarnessAdapter):
         json.dump(cfg, fh)
         fh.close()
         self.config_path = Path(fh.name)
+        # Set by run_job(); see _job_ws() for why the workspace path needs it.
+        self._author: Optional[str] = None
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
+        self._author = author
         session = time.strftime("%Y%m%d-%H%M%S")
         with self.prepare_workspace(job) as workspace:
             cmd = [
@@ -378,12 +381,33 @@ class NanobotAdapter(HarnessAdapter):
             ]
             return _run_and_tee(cmd, log_path=log_path)
 
+    def _job_ws(self, job: Job) -> Path:
+        """Workspace path for `job`, keyed by author AND definition.
+
+        Keying by definition name alone made two concurrent queues that
+        share a definition use one directory: prepare_workspace's
+        `rsync --delete` and cleanup_workspace's rmtree then ran under the
+        other queue's live session, killing it with
+        `FileNotFoundError ... job_workspaces/<def>/sessions/*.jsonl.tmp`
+        (hit 2026-09-08 23:37:40 loop_033 and 2026-09-15 13:52:40 loop_127,
+        both at the exact second the other batch printed `All jobs done`).
+        `author` is compute_author()'s f"{harness}[-{model}]-{isa}", already
+        sanitised to [A-Za-z0-9.-], so an opus sve queue and a sonnet sve2
+        queue over the same definition no longer collide.
+
+        Falls back to the bare definition name when run_job() has not set
+        _author yet — cleanup_workspace() must never raise on a job the
+        batch aborted before running.
+        """
+        stem = f"{self._author}_{job.name}" if self._author else job.name
+        return NANOBOT_JOB_WORKSPACES_DIR / stem
+
     @contextmanager
     def prepare_workspace(self, job: Job):
         """Per-job workspace isolation so memory/sessions never bleed
         between jobs. Must live outside any git repo — nanobot's GitStore
         refuses to init nested inside one."""
-        job_ws = NANOBOT_JOB_WORKSPACES_DIR / job.name
+        job_ws = self._job_ws(job)
         job_ws.mkdir(parents=True, exist_ok=True)
         for shared in ("AGENTS.md", "HEARTBEAT.md", "SOUL.md", "USER.md", "prompts", "skills"):
             src = NANOBOT_WORKSPACE / shared
@@ -400,7 +424,9 @@ class NanobotAdapter(HarnessAdapter):
         yield job_ws
 
     def cleanup_workspace(self, job: Job) -> None:
-        shutil.rmtree(NANOBOT_JOB_WORKSPACES_DIR / job.name, ignore_errors=True)
+        # Must go through _job_ws() too — building at one path and deleting
+        # another would leak a workspace per job.
+        shutil.rmtree(self._job_ws(job), ignore_errors=True)
 
     def cleanup(self) -> None:
         self.config_path.unlink(missing_ok=True)
