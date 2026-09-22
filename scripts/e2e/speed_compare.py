@@ -98,11 +98,24 @@ def main() -> int:
                 cell = f"{r['speedup']:.3f}x" if r["speedup"] else "no baseline"
             row += cell.ljust(28)
         print(row)
-    row = "geomean (passing only)".ljust(w)
+    # Two geomean rows, because one is not enough to be honest. A per-author geomean over
+    # "whatever that author happened to pass" silently compares different definition sets --
+    # an author gated out of its hardest kernels scores HIGHER. So also report the geomean
+    # over the definitions every author passes, which is the only like-for-like column.
+    common = [d for d in args.definitions
+              if all((r := results.get((d, a))) and r.get("passed") == r.get("total") and r.get("speedup")
+                     for a in args.authors)]
+    row = f"geomean over {len(common)} common".ljust(w)
     for a in args.authors:
-        g = geomean([r["speedup"] for (d, au), r in results.items()
-                     if au == a and r.get("passed") == r.get("total") and r.get("speedup")])
+        g = geomean([results[(d, a)]["speedup"] for d in common])
         row += (f"{g:.3f}x" if g else "-").ljust(28)
+    print(row)
+    row = "geomean of own passes".ljust(w)
+    for a in args.authors:
+        passes = [r["speedup"] for (d, au), r in results.items()
+                  if au == a and r.get("passed") == r.get("total") and r.get("speedup")]
+        g = geomean(passes)
+        row += (f"{g:.3f}x ({len(passes)}/{len(args.definitions)})" if g else "-").ljust(28)
     print(row)
 
     if args.out:
