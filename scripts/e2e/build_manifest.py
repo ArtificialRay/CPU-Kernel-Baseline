@@ -58,6 +58,17 @@ extern "C" int armbench_entry_gemm_rows(const uint16_t* A, float* output, const 
 """
 
 
+def kernel_rows_abi_text(src: str) -> str:
+    """The kernel.cpp rewrite the rows ABI needs: mutable static scratch becomes
+    thread_local, because the override hands each ggml thread its own row range
+    (const lookup tables are left alone).  Idempotent, so it doubles as the
+    normaliser verify_kernel_set.py compares sources through."""
+    src = re.sub(r"\bstatic\s+std::vector", "static thread_local std::vector", src)
+    src = re.sub(r"\bstatic\s+(?!const\b|constexpr\b|inline\b|thread_local\b)((?:[A-Za-z_][A-Za-z0-9_:<>]*\s+)+)([A-Za-z_][A-Za-z0-9_]*\s*\[)",
+                 r"static thread_local \1\2", src)
+    return src
+
+
 def rows_abi_sources(build: Path, N: int) -> None:
     """Rewrite the materialized harness so N is a runtime thread_local (see RT_GEMM_CPP)
     and make the kernel's static scratch buffers thread-local."""
@@ -67,11 +78,7 @@ def rows_abi_sources(build: Path, N: int) -> None:
     h = h.replace(old, f"constexpr int N_FULL = {N};\nextern thread_local int N;   // runtime (rows-abi), == N_FULL unless the override splits rows")
     (build / "gemm.h").write_text(h)
     (build / "gemm.cpp").write_text(RT_GEMM_CPP)
-    k = (build / "kernel.cpp").read_text()
-    k = re.sub(r"\bstatic\s+std::vector", "static thread_local std::vector", k)
-    k = re.sub(r"\bstatic\s+(?!const\b|constexpr\b|inline\b|thread_local\b)((?:[A-Za-z_][A-Za-z0-9_:<>]*\s+)+)([A-Za-z_][A-Za-z0-9_]*\s*\[)",
-               r"static thread_local \1\2", k)   # mutable static arrays -> thread_local (const tables untouched)
-    (build / "kernel.cpp").write_text(k)
+    (build / "kernel.cpp").write_text(kernel_rows_abi_text((build / "kernel.cpp").read_text()))
 
 
 def pick_version(traj: Path, best: bool):
