@@ -378,3 +378,38 @@ activation scale again, reproducing the Mac result exactly.
 Paper-safe claim: **+33% prefill and +10% decode over stock llama.cpp at +2.1% perplexity**,
 with the whole set passing a gate calibrated against the reference implementation's own
 numerics on real activations.
+
+### The Sol arm, and a kernel that submitted the baseline (2026-09-22)
+
+`gpt-5.6-sol` (nanobot, OpenAI key, budget 50/60, 3 lanes) produced all 11 kernels under
+gate v2 in about 2.5 h. Per-kernel harness speedups: 1.01x to 1.75x, geometric mean 1.20x.
+
+Its `gemm_ggml_q5_K_n8192_k2560` does not implement a kernel. It calls
+`ggml_vec_dot_q5_K_q8_K` -- ggml's own reference routine. That compiles and scores 1.01x
+because the evaluation harness links ggml, so the symbol resolves: the kernel *is* the
+baseline. Spliced into llama.cpp it cannot be dlopened, and because the override loader
+disables the whole manifest when any library fails, the first Sol measurement silently ran
+the no-kernel build and produced a plausible table of nothing (identical to `norepack`,
+perplexity 10.067). `build_manifest.py` now checks each built .so for undefined `ggml_*`
+symbols and skips with a reason; the deeper fix is to reject this at submission time so the
+agent is told it has submitted the baseline. Exactly one kernel of the 22 across both sets
+does this.
+
+With that kernel dropped (its shape falls back to stock ggml, which is what it does anyway),
+the Sol set measured on a c8g.4xlarge:
+
+| build | pp512 t=16 | tg128 t=16 | speedup pp / tg | perplexity |
+|---|---|---|---|---|
+| stock | 157.7 | 38.05 | 1.00x / 1.00x | 10.06 |
+| sol (10 kernels) | 92.4 | 34.74 | 0.59x / 0.91x | 10.06 |
+| Fable repaired | 209.1 | 41.35 | 1.33x / 1.09x | 10.27 |
+
+**Sol's kernels are numerically clean and too slow to matter.** Perplexity is
+indistinguishable from stock, so nothing like the Fable defect is present. But at 0.59x of
+stock they lose badly: they beat the generic ggml path they replace by only about 1.08x,
+while ggml's own repack fast path beats that generic path by roughly 1.85x. A kernel set has
+to clear the repack path, not the generic one, to be worth splicing.
+
+The repaired Fable set was carried in this run as a cross-check and reproduced across two
+separate instances: 1.33x vs 1.32x prefill, 1.09x vs 1.10x decode, perplexity 10.271 both
+times.
