@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 from pathlib import Path
 
@@ -60,9 +61,15 @@ def main() -> int:
             print(row)
 
     def ppl_of(name):
+        """measure_e2e stores llama-perplexity's raw tail, so pull the number out of it."""
         v = ppl.get(name)
         if isinstance(v, dict):
             v = v.get("ppl", v.get("value"))
+        if v is None:
+            return None
+        m = re.search(r"PPL\s*=\s*([0-9]+\.?[0-9]*)", str(v))
+        if m:
+            return float(m.group(1))
         try:
             return float(str(v).split()[0])
         except (TypeError, ValueError, IndexError):
