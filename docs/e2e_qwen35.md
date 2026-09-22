@@ -347,3 +347,34 @@ a gate.
 All 30 packed-ggml definitions (the 11 Qwen3.5-4B shapes and the 19 Qwen3.8-27B shapes) are
 calibrated, 176 workloads. The 27B workloads still use random activations -- only the 4B
 model was dumped -- so their floors are relative but not yet outlier-aware.
+
+### Results under gate v2 — the shortcut bought almost nothing (2026-09-22)
+
+c8g.4xlarge, medians of 5 interleaved repetitions, perplexity on 8 chunks of wikitext-2
+from the same binaries in the same run. `norepack` is stock code with ggml's repack path
+disabled, i.e. the generic kernels the override actually replaces.
+
+| build | pp512 t=16 | tg128 t=16 | speedup pp / tg | perplexity |
+|---|---|---|---|---|
+| stock | 157.9 | 38.00 | 1.00x / 1.00x | 10.06 |
+| norepack | 85.8 | 33.18 | 0.54x / 0.87x | 10.07 |
+| Fable as submitted | 212.5 | 41.74 | 1.35x / 1.10x | 14.45 (+43.6%) |
+| Fable repaired | 209.3 | 41.72 | 1.33x / 1.10x | 10.27 (+2.1%) |
+
+At 1 and 4 threads the same holds: 1.47x vs 1.45x prefill, and 1.41x vs 1.37x, with decode
+identical to two decimals.
+
+**The batch-shared exponent on the block sums bought about 1.5% of prefill throughput and
+cost 41 points of perplexity.** It was never a speed-versus-accuracy tradeoff worth making;
+the old gate simply could not price it. The repaired set keeps essentially all of the
+speedup and lands within 2.1% of stock perplexity, which is the same cost decode already
+paid and comes from the kernels' per-row activation scale rather than anything in the
+batched path.
+
+Per-kernel under gate v2 on the same box, the repaired set passes 63 of 64 workloads. The
+single miss is the q5_K n8192 M=1 workload at 0.1 dB under its floor, the per-row
+activation scale again, reproducing the Mac result exactly.
+
+Paper-safe claim: **+33% prefill and +10% decode over stock llama.cpp at +2.1% perplexity**,
+with the whole set passing a gate calibrated against the reference implementation's own
+numerics on real activations.
