@@ -527,3 +527,46 @@ at **+2.1%** perplexity against the re-optimized set's **+1.0%**. So the re-run 
 than authorship: re-optimizing under a real precision constraint produced kernels that are
 measurably more accurate than mechanically patching the shortcut out of the old ones. That
 question is now answered and the hand-patched set is retired.
+
+### Kernel level, under gate v2 (2026-09-22)
+
+Both kernel sets run on one c8g.xlarge — the instance type the agents ran on — against ggml's
+own kernel as baseline, on the gate-v2 workloads (`scripts/e2e/speed_compare.py`). Six of the
+eleven definitions were never re-optimized, so the two columns there are the *same bytes*
+and measure nothing but run-to-run noise:
+
+| definition | original submission | gate-v2 | Δ |
+|---|---|---|---|
+| q4_K n1024 k2560 | 3.145x | 3.147x | +0.05% |
+| q4_K n2560 k4096 | 2.901x | 2.885x | −0.56% |
+| q4_K n2560 k9216 | 2.880x | 2.874x | −0.21% |
+| q6_K n1024 k2560 | 2.713x | 2.704x | −0.35% |
+| q6_K n248320 k2560 | 2.264x | 2.265x | +0.04% |
+| q6_K n2560 k9216 | 2.715x | 2.728x | +0.47% |
+| **geomean** | **2.756x** | **2.753x** | **−0.09%** |
+
+**The measurement's noise floor is 0.09% in the geomean and 0.56% on the worst single
+kernel.** Any difference larger than that in the table below is real.
+
+The five re-optimized definitions:
+
+| definition | original submission | gate-v2 |
+|---|---|---|
+| q4_K n4096 k2560 | fails gate (1/6 workloads) | 2.950x |
+| q4_K n8192 k2560 | fails gate (1/6) | 2.909x |
+| q4_K n9216 k2560 | fails gate (1/6) | 2.908x |
+| q5_K n2560 k4096 | fails gate (1/6) | 3.568x |
+| q5_K n8192 k2560 | fails gate (**0/6**) | 3.625x |
+| **geomean** | — | **3.175x** |
+
+**The original submissions have no speed on this axis, because they are not admissible.**
+Each one passes at most the single M=1 workload and fails every batched one with
+`INCORRECT_NUMERICAL`; the q5_K n8192 kernel fails all six. Their old headline numbers
+(2.99x-3.42x) were measured against a gate that could not see the defect, so there is nothing
+to compare them to here — which is the point. Under a gate that prices precision, 5 of the
+11 submissions from the first sweep simply do not count.
+
+Across all eleven, the gate-v2 set is **2.938x, with 11/11 admissible**; the original set is
+**6/11 admissible**. Beware the naive per-author geomean here: the shortcut set scores 2.756x
+only because its five hardest kernels are missing from the column. `speed_compare.py` prints
+the common-definition geomean alongside it for that reason.
