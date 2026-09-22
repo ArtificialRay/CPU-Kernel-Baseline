@@ -47,7 +47,7 @@ eval/llm_providers.json
 # Terraform — state contains live AWS resource info, providers are large binaries
 terraform/.terraform/
 terraform/terraform.tfstate
-terraform/terraform.tfstate.backup
+terraform/terraform.tfstate.*
 terraform/.terraform.lock.hcl
 
 .env

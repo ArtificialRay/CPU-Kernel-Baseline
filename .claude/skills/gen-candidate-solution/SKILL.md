@@ -57,9 +57,11 @@ here — that belongs to a different, not-yet-built candidate track. `--tag` fil
 `--definition` is given explicitly (an explicit ask always goes through), so double-check the tag
 yourself before generating a single definition by name.
 
-`gemm`'s definitions are a real example of this split: `gemm_fp32_n1000_k1280` etc. and the
-`w8a8ch` variants are `baseline-solution:ncnn`; `gemm_fp32_n1024_k2048` etc. and the `q8_0` variants
-are `baseline-solution:llama.cpp`.
+`conv2d`/`conv2d_depthwise` are a real example of this split: most definitions are
+`baseline-solution:ncnn`, while a few (e.g. the SME2/f16 ones) are `baseline-solution:kleidiai`.
+(`gemm` no longer mixes backends this way — its ncnn-tagged definitions/workloads/solutions were
+removed; what remains there is split between `baseline-solution:kleidiai` and
+`baseline-solution:llama.cpp`, neither of which `gen_candidate_solution.py` targets.)
 
 ---
 

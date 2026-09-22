@@ -34,6 +34,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import fcntl
 import json
 import os
@@ -125,6 +126,21 @@ def _tf(*args, capture: bool = False, extra_env: dict | None = None) -> subproce
         text=True,
         env=env,
     )
+
+
+@contextlib.contextmanager
+def _tf_lock():
+    """Serialise terraform apply/destroy across concurrent driver processes.
+    Terraform's own local state lock allows only one instance to provision/teardown
+    while other intances fail with "Error acquiring the state lock", this lock makes
+    instance handlings to a FIFO queue."""
+    lock_path = TERRAFORM_DIR / ".armbench.lock"
+    with open(lock_path, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def _tf_output() -> dict:
@@ -343,23 +359,24 @@ def provision(
     # label as "should be destroyed" (see terraform/main.tf's var.instances
     # docstring) — -target is what keeps concurrent labels from stepping on
     # each other.
-    result = _tf(
-        "apply", "-auto-approve", *vars,
-        f'-target=aws_instance.labeled["{label}"]',
-        f'-target=null_resource.deploy["{label}"]',
-        extra_env={
-            "TF_VAR_instances": json.dumps({label: instance_type}),
-            "TF_VAR_mac_host_ids": _mac_host_ids(label, instance_type),
-        },
-    )
+    with _tf_lock():
+        result = _tf(
+            "apply", "-auto-approve", *vars,
+            f'-target=aws_instance.labeled["{label}"]',
+            f'-target=null_resource.deploy["{label}"]',
+            extra_env={
+                "TF_VAR_instances": json.dumps({label: instance_type}),
+                "TF_VAR_mac_host_ids": _mac_host_ids(label, instance_type),
+            },
+        )
 
-    if result.returncode != 0:
-        raise RuntimeError("terraform apply failed")
+        if result.returncode != 0:
+            raise RuntimeError("terraform apply failed")
 
-    outputs = _tf_output()
+        outputs = _tf_output()
     host = outputs["instance_public_ips"]["value"][label]
     instance_id = outputs.get("instance_ids", {}).get("value", {}).get(label)
-    key_file = outputs.get("ssh_key_path", {}).get("value", "~/.ssh/id_rsa")
+    key_file = outputs.get("ssh_key_paths", {}).get("value", {}).get(label, "~/.ssh/id_rsa")
     # ec2-user on Mac, ubuntu elsewhere — terraform/main.tf owns that split.
     ssh_user = outputs.get("instance_ssh_users", {}).get("value", {}).get(label, "ubuntu")
 
@@ -419,19 +436,20 @@ def teardown(label: str | None = None):
     _validate_label(label)
     instance_type = _recorded_instance_type(label) or "c7g.large"
     print(f"[teardown] Destroying label={label!r}...")
-    result = _tf(
-        "destroy", "-auto-approve",
-        f'-target=aws_instance.labeled["{label}"]',
-        f'-target=null_resource.deploy["{label}"]',
-        extra_env={
-            "TF_VAR_instances": json.dumps({label: instance_type}),
-            "TF_VAR_mac_host_ids": _mac_host_ids(label, instance_type),
-        },
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"terraform destroy failed for label={label!r}")
-    if EVAL_CONFIG_PATH.exists():
-        _update_config(lambda config: config.get("instances", {}).pop(label, None))
+    with _tf_lock():
+        result = _tf(
+            "destroy", "-auto-approve",
+            f'-target=aws_instance.labeled["{label}"]',
+            f'-target=null_resource.deploy["{label}"]',
+            extra_env={
+                "TF_VAR_instances": json.dumps({label: instance_type}),
+                "TF_VAR_mac_host_ids": _mac_host_ids(label, instance_type),
+            },
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"terraform destroy failed for label={label!r}")
+        if EVAL_CONFIG_PATH.exists():
+            _update_config(lambda config: config.get("instances", {}).pop(label, None))
     print(f"[teardown] label={label!r} terminated.")
 
 

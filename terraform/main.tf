@@ -247,6 +247,9 @@ resource "aws_instance" "labeled" {
   host_id   = try(local.mac_host_id[each.key], null)
   subnet_id = try(data.aws_subnet.mac[each.key].id, null)
 
+  # terminate all non-spot instance(with true shutdown but not stop the instance)
+  instance_initiated_shutdown_behavior = (var.on_demand || local.is_mac[each.key]) ? "terminate" : null
+
   # Installs clang-18 + llvm-objdump and creates ~/arm-bench
   user_data = local.is_mac[each.key] ? null : base64encode(file("${path.module}/setup.sh"))
 
