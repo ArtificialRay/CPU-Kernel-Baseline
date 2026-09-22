@@ -570,3 +570,40 @@ Across all eleven, the gate-v2 set is **2.938x, with 11/11 admissible**; the ori
 **6/11 admissible**. Beware the naive per-author geomean here: the shortcut set scores 2.756x
 only because its five hardest kernels are missing from the column. `speed_compare.py` prints
 the common-definition geomean alongside it for that reason.
+
+### What +1.0% perplexity is worth, measured (2026-09-22)
+
+A quality cost is unreadable without a scale, so the same binary, text, chunk count and
+thread count were run across the Qwen3.5-4B quantization ladder
+(`scripts/e2e/quant_reference.py`):
+
+| model | size | PPL | vs Q4_K_M |
+|---|---|---|---|
+| Q3_K_M | 2.29G | 10.3109 | +2.47% |
+| Q4_K_S | 2.59G | 10.0301 | −0.32% |
+| **Q4_K_M** | 2.74G | **10.0624** | — |
+| Q5_K_M | 3.14G | 10.0752 | +0.13% |
+| Q6_K | 3.53G | 10.0424 | −0.20% |
+| Q8_0 | 4.48G | 10.0161 | −0.46% |
+| BF16 | 8.42G | 10.0052 | −0.57% |
+| *our kernels on Q4_K_M* | *2.74G* | *10.1622* | *+1.00%* |
+
+Read honestly, this is not the flattering result:
+
+- **Quantizing this model to 4 bits at all costs +0.57%** (BF16 → Q4_K_M). Our kernels add
+  **+1.00%** on top — nearly twice the cost of the entire 4-bit quantization.
+- Dropping a whole level, Q4_K_M → Q3_K_M, costs **+2.47%**. So the kernels cost about
+  **40% of one step down the ladder** — real, bounded, and not free.
+- Everything from Q4 to BF16 spans only 0.6%, i.e. less than the kernels cost.
+
+**The ladder is also non-monotonic** — Q4_K_S scores better than Q4_K_M and Q5_K_M worse —
+which cannot be true and means an 8-chunk sample (≈4k tokens) does not resolve differences
+below roughly ±0.3%. The three large numbers (+2.47%, +1.00%, +0.57%) are above that floor
+and the +1.00% reproduced across three instances, so the conclusions above hold; the fine
+structure between Q4_K_S and BF16 does not and should not be quoted. A higher chunk count is
+needed before any of this goes in a paper.
+
+The residual +1.0% is the known second-order defect: the kernels carry one activation scale
+per row of K elements where ggml uses a Q8_K scale per 256-element block. It is not the
+shared-exponent bug — that one is gone — and closing it would need another gate change and
+another re-optimization round.
