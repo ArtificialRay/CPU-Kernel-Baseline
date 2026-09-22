@@ -55,7 +55,7 @@ from mcp_app.agent_tools.isa import isa_satisfies
 # skills/launch/launch_session.py uses for its sibling remote.py).
 from harness_adapters import (
     HarnessAdapter, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, NanobotAdapter,
-    OwnHarnessAdapter, Job,
+    OwnHarnessAdapter, SingleShotAdapter, Job,
 )
 
 DEFINITIONS_DIR = REPO_ROOT / "bench-trace" / "definitions"
@@ -66,6 +66,7 @@ EVAL_CONFIG_PATH = REPO_ROOT / "provisioning" / "eval_config.json"
 ADAPTER_CLASSES = {
     "claude-code": ClaudeCodeAdapter, "cline": ClineAdapter, "codex": CodexAdapter,
     "nanobot": NanobotAdapter, "own": OwnHarnessAdapter,
+    "single-shot": SingleShotAdapter,
 }
 
 
@@ -319,7 +320,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
         adapter = NanobotAdapter(dataset=dataset, model=args.model, local_port=local_port)
         if model is None:
             model = adapter.model
-    elif args.harness != "own":
+    elif args.harness not in ("own", "single-shot"):
         raise ValueError(f"Unknown --harness {args.harness!r}")
     isa = args.isa
     author = args.author or compute_author(args.harness, model, isa)
@@ -363,6 +364,12 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             # cap (line above, `max_iterations`): since some model won't provide a tool call for each turn,
             # set a tool call budget that is much higher than max-iterations to avoid unnecessary re-running
             max_turns=max_iterations * 3,
+        )
+    elif args.harness == "single-shot":
+        adapter = SingleShotAdapter(
+            endpoint=prepared["endpoint"], author=author, remote_root=args.remote_root,
+            target=instance.target, dataset=dataset, isa=isa, model=args.model,
+            samples=args.samples, temperature=args.temperature,
         )
     ran_jobs: list[Job] = []
     try:
@@ -622,7 +629,8 @@ def sync_job_results(label: str, author: str, definition: str, local_results_dir
 
 def main(argv: Optional[list[str]] = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--harness", required=True, choices=["claude-code", "cline", "codex", "nanobot", "own"])
+    p.add_argument("--harness", required=True,
+                   choices=["claude-code", "cline", "codex", "nanobot", "own", "single-shot"])
     p.add_argument("--dataset", required=True, nargs="+", choices=["ncnn", "simd-loop", "llama.cpp", "kleidiai"],
                    help="One or more datasets (space-separated). More than one requires "
                         "--until-complete, which interleaves them round-robin.")
@@ -632,6 +640,14 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "(empty = CLI default). nanobot: patched into a temp copy of "
                         "agents.defaults.model (nanobot's CLI has no --model flag). own: "
                         "litellm model string, required (e.g. anthropic/claude-opus-4-8).")
+    p.add_argument("--samples", type=int, default=3,
+                   help="--harness single-shot only: independent one-shot generations per "
+                        "definition. Failed samples are kept, not redrawn — the pass rate is "
+                        "part of the result. Default: 3")
+    p.add_argument("--temperature", type=float, default=1.0,
+                   help="--harness single-shot only: sampling temperature. The default of 1.0 "
+                        "is what makes repeated samples differ; 0 would draw the same kernel "
+                        "every time and waste --samples. Default: 1.0")
     p.add_argument("--min-iterations", type=int, default=15,
                    help="Floor, not a cap — the model is told not to submit early. Default: 15")
     p.add_argument("--max-iterations", type=int, default=40,

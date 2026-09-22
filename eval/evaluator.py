@@ -114,7 +114,13 @@ _ISA_PROMPT_INFO: dict[str, tuple[str, str]] = {
 }
 
 
-def build_user_prompt(definition, ref_solution) -> str:
+def build_user_prompt(definition, ref_solution, *, closing: str | None = None) -> str:
+    """Task description: the entry signature and the scalar kernel to replace.
+
+    `closing` is the trailing instruction; the default points at the tool loop.
+    eval/single_shot.py passes its own, so the two paths hand the model
+    identical task information and differ only in what it may do with it.
+    """
     parts = [f"Definition: {definition.name}  (op_type: {definition.op_type})"]
 
     if ref_solution is not None:
@@ -135,10 +141,10 @@ def build_user_prompt(definition, ref_solution) -> str:
                 f"```cpp\n{kernel.content}\n```"
             )
 
-    parts.append(
+    parts.append(closing if closing is not None else (
         "\nStart with compile(). Use evaluate(measure=false) to check correctness, "
         "then evaluate(measure=true) for speedup metrics."
-    )
+    ))
     return "\n".join(parts)
 
 
