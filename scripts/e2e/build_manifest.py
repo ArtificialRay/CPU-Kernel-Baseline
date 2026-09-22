@@ -99,7 +99,12 @@ def pick_version(traj: Path, best: bool):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--runs", nargs="+", required=True, help="agent-run roots (later roots override earlier)")
+    ap.add_argument("--runs", nargs="*", default=[], help="agent-run roots (later roots override earlier)")
+    ap.add_argument("--solutions", default=None,
+                    help="build from bench-trace/solutions/<dataset>/<AUTHOR>/gemm/*.json instead of "
+                         "agent run dirs -- for kernel sets that were repaired or hand-written rather "
+                         "than produced by a run (e.g. fable-exact-bsums)")
+    ap.add_argument("--dataset", default="llama.cpp")
     ap.add_argument("--isa", default="sve2")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--best", action="store_true", help="best PASSED evaluate instead of the submitted version")
@@ -119,12 +124,29 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     march = args.march or _isa_table()[args.isa].march
 
+    if not args.runs and not args.solutions:
+        ap.error("pass --runs or --solutions")
+
+    sol_sources = {}
+    if args.solutions:
+        sdir = REPO / "bench-trace" / "solutions" / args.dataset / args.solutions / "gemm"
+        if not sdir.is_dir():
+            raise SystemExit(f"no such solutions dir: {sdir}")
+        for f in sorted(sdir.glob("*.json")):
+            sd = json.load(open(f))
+            sol_sources[sd["definition"]] = next(
+                x["content"] for x in sd["sources"] if x["path"] == "kernel.cpp"
+            )
+
     found = {}
     for root in args.runs:
         for d in sorted(Path(root).expanduser().iterdir()):
             if (d / "trajectory.jsonl").exists():
                 found[d.name] = d
     kernels, skipped = [], []
+    for name in sorted(sol_sources):
+        found.setdefault(name, None)
+
     for name, d in sorted(found.items()):
         m = NAME_RX.match(name)
         if not m:
@@ -134,16 +156,20 @@ def main() -> None:
             skipped.append({"definition": name, "reason": "filtered by --only-types"}); continue
         if args.only_roles and not any(r in name for r in args.only_roles):
             skipped.append({"definition": name, "reason": "filtered by --only-roles"}); continue
-        src_file, speedup = pick_version(d / "trajectory.jsonl", args.best)
-        if not src_file:
-            skipped.append({"definition": name, "reason": "no submitted/PASSED version"}); continue
+        if d is None:
+            src_file, speedup = f"solutions/{args.solutions}", None
+        else:
+            src_file, speedup = pick_version(d / "trajectory.jsonl", args.best)
+            if not src_file:
+                skipped.append({"definition": name, "reason": "no submitted/PASSED version"}); continue
         ref = json.load(open(REPO / "bench-trace/solutions/llama.cpp/reference-scalar/gemm" / f"{name}.json"))
         build = out_dir / "build" / name
         build.mkdir(parents=True, exist_ok=True)
         for s in ref["sources"]:
             if s["path"] != "kernel.cpp":
                 (build / s["path"]).write_text(s["content"])
-        (build / "kernel.cpp").write_text((d / src_file).read_text())
+        kernel_src = sol_sources[name] if d is None else (d / src_file).read_text()
+        (build / "kernel.cpp").write_text(kernel_src)
         so = out_dir / f"{name}.so"
         abi = "entry"
         if args.rows_abi:
@@ -158,7 +184,7 @@ def main() -> None:
                 for s_ in ref["sources"]:
                     if s_["path"] != "kernel.cpp":
                         (build / s_["path"]).write_text(s_["content"])
-                (build / "kernel.cpp").write_text((d / src_file).read_text())
+                (build / "kernel.cpp").write_text(kernel_src)
         if abi == "entry":
             cmd = [args.cxx, "-shared", "-fPIC", "-O3", march, "-std=c++14", "-I", str(build),
                    str(build / "kernel.cpp"), str(build / "gemm.cpp"), "-o", str(so)]
