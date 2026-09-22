@@ -86,9 +86,10 @@ class SqnrEvaluator(DefaultEvaluator):
                 EvaluationStatus.INCORRECT_SHAPE if c.fail_reason == "shape"
                 else EvaluationStatus.INCORRECT_NUMERICAL
             )
+            who = baseline.sqnr_floor_author or "the reference implementation"
             how = (
-                f"the {cfg.baseline_author} baseline scores {floor + cfg.sqnr_margin_db:.1f} dB "
-                f"on this workload, so the floor is {floor:.1f} dB"
+                f"{who} scores {floor + cfg.sqnr_margin_db:.1f} dB on this workload and you "
+                f"may give up at most {cfg.sqnr_margin_db:.1f} dB, so the floor is {floor:.1f} dB"
                 if relative else f"absolute floor {floor:.1f} dB"
             )
             log = (

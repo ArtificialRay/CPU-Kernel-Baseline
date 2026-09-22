@@ -63,13 +63,17 @@ class DefaultEvaluator(Evaluator):
         # A calibrated workload states what the *baseline* kernel scores on these
         # exact inputs; the candidate is then held to that, not to a fixed floor.
         floor = None
-        raw = (workload.tags or {}).get("baseline_sqnr_db")
+        tags = workload.tags or {}
+        raw = tags.get("baseline_sqnr_db")
         if raw is not None:
             try:
                 floor = float(raw) - cfg.sqnr_margin_db
             except (TypeError, ValueError):
                 floor = None
-        return RefBaseline(np_inputs=np_inputs, ref_np=ref_np, sqnr_floor_db=floor)
+        return RefBaseline(
+            np_inputs=np_inputs, ref_np=ref_np, sqnr_floor_db=floor,
+            sqnr_floor_author=tags.get("baseline_sqnr_author"),
+        )
 
     # ── Phase 1: correctness ──────────────────────────────────────────────────
 

@@ -289,3 +289,61 @@ SQNR on the harness's random-input workloads, and by 3.9 perplexity in the model
 workloads built from activations dumped out of llama.cpp, a gate set relative to the
 baseline's own SQNR rather than an absolute floor, and end-to-end perplexity as the
 acceptance test for any model-level claim.
+
+### Gate v2 — what changed, and the evidence it works (2026-09-21)
+
+Three changes, all needed; any one alone still lets the bad kernel through.
+
+1. **Real activations.** New workload input type `{"type": "tensor", "path": ...}` loads a
+   tensor from the warehouse. `ARMBENCH_DUMP_DIR` on the override hook captures what
+   llama.cpp actually computes (`ARMBENCH_DUMP_STRIDE` spreads captures over the layer
+   stack, since the same shape recurs once per layer), and
+   `scripts/e2e/dump_to_workloads.py` slices those into per-M workloads. 5.3 MB for all 11
+   definitions.
+2. **Realistic weights.** `_gen_ggml_kquant_rows` used to draw the quant integers uniform
+   and the per-sub-block scale and min independently from one distribution. Real Q4_K has
+   `dmin` about 8x `d` and 6-bit mins near 46/63, because the sub-block min carries most of
+   the weight value; the old generator gave `dmin/d = 1.0` and mins of 37, which made the
+   min-correction term a minor correction and hid any kernel that mishandled it. It now
+   draws Gaussian weights and quantizes them the way ggml does, which reproduces the real
+   tensor's statistics to three digits.
+
+   | | d | dmin | dmin/d | mean 6-bit min |
+   |---|---|---|---|---|
+   | real Qwen3.5-4B tensor | 5.0e-5 | 4.04e-4 | 8.08 | 46.3 |
+   | old generator | 2.8e-4 | 2.8e-4 | 1.00 | 37.0 |
+   | new generator | 4.9e-5 | 4.04e-4 | 8.19 | 46.6 |
+
+3. **A baseline-relative floor.** `EvalConfig.sqnr_margin_db` (default 1.0) plus a
+   per-workload `baseline_sqnr_db` tag written by `scripts/e2e/calibrate_sqnr_floor.py`.
+   The candidate is held to what the reference implementation itself scores on the same
+   inputs. On these definitions that floor is 48-51 dB, against the old absolute 20 dB.
+
+**Evidence.** On `gemm_ggml_q4_K_n9216_k2560` the submitted kernel and the same kernel with
+exact block sums were 0.3 dB apart under the old gate and both passed. Under gate v2 the
+submitted kernel scores 27-33 dB against a 49-51 dB floor and fails every M>=2 workload;
+the exact-bsums version passes all six. Across the nine kernels that compile on a NEON host
+(the two SVE q6_K kernels need a Graviton), gate v2 rejects exactly the ones that hurt the
+model:
+
+| kernel | workloads passing gate v2 | measured e2e PPL cost |
+|---|---|---|
+| gemm_ggml_q4_K_n9216_k2560 | 1/6 | +1.67 |
+| gemm_ggml_q5_K_n8192_k2560 | 0/6 | +1.19 |
+| gemm_ggml_q4_K_n4096_k2560 | 1/6 | +0.61 |
+| gemm_ggml_q4_K_n8192_k2560 | 1/6 | +0.22 |
+| gemm_ggml_q5_K_n2560_k4096 | 1/6 | +0.00 |
+| gemm_ggml_q4_K_n1024_k2560 | 6/6 | +0.10 |
+| gemm_ggml_q4_K_n2560_k9216 | 6/6 | +0.05 |
+| gemm_ggml_q4_K_n2560_k4096 | 6/6 | -0.05 |
+| gemm_ggml_q6_K_n1024_k2560 | 6/6 | +0.01 |
+
+The single workload the failing kernels still pass is M=1, whose code path keeps the block
+sums exact -- which is also the only regime where the end-to-end perplexity cost was
+acceptable. `gemm_ggml_q5_K_n2560_k4096` is a conservative rejection: it takes the same
+shortcut but sits on a tensor where it happens not to matter. Erring that way is correct for
+a gate.
+
+All 30 packed-ggml definitions (the 11 Qwen3.5-4B shapes and the 19 Qwen3.8-27B shapes) are
+calibrated, 176 workloads. The 27B workloads still use random activations -- only the 4B
+model was dumped -- so their floors are relative but not yet outlier-aware.
