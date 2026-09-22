@@ -359,7 +359,7 @@ def provision(
     outputs = _tf_output()
     host = outputs["instance_public_ips"]["value"][label]
     instance_id = outputs.get("instance_ids", {}).get("value", {}).get(label)
-    key_file = outputs.get("ssh_key_path", {}).get("value", "~/.ssh/id_rsa")
+    key_file = outputs.get("ssh_key_paths", {}).get("value", {}).get(label, "~/.ssh/id_rsa")
     # ec2-user on Mac, ubuntu elsewhere — terraform/main.tf owns that split.
     ssh_user = outputs.get("instance_ssh_users", {}).get("value", {}).get(label, "ubuntu")
 

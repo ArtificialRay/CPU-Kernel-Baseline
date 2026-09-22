@@ -63,6 +63,22 @@ Provisioning and remote runs need an AWS account with Terraform configured
 | `.env` (copy from `.env.example`) | System parameters: harness config paths, API keys, `RSYNC_ALLOWLIST` |
 | `skills/<harness>/<harness>-kernel-session/config.json` | Per-harness config (e.g. nanobot's model/provider + MCP server wiring) |
 
+### Apple Silicon / Mac baseline collection
+
+When benchmarking your agent with kernel optimization on an EC2 Mac instance, use these timing defaults in `config/kernel_contracts.yaml`:
+
+```yaml
+eval_defaults:
+  warmup: 10
+  repeat: 50
+  inner_iters: auto
+```
+
+`inner_iters: auto` enlarges short timed windows to reduce Apple Silicon
+frequency-ramp and timer-resolution noise. Keep Mac traces collected with
+these settings separate from older traces collected with `warmup: 5` and
+`inner_iters: 1`; do not mix the two timing protocols in one baseline set.
+
 ## Two ways to run an agent against this benchmark
 
 - **MCP server for an external harness** — start `mcp_app/server.py` directly
