@@ -446,9 +446,14 @@ submissions untouched, 5 were re-optimized here under gate v2. No hand-patched k
 in the set. Total cost across both rounds ~$137 of Fable, about half the 2026-09-21
 eleven-kernel sweep.
 
-Also unmeasured: kernel-level speedups for the hand-repaired `fable-exact-bsums` set, so
-there is currently no direct speed comparison between the hand-patched kernels and the
-honestly re-optimized ones. That needs a harness run, no model credits.
+**The hand-patched `fable-exact-bsums` set is retired as a result.** It did its job: it is
+how the defect was proven (mechanically removing the shared exponent, changing nothing else,
+moved perplexity from 14.45 to 10.27 while prefill went only 1.35x -> 1.33x), and that
+established the shortcut was never a real tradeoff. But it is a hand edit of the model's
+output, not something an agent produced, so it cannot carry a claim in a paper about what
+agents produce. It stays in the root-cause section as evidence and is dropped from the
+results tables, the kernel-level comparison and the headline. The Fable-authored gate-v2
+set supersedes it.
 
 ### A measurement that measured the wrong kernels (2026-09-22)
 
