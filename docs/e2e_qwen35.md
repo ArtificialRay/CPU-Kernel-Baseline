@@ -500,3 +500,30 @@ cheating original, measured twice. The `stock`, `norepack` and `fable_repaired` 
 `fable_repaired` has now reproduced 1.32x at PPL 10.27 on three separate instances. The
 kernel-level gate-v2 speedups (3.601x / 3.573x / 3.026x / 2.967x / 2.927x) were read from the
 trajectories, not from the copied files, and are unaffected.
+
+### End to end, fully Fable-authored (2026-09-22, corrected run)
+
+Manifest built from the agent run directories (`build_manifest.py --runs <original> <gate-v2>`,
+later roots win) and checked by `verify_kernel_set.py` before the box came up: 5 verified new,
+6 verified reused, the shared-exponent idiom absent from all 11. c8g.4xlarge, medians of 5,
+perplexity over 8 wikitext-2 chunks from the same binaries.
+
+| build | pp512 t=16 | tg128 t=16 | speedup pp / tg | perplexity |
+|---|---|---|---|---|
+| stock | 158.1 | 39.17 | 1.00x / 1.00x | 10.062 |
+| norepack | 86.1 | 34.14 | 0.54x / 0.87x | 10.067 |
+| **Fable, gate v2** | **210.4** | **42.26** | **1.33x / 1.08x** | **10.162 (+1.0%)** |
+
+At lower thread counts the margin is wider — 1.41x prefill at t=1 and 1.39x at t=4 — so 1.33x
+is the conservative end of the range, taken where ggml's own repack path is strongest.
+
+**Headline claim: +33% prefill and +8% decode over stock llama.cpp at +1.0% perplexity, with
+every kernel written by the agent.** Against the same set's shortcut-taking predecessor
+(1.35x prefill, perplexity 14.45), being honest about precision cost about 1.5% of prefill
+and recovered 43 points of perplexity.
+
+The hand-patched set, measured alongside as the last use of it, reached the same speed (1.33x)
+at **+2.1%** perplexity against the re-optimized set's **+1.0%**. So the re-run bought more
+than authorship: re-optimizing under a real precision constraint produced kernels that are
+measurably more accurate than mechanically patching the shortcut out of the old ones. That
+question is now answered and the hand-patched set is retired.
