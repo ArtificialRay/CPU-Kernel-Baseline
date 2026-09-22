@@ -413,3 +413,36 @@ to clear the repack path, not the generic one, to be worth splicing.
 The repaired Fable set was carried in this run as a cross-check and reproduced across two
 separate instances: 1.33x vs 1.32x prefill, 1.09x vs 1.10x decode, perplexity 10.271 both
 times.
+
+### Does a better gate produce better work? (2026-09-22, partial)
+
+Re-ran the five kernels that carried the batch-shared-exponent defect with Fable 5.1 under
+gate v2, budget 33/42 (the previous sweep showed every one of them reached 99.6-100% of its
+own best by turn 33). Three completed before the run was stopped for budget:
+
+| kernel | with the shortcut | under gate v2 | change |
+|---|---|---|---|
+| gemm_ggml_q5_K_n2560_k4096 | 3.39x | **3.601x** | +6% |
+| gemm_ggml_q4_K_n4096_k2560 | 3.03x | 3.026x | flat |
+| gemm_ggml_q4_K_n9216_k2560 | 3.00x | 2.967x | -1% |
+
+**Told the truth about precision, the model finds the same speed honestly.** Two of three
+match their cheating counterparts and one beats it by six percent, while every submission
+clears a floor set at the reference implementation's own SQNR. Taken with the end-to-end
+result -- the shortcut bought 1.5% of prefill and cost 41 points of perplexity -- the trade
+the old gate induced was never a trade at all. The benchmark priced precision at zero, so
+the optimizer spent it.
+
+Stored as solution author `claude-code-claude-fable-5-1-gatev2` (HF + local backup in
+`sweep_backups/2026-09-22_fable_gatev2/`). Cost $70 of Fable, about a quarter of the
+eleven-kernel 2026-09-21 sweep.
+
+Not done: `gemm_ggml_q4_K_n8192_k2560` (stopped before it started) and
+`gemm_ggml_q5_K_n8192_k2560` (killed mid-run at 8 calls, nothing banked -- a kernel's best is
+only persisted once it passes an evaluate, since the harness auto-submits on improvement).
+The six kernels that never had the defect are unchanged and already pass gate v2, so a
+complete gate-v2 set needs only those two.
+
+Also unmeasured: kernel-level speedups for the hand-repaired `fable-exact-bsums` set, so
+there is currently no direct speed comparison between the hand-patched kernels and the
+honestly re-optimized ones. That needs a harness run, no model credits.
