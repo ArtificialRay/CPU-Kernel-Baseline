@@ -449,3 +449,49 @@ eleven-kernel sweep.
 Also unmeasured: kernel-level speedups for the hand-repaired `fable-exact-bsums` set, so
 there is currently no direct speed comparison between the hand-patched kernels and the
 honestly re-optimized ones. That needs a harness run, no model credits.
+
+### A measurement that measured the wrong kernels (2026-09-22)
+
+The first end-to-end run of the complete gate-v2 set reported 1.35x prefill at perplexity
+**14.449** — matching the known-broken set's 14.4493 to four digits. It was not a coincidence.
+The manifest had been built with `build_manifest.py --solutions
+claude-code-claude-fable-5-1-gatev2`, and that solution folder had been assembled by hand by
+copying JSONs off the controller *after* a local→controller `bench-trace/` rsync had already
+replaced them with the previous round's submissions. Ten of eleven entries were the original
+kernels; only `gemm_ggml_q5_K_n2560_k4096` was genuinely new.
+
+Nothing in the pipeline objected, and nothing should have: the splice was correct, 11/11 shapes
+were intercepted, every `.so` was readable, every gate passed. **The plumbing checks verify that
+kernels run, not that they are the kernels you meant.** The only tell was a perplexity that
+happened to be recognisable.
+
+Two things came out of it:
+
+- `scripts/e2e/verify_kernel_set.py` — compares a manifest's actual compiled sources against a
+  reference run set and fails *before* provisioning if a kernel that should be new is
+  byte-identical to the old one (`--expect-changed`), if a deliberately reused kernel has
+  drifted (`--expect-same`), or if a known-bad idiom appears anywhere (`--forbid 'maxabs >> sh'`).
+  Sources are compared through `kernel_rows_abi_text()`, since `build_manifest` leaves a
+  *rewritten* kernel.cpp in its build dir and raw run-dir sources never match it byte for byte.
+  Run against the bad set it reports "11 reused, 0 new" and refuses.
+- `scripts/e2e/solutions_from_runs.py` — builds solution JSONs from the agent run directories,
+  which is the authoritative record (`trajectory.jsonl` names the submitted version, `v<N>.cpp`
+  holds it). The folder was assembled by hand because no tool did this. The regenerated folder
+  has been re-pushed to HF and verified against the originals in both directions.
+
+Auditing the rest turned up one more instance of the same contamination: the controller's
+`claude-code-claude-fable-5-1-sve2` copy of `gemm_ggml_q5_K_n2560_k4096` had been overwritten
+with the gate-v2 kernel, plus a stray `..._current.json` that `TraceSet` would have loaded as a
+twelfth solution. Restored from the clean local copy; HF was never affected (checked file by
+file against local).
+
+The corrected measurement builds the manifest with `--runs <original-runs> <gatev2-runs>`
+(later roots win, which is exactly the 6-reused + 5-re-optimized shape) and runs the guard
+before provisioning.
+
+**Invalidated by this**: the `fable_gatev2` row of the 2026-09-22 table, and the claim that the
+fully Fable-authored set "matches the cheating original's 1.35x prefill exactly" — it *was* the
+cheating original, measured twice. The `stock`, `norepack` and `fable_repaired` rows stand, and
+`fable_repaired` has now reproduced 1.32x at PPL 10.27 on three separate instances. The
+kernel-level gate-v2 speedups (3.601x / 3.573x / 3.026x / 2.967x / 2.927x) were read from the
+trajectories, not from the copied files, and are unaffected.
