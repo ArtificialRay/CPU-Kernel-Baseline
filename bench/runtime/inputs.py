@@ -118,6 +118,18 @@ def _gen_ggml_kquant_rows(shape: tuple, layout: str, rng: np.random.Generator) -
     nb = k_bytes // blk
     k = nb * _GGML_KQUANT_BLOCK_ELEMS[layout]
     SIGMA = 0.009  # weight std dev, matched to a real Qwen3.5-4B Q4_K_M tensor
+    # Generate in row chunks. The lm_head shape is [248320, 2560]; one float32 copy of
+    # that is 2.5 GB and this needs several intermediates, which OOMs an 8 GB eval box.
+    # numpy fills in C order, so drawing chunks in row order gives bit-identical values
+    # to one big draw -- chunking does not move the SQNR floors.
+    rows_per_chunk = max(1, min(n_rows, (32 << 20) // max(1, k * 4)))
+    if n_rows > rows_per_chunk:
+        parts = []
+        for r0 in range(0, n_rows, rows_per_chunk):
+            sub_shape = (min(rows_per_chunk, n_rows - r0), k_bytes)
+            parts.append(_gen_ggml_kquant_rows(sub_shape, layout, rng))
+        return np.ascontiguousarray(np.concatenate(parts, axis=0))
+
     w = rng.normal(0.0, SIGMA, (n_rows, k)).astype(np.float32)
 
     def _asym(levels: int, group: int):
