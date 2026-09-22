@@ -97,6 +97,30 @@ def pick_version(traj: Path, best: bool):
     return r.get("source_file") or r["metrics"].get("source_file"), r["metrics"].get("time_speedup_geomean") or r["metrics"].get("time_speedup")
 
 
+
+def undefined_ggml_symbols(so: Path) -> list:
+    """ggml symbols the .so expects someone else to provide.
+
+    The evaluation harness links ggml, so a candidate that just calls
+    ggml_vec_dot_q5_K_q8_K compiles, runs and scores ~1.00x -- it *is* the baseline. The
+    e2e override dlopens the kernel on its own, where that symbol does not resolve, and the
+    loader then disables every override in the manifest, not just this one. Catch it here.
+    """
+    try:
+        out = subprocess.run(["nm", "-D", "-u", str(so)], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        return []
+    syms = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if parts and parts[0] in ("U", "w") and len(parts) > 1:
+            pass
+        for tok in parts:
+            if tok.startswith("ggml_"):
+                syms.add(tok)
+    return sorted(syms)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", nargs="*", default=[], help="agent-run roots (later roots override earlier)")
@@ -191,6 +215,16 @@ def main() -> None:
             p = subprocess.run(cmd, capture_output=True, text=True)
             if p.returncode != 0:
                 skipped.append({"definition": name, "reason": "compile failed: " + p.stderr[-400:]}); continue
+        bad = undefined_ggml_symbols(so)
+        if bad:
+            skipped.append({
+                "definition": name,
+                "reason": ("references ggml internals (" + ", ".join(bad) + "): the kernel "
+                           "delegates to ggml's own routine, so it cannot be dlopened outside "
+                           "the harness and would disable every override in this manifest"),
+            })
+            print(f"  {name}: SKIPPED -- calls ggml internals ({', '.join(bad)})")
+            continue
         kernels.append({"op": "mul_mat", "type": qtype, "K": K, "N": N, "so": str(so),
                         "symbol": "armbench_entry_gemm", "abi": abi,
                         "definition": name, "version": src_file, "harness_speedup": speedup})
