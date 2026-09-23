@@ -11,3 +11,5 @@ or option on the harness itself (`test_scripts/bench_fleet.py` /
 
 Run each arm with its own `--author` so results/solutions don't collide
 (`compute_author()` doesn't fold ablation flags into the author string).
+
+Documentation in this repo is classified by ISA: SVE related skills are in `skills/hardware_docs/sve`, SME related skills are in `skills/hardware_docs/sme`

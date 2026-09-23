@@ -88,9 +88,10 @@ def list_run_dir_resources(
                         mimeType=_MIME_TYPES.get(path.suffix, "text/plain"),
                     )
                 )
-    # Static hardware optimization guides (run_dir/docs/*.md) — always visible,
-    # like the reference-scalar starter, never scoped to visible_definitions.
-    for path in sorted((run_dir / _DOCS_DIRNAME).glob("*.md")):
+    # Static hardware optimization guides (run_dir/docs/**/*.md, organized
+    # per-ISA-family — e.g. docs/sve/, docs/sme/) — always visible, like the
+    # reference-scalar starter, never scoped to visible_definitions.
+    for path in sorted((run_dir / _DOCS_DIRNAME).rglob("*.md")):
         if not path.is_file():
             continue
         rel = str(path.relative_to(run_dir))

@@ -317,12 +317,10 @@ class ClineAdapter(HarnessAdapter):
 # mild and unmodified either way.
 NANOBOT_DOC_NUDGE = (
     "IMPORTANT: before writing or compiling ANY kernel, first call list_resources() and "
-    "read the Arm Neoverse Software Optimization Guide for the target hardware in full "
-    "(docs/neoverse-v2-swog.md for Graviton4/SVE2, docs/neoverse-v1-swog.md for "
-    "Graviton3/SVE). Ground every optimization decision — instruction selection, vector "
-    "width, unroll factor, and scheduling — in its per-instruction latency/throughput "
-    "tables, and briefly note which guidance you applied. Do not begin optimizing until "
-    "you have read it.\n\n"
+    "read EVERY docs/ resource relevant to your target ISA in full (docs/sve/ for "
+    "SVE/SVE2, docs/sme/ for SME2) — not just the first file you see. Ground every "
+    "optimization decision in this material, and briefly note which guidance you "
+    "applied. Do not begin optimizing until you have read the relevant docs.\n\n"
 )
 
 

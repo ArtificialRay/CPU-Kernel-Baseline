@@ -84,16 +84,20 @@ DOCS_DIRNAME = "docs"
 
 
 def _write_hardware_docs(run_dir: Path) -> None:
-    """Copy the bundled Arm optimization guides into `run_dir/docs/*.md` so the
-    agent can read per-instruction latency/throughput tables via list_resources()
-    /read_resource() — the same MCP path as the kernel files. Best-effort."""
+    """Copy the bundled Arm optimization guides into `run_dir/docs/**/*.md` so
+    the agent can read per-instruction latency/throughput tables via
+    list_resources()/read_resource() — the same MCP path as the kernel files.
+    Recursive (rglob) and preserves the source's subdirectory layout (e.g.
+    `sve/neoverse-v2-swog.md`, `sme/README.md`) — skills/hardware_docs/ is
+    organized per-ISA-family, not flat. Best-effort."""
     if not _HARDWARE_DOCS_SRC.is_dir():
         return
     dest = run_dir / DOCS_DIRNAME
-    dest.mkdir(parents=True, exist_ok=True)
-    for md in sorted(_HARDWARE_DOCS_SRC.glob("*.md")):
+    for md in sorted(_HARDWARE_DOCS_SRC.rglob("*.md")):
+        rel = md.relative_to(_HARDWARE_DOCS_SRC)
         try:
-            shutil.copyfile(md, dest / md.name)
+            (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(md, dest / rel)
         except OSError:
             pass
 
