@@ -29,10 +29,10 @@ this document first, then that harness's own `README.md`.
 `launch/` (`skills/launch/`) is a harness-agnostic, self-contained package —
 zero Python imports from `eval/` or `mcp_app/` — that provisions a Graviton
 instance and starts an `mcp_app` session on it. Provisioning itself (Terraform apply/destroy) is
-done by the standalone `eval/provision.py` script; `launch/launch_session.py`
+done by the standalone `provisioning/provision.py` script; `launch/launch_session.py`
 invokes it only via subprocess, never imports it. Both sides read/write the
-same shared `eval/eval_config.json` for "what's currently up" — so an
-instance `eval/provision.py` brought up is visible to `launch/`, and vice
+same shared `provisioning/eval_config.json` for "what's currently up" — so an
+instance `provisioning/provision.py` brought up is visible to `launch/`, and vice
 versa; there's exactly one record of what's running, not two.
 
 please not that, **launch** or use **provision+prepare-session** separately, launch a instance with target dataset(codebase) built. As long as you copy the spawn command for mcp server to your agent's config, or execute the spawn command, the server starts.
@@ -60,7 +60,7 @@ SSH local-port-forward (not exposed publicly), and prints the endpoint.
 | `--instance` | no | derived from `--isa` | EC2 instance type override, e.g. `c8g.xlarge` |
 | `--author` | no | `f'nanobot-{isa}'` | tags every solution/trace this session writes (`f"{author}_{definition.name}"`); also names the session's `run_dir` (`agent-runs-mcp/<author>/`). isa is always folded into the default so two isa's don't clobber each other's solution files — nothing else disambiguates isa. |
 | `--baseline-author` | no | auto-derived from `--dataset` | only pass this to override |
-| `--label` | no | `f'{dataset(s)}-{author}'` | name identifying this instance — one per concurrently-desired instance (see `eval/provision.py`'s module docstring). Since `--author` already carries isa by default, this alone keeps different isa's on separate instances without extra flags |
+| `--label` | no | `f'{dataset(s)}-{author}'` | name identifying this instance — one per concurrently-desired instance (see `provisioning/provision.py`'s module docstring). Since `--author` already carries isa by default, this alone keeps different isa's on separate instances without extra flags |
 | `--local-repo-dir` | **no** | this checkout's own root (`REPO_ROOT`, computed from where `launch_session.py` itself lives — not your shell's cwd) | your local checkout of this repo, pushed to the instance by `prepare_session`'s rsync |
 | `--remote-root` | no | `~/arm-bench` | where the repo lives on the instance |
 | `--local-port` | no | random free port | pin the local tunnel port across relaunches, so a reused MCP client config doesn't need re-editing every time |
@@ -85,7 +85,7 @@ python3 launch_session.py prepare-session \
 | `--isa` | yes | — | one of `neon`, `sve`, `sve2`, `sme2` — drives the default instance type |
 | `--instance` | no | derived from `--isa` | EC2 instance type override, e.g. `c8g.xlarge` |
 | `--label` | no | `f'{dataset(s)}-{isa}'` | name identifying this instance. `provision` has no `--author` (it's a bare infra command, not tied to any producer), so unlike `launch` its default doesn't fold author in |
-| `--local-repo-dir` | no | *(no effect here)* | accepted for parity with `launch`, but unused by standalone `provision` — `eval/provision.py` always rsyncs its own repo checkout during provisioning |
+| `--local-repo-dir` | no | *(no effect here)* | accepted for parity with `launch`, but unused by standalone `provision` — `provisioning/provision.py` always rsyncs its own repo checkout during provisioning |
 | `--dataset` | no | `""` (skip) | build this dataset's native lib right after provisioning |
 
 ### `prepare-session` flags
@@ -146,7 +146,7 @@ python3 launch_session.py teardown             # terraform-destroy the instance(
 ```
 
 Neither takes any flags. `teardown` shares Terraform state with
-`eval/provision.py --teardown` — it tears down the same physical
+`provisioning/provision.py --teardown` — it tears down the same physical
 instance(s) regardless of which side provisioned it.
 
 Fanning a batch of definitions out across N instances means running N

@@ -214,19 +214,31 @@ bench-trace/                    # On-disk warehouse (TraceSet root) — .gitigno
   traces/<op_type>/
 
 eval/                           # In-repo litellm agent loop (Path 1)
-  provision.py                  # Terraform lifecycle for Graviton EC2 instances
   evaluator.py                  # run_agentic_eval turn loop (prompts, retries, history compression)
   mcp_client.py                 # MCP client bridge — attach()es to an already-running
                                  #   mcp_app/server.py session (compile/evaluate/disassemble/submit),
                                  #   same server Path 3 drives; provisioning/tunnel lifecycle is the
                                  #   caller's (test_scripts/bench_fleet.py's) job, not this module's
-  remote.py                     # InstanceHandle — SSH/rsync to a provisioned instance
-  eval_config.json              # SSH connection info — copy from .example
   llm_providers.py              # resolve_completion_kwargs() — optional per-provider
                                  #   api_key/api_base override for litellm.completion()
   llm_providers.json            # per-provider api_key/api_base — copy from .example;
                                  #   optional, litellm falls back to env vars (ANTHROPIC_API_KEY etc.)
                                  #   for any provider/field left out or if this file is absent
+
+provisioning/                   # Terraform/EC2 lifecycle shared by all three paths (Path 1's
+                                 #   eval/evaluator.py, Path 3's skills/launch/launch_session.py,
+                                 #   and scripts/gen-workload/collect_workloads_llm.py) — invoked
+                                 #   only via subprocess by skills/launch/ (zero imports from
+                                 #   eval/ or provisioning/), imported directly elsewhere
+  provision.py                  # Terraform lifecycle for Graviton EC2 instances
+  remote.py                     # InstanceHandle — SSH/rsync to a provisioned instance
+  eval_config.json              # SSH connection info — copy from .example
+  workspaces.py                 # current_workspace_config() — per-Terraform-workspace AWS
+                                 #   account/namespace/profile, keyed by `terraform workspace show`
+  workspaces.json                # workspace -> {account_id, namespace, aws_profile} — copy from
+                                 #   .example; provision.py always injects these per terraform call
+                                 #   instead of relying on a single global .env value (see
+                                 #   workspaces.py's module docstring for the incident that motivated it)
 
 mcp_app/                        # MCP server for Path 3
   server.py                     # MCP server (--transport stdio|streamable-http)
@@ -273,9 +285,9 @@ config/kernel_contracts.yaml    # Single source of truth: ISA mappings, evaluato
 
 ### Provision & teardown
 ```bash
-python eval/provision.py --isa sve2       # Graviton4 c8g.large (SVE2=128-bit)
-python eval/provision.py --isa sve        # Graviton3 c7g.large (SVE=256-bit)
-python eval/provision.py --teardown
+python provisioning/provision.py --isa sve2       # Graviton4 c8g.large (SVE2=128-bit)
+python provisioning/provision.py --isa sve        # Graviton3 c7g.large (SVE=256-bit)
+python provisioning/provision.py --teardown
 ```
 
 ### In-repo litellm agent loop (Path 1 — requires Graviton instance)

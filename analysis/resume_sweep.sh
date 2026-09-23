@@ -58,7 +58,7 @@ clean_stale_servers () {
     HOST=$("$PY" -c "
 import json,sys
 try:
-    c=json.load(open('eval/eval_config.json'))
+    c=json.load(open('provisioning/eval_config.json'))
     print(c.get('instances',{}).get('$DS-$AUTHOR',{}).get('host',''))
 except Exception: print('')
 " 2>/dev/null)
@@ -124,7 +124,7 @@ for round in $(seq 1 "$MAX_ROUNDS"); do
     if [ "$N" -gt 0 ] && [ "${PREV[$DS]:-}" = "$N" ]; then
       LB="$DS-$AUTHOR"
       echo "@@@ [$(date +%H:%M:%S)] ROUND $round $DS STALLED at $N — tearing down $LB to force a fresh box"
-      "$PY" eval/provision.py --teardown --label "$LB" >/dev/null 2>&1 || true
+      "$PY" provisioning/provision.py --teardown --label "$LB" >/dev/null 2>&1 || true
     fi
     PREV[$DS]="$N"
   done
@@ -148,7 +148,7 @@ for DS in $DATASETS; do
 done
 for DS in $DATASETS; do
   LB="$DS-$AUTHOR"
-  "$PY" eval/provision.py --teardown --label "$LB" >/dev/null 2>&1 \
+  "$PY" provisioning/provision.py --teardown --label "$LB" >/dev/null 2>&1 \
     && echo "@@@ teardown $LB OK" || echo "@@@ teardown $LB FAILED (destroy manually)"
 done
 echo "@@@ RESUME_DONE $(date +%H:%M:%S)"

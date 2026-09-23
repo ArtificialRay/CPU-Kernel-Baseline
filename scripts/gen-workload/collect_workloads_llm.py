@@ -6,7 +6,7 @@ instance, using ShareGPT prompts as traffic.
 Flow
 ----
 1. Reuse the Graviton instance already running under --label, or provision
-   one (needs --isa) via a subprocess call to eval/provision.py. Shape
+   one (needs --isa) via a subprocess call to provisioning/provision.py. Shape
    collection only hooks GGML_OP_MUL_MAT and reads token-count/tensor-shape
    metadata that's identical across ISA backends — it's instance-agnostic,
    any already-running Graviton tier works.
@@ -224,7 +224,7 @@ def _setup_remote(handle) -> str:
 
     print("[llm] Rsyncing llama.cpp to remote ~/llama.cpp/ ...")
     # InstanceHandle.rsync_to() is allow-list only (see its docstring in
-    # eval/remote.py) — no excludes kwarg. Build the allowlist dynamically from
+    # provisioning/remote.py) — no excludes kwarg. Build the allowlist dynamically from
     # whatever's actually in the local checkout, skipping just .git (huge,
     # irrelevant to the build) and any local build/__pycache__ artifacts.
     _rsync_skip = {".git", "build", "__pycache__"}
@@ -376,11 +376,11 @@ def main() -> None:
     # token-count/tensor-shape metadata that's identical across ISA backends —
     # nothing here needs SVE2 specifically, so this is instance-agnostic: any
     # already-running label works as-is, whatever tier it happens to be.
-    # eval/provision.py is a standalone script (see its module docstring) —
-    # invoke it via subprocess, then read the shared eval/eval_config.json it
+    # provisioning/provision.py is a standalone script (see its module docstring) —
+    # invoke it via subprocess, then read the shared provisioning/eval_config.json it
     # wrote, rather than importing its internals.
     label = args.label
-    eval_config_path = REPO_ROOT / "eval" / "eval_config.json"
+    eval_config_path = REPO_ROOT / "provisioning" / "eval_config.json"
     existing = {}
     if eval_config_path.exists():
         existing = json.loads(eval_config_path.read_text()).get("instances", {}).get(label, {})
@@ -392,12 +392,12 @@ def main() -> None:
         if not args.isa:
             parser.error(
                 f"No running instance found for label={label!r} and --isa not given. "
-                f"Either provision it first (python eval/provision.py --isa <isa> --label {label}) "
+                f"Either provision it first (python provisioning/provision.py --isa <isa> --label {label}) "
                 f"or pass --isa here to provision it now."
             )
         print(f"[llm] No instance found for label={label!r} — provisioning via --isa {args.isa}...")
         subprocess.run(
-            [sys.executable, str(REPO_ROOT / "eval" / "provision.py"),
+            [sys.executable, str(REPO_ROOT / "provisioning" / "provision.py"),
              "--isa", args.isa, "--label", label],
             check=True,
         )
@@ -405,10 +405,10 @@ def main() -> None:
     eval_config = json.loads(eval_config_path.read_text())
     inst = eval_config.get("instances", {}).get(label, {})
     if not inst.get("host"):
-        raise RuntimeError(f"eval/provision.py exited successfully but wrote no instance for label={label!r}")
+        raise RuntimeError(f"provisioning/provision.py exited successfully but wrote no instance for label={label!r}")
 
     sys.path.insert(0, str(REPO_ROOT))
-    from eval.remote import InstanceHandle  # noqa: PLC0415
+    from provisioning.remote import InstanceHandle  # noqa: PLC0415
 
     handle = InstanceHandle(
         host=inst["host"], user=inst.get("user", "ubuntu"),

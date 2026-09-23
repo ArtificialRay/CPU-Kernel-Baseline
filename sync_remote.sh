@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Push local arm-bench/ + CPU-Kernel-Baseline/ncnn/ to a running instance.
-# Mirrors the rsync logic of eval/provision.py (provision + provision_codebase).
+# Mirrors the rsync logic of provisioning/provision.py (provision + provision_codebase).
 #
 # Usage:
 #   ./sync_remote.sh                    # sync to the "c7g" label (default)
-#   LABEL=ncnn-sve ./sync_remote.sh     # sync to a specific --label (see eval/provision.py)
+#   LABEL=ncnn-sve ./sync_remote.sh     # sync to a specific --label (see provisioning/provision.py)
 #   ./sync_remote.sh --mirror           # also delete remote files missing locally
 #   HOST=1.2.3.4 ./sync_remote.sh       # override host (default: from eval_config.json)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG="$REPO_ROOT/eval/eval_config.json"
+CONFIG="$REPO_ROOT/provisioning/eval_config.json"
 KEY="${KEY:-$HOME/.ssh/id_rsa}"
 USER_NAME="${USER_NAME:-ubuntu}"
 LABEL="${LABEL:-c7g}"

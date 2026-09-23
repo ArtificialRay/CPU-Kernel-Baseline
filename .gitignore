@@ -35,7 +35,10 @@ traces/*
 !traces/.gitkeep
 
 # SSH credentials — never commit these
-eval/eval_config.json
+provisioning/eval_config.json
+
+# Per-Terraform-workspace AWS account/namespace/profile map — never commit
+provisioning/workspaces.json
 
 # LLM provider api_key/api_base — never commit these
 eval/llm_providers.json

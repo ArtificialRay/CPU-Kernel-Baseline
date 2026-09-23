@@ -1,0 +1,12 @@
+{
+  "default": {
+    "account_id": "111111111111",
+    "namespace": "",
+    "aws_profile": null
+  },
+  "my-workspace": {
+    "account_id": "222222222222",
+    "namespace": "my-workspace",
+    "aws_profile": "my-aws-profile"
+  }
+}

@@ -52,7 +52,7 @@ pip install -r requirements.txt
 ```
 
 Provisioning and remote runs need an AWS account with Terraform configured
-(`terraform/`) and an SSH key. See `eval/eval_config.json.example`.
+(`terraform/`) and an SSH key. See `provisioning/eval_config.json.example`.
 
 ## Configuration
 
@@ -173,7 +173,7 @@ matching `--dataset` (narrow with `--definitions`) until the model stops or
 **--model** is a required argument for own harness as there are no default model provided for own harness
 
 See [`eval/README.md`](eval/README.md) for `eval/evaluator.py`'s agent-loop
-details, `eval/provision.py`'s standalone provisioning commands, and where
+details, `provisioning/provision.py`'s standalone provisioning commands, and where
 results/traces end up.
 
 ---
@@ -201,7 +201,7 @@ Always remember to teardown MCP server after your session:
 ```bash
 python3 skills/launch/launch_session.py teardown
 ```
-use `--label` to specify the exact instance you want to terminate at eval/eval_config.json, otherwise, it will terminate all living instances
+use `--label` to specify the exact instance you want to terminate at provisioning/eval_config.json, otherwise, it will terminate all living instances
 
 
 ---

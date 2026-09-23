@@ -14,7 +14,7 @@ pip install -r requirements.txt   # from repo root
 - An AWS account with Terraform configured (`terraform/`) and an SSH key, if
   you'll be provisioning instances (not needed if you're only pointing at an
   already-running instance recorded in `eval_config.json`).
-- `eval/eval_config.json` — copy from `eval/eval_config.json.example`.
+- `provisioning/eval_config.json` — copy from `provisioning/eval_config.json.example`.
   Records `host`/`user`/`key_file`/`instance_type` per label (default label
   is `f"{dataset}-{isa}"`). Shared with `skills/launch/`'s own provisioning,
   so an instance either side brought up is visible to the other.
@@ -27,7 +27,7 @@ python eval/run_benchmark.py --problem <op_type> --dataset <dataset> --model <mo
 
 What this does, end to end:
 1. Provisions a fresh instance or reuses one already recorded in
-   `eval_config.json` for this `{dataset}-{isa}` label (`eval/provision.py`).
+   `eval_config.json` for this `{dataset}-{isa}` label (`provisioning/provision.py`).
 2. Starts `mcp_app.server` on it and opens an MCP client session
    (`eval/mcp_client.py`), reused across every definition in this run.
 3. Runs the litellm agent loop (`eval/evaluator.py::run_agentic_eval`) for
@@ -109,19 +109,19 @@ python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-
 | `sve` | `c7g.large` | Graviton3, Neoverse V1, 256-bit SVE |
 | `sve2` | `c8g.large` | Graviton4, Neoverse V2, 128-bit SVE2 (default) |
 
-## Provisioning (`eval/provision.py`)
+## Provisioning (`provisioning/provision.py`)
 
 Standalone script — `run_benchmark.py --provision`/`--teardown` just call
 into it. Useful directly when you want an instance to persist across several
 `run_benchmark.py` invocations, or to check/tear down what's currently up.
 
 ```bash
-python eval/provision.py --isa sve2                    # provision (label defaults to isa)
-python eval/provision.py --isa sve2 --dataset ncnn      # + build ncnn's native lib right after
-python eval/provision.py --status                        # show what's currently up
-python eval/provision.py --teardown                       # destroy every recorded instance
-python eval/provision.py --teardown --label ncnn-sve2     # destroy just one label
-python eval/provision.py --isa sve2 --on-demand            # on-demand, not spot — for long unattended runs
+python provisioning/provision.py --isa sve2                    # provision (label defaults to isa)
+python provisioning/provision.py --isa sve2 --dataset ncnn      # + build ncnn's native lib right after
+python provisioning/provision.py --status                        # show what's currently up
+python provisioning/provision.py --teardown                       # destroy every recorded instance
+python provisioning/provision.py --teardown --label ncnn-sve2     # destroy just one label
+python provisioning/provision.py --isa sve2 --on-demand            # on-demand, not spot — for long unattended runs
 ```
 
 | Flag | Default | Description |

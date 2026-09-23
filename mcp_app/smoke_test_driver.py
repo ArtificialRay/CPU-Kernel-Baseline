@@ -45,7 +45,7 @@ load_dotenv()
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCH_TRACE = REPO_ROOT / "bench-trace"
 
-# Shared with eval/provision.py and skills/launch/launch_session.py — lives
+# Shared with provisioning/provision.py and skills/launch/launch_session.py — lives
 # at the repo root (like contracts.py/config/kernel_contracts.yaml) so none
 # of the three packages "owns" a separately-duplicated copy that can drift.
 DATASET_BUILDS: dict = json.loads((REPO_ROOT / "config" / "dataset_builds.json").read_text())

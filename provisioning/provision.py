@@ -1,36 +1,20 @@
 """
-eval/provision.py — standalone Terraform lifecycle wrapper for Arm EC2
-instances (Graviton3/4). Provisions an instance, waits for it to be ready,
-rsyncs source, installs deps, and (optionally) builds a dataset's native
-lib. Writes/reads a single shared config file, eval/eval_config.json.
-
-Every instance is identified by a `label` — an arbitrary caller-chosen name,
-one per concurrently-desired instance (see `default_label()` below for the
---isa/--dataset-derived default). This replaced an earlier tier-keyed
-("c7g"/"c8g") design that could only ever track one instance per ISA tier —
-two jobs on the same ISA (e.g. ncnn+sve and llama.cpp+sve) had no way to get
-two separate instances. `label` maps directly onto terraform/main.tf's
-`var.instances` map key (`aws_instance.labeled[label]`).
-
-Standalone script — nothing else in this repo imports from this module.
-Callers that need an instance (eval/run_benchmark.py,
-skills/launch/launch_session.py, scripts/gen-workload/collect_workloads_llm.py)
-invoke it as a subprocess and then read eval/eval_config.json themselves
-for host/user/key_file. This is what keeps skills/launch/ (which must have
-zero Python imports from eval/ — see skills/README.md) and eval/ able to
-share one provisioning script and one source of truth for "what's running"
-without either importing the other.
+provisioning/provision.py — standalone Terraform lifecycle wrapper for Arm
+EC2 instances (Graviton3/4). Provisions an instance, waits for it to be
+ready, rsyncs source, installs deps, and (optionally) builds a dataset's
+native lib. Writes/reads a single shared config file,
+provisioning/eval_config.json.
 
 Usage:
-    python eval/provision.py --isa sve2 --dataset ncnn
+    python provisioning/provision.py --isa sve2 --dataset ncnn
     # label defaults to "ncnn-sve2". Reuses a reachable instance under that
     # label if eval_config.json has one recorded, otherwise runs terraform
     # apply for a fresh one. To force a genuinely new instance: `--teardown
     # --label ncnn-sve2` first, then provision again.
 
-    python eval/provision.py --teardown --label ncnn-sve2   # tear down just that one
-    python eval/provision.py --teardown                     # tear down every known label
-    python eval/provision.py --status
+    python provisioning/provision.py --teardown --label ncnn-sve2   # tear down just that one
+    python provisioning/provision.py --teardown                     # tear down every known label
+    python provisioning/provision.py --status
 """
 
 import argparse
@@ -49,12 +33,13 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from contracts import ISA_INSTANCE_MAP
-from eval.remote import InstanceHandle
+from provisioning.remote import InstanceHandle
+from provisioning.workspaces import current_workspace_config, workspace_account_ids
 
 load_dotenv()
 REPO_ROOT = Path(__file__).parent.parent
 TERRAFORM_DIR = REPO_ROOT / "terraform"
-EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
+EVAL_CONFIG_PATH = Path(__file__).parent / "eval_config.json"
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see InstanceHandle.rsync_to's docstring.
@@ -117,8 +102,19 @@ def _mac_host_ids(label: str, instance_type: str) -> str:
 
 
 def _tf(*args, capture: bool = False, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    """Run `terraform <args>`, with the current Terraform workspace's
+    namespace/account-guard/AWS profile (provisioning/workspaces.json, via
+    current_workspace_config()) always injected. `extra_env`
+    (e.g. TF_VAR_instances) is call-specific and takes precedence."""
     cmd = ["terraform"] + list(args)
-    env = {**os.environ, **extra_env} if extra_env else None
+    ws_cfg = current_workspace_config()
+    base_env = {
+        "TF_VAR_namespace": ws_cfg.get("namespace") or "",
+        "TF_VAR_workspace_account_ids": json.dumps(workspace_account_ids()),
+    }
+    if ws_cfg.get("aws_profile"):
+        base_env["AWS_PROFILE"] = ws_cfg["aws_profile"]
+    env = {**os.environ, **base_env, **(extra_env or {})}
     return subprocess.run(
         cmd,
         cwd=TERRAFORM_DIR,
