@@ -21,6 +21,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 PPL_RX = re.compile(r"Final estimate:\s*PPL\s*=\s*([0-9.]+)\s*\+/-\s*([0-9.]+)")
@@ -39,10 +40,24 @@ def fetch(repo: str, fname: str, dest: Path) -> bool:
 
 
 def perplexity(binary: Path, model: Path, text: Path, chunks: int, threads: int):
-    p = subprocess.run([str(binary), "-m", str(model), "-f", str(text),
-                        "--chunks", str(chunks), "-t", str(threads)],
-                       capture_output=True, text=True, timeout=7200)
-    out = p.stdout + p.stderr
+    """Run llama-perplexity, echoing its progress as it goes.
+
+    A bf16 model at 64 chunks takes two hours, and capturing the output whole means
+    two hours of a log that says nothing -- indistinguishable from a hung process,
+    which is exactly how it reads when you check on it.
+    """
+    proc = subprocess.Popen([str(binary), "-m", str(model), "-f", str(text),
+                             "--chunks", str(chunks), "-t", str(threads)],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    lines, last = [], 0.0
+    for line in proc.stdout:
+        lines.append(line)
+        now = time.time()
+        if "ETA" in line and now - last > 60:      # one heartbeat a minute, not one a chunk
+            print(f"      {line.strip()[-90:]}", flush=True)
+            last = now
+    proc.wait(timeout=7200)
+    out = "".join(lines)
     m = PPL_RX.search(out)
     if not m:
         return None, None, out[-300:].strip()
