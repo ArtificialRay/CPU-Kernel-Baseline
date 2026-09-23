@@ -74,7 +74,12 @@ def build_tools(cfg: SessionConfig) -> KernelSession:
 # session as read-on-demand MCP resources under `<run_dir>/docs/` (see
 # resources.py::_DOCS_DIRNAME). Static + dataset-independent, so written once at
 # run_dir root rather than per-definition.
-_HARDWARE_DOCS_SRC = Path(__file__).parent / "hardware_docs"
+# Docs has moved to skills/hardware_docs (e21954c)
+_HARDWARE_DOCS_SRC = next(
+    (p for p in (Path(__file__).resolve().parent.parent / "skills" / "hardware_docs",
+                 Path(__file__).parent / "hardware_docs") if p.is_dir()),
+    Path(__file__).parent / "hardware_docs",
+)
 DOCS_DIRNAME = "docs"
 
 
