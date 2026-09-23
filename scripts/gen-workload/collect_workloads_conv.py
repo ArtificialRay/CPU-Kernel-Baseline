@@ -17,9 +17,16 @@ Usage
 -----
     python scripts/collect_workloads_conv.py --op-type conv2d \\
         --definition conv2d_fp32_kh1_kw1_sh1_sw1_dh1_dw1_p0        # write JSONL
-    python scripts/collect_workloads_conv.py --op-type gemm \\
-        --definition gemm_fp32_n1000_k1280 --dry-run               # preview only
+    python scripts/collect_workloads_conv.py --op-type conv2d_depthwise \\
+        --definition conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2 --dry-run  # preview only
     python scripts/collect_workloads_conv.py --list-op-types       # show supported op_types
+
+`gemm` is registered in CV_CAPTURE_SPECS (nn.Linear -> M/K/N) but currently has
+no ncnn-tagged definitions in bench-trace/definitions/gemm/ to target (all of
+ncnn's gemm definitions/workloads/solutions were removed; the remaining gemm
+definitions there are baseline-solution:kleidiai/llama.cpp, out of scope for
+this script) -- it still works once/if a new ncnn-tagged gemm definition is
+added, no script changes needed.
 """
 
 from __future__ import annotations

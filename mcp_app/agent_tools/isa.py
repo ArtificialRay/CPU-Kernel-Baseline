@@ -25,7 +25,7 @@ from typing import NamedTuple
 from contracts import ISA_TABLE
 
 # isa name -> (march flag, isa_features, target_hardware label), from contracts.py
-# (shared with eval/provision.py etc.) plus a local
+# (shared with provisioning/provision.py etc.) plus a local
 # "portable" alias: same -march as neon (armv8-a mandates NEON); the "no
 # hand-written SIMD" constraint is a PROMPT concern (nanobot skill), not a
 # compile flag, so "portable" isn't a real hardware tier in contracts.yaml.

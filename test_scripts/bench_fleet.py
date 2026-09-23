@@ -59,7 +59,7 @@ from harness_adapters import (
 )
 
 DEFINITIONS_DIR = REPO_ROOT / "bench-trace" / "definitions"
-EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
+EVAL_CONFIG_PATH = REPO_ROOT / "provisioning" / "eval_config.json"
 
 # For run_until_complete()'s round planner only — it needs each harness's
 # prompt_template/template_args.
@@ -119,14 +119,14 @@ def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root
     baseline_author = BASELINE_AUTHORS.get(dataset, dataset)
     target = instance.target
     # RemoteTarget (skills/launch/remote.py) carries no instance_type, so it
-    # can't expose eval/remote.py::InstanceHandle's `.python` property, and
+    # can't expose provisioning/remote.py::InstanceHandle's `.python` property, and
     # that property's own mac branch (~/venv/bin/python) is stale anyway.
     # Plain `python3` on PATH is the stock macOS 3.9.6 (no deps) UNLESS a
     # host has a manual PATH shim (armbench-sme-gpt-5.6-luna does;
     # armbench-sme-kleidiai-test doesn't — confirmed live, the latter's
     # jobs all failed with `ModuleNotFoundError: No module named 'mcp'`).
     # {remote_root}/.venv/bin/python3 is the uv-managed venv
-    # eval/provision.py::_install_deps actually creates for the
+    # provisioning/provision.py::_install_deps actually creates for the
     # Apple-silicon tier, present with deps installed on BOTH mac hosts —
     # use that explicitly instead of hoping PATH is shimmed.
     python = (
@@ -302,7 +302,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     
     Returns the instance label this call provisioned/
     reused, so main() can scope its final teardown to just this instance
-    instead of tearing down every instance eval/provision.py knows about."""
+    instead of tearing down every instance provisioning/provision.py knows about."""
     adapter: HarnessAdapter
     model = args.model
     local_port = _free_local_port()
@@ -498,7 +498,7 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
     
     Returns the instance label for every --dataset, so main() can scope its
     final teardown to just these instances instead of tearing down every
-    instance eval/provision.py knows about."""
+    instance provisioning/provision.py knows about."""
     datasets = args.dataset
     # Resolve --model up front
     model = args.model or ADAPTER_CLASSES[args.harness].default_model()

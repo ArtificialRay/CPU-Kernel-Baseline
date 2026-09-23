@@ -1,14 +1,6 @@
 """launch_session — bring up one mcp_app session on a remote instance, sync
 results back afterward. Runs on the caller's host, not the target instance.
 
-Provisioning (`provision`/`teardown`/`status`) is done by the standalone
-`eval/provision.py` script — invoked only via subprocess, never imported.
-This module has zero Python imports from eval/ or mcp_app/ (see remote.py's
-docstring); it only reads the shared `eval/eval_config.json` that
-`eval/provision.py` writes, which is a file-format contract, not a Python
-import. This module already assumes the full repo checkout (including
-eval/) is present locally, since it rsyncs REPO_ROOT to the remote. Sharing
-that one config file is what lets `eval/provision.py` and this module
 provision/reuse/teardown the same instances without either side going stale
 about what the other has done.
 `launch` composes provisioning + `prepare_session()` in one call.
@@ -53,8 +45,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from contracts import ISA_INSTANCE_MAP
 from remote import RemoteTarget
 
-EVAL_CONFIG_PATH = REPO_ROOT / "eval" / "eval_config.json"
-PROVISION_SCRIPT = REPO_ROOT / "eval" / "provision.py"
+EVAL_CONFIG_PATH = REPO_ROOT / "provisioning" / "eval_config.json"
+PROVISION_SCRIPT = REPO_ROOT / "provisioning" / "provision.py"
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see RemoteTarget.rsync_to's docstring.
@@ -65,7 +57,7 @@ RSYNC_ALLOWLIST = [p.strip() for p in os.environ.get("RSYNC_ALLOWLIST", "").spli
 if not RSYNC_ALLOWLIST:
     raise RuntimeError("RSYNC_ALLOWLIST is unset or empty — set it in .env (see .env.example).")
 
-# Shared with eval/provision.py and mcp_app/smoke_test_driver.py — lives at
+# Shared with provisioning/provision.py and mcp_app/smoke_test_driver.py — lives at
 # the repo root (like contracts.py/config/kernel_contracts.yaml) so none of
 # the three packages "owns" a separately-duplicated copy that can drift.
 DATASET_BUILDS: dict = json.loads((REPO_ROOT / "config" / "dataset_builds.json").read_text())
@@ -78,7 +70,7 @@ class ProvisionedInstance:
     instance_id: Optional[str] = None
 
 
-# label — see eval/provision.py's module docstring for the full rationale
+# label — see provisioning/provision.py's module docstring for the full rationale
 # (replaces the old tier-keyed "c7g"/"c8g" design, which could only ever
 # track one instance per ISA tier). `dataset` here can be a single string
 # (the `provision` subcommand) or a list (`launch`'s repeatable --dataset,
@@ -97,8 +89,8 @@ def _label_for(dataset, author: str) -> str:
 
 
 def _read_config_instance(label: str) -> Optional[ProvisionedInstance]:
-    """Read the shared eval/eval_config.json directly for a running instance
-    under `label`. No import from eval/provision.py."""
+    """Read the shared provisioning/eval_config.json directly for a running instance
+    under `label`. No import from provisioning/provision.py."""
     if not EVAL_CONFIG_PATH.exists():
         return None
     config = json.loads(EVAL_CONFIG_PATH.read_text())
@@ -117,7 +109,7 @@ def _read_config_instance(label: str) -> Optional[ProvisionedInstance]:
 def _provision(
     isa: str, instance_type: str, dataset: str, *, label: str, on_demand: bool = False
 ) -> ProvisionedInstance:
-    """Subprocess-invoke the standalone eval/provision.py, then read the
+    """Subprocess-invoke the standalone provisioning/provision.py, then read the
     eval_config.json it wrote. Reuses a reachable instance under `label`
     if one's already up; otherwise provisions a fresh one.
 
@@ -131,7 +123,7 @@ def _provision(
     instance = _read_config_instance(label)
     if instance is None:
         raise RuntimeError(
-            f"eval/provision.py exited successfully but wrote no instance for label={label!r}"
+            f"provisioning/provision.py exited successfully but wrote no instance for label={label!r}"
         )
     return instance
 
@@ -151,7 +143,7 @@ def is_instance_reachable(label: str, *, timeout: int = 15) -> bool:
 
 def _teardown(label: Optional[str] = None) -> None:
     """`label` given: destroy just that one instance. Omitted: tear down
-    every label eval/provision.py knows about (old "destroy everything"
+    every label provisioning/provision.py knows about (old "destroy everything"
     behavior, kept as an explicit opt-in — see its own teardown() docstring).
     """
     cmd = [sys.executable, str(PROVISION_SCRIPT), "--teardown"]
@@ -163,7 +155,7 @@ def _teardown(label: Optional[str] = None) -> None:
 def _status() -> None:
     config = json.loads(EVAL_CONFIG_PATH.read_text()) if EVAL_CONFIG_PATH.exists() else {}
     if not config.get("instances"):
-        print("No eval/eval_config.json instances found. Run `provision` first.")
+        print("No provisioning/eval_config.json instances found. Run `provision` first.")
         return
     for label, inst in config["instances"].items():
         host = inst.get("host", "")
@@ -185,14 +177,14 @@ def _spawn_command(
     run_dir = f"{remote_root}/agent-runs-mcp/{author}"
     dataset_flags = " ".join(f"--dataset {ds}" for ds in datasets)
     # RemoteTarget carries no instance_type, so it can't expose
-    # eval/remote.py::InstanceHandle's `.python` property directly — and
+    # provisioning/remote.py::InstanceHandle's `.python` property directly — and
     # that property's own mac branch (~/venv/bin/python) is stale anyway.
     # On a mac tier, plain `python3` on PATH is the stock macOS 3.9.6
     # (no `mcp` package) UNLESS a host happens to have a manual PATH shim
     # (armbench-sme-gpt-5.6-luna does; armbench-sme-kleidiai-test doesn't —
     # confirmed live, the latter failed every job with `ModuleNotFoundError:
     # No module named 'mcp'`). `{remote_root}/.venv/bin/python3` is the
-    # uv-managed venv eval/provision.py::_install_deps actually creates for
+    # uv-managed venv provisioning/provision.py::_install_deps actually creates for
     # the Apple-silicon tier and is present with `mcp` installed on BOTH
     # mac hosts — use that explicitly instead of hoping PATH is shimmed.
     python = f"{remote_root}/.venv/bin/python3" if instance_type.startswith("mac") else "python3"
@@ -476,7 +468,7 @@ def _resolve_instance(args: argparse.Namespace) -> ProvisionedInstance:
     """Reuse an already-up-and-reachable instance for --isa if one's up,
     otherwise provision a fresh one 
 
-    eval/provision.py's own `--dataset` only builds one dataset's native lib
+    provisioning/provision.py's own `--dataset` only builds one dataset's native lib
     at provision time. With more than one --dataset requested here, skip
     that step (pass "") and rely on prepare_session's own per-dataset
     ensure_dataset_ready loop right after 
@@ -594,7 +586,7 @@ def main(argv: list[str] | None = None) -> None:
         sp.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
         sp.add_argument("--label", default=None,
                          help="Name identifying this instance — one per concurrently-desired "
-                              "instance (see eval/provision.py's module docstring). Default: "
+                              "instance (see provisioning/provision.py's module docstring). Default: "
                               "f'{dataset(s)}-{author}' for `launch` (which has --author), "
                               "f'{dataset(s)}-{isa}' for standalone `provision`.")
         sp.add_argument("--instance", default=None,
@@ -602,7 +594,7 @@ def main(argv: list[str] | None = None) -> None:
                               "Defaults to ISA_INSTANCE_MAP[isa].")
         sp.add_argument("--local-repo-dir", default=None,
                          help="Repo checkout for prepare_session's rsync (the `launch` "
-                              "subcommand only — eval/provision.py always rsyncs its own "
+                              "subcommand only — provisioning/provision.py always rsyncs its own "
                               "repo root during provisioning itself). Defaults to this "
                               "repo's own root.")
         sp.add_argument("--on-demand", action="store_true",
@@ -622,10 +614,10 @@ def main(argv: list[str] | None = None) -> None:
     teardown_p = sub.add_parser("teardown", help="Terraform-destroy the instance(s).")
     teardown_p.add_argument("--label", default=None,
                              help="Destroy just this one instance. Omit to tear down every "
-                                  "label eval/eval_config.json knows about.")
+                                  "label provisioning/eval_config.json knows about.")
     teardown_p.set_defaults(func=_cli_teardown)
 
-    status_p = sub.add_parser("status", help="Show eval/eval_config.json's tracked instances.")
+    status_p = sub.add_parser("status", help="Show provisioning/eval_config.json's tracked instances.")
     status_p.set_defaults(func=_cli_status)
 
     launch = sub.add_parser(

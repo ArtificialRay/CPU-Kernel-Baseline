@@ -9,11 +9,35 @@ terraform {
 
 provider "aws" {
   region = "us-west-2"
+
+  # Refuse to run under credentials for any account but the one the current
+  # workspace lives in — see var.workspace_account_ids.
+  allowed_account_ids = length(var.workspace_account_ids) == 0 ? null : [var.workspace_account_ids[terraform.workspace]]
 }
 
 # ---------------------------------------------------------------------------
 # Variables
 # ---------------------------------------------------------------------------
+
+variable "workspace_account_ids" {
+  description = <<-EOT
+    Terraform workspace -> id of the AWS account that workspace lives in, e.g.
+    {"default" = "111111111111", "scs-lti-l3" = "222222222222"}.
+
+    A workspace isolates state, not credentials. Run one workspace's state
+    under another account's AWS_PROFILE and terraform finds none of its
+    resources, drops them from state and re-creates them in the wrong account,
+    leaving the originals running with nothing tracking them.
+
+    Once this map is non-empty the provider only accepts the account listed for
+    the current workspace, and a workspace with no entry is an error rather
+    than an unguarded run. Empty (the default) keeps the old behaviour: no
+    check. Set it via TF_VAR_workspace_account_ids so account ids stay out of
+    the repo.
+  EOT
+  type        = map(string)
+  default     = {}
+}
 
 variable "build_target" {
   description = "arm-bench make target (scalar, neon, sve, sve2, sme2, all, ...)"
@@ -61,6 +85,30 @@ variable "mac_host_ids" {
   default     = {}
 }
 
+variable "namespace" {
+  description = <<-EOT
+    Suffix for the account-global names this config creates (security group,
+    key pairs), so several Terraform states — e.g. one per git worktree — can
+    coexist in one AWS account without InvalidGroup.Duplicate. Empty keeps
+    the original "kernel-testing-sg". Set via TF_VAR_namespace, e.g. "sweep".
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "ssh_key_files" {
+  description = <<-EOT
+    label -> private key path used for that label's instance (default
+    ~/.ssh/id_rsa). The matching public key is registered as that label's EC2
+    key pair from the same path with ".pem" stripped and ".pub" appended
+    (~/.ssh/mac-m4-key.pem -> ~/.ssh/mac-m4-key.pub). Lets Graviton labels use
+    id_rsa and Mac labels use mac-m4-key.pem in one apply. Set via
+    TF_VAR_ssh_key_files='{"ncnn-sme2":"~/.ssh/mac-m4-key.pem"}'.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
 variable "mac_availability_zone" {
   description = "AZ for Mac hosts this config allocates itself. Ignored for ids passed in through var.mac_host_ids — those bring their own AZ, which is read back off the host."
   type        = string
@@ -93,6 +141,8 @@ locals {
   # Effective host id per mac label — the one supplied, else the one allocated.
   # try() rather than a bare index because aws_ec2_host.mac has no entry for a
   # label that supplied its own id.
+  name_suffix = var.namespace == "" ? "" : "-${var.namespace}"
+
   ssh_user = { for label, _ in var.instances : label => local.is_mac[label] ? "ec2-user" : "ubuntu" }
 
   mac_host_id = {
@@ -139,7 +189,7 @@ data "aws_subnet" "mac" {
 # ---------------------------------------------------------------------------
 
 resource "aws_security_group" "kernel_testing" {
-  name = "kernel-testing-sg"
+  name = "kernel-testing-sg${local.name_suffix}"
 
   ingress {
     from_port   = 22
@@ -157,12 +207,17 @@ resource "aws_security_group" "kernel_testing" {
 }
 
 # ---------------------------------------------------------------------------
-# Key pair — shared across every labeled instance
+# Key pair — one per label. Per label so each can use its own key (Graviton
+# vs Mac), and so a -target apply for one label never recreates a key pair
+# other running instances were launched with. The name is stable (no
+# timestamp()): a name that changes every plan makes every apply replace the
+# key pair.
 # ---------------------------------------------------------------------------
 
-resource "aws_key_pair" "kernel_testing" {
-  key_name   = "kernel-testing-key-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
-  public_key = file("~/.ssh/id_rsa.pub")
+resource "aws_key_pair" "labeled" {
+  for_each   = var.instances
+  key_name   = "kernel-testing-key${local.name_suffix}-${each.key}"
+  public_key = file("${trimsuffix(lookup(var.ssh_key_files, each.key, "~/.ssh/id_rsa"), ".pem")}.pub")
 }
 
 # ---------------------------------------------------------------------------
@@ -184,13 +239,16 @@ resource "aws_instance" "labeled" {
   # macOS Tahoe 26 arm64 (Apple clang 21) for Mac, Ubuntu 22.04 LTS arm64 otherwise
   ami                    = local.is_mac[each.key] ? "ami-0e971f0ce976b2435" : "ami-012798e88aebdba5c"
   instance_type          = each.value
-  key_name               = aws_key_pair.kernel_testing.key_name
+  key_name               = aws_key_pair.labeled[each.key].key_name
   vpc_security_group_ids = [aws_security_group.kernel_testing.id]
 
   # null for every non-Mac label, i.e. default tenancy in the default subnet.
   tenancy   = local.is_mac[each.key] ? "host" : null
   host_id   = try(local.mac_host_id[each.key], null)
   subnet_id = try(data.aws_subnet.mac[each.key].id, null)
+
+  # terminate all non-spot instance(with true shutdown but not stop the instance)
+  instance_initiated_shutdown_behavior = (var.on_demand || local.is_mac[each.key]) ? "terminate" : null
 
   # Installs clang-18 + llvm-objdump and creates ~/arm-bench
   user_data = local.is_mac[each.key] ? null : base64encode(file("${path.module}/setup.sh"))
@@ -204,6 +262,13 @@ resource "aws_instance" "labeled" {
 
   tags = {
     Name = "kernel-testing-${each.key}"
+  }
+
+  # key_name forces a new instance. Never let a key-pair rename replace a
+  # running one — for a Mac that also means re-paying the Dedicated Host's
+  # 24-hour minimum.
+  lifecycle {
+    ignore_changes = [key_name]
   }
 }
 
@@ -228,7 +293,7 @@ resource "null_resource" "deploy" {
   connection {
     type        = "ssh"
     user        = local.ssh_user[each.key]
-    private_key = file("~/.ssh/id_rsa")
+    private_key = file(lookup(var.ssh_key_files, each.key, "~/.ssh/id_rsa"))
     host        = aws_instance.labeled[each.key].public_ip
     timeout     = "15m"
   }
@@ -270,6 +335,11 @@ output "instance_ssh_users" {
   }
 }
 
-output "ssh_key_path" {
-  value = "~/.ssh/id_rsa"
+# Private key per label. Derived from the instances (not var.instances) and via
+# lookup(), for the same -target / stale-state-label reasons as the output above.
+output "ssh_key_paths" {
+  value = {
+    for label, _ in aws_instance.labeled :
+    label => lookup(var.ssh_key_files, label, "~/.ssh/id_rsa")
+  }
 }

@@ -35,7 +35,10 @@ traces/*
 !traces/.gitkeep
 
 # SSH credentials — never commit these
-eval/eval_config.json
+provisioning/eval_config.json
+
+# Per-Terraform-workspace AWS account/namespace/profile map — never commit
+provisioning/workspaces.json
 
 # LLM provider api_key/api_base — never commit these
 eval/llm_providers.json
@@ -47,7 +50,7 @@ eval/llm_providers.json
 # Terraform — state contains live AWS resource info, providers are large binaries
 terraform/.terraform/
 terraform/terraform.tfstate
-terraform/terraform.tfstate.backup
+terraform/terraform.tfstate.*
 terraform/.terraform.lock.hcl
 
 .env

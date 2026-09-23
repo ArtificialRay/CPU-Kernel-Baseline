@@ -2,14 +2,15 @@
 
 Pure SSH client: given host/user/key_file for an instance that's already
 up, run commands and move files on it. No provisioning/Terraform logic and
-no config-file I/O lives here — that's eval/provision.py's job. Consumers
-that just need to talk to an already-provisioned instance (evaluator.py,
-agent_tools/base.py, run_benchmark.py) import from here, never from
-eval/provision.py.
+no config-file I/O lives here — that's provisioning/provision.py's job.
+Consumers that just need to talk to an already-provisioned instance
+(eval/evaluator.py, mcp_app/agent_tools/base.py) import from here, never
+from provisioning/provision.py.
 
 Style reference: skills/launch/remote.py's RemoteTarget has the same shape
 of ssh_cmd/rsync_to/rsync_from methods (separately duplicated there, not
-imported, per that skill's own zero-imports-from-eval/ boundary).
+imported, per that skill's own zero-imports-from-eval/-or-provisioning/
+boundary).
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ class InstanceHandle:
 
         macOS ships a python3 (3.9.6) too old for requirements.txt, so the
         Apple-silicon tier runs out of the uv-managed venv that
-        eval/provision.py::_install_deps creates.
+        provisioning/provision.py::_install_deps creates.
         """
         return "~/venv/bin/python" if self.instance_type.startswith("mac") else "python3"
 

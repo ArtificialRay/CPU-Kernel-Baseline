@@ -6,12 +6,12 @@
 # eval.run_benchmark. Edit NCNN_PROBLEMS/LLAMACPP_PROBLEMS below to change
 # which problems get smoke-tested.
 #
-# Host/user/key are read from eval/eval_config.json (same file
+# Host/user/key are read from provisioning/eval_config.json (same file
 # eval/run_benchmark.py uses) under LABEL (default: $ISA, matching
-# eval/provision.py's default_label() when no --dataset is given — this
+# provisioning/provision.py's default_label() when no --dataset is given — this
 # script drives both ncnn and llama.cpp smoke tests off the same instance).
 # Override with HOST/SSH_USER/KEY_FILE env vars, or provision one first:
-# python eval/provision.py --isa sve2
+# python provisioning/provision.py --isa sve2
 #
 # Usage:
 #   ./scripts/run_driver_smoke.sh
@@ -62,18 +62,18 @@ LLAMACPP_PROBLEMS=(
 LABEL="${LABEL:-$ISA}"
 
 if [[ -z "${HOST:-}" ]]; then
-    if [[ ! -f eval/eval_config.json ]]; then
-        echo "HOST not set and eval/eval_config.json unavailable — set HOST explicitly." >&2
+    if [[ ! -f provisioning/eval_config.json ]]; then
+        echo "HOST not set and provisioning/eval_config.json unavailable — set HOST explicitly." >&2
         exit 1
     fi
     HOST=$("$PYTHON" -c "
 import json
-cfg = json.load(open('eval/eval_config.json'))
+cfg = json.load(open('provisioning/eval_config.json'))
 print(cfg['instances'].get('$LABEL', {}).get('host', ''))
 ")
     if [[ -z "$HOST" ]]; then
-        echo "eval/eval_config.json has no host for label '$LABEL' (ISA=$ISA)." \
-             "Provision one first: python eval/provision.py --isa $ISA" >&2
+        echo "provisioning/eval_config.json has no host for label '$LABEL' (ISA=$ISA)." \
+             "Provision one first: python provisioning/provision.py --isa $ISA" >&2
         exit 1
     fi
 fi
