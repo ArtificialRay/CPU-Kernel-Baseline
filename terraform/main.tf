@@ -138,18 +138,13 @@ locals {
     if startswith(it, "mac") && lookup(var.mac_host_ids, label, "") == ""
   }
 
-  # Effective host id per mac label — the one supplied, else the one allocated.
-  # try() rather than a bare index because aws_ec2_host.mac has no entry for a
-  # label that supplied its own id.
   name_suffix = var.namespace == "" ? "" : "-${var.namespace}"
 
   ssh_user = { for label, _ in var.instances : label => local.is_mac[label] ? "ec2-user" : "ubuntu" }
 
-  mac_host_id = {
-    for label, it in var.instances : label =>
-    coalesce(lookup(var.mac_host_ids, label, ""), try(aws_ec2_host.mac[label].id, ""))
-    if startswith(it, "mac")
-  }
+  # Mac labels in this apply — keys derived only from var.instances, never
+  # from aws_ec2_host.mac itself
+  mac_labels = { for label, it in var.instances : label => it if startswith(it, "mac") }
 }
 
 # A targeted destroy removes the instance and its dependents, not its
@@ -173,8 +168,10 @@ resource "aws_ec2_host" "mac" {
 # a mismatched one. Read the AZ back off the host (works for both supplied and
 # allocated ids) and pin the matching default subnet.
 data "aws_ec2_host" "mac" {
-  for_each = local.mac_host_id
-  host_id  = each.value
+  for_each = local.mac_labels
+  # Direct each.key indexing into aws_ec2_host.mac (not through an
+  # aggregating local) — same reasoning as aws_instance.labeled's host_id.
+  host_id = coalesce(lookup(var.mac_host_ids, each.key, ""), try(aws_ec2_host.mac[each.key].id, ""))
 }
 
 data "aws_subnet" "mac" {
@@ -243,8 +240,12 @@ resource "aws_instance" "labeled" {
   vpc_security_group_ids = [aws_security_group.kernel_testing.id]
 
   # null for every non-Mac label, i.e. default tenancy in the default subnet.
+  # Use direct indexing (`aws_ec2_host.mac[each.key]`) instead of `local.mac_host_id`.
+  # `local.mac_host_id` aggregates across all labels, creating cross-label dependencies
+  # that cause single-label applies (`TF_VAR_instances={label: type}`) to attempt 
+  # destroying other active Mac hosts.
   tenancy   = local.is_mac[each.key] ? "host" : null
-  host_id   = try(local.mac_host_id[each.key], null)
+  host_id   = local.is_mac[each.key] ? coalesce(lookup(var.mac_host_ids, each.key, ""), try(aws_ec2_host.mac[each.key].id, null)) : null
   subnet_id = try(data.aws_subnet.mac[each.key].id, null)
 
   # terminate all non-spot instance(with true shutdown but not stop the instance)

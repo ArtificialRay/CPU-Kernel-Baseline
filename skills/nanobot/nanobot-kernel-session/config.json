@@ -749,6 +749,11 @@
         "type": "streamableHttp",
         "url": "http://127.0.0.1:9002/mcp",
         "toolTimeout": 900
+      },
+      "KleidiaiKernelBench": {
+        "type": "streamableHttp",
+        "url": "http://127.0.0.1:9003/mcp",
+        "toolTimeout": 900
       }
     },
     "ssrfWhitelist": ["127.0.0.0/8"]

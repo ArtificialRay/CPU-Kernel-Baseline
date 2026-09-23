@@ -349,19 +349,20 @@ def provision(
     vars = [f"-var=on_demand={'true' if on_demand else 'false'}"]
     if initial_build:
         vars.append(f"-var=build_target={initial_build}")
-    # -target scopes this apply to just this label's instance + deploy resource.
-    # Without -target, an apply only sees whatever single label is in
-    # TF_VAR_instances below and would treat every OTHER already-provisioned
-    # label as "should be destroyed" (see terraform/main.tf's var.instances
-    # docstring) — -target is what keeps concurrent labels from stepping on
-    # each other.
+    # -target scopes what gets APPLIED to just this label's instance + deploy
+    # resource, but var.instances' for_each set is still computed from the
+    # full TF_VAR_instances map regardless of -target — merge in every
+    # already-known label (_all_recorded_instances) so that set doesn't
+    # shrink to just this one and mark every OTHER label's resources "not in
+    # for_each map" (see _all_recorded_instances' docstring).
+    all_instances = {**_all_recorded_instances(), label: instance_type}
     with _tf_lock():
         result = _tf(
             "apply", "-auto-approve", *vars,
             f'-target=aws_instance.labeled["{label}"]',
             f'-target=null_resource.deploy["{label}"]',
             extra_env={
-                "TF_VAR_instances": json.dumps({label: instance_type}),
+                "TF_VAR_instances": json.dumps(all_instances),
                 "TF_VAR_mac_host_ids": _mac_host_ids(label, instance_type),
             },
         )
@@ -432,13 +433,18 @@ def teardown(label: str | None = None):
     _validate_label(label)
     instance_type = _recorded_instance_type(label) or "c7g.large"
     print(f"[teardown] Destroying label={label!r}...")
+    # Same reasoning as provision()'s all_instances: without this merge, a
+    # destroy scoped to just `label` would still shrink var.instances down to
+    # one entry and mark every OTHER label's aws_ec2_host.mac as "not in
+    # for_each map" too.
+    all_instances = {**_all_recorded_instances(), label: instance_type}
     with _tf_lock():
         result = _tf(
             "destroy", "-auto-approve",
             f'-target=aws_instance.labeled["{label}"]',
             f'-target=null_resource.deploy["{label}"]',
             extra_env={
-                "TF_VAR_instances": json.dumps({label: instance_type}),
+                "TF_VAR_instances": json.dumps(all_instances),
                 "TF_VAR_mac_host_ids": _mac_host_ids(label, instance_type),
             },
         )
@@ -457,6 +463,58 @@ def _recorded_instance_type(label: str) -> str | None:
         return None
     config = json.loads(EVAL_CONFIG_PATH.read_text())
     return config.get("instances", {}).get(label, {}).get("instance_type")
+
+
+def _allocated_mac_hosts() -> dict[str, str]:
+    """{label: instance_type} for every aws_ec2_host.mac[label] Terraform
+    currently has in state, read straight from `terraform show -json` —
+    NOT from eval_config.json. A completed label's teardown() pops it out
+    of eval_config.json's `instances` map (its whole point is tracking
+    *active* instances), but a targeted destroy deliberately leaves the
+    Dedicated Host behind (24h minimum, see aws_ec2_host.mac's comment in
+    main.tf) — so relying on eval_config.json alone for the TF_VAR_instances
+    merge re-opens the exact for_each-shrinks-and-destroys-it hole
+    _all_recorded_instances() exists to close, just one completed job
+    later. Confirmed live 2026-09-23: kleidiai-codex-gpt-5.6-luna-sme2
+    finished, its eval_config.json entry vanished, and the very next
+    apply for an unrelated label tried to release its still-allocated host."""
+    result = _tf("show", "-json", capture=True)
+    if result.returncode != 0 or not result.stdout:
+        return {}
+    try:
+        state = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {}
+    resources = state.get("values", {}).get("root_module", {}).get("resources", [])
+    return {
+        r["index"]: r["values"]["instance_type"]
+        for r in resources
+        if r.get("type") == "aws_ec2_host" and r.get("name") == "mac"
+    }
+
+
+def _all_recorded_instances() -> dict[str, str]:
+    """{label: instance_type} for every label that needs to stay in
+    var.instances' for_each set: everything eval_config.json currently
+    tracks as an active instance, PLUS every label with an already-
+    allocated (but currently instance-less) mac host per
+    _allocated_mac_hosts(). Every apply()/teardown() call merges this into
+    TF_VAR_instances (rather than sending just the one label being acted on)
+    so var.instances' for_each set never shrinks relative to what's actually
+    live — see terraform/main.tf's var.instances docstring and
+    aws_ec2_host.mac: a single-label TF_VAR_instances makes every OTHER
+    label's resources "not in for_each map" and destroys them. That's
+    silently harmless for aws_key_pair.labeled/aws_instance.labeled (cheap
+    to recreate) but fatal for aws_ec2_host.mac on the mac tier, whose
+    24-hour minimum allocation makes AWS refuse the destroy outright and
+    abort the whole apply — confirmed live 2026-09-23."""
+    merged = dict(_allocated_mac_hosts())
+    if EVAL_CONFIG_PATH.exists():
+        config = json.loads(EVAL_CONFIG_PATH.read_text())
+        for l, inst in config.get("instances", {}).items():
+            if inst.get("instance_type"):
+                merged[l] = inst["instance_type"]
+    return merged
 
 
 def get_running_instance(label: str) -> InstanceHandle | None:

@@ -123,18 +123,14 @@ def ensure_baselines(
     baseline_author = baseline_author_for(dataset, isa)
     target = instance.target
     # RemoteTarget (skills/launch/remote.py) carries no instance_type, so it
-    # can't expose provisioning/remote.py::InstanceHandle's `.python` property, and
-    # that property's own mac branch (~/venv/bin/python) is stale anyway.
-    # Plain `python3` on PATH is the stock macOS 3.9.6 (no deps) UNLESS a
-    # host has a manual PATH shim (armbench-sme-gpt-5.6-luna does;
-    # armbench-sme-kleidiai-test doesn't — confirmed live, the latter's
-    # jobs all failed with `ModuleNotFoundError: No module named 'mcp'`).
-    # {remote_root}/.venv/bin/python3 is the uv-managed venv
-    # provisioning/provision.py::_install_deps actually creates for the
-    # Apple-silicon tier, present with deps installed on BOTH mac hosts —
-    # use that explicitly instead of hoping PATH is shimmed.
+    # can't expose provisioning/remote.py::InstanceHandle's `.python` property
+    # directly — but that property's mac branch (~/venv/bin/python) is where
+    # provisioning/provision.py::_macos_dep_steps() actually creates the
+    # uv-managed venv, confirmed by SSHing into a live mac host (2026-09-23):
+    # {remote_root}/.venv (the path this used to hardcode instead) does not
+    # exist there, `~/venv/bin/python3` does and has `mcp` importable.
     python = (
-        f"{remote_root}/.venv/bin/python3" if instance.instance_type.startswith("mac")
+        "~/venv/bin/python3" if instance.instance_type.startswith("mac")
         else "python3"
     )
 
