@@ -44,7 +44,7 @@ baseline_authors_default:
 baseline_authors_by_isa:
   simd-loop:
     sve2: "baseline-sve2"
-    sme2: "baseline-sve2"
+    sme2: "baseline-sme2"
 
 # bench/config.py's BenchmarkConfig/EvalConfig field defaults. baseline_author
 # intentionally isn't duplicated here — it reuses baseline_authors_default.ncnn above.

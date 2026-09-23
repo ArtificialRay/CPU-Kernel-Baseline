@@ -1,0 +1,139 @@
+{
+  "description": "33-definition dtype-symmetric representative sample of bench-trace/definitions/, restricted to definitions with a real baseline solution compatible with --isa sme2 (mac-m4.metal). Same ncnn/llama.cpp/simd-loop picks as subset_sve.json where their baselines are ISA-agnostic; kleidiai swapped to its sme2 counterpart.",
+  "isa": "sme2",
+  "count": 33,
+  "definitions": [
+    {
+      "name": "conv2d_depthwise_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1",
+      "dataset": "ncnn"
+    },
+    {
+      "name": "conv2d_depthwise_fp32_kh5_kw5_sh1_sw1_dh1_dw1_p2",
+      "dataset": "ncnn"
+    },
+    {
+      "name": "conv2d_depthwise_w8a8ch_kh3_kw3_sh1_sw1_dh1_dw1_p1",
+      "dataset": "ncnn"
+    },
+    {
+      "name": "conv2d_depthwise_w8a8ch_kh5_kw5_sh1_sw1_dh1_dw1_p2",
+      "dataset": "ncnn"
+    },
+    {
+      "name": "conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1",
+      "dataset": "ncnn"
+    },
+    {
+      "name": "conv2d_fp32_kh7_kw7_sh2_sw2_dh1_dw1_p3",
+      "dataset": "ncnn"
+    },
+    {
+      "name": "conv2d_w8a8ch_kh3_kw3_sh1_sw1_dh1_dw1_p1",
+      "dataset": "ncnn"
+    },
+    {
+      "name": "conv2d_w8a8ch_kh7_kw7_sh2_sw2_dh1_dw1_p3",
+      "dataset": "ncnn"
+    },
+    {
+      "name": "pooling_fp32_global_avg",
+      "dataset": "ncnn"
+    },
+    {
+      "name": "pooling_fp32_max_kh3_kw3_sh2_sw2_p1",
+      "dataset": "ncnn"
+    },
+    {
+      "name": "gemm_fp32_sme2_n512_k512",
+      "dataset": "kleidiai"
+    },
+    {
+      "name": "gemm_bf16_n2048_k2048",
+      "dataset": "llama.cpp"
+    },
+    {
+      "name": "gemm_q4_k_m_n2048_k2048",
+      "dataset": "llama.cpp"
+    },
+    {
+      "name": "gemm_q8_0_n2048_k2048",
+      "dataset": "llama.cpp"
+    },
+    {
+      "name": "gemm_q8_0_n1408_k2048",
+      "dataset": "llama.cpp"
+    },
+    {
+      "name": "mha_bf16_h16_d128_kvh16",
+      "dataset": "llama.cpp"
+    },
+    {
+      "name": "moe_bf16_e64_k8_d2048_ff1024",
+      "dataset": "llama.cpp"
+    },
+    {
+      "name": "moe_q4_k_m_e64_k8_d2048_ff1024",
+      "dataset": "llama.cpp"
+    },
+    {
+      "name": "moe_q8_0_e64_k8_d2048_ff1024",
+      "dataset": "llama.cpp"
+    },
+    {
+      "name": "rms_norm_fp32_d2048",
+      "dataset": "llama.cpp"
+    },
+    {
+      "name": "loop_001",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_002",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_003",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_010",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_024",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_027",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_035",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_037",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_105",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_108",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_113",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_126",
+      "dataset": "simd-loop"
+    },
+    {
+      "name": "loop_127",
+      "dataset": "simd-loop"
+    }
+  ]
+}
