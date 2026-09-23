@@ -517,8 +517,10 @@ perplexity over 8 wikitext-2 chunks from the same binaries.
 At lower thread counts the margin is wider — 1.41x prefill at t=1 and 1.39x at t=4 — so 1.33x
 is the conservative end of the range, taken where ggml's own repack path is strongest.
 
-**Headline claim: +33% prefill and +8% decode over stock llama.cpp at +1.0% perplexity, with
-every kernel written by the agent.** Against the same set's shortcut-taking predecessor
+**Headline claim: +33% prefill and +8% decode over stock llama.cpp at +0.62% perplexity, with
+every kernel written by the agent.** (The +1.0% figure this table's 8-chunk perplexity column
+gives is an artifact of too small a sample; the 64-chunk re-measurement below puts it at
++0.62% with 3x tighter error bars.) Against the same set's shortcut-taking predecessor
 (1.35x prefill, perplexity 14.45), being honest about precision cost about 1.5% of prefill
 and recovered 43 points of perplexity.
 
@@ -571,39 +573,44 @@ Across all eleven, the gate-v2 set is **2.938x, with 11/11 admissible**; the ori
 only because its five hardest kernels are missing from the column. `speed_compare.py` prints
 the common-definition geomean alongside it for that reason.
 
-### What +1.0% perplexity is worth, measured (2026-09-22)
+### What the kernels' quality cost is worth, measured (2026-09-22)
 
-A quality cost is unreadable without a scale, so the same binary, text, chunk count and
-thread count were run across the Qwen3.5-4B quantization ladder
-(`scripts/e2e/quant_reference.py`):
+A quality cost is unreadable without a scale, so the same binary, text and thread count were
+run across the Qwen3.5-4B quantization ladder (`scripts/e2e/quant_reference.py`).
 
-| model | size | PPL | vs Q4_K_M |
+**Measured twice.** The first pass used the same 8 chunks (~4k tokens) as the kernel
+measurement and produced a ladder that was *non-monotonic* — Q4_K_S scored better than
+Q4_K_M and Q5_K_M scored worse — which cannot be true and showed the sample could not
+resolve differences below about ±0.3%. Conclusions drawn from it were wrong: it put the
+kernels' cost at +1.00% and 4-bit quantization's at +0.57%, i.e. the kernels costing nearly
+twice the quantization. Re-run at 64 chunks, with error bars 3x tighter (±0.20 vs ±0.61),
+the ladder is monotonic and the relationship reverses. **The 8-chunk numbers are recorded
+here only as the reason to distrust them; the 64-chunk numbers are the result.**
+
+| model | size | PPL (64 chunks) | vs Q4_K_M |
 |---|---|---|---|
-| Q3_K_M | 2.29G | 10.3109 | +2.47% |
-| Q4_K_S | 2.59G | 10.0301 | −0.32% |
-| **Q4_K_M** | 2.74G | **10.0624** | — |
-| Q5_K_M | 3.14G | 10.0752 | +0.13% |
-| Q6_K | 3.53G | 10.0424 | −0.20% |
-| Q8_0 | 4.48G | 10.0161 | −0.46% |
-| BF16 | 8.42G | 10.0052 | −0.57% |
-| *our kernels on Q4_K_M* | *2.74G* | *10.1622* | *+1.00%* |
+| Q3_K_M | 2.29G | 9.8459 | +3.61% |
+| **Q4_K_M (stock)** | 2.74G | **9.5029** | — |
+| *Q4_K_M + our kernels* | *2.74G* | *9.5617 ± 0.201* | *+0.62%* |
+| Q6_K | 3.53G | 9.4364 | −0.70% |
+| BF16 | 8.42G | 9.3841 | −1.25% |
 
-Read honestly, this is not the flattering result:
+- **Quantizing this model to 4 bits costs +1.27%** (BF16 → Q4_K_M). The kernels add
+  **+0.62%** on top — **about half** what the quantization they run on already costs.
+- Dropping a whole level, Q4_K_M → Q3_K_M, costs **+3.61%**. The kernels cost **17% of one
+  step down the ladder**.
+- Against unquantized BF16, the whole stack — 4-bit weights plus our kernels — is +1.89%.
 
-- **Quantizing this model to 4 bits at all costs +0.57%** (BF16 → Q4_K_M). Our kernels add
-  **+1.00%** on top — nearly twice the cost of the entire 4-bit quantization.
-- Dropping a whole level, Q4_K_M → Q3_K_M, costs **+2.47%**. So the kernels cost about
-  **40% of one step down the ladder** — real, bounded, and not free.
-- Everything from Q4 to BF16 spans only 0.6%, i.e. less than the kernels cost.
+**Paper-safe statement: +33% prefill and +8% decode for a perplexity cost of +0.62%, which is
+half the cost of the 4-bit quantization it runs on and a sixth of one quantization level.**
 
-**The ladder is also non-monotonic** — Q4_K_S scores better than Q4_K_M and Q5_K_M worse —
-which cannot be true and means an 8-chunk sample (≈4k tokens) does not resolve differences
-below roughly ±0.3%. The three large numbers (+2.47%, +1.00%, +0.57%) are above that floor
-and the +1.00% reproduced across three instances, so the conclusions above hold; the fine
-structure between Q4_K_S and BF16 does not and should not be quoted. A higher chunk count is
-needed before any of this goes in a paper.
-
-The residual +1.0% is the known second-order defect: the kernels carry one activation scale
-per row of K elements where ggml uses a Q8_K scale per 256-element block. It is not the
+The residual is the known second-order defect: the kernels carry one activation scale per row
+of K elements where ggml uses a Q8_K scale per 256-element block. It is not the
 shared-exponent bug — that one is gone — and closing it would need another gate change and
 another re-optimization round.
+
+**Methodological note worth keeping:** an 8-chunk perplexity sample is enough to detect a
+catastrophic regression (the broken kernels' +44% was never in doubt) and not enough to size
+a small one. A ladder that fails to order itself monotonically is the cheap tell that the
+sample is too small, and it should disqualify the comparison before conclusions are drawn
+from it, not after.
