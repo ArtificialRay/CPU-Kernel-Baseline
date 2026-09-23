@@ -316,7 +316,9 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     elif args.harness == "cline":
         adapter = ClineAdapter(model=args.model)
     elif args.harness == "nanobot":
-        adapter = NanobotAdapter(dataset=dataset, model=args.model, local_port=local_port)
+        adapter = NanobotAdapter(
+            dataset=dataset, model=args.model, local_port=local_port, docs_nudge=args.docs_nudge,
+        )
         if model is None:
             model = adapter.model
     elif args.harness != "own":
@@ -475,6 +477,8 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         cmd += ["--local-results-dir", args.local_results_dir]
     if args.sync_solutions:
         cmd.append("--sync-solutions")
+    if args.docs_nudge:
+        cmd.append("--docs-nudge")
     if args.label:
         cmd += ["--label", args.label]
     if args.wandb:
@@ -672,6 +676,14 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--batch-size", type=int, default=3,
                    help="--until-complete with multiple --dataset values only: round-robin "
                         "chunk size per dataset per round.")
+    p.add_argument("--docs-nudge", action="store_true",
+                   help="nanobot only: prepend a forced instruction to each job's prompt "
+                        "telling the model to read the Arm hardware optimization guide (MCP "
+                        "resource) in full before writing or compiling any kernel — the "
+                        "docs-ablation 'nudge' arm. Run once without this flag (control) and "
+                        "once with it (nudge), passing a distinct --author each time so the "
+                        "two runs' results/solutions don't collide (compute_author() doesn't "
+                        "fold this flag in).")
     p.add_argument("--wandb", action="store_true",
                    help="Log every job to Weights & Biases (needs `pip install wandb`). Off by "
                         "default.")
@@ -682,6 +694,9 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "one group.")
     p.add_argument("--skip-final-teardown", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(argv)
+
+    if args.docs_nudge and args.harness != "nanobot":
+        p.error("--docs-nudge is only wired up for --harness nanobot")
 
     if not args.until_complete:
         if len(args.dataset) != 1:

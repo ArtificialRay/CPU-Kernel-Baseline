@@ -1,18 +1,13 @@
 # ablation/
 
-One sub-directory per ablation study. The rule that makes this directory
-worth having: **an ablation never edits the main harness files**
-(`test_scripts/bench_fleet.py`, `test_scripts/harness_adapters.py`,
-`mcp_app/`, `skills/`). It composes them instead — subclassing an adapter,
-wrapping a launch step, post-processing a box — so the production sweep path
-stays exactly what it is and an ablation can be deleted without leaving
-knobs behind.
+Documentation only — records of ablation studies run against this repo's
+harnesses. No drivers/scripts live here; each study is implemented as a flag
+or option on the harness itself (`test_scripts/bench_fleet.py` /
+`test_scripts/harness_adapters.py`), not a separate wrapper.
 
-| study | what it varies | driver |
+| study | what it varies | how to run |
 |---|---|---|
-| [`docs_ablation/`](docs_ablation/README.md) | whether the agent has the Arm Software Optimization Guides (and how hard it's pushed to read them) | `python ablation/docs_ablation/run.py --arm {control,docs,nudge} <bench_fleet args>` |
+| docs-nudge | whether the agent is forced to read the Arm Software Optimization Guide before optimizing | `test_scripts/bench_fleet.py --harness nanobot --docs-nudge` (nudge) vs. the same command without the flag (control) — see `NanobotAdapter`/`--docs-nudge` in `test_scripts/harness_adapters.py` and `test_scripts/bench_fleet.py` |
 
-Each driver takes the same arguments as `test_scripts/bench_fleet.py` plus
-its own arm selector, derives a distinct `--author` per arm (so results dirs,
-boxes and W&B tags never mix), and puts every arm of one study in one W&B
-group so the comparison is a single Runs Table filter.
+Run each arm with its own `--author` so results/solutions don't collide
+(`compute_author()` doesn't fold ablation flags into the author string).

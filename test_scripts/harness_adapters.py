@@ -312,6 +312,20 @@ class ClineAdapter(HarnessAdapter):
         yield CLINE_WORKSPACE_DIR
 
 
+# docs-ablation "nudge" arm for nanobot: prepended to the per-job prompt
+#  SKILL.md's own mention of the same docs (see nanobot-kernel-session/SKILL.md) stays
+# mild and unmodified either way.
+NANOBOT_DOC_NUDGE = (
+    "IMPORTANT: before writing or compiling ANY kernel, first call list_resources() and "
+    "read the Arm Neoverse Software Optimization Guide for the target hardware in full "
+    "(docs/neoverse-v2-swog.md for Graviton4/SVE2, docs/neoverse-v1-swog.md for "
+    "Graviton3/SVE). Ground every optimization decision — instruction selection, vector "
+    "width, unroll factor, and scheduling — in its per-instruction latency/throughput "
+    "tables, and briefly note which guidance you applied. Do not begin optimizing until "
+    "you have read it.\n\n"
+)
+
+
 class NanobotAdapter(HarnessAdapter):
     name = "nanobot"
     prompt_template = (
@@ -331,7 +345,8 @@ class NanobotAdapter(HarnessAdapter):
     def default_model(cls) -> Optional[str]:
         return json.loads(NANOBOT_CONFIG_BASE.read_text())["agents"]["defaults"]["model"]
 
-    def __init__(self, *, dataset: str, model: Optional[str], local_port: int):
+    def __init__(self, *, dataset: str, model: Optional[str], local_port: int, docs_nudge: bool = False):
+        self.docs_nudge = docs_nudge
         if subprocess.run(["which", "nanobot"], capture_output=True).returncode != 0:
             raise RuntimeError(
                 "nanobot CLI not found on PATH — pip install nanobot-ai (pinned in "
@@ -371,9 +386,10 @@ class NanobotAdapter(HarnessAdapter):
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         session = time.strftime("%Y%m%d-%H%M%S")
+        prompt = (NANOBOT_DOC_NUDGE + job.prompt) if self.docs_nudge else job.prompt
         with self.prepare_workspace(job) as workspace:
             cmd = [
-                "nanobot", "agent", "--logs", "-m", job.prompt,
+                "nanobot", "agent", "--logs", "-m", prompt,
                 "-w", str(workspace), "-c", str(self.config_path), "--session", session,
             ]
             return _run_and_tee(cmd, log_path=log_path)
