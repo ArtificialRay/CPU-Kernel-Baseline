@@ -47,7 +47,7 @@ import analysis.wandb_log_run as wandb_log_run
 # imports its public functions.
 import skills.launch.launch_session as launch_session
 from skills.launch.launch_session import RemoteTarget, prepare_session, stop_tunnel, sync_results
-from contracts import BASELINE_AUTHORS, ISA_INSTANCE_MAP
+from contracts import ISA_INSTANCE_MAP, baseline_author_for
 from mcp_app.agent_tools.isa import isa_satisfies
 
 # harness_adapters.py lives alongside this script — Python puts a directly
@@ -112,11 +112,14 @@ def _cost_proxy(name: str) -> int:
     return prod
 
 
-def ensure_baselines(instance, dataset: str, definitions: list[str], remote_root: str) -> None:
+def ensure_baselines(
+    instance, dataset: str, definitions: list[str], remote_root: str, isa: Optional[str] = None,
+) -> None:
     """Sync the repo, then collect + verify baseline traces BEFORE the MCP
-    server starts.
+    server starts. The author is ISA-routed (contracts.baseline_author_for) so
+    it matches what mcp_app/session.py will compare against on this box.
     """
-    baseline_author = BASELINE_AUTHORS.get(dataset, dataset)
+    baseline_author = baseline_author_for(dataset, isa)
     target = instance.target
     # RemoteTarget (skills/launch/remote.py) carries no instance_type, so it
     # can't expose provisioning/remote.py::InstanceHandle's `.python` property, and
@@ -219,7 +222,7 @@ def build_jobs(
         for entry in raw_entries
     }
 
-    baseline_author = BASELINE_AUTHORS.get(dataset, dataset)
+    baseline_author = baseline_author_for(dataset, isa)
     jobs: list[Job] = []
     isa_skipped: list[str] = []
     for path in sorted(DEFINITIONS_DIR.rglob("*.json")):
@@ -338,7 +341,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     )
     if jobs:
         ensure_baselines(
-            instance, dataset, [j.name for j in jobs], args.remote_root,
+            instance, dataset, [j.name for j in jobs], args.remote_root, isa=isa,
         )
 
     # sync_repo=False: ensure_baselines() already synced, and re-syncing here
