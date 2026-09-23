@@ -382,22 +382,14 @@ class NanobotAdapter(HarnessAdapter):
             return _run_and_tee(cmd, log_path=log_path)
 
     def _job_ws(self, job: Job) -> Path:
-        """Workspace path for `job`, keyed by author AND definition.
+        """Workspace path for `job`, keyed by both author and definition.
 
-        Keying by definition name alone made two concurrent queues that
-        share a definition use one directory: prepare_workspace's
-        `rsync --delete` and cleanup_workspace's rmtree then ran under the
-        other queue's live session, killing it with
-        `FileNotFoundError ... job_workspaces/<def>/sessions/*.jsonl.tmp`
-        (hit 2026-09-08 23:37:40 loop_033 and 2026-09-15 13:52:40 loop_127,
-        both at the exact second the other batch printed `All jobs done`).
-        `author` is compute_author()'s f"{harness}[-{model}]-{isa}", already
-        sanitised to [A-Za-z0-9.-], so an opus sve queue and a sonnet sve2
-        queue over the same definition no longer collide.
+        Keying by definition alone caused race conditions when concurrent queues shared
+        a definition, leading to `prepare_workspace` (`rsync --delete`) or `cleanup_workspace`
+        wiping active session files. Keying by author ensures queue isolation.
 
-        Falls back to the bare definition name when run_job() has not set
-        _author yet — cleanup_workspace() must never raise on a job the
-        batch aborted before running.
+        Falls back to the bare definition name if `_author` is unset, ensuring
+        `cleanup_workspace()` can safely run on aborted jobs.
         """
         stem = f"{self._author}_{job.name}" if self._author else job.name
         return NANOBOT_JOB_WORKSPACES_DIR / stem
