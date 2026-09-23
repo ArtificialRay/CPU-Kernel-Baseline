@@ -49,7 +49,7 @@ baseline_authors_by_isa:
 # bench/config.py's BenchmarkConfig/EvalConfig field defaults. baseline_author
 # intentionally isn't duplicated here — it reuses baseline_authors_default.ncnn above.
 eval_defaults:
-  warmup: 5
+  warmup: 10
   repeat: 50
 # "auto": Auto-tunes `inner_iters` per (definition, workload) to target `target_sample_ns`.
 #
@@ -60,7 +60,7 @@ eval_defaults:
 # To ensure fair comparisons, candidates inherit their baseline's `inner_iters`.
 #
 # NOTE: Currently disabled (default=1) so existing benchmark results remain reproducible.
-  inner_iters: 1 # could set to "auto", see above comment
+  inner_iters: auto # could set to "auto", see above comment
   target_sample_ns: 1000000
   cpu: 0
   watchdog_s: 30.0
