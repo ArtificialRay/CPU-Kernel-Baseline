@@ -9,8 +9,7 @@ of the iteration loop itself.
 
 The model is handed exactly the same task information run_agentic_eval's first
 turn gets — the entry signature from the definition's header plus the
-reference-scalar kernel to replace (build_user_prompt, shared) — so "may I
-iterate" is the only variable between the two.
+reference-scalar kernel to replace — so "may I iterate" is the only variable between the two.
 
 Measurement goes through the same MCP compile/evaluate the tool loop uses, so
 the resulting time_speedup_geomean is computed by the same evaluator against
@@ -30,7 +29,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
 from contracts import AGENT_KERNEL_FILENAME, REFERENCE_SCALAR_AUTHORS
-from eval.evaluator import _ISA_PROMPT_INFO, build_user_prompt
+from eval.evaluator import _ISA_PROMPT_INFO
 from eval.llm_call import call_llm
 from eval.llm_providers import resolve_completion_kwargs
 
@@ -71,13 +70,39 @@ You are measured on wall-time speedup against the {baseline_label}, as a
 geometric mean over every workload of this definition.
 """
 
-_CLOSING = (
-    "\nWrite the optimized {kernel_filename} now, as a single ```cpp block. "
-    "Remember: one attempt, no feedback, no second chance."
-)
+def build_user_prompt(definition, ref_solution) -> str:
+    """Task description: the entry signature and the scalar kernel to replace,
+    closed with the single-shot-specific instruction.
 
-# ``` fences, optionally tagged cpp/c++/c. Non-greedy body, DOTALL.
-_FENCE_RE = re.compile(r"```(?P<tag>[A-Za-z+#]*)\s*\n(?P<body>.*?)```", re.DOTALL)
+    Standalone copy of eval/evaluator.py's build_user_prompt — kept identical
+    (minus the closing, which only this module needs) by hand so both paths
+    hand the model the same task information (see this module's docstring).
+    """
+    parts = [f"Definition: {definition.name}  (op_type: {definition.op_type})"]
+
+    if ref_solution is not None:
+        header = next(
+            (s for s in ref_solution.sources if s.path.endswith(".h")), None
+        )
+        kernel = next(
+            (s for s in ref_solution.sources if s.path == AGENT_KERNEL_FILENAME), None
+        )
+        if header:
+            parts.append(
+                f"\nHeader (shows the function signature you must implement):\n"
+                f"```cpp\n{header.content}\n```"
+            )
+        if kernel:
+            parts.append(
+                f"\nReference scalar kernel (your task: replace with optimized implementation):\n"
+                f"```cpp\n{kernel.content}\n```"
+            )
+    closing = (
+        "\nWrite the optimized {kernel_filename} now, as a single ```cpp block. "
+        "Remember: one attempt, no feedback, no second chance."
+    ).format(kernel_filename=AGENT_KERNEL_FILENAME)
+    parts.append(closing)
+    return "\n".join(parts)
 
 
 def extract_kernel_code(text: str) -> Optional[str]:
@@ -89,7 +114,9 @@ def extract_kernel_code(text: str) -> Optional[str]:
     """
     if not text:
         return None
-    blocks = [(m.group("tag").lower(), m.group("body")) for m in _FENCE_RE.finditer(text)]
+    # ``` fences, optionally tagged cpp/c++/c. Non-greedy body, DOTALL.
+    fence_re = re.compile(r"```(?P<tag>[A-Za-z+#]*)\s*\n(?P<body>.*?)```", re.DOTALL)
+    blocks = [(m.group("tag").lower(), m.group("body")) for m in fence_re.finditer(text)]
     if not blocks:
         return None
     tagged = [b for tag, b in blocks if tag in ("cpp", "c++", "cc", "c")]
@@ -137,10 +164,7 @@ def run_single_shot(
         baseline_label=baseline_label,
         kernel_filename=AGENT_KERNEL_FILENAME,
     )
-    user_msg = build_user_prompt(
-        definition, ref_solution,
-        closing=_CLOSING.format(kernel_filename=AGENT_KERNEL_FILENAME),
-    )
+    user_msg = build_user_prompt(definition, ref_solution)
 
     tools = mcp_client.tools_for(definition.name)
     run_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
