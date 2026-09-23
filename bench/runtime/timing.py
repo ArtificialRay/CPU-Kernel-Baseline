@@ -89,12 +89,10 @@ def pin_to_cpu(cpu: int) -> Optional[int]:
         return None
 
 
-# Window a timed sample should span when inner_iters is chosen automatically.
-# 1 ms against macOS's 1000 ns clock_gettime granularity is 0.1% quantisation
-# error; a candidate 50x faster than the baseline it inherits inner_iters from
-# still sees only 5%. It also bounds the cost: repeat * 1 ms per workload no
-# matter how fast the kernel is.
-DEFAULT_TARGET_SAMPLE_NS = 1_000_000
+# Target sample duration when inner_iters is auto-tuned.
+# 10 ms keeps quantization error ≤2% even for candidates 200x faster than 
+# baseline (macOS 1 µs clock precision), while capping workload cost at repeat * 10 ms.
+DEFAULT_TARGET_SAMPLE_NS = 10_000_000
 
 
 def round_pow2(n: int) -> int:
