@@ -33,8 +33,14 @@ UB = [(1, 43.41, 47.13), (2, 57.12, 82.16), (8, 127.37, 170.58),
 # 64-chunk wikitext-2 ladder: ppl64.sh (stock models) + definitive run (+kernels)
 LADDER = [("Q3_K_M", 9.8459, "quant"), ("Q4_K_M\n+ agent kernels", 9.5617, "kernels"),
           ("Q4_K_M", 9.5029, "quant"), ("Q6_K", 9.4364, "quant"), ("BF16", 9.3841, "quant")]
-# kernel-level geomean (gate v2, 11 kernels) vs deployed prefill speedup @t=16
-MODELS = [("Claude Fable 5.1", 2.932, 1.33), ("gpt-5.6-sol", 1.201, 0.59)]
+# kernel-level geomean (gate v2, 11 kernels) vs deployed prefill speedup @t=16, and the
+# perplexity each arm costs vs its own stock. Sol's ppl delta is the 8-chunk measurement
+# (stock 10.062 -> 10.064); Fable's is 64-chunk (9.503 -> 9.562). Deltas are comparable,
+# absolute perplexities are not.
+# name, kernel-level geomean (None = not an agent), deployed prefill, ppl delta vs stock
+MODELS = [("stock\nllama.cpp", None, 1.00, 0.0),
+          ("gpt-5.6-sol", 1.201, 0.59, 0.0),
+          ("Claude\nFable 5.1", 2.932, 1.33, 0.6)]
 # gate-v1 attribution, 8 chunks, one kernel overridden at a time (docs/e2e_qwen35.md)
 ATTRIB = [("ffn gate/up\nq4_K", 11.51), ("GDN in-proj\nq5_K", 11.23),
           ("GDN z-gate\nq4_K", 10.87), ("attn q\nq4_K", 10.23),
@@ -119,20 +125,27 @@ def f_ub(ax):
 
 def f_models(ax):
     labs = [m[0] for m in MODELS]
-    x = range(len(labs))
-    w = 0.33
-    ax.bar([i - w / 2 for i in x], [m[1] for m in MODELS], w, color=C_STOCK, label="kernel-level (geomean, 11 kernels)")
-    ax.bar([i + w / 2 for i in x], [m[2] for m in MODELS], w, color=C_AGENT, label="deployed (prefill, end to end)")
+    x = list(range(len(labs)))
+    w = 0.34
+    kl = [m[1] for m in MODELS]
+    ax.bar([i - w / 2 for i in x if kl[i] is not None],
+           [v for v in kl if v is not None], w,
+           color=C_STOCK, label="kernel-level (geomean, 11 kernels)")
+    ax.bar([i + w / 2 if kl[i] is not None else i for i in x],
+           [m[2] for m in MODELS], w, color=C_AGENT,
+           label="deployed (prefill, end to end)")
     for i, m in enumerate(MODELS):
-        ax.text(i - w / 2, m[1] + 0.06, f"{m[1]:.2f}x", ha="center", fontsize=8.5)
-        ax.text(i + w / 2, m[2] + 0.06, f"{m[2]:.2f}x", ha="center", fontsize=8.5,
-                color=C_BAD if m[2] < 1 else "black",
-                fontweight="bold" if m[2] < 1 else "normal")
+        if m[1] is not None:
+            ax.text(i - w / 2, m[1] + 0.07, f"{m[1]:.2f}x", ha="center", fontsize=8.5)
+        dx = (w / 2) if m[1] is not None else 0.0
+        bad = m[2] < 1.0
+        ax.text(i + dx, m[2] + 0.07, f"{m[2]:.2f}x", ha="center", fontsize=9,
+                color=C_BAD if bad else "black", fontweight="bold" if bad else "normal")
     ax.axhline(1.0, color=C_BAD, lw=1, ls="--")
-    ax.text(1.44, 0.86, "net-negative below here", fontsize=8, color=C_BAD, ha="right")
-    ax.set_xticks(list(x)); ax.set_xticklabels(labs, fontsize=9)
-    ax.legend(fontsize=8, frameon=False, loc="upper right")
-    ax.set_ylim(0, 3.35)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{m[0]}\n({m[3]:+.1f}% ppl)" for m in MODELS], fontsize=8.5)
+    ax.legend(fontsize=8, frameon=False, loc="upper left")
+    ax.set_ylim(0, 3.4)
     style(ax, "Kernel-level score does not predict deployed value", "", "speedup")
 
 
