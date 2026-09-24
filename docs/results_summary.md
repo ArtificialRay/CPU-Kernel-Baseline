@@ -232,6 +232,35 @@ Two confounds to state rather than have found: the arms differ in three ways at 
 `armv8-a` has neither `fullfp16` nor `dotprod`), and E1 is supplementary — the workbook's ISA
 row is S2a, which we have.
 
+### The agent DOES adapt — the null is "adapted, no gain" (2026-09-24)
+
+The performance null alone cannot say whether the agent adapted to each ISA or ignored it.
+`scripts/e2e/techniques_by_isa.py` compares W&B's `best_kernel_techniques` across arms for the
+30 kernels that have it in all three:
+
+| technique | neon | sve | sve2 |
+|---|---|---|---|
+| `neon` | **30** | 2 | 2 |
+| `predication` | 0 | **28** | **28** |
+| `int8_dot` | 0 | 2 | **7** |
+| `fma` | 10 | 18 | 19 |
+| mean techniques/kernel | 1.37 | 1.67 | 1.87 |
+
+**30 of 30 kernels differ across arms; none are identical.** The switches track real feature
+availability — NEON intrinsics under `armv8-a`, SVE predication as soon as SVE exists, and
+`int8_dot` rising 0 → 2 → 7 exactly as `dotprod` becomes available (neon and our sve arm lack
+it; sve2's `armv9-a+sve2` has it).
+
+So E1 should be read as: **the agent rewrites the kernel for each target, correctly exploiting
+what each offers, and the performance is the same anyway.** That is a statement about the
+hardware and these workloads, not about model capability — and it is much stronger than the
+"maybe it ignored the ISA" reading the performance numbers alone allow.
+
+Strength: DIFFERENT technique sets are solid evidence of adaptation; the per-tag counts come
+from a coarse regex classifier, so they are suggestive rather than instruction-level proof.
+The paper's Sec 5 disassembly plan (count generation-specific instruction classes in each
+final kernel) would upgrade this, and is now clearly worth doing.
+
 A third, structural one, found while completing the 33rd definition: **an ISA ablation can only
 compare tiers where an expert baseline exists.** The subset's `gemm_fp32_n512_k512` is scored
 against KleidiAI's own kernel, whose spec declares `isa_features: ["sve"]` and builds
