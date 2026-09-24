@@ -1,0 +1,124 @@
+# Results summary (2026-09-24)
+
+Status of every claim we can currently defend, with where the data lives. Workbook:
+Google Sheet `1G5V97QA5YDv…`. W&B: `ArmBench/arm-bench-kernels-gpt5.6-luna`.
+
+---
+
+## 1. Benchmark validity — the strongest result
+
+A standard kernel gate (random inputs, fixed 20 dB SQNR floor) **certified 11 of 11 kernels
+correct. Five of them raised end-to-end perplexity by 44%** (10.06 → 14.45 on Qwen3.5-4B).
+
+Root cause: the M≥2 batched path requantized Q8_K block sums under one exponent shared across
+the batch — invisible to random data, ruinous on real activations. Proven by forcing M=1
+semantics (PPL 12.68 → 8.77) and by per-kernel attribution whose deltas sum to the observed
+total.
+
+**The shortcut bought almost nothing: ~1.5% of prefill.** Under a corrected gate (real dumped
+activations, realistic k-quant weights, baseline-relative SQNR floor) the model re-derived the
+same speed honestly — **3.205x geomean vs 3.160x for the shortcut versions**. The old gate did
+not induce a bad trade-off; it priced precision at zero, so the optimizer spent it.
+
+Under the corrected gate the original submissions are **6/11 admissible**; each failing kernel
+passes at most the single M=1 workload and one passes none. The re-optimized set is **11/11 at
+2.938x**.
+
+`docs/e2e_qwen35.md`. Fills the workbook's **S5 · New Kernel · Qwen3.5-4B · 11 kernels** row
+(currently marked *Not started*).
+
+## 2. End-to-end deployment value
+
+Qwen3.5-4B-Q4_K_M, c8g.4xlarge (Graviton4), 16 threads, vs stock llama.cpp **with its repack
+fast path on** (turning repack off costs stock 46% of prefill, so the baseline is real).
+
+| | speedup |
+|---|---|
+| prefill @512 (`-fa off`) | **1.373x** |
+| prefill @8192 | 1.277x |
+| decode, depth 0 → 32k | 1.074x → 1.041x |
+| micro-batch `-ub` 1 / 2 / 8 / 64 / 512 | 1.086 / 1.439 / 1.339 / 1.059 / 1.324 |
+| perplexity (64 chunks) | **+0.62%** |
+
++0.62% is **half what the 4-bit quantization itself costs** (+1.27% vs BF16) and a sixth of one
+quantization level (Q4→Q3 = +3.61%).
+
+**Caveats that must travel with these numbers.** `-fa auto` selects flash attention, which is
+~2x *slower* here — measured on that path the prefill figures drop to 1.328/1.119. And the
+`-ub` row required fixing our own splice: dispatch M-split whenever M>1, starving 14 of 16
+threads at small batch, which made the build **4.7x slower than stock at `-ub 2`** until
+commit `33f370c`. Four prior measurements at the default `ub=512` never saw it.
+
+## 3. Model capability dominates everything
+
+Same benchmark, gate, prompt and hardware; 11 Qwen kernels:
+
+| | kernel geomean | end-to-end prefill |
+|---|---|---|
+| Claude Fable 5.1 | **2.932x** | 1.33x |
+| gpt-5.6-sol | 1.201x | **0.59x** |
+
+**Fable wins all 11 kernels** (narrowest margin 1.80x). Sol's kernels are numerically clean but
+make the model *slower than doing nothing* — they beat the generic ggml path by ~1.2x while
+ggml's repack path beats it by ~1.85x. Sol also submitted the baseline itself for one kernel
+(`ggml_vec_dot_q5_K_q8_K`), a second, independent species of benchmark-gaming.
+
+This caps the claim at "a strong model can do this", not "agents can".
+
+## 4. Agents beat the gaps experts left, not experts — subset-independent
+
+Splitting by whether the expert baseline is itself optimized (`baseline_vs_scalar >= 2`):
+
+| subset | n | weak-baseline | strong-baseline | gap |
+|---|---|---|---|---|
+| teammate's new 33 | 32 | 1.869x | **0.690x** | 2.7x |
+| our original 33 | 33 | 1.956x | 0.757x | 2.6x |
+| the 21 overlapping | 21 | 2.155x | 0.701x | 3.1x |
+
+**Against genuinely optimized expert kernels the agent reaches ~0.69-0.76 and never wins.** The
+whole >1.0 aggregate comes from kernels where the expert left the code essentially
+unoptimized. Robust to the subset change, which is what makes it publishable.
+
+Corroborated by A2: the agent **loses on a third to a half of all kernels** — only 3/8 on
+llama.cpp in every ISA arm — and wins 2.1-2.4x where it wins.
+
+## 5. ISA target does not matter
+
+E1 on the new subset (n=32): **neon 1.209 / sve 1.193 / sve2 1.229** — a 3.0% spread against a
+**4.37% run-to-run noise floor** measured by repeating one identical cell (S7 seed 1 vs the E1
+sve arm). Formally indistinguishable. Per-kernel the median spread between identical runs is
+**15.9%**, and one kernel (`loop_120`) went 1.70x → 5.64x between two identical runs.
+
+Two confounds to state rather than have found: the arms differ in three ways at once (neon's
+`armv8-a` has neither `fullfp16` nor `dotprod`), and E1 is supplementary — the workbook's ISA
+row is S2a, which we have.
+
+## 6. Test-time scaling — returns exhausted early
+
+S1, geomean by **tool-call** budget (the harness caps tool calls; each evaluation costs a
+compile plus an evaluate, so halve for evaluations):
+
+| tool calls | 10 | 20 | 40 | 60 | 80 | 100 |
+|---|---|---|---|---|---|---|
+| all 33 | 1.018 | 1.148 | 1.272 | 1.371 | 1.401 | **1.416** |
+
+10→50 buys +28%; **50→100 buys +8.6%**. Plateau by dataset: ncnn 90, llama.cpp 60, simd-loop 80
+tool calls — **contradicting the deck**, which expects ~80 for ncnn/llama.cpp and ~30 for
+simd-loop. Independently corroborated by the e2e sweep, where the best kernel appeared by turn
+30-33 and turns 34-42 bought ~0.1%.
+
+## 7. Where the agent wins and loses (A4)
+
+gemm **0.807** and conv2d **0.553** are the *worst* op types; moe, rms_norm and simd-loop are
+above 1.0. **The deck says "gemm strong"** — measured, it is second-worst. gemm and conv2d are
+exactly where vendor experts concentrate, consistent with §4.
+
+---
+
+## Open
+
+- **S7 seeds 2-3** running; n≥3 needed for the ±std on slide 11 to be defensible.
+- **S9** (measurement-vs-agent noise decomposition) running — determines how hard §5 can be pushed.
+- **kleidiai `gemm_fp32_n512_k512`** staged, serialised behind the current wave; completes 33/33.
+- Residual +0.62% perplexity is a known unfixed defect (per-row activation scale vs ggml's
+  per-256-block Q8_K).
