@@ -27,12 +27,16 @@ Claims below are what we can currently defend, with provenance. Workbook: Google
    reaches **0.69x** and never wins. Holds across three different 33-kernel subsets.
 2. **Model capability dominates every other axis we varied.** Fable 5.1 reaches 2.93x at the
    kernel level and +33% prefill deployed; gpt-5.6-sol reaches 1.20x and is **net-negative
-   deployed (0.59x)**. ISA target, by contrast, is inside the measurement noise.
+   deployed (0.59x)**. ISA target, by contrast, is inside the sampling noise.
 3. **Test-time scaling saturates early** — returns are exhausted by ~40 evaluations, measured
    independently on two datasets and two models.
 4. **Models exploit under-specified metrics, in more than one way.** A precision shortcut
    invisible to random-input testing, and — separately, another model — submitting the vendor
    baseline as its own answer. Both scored well under a conventional gate.
+5. **Almost all of a reported speedup's variance is the model, not the machine.** Re-timing
+   fixed code gives a **0.40%** geomean spread; re-running the same agent cell gives **4.37%**,
+   and **15.9%** per kernel. Single-run kernel comparisons cannot resolve the differences this
+   literature routinely reports — including our own ISA arms, which sit at 3.0%.
 
 ---
 
@@ -116,9 +120,30 @@ llama.cpp in every ISA arm — and wins 2.1-2.4x where it wins.
 ## 5. ISA target does not matter
 
 E1 on the new subset (n=32): **neon 1.209 / sve 1.193 / sve2 1.229** — a 3.0% spread against a
-**4.37% run-to-run noise floor** measured by repeating one identical cell (S7 seed 1 vs the E1
-sve arm). Formally indistinguishable. Per-kernel the median spread between identical runs is
-**15.9%**, and one kernel (`loop_120`) went 1.70x → 5.64x between two identical runs.
+**4.37% agent-resampling floor** measured by repeating one identical cell (S7 seed 1 vs the E1
+sve arm). The arms differ from each other by less than the same agent differs from itself.
+Per-kernel the median spread between identical runs is **15.9%**, and one kernel (`loop_120`)
+went 1.70x → 5.64x between two identical runs.
+
+That floor is not the stopwatch. **S9** re-times fixed code (autovec vs `baseline-sve2`, 13
+definitions, 3 repeats on one box, nothing about the agent varying):
+
+| | measurement-only (S9) | agent resampling (S7) | ratio |
+|---|---|---|---|
+| geomean spread | **0.40%** | 4.37% | 11x |
+| median per-kernel spread | **0.82%** | 15.9% | 19x |
+| worst kernel | 2.97% (`loop_108`) | 1.70x → 5.64x (`loop_120`) | — |
+
+**The harness measures to a few tenths of a percent; ~99% of the variance in a reported
+speedup is the model resampling, not the timer.** This is the finding that licenses the ISA
+null: a 3.0% spread is 7x the measurement floor but well under the sampling floor, so the arms
+are indistinguishable *for the reason that matters* — you cannot resolve them without more
+agent runs, and no amount of extra timing repeats will help.
+
+It also sets the protocol for anyone using this benchmark: **report n≥3 independent agent runs;
+do not spend the budget on timing repetitions.** Single-run kernel comparisons — the norm in
+this literature, and what KernelBench's temperature-0 sampling gives — cannot resolve
+differences of the size routinely reported.
 
 Two confounds to state rather than have found: the arms differ in three ways at once (neon's
 `armv8-a` has neither `fullfp16` nor `dotprod`), and E1 is supplementary — the workbook's ISA
