@@ -167,18 +167,16 @@ isa:
   # the same host against the same baseline, only the candidate's allowed
   # instructions differ.
   #
-  # host_features: what the HOST provides beyond `features`, i.e. what a
-  # baseline may use but the candidate may not. Consulted only by the
-  # baseline isa-filter (mcp_app/agent_tools/isa.py::isa_host_satisfies), so
-  # kleidiai's SME2 baselines are not skipped on the restricted tiers.
-  # Omitted = []; every pre-existing tier behaves exactly as before.
+  # features: ["sme2"] on all three = what the HOST provides, so the baseline
+  # isa-filter keeps kleidiai's SME2 baselines. It does not restrict the
+  # candidate — that is march + disallowed_source_patterns +
+  # disallowed_asm_patterns below.
   m4-neon:
     # NEON only: no SVE, no streaming mode, no ZA. "+nosme" drops SME/SME2
     # from apple-m4 so SME intrinsics fail at compile time.
     # TODO(verify on mac-m4.metal): Apple clang accepts "+nosme" here.
     march: "-mcpu=apple-m4+nosme"
-    features: []
-    host_features: ["sme2"]
+    features: ["sme2"]
     labels: ["apple-m4", "aarch64-neon"]
     instance_type: "mac-m4.metal"
   m4-ssve:
@@ -187,8 +185,7 @@ isa:
     # implies ZA), so the split is enforced by disallowed_source_patterns +
     # disallowed_asm_patterns below.
     march: "-mcpu=apple-m4"
-    features: []
-    host_features: ["sme2"]
+    features: ["sme2"]
     labels: ["apple-m4", "aarch64-ssve"]
     instance_type: "mac-m4.metal"
 

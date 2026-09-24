@@ -177,18 +177,6 @@ def isa_satisfies(required: list[str], isa: str) -> bool:
     return set(required) <= set(_ISA_MARCH[isa][1])
 
 
-def isa_host_satisfies(required: list[str], isa: str) -> bool:
-    """Like isa_satisfies, but also counts `isa`'s host_features — what the
-    HOST provides beyond what the candidate may use (kernel_contracts.yaml's
-    m4-neon/m4-ssve). For the baseline isa-filter only: a baseline runs on
-    the host, not under the candidate's restrictions.
-    """
-    if isa not in _ISA_MARCH:
-        raise ValueError(f"Unknown isa {isa!r}. Supported: {sorted(_ISA_MARCH)}")
-    host_features = ISA_TABLE[isa].host_features if isa in ISA_TABLE else []
-    return set(required) <= set(_ISA_MARCH[isa][1]) | set(host_features)
-
-
 def isa_satisfies_on_host(required: list[str], *, cpuinfo_path: Path = Path("/proc/cpuinfo")) -> bool:
     """True if THIS machine's live-detected features (detected_solution_features)
     cover every token in `required`. Real hardware check that detect features from the hardware directly
@@ -198,5 +186,5 @@ def isa_satisfies_on_host(required: list[str], *, cpuinfo_path: Path = Path("/pr
 
 __all__ = [
     "MarchInfo", "SUPPORTED_ISAS", "march_for_isa", "verify_isa_available",
-    "isa_satisfies", "isa_host_satisfies", "isa_satisfies_on_host", "detected_solution_features",
+    "isa_satisfies", "isa_satisfies_on_host", "detected_solution_features",
 ]

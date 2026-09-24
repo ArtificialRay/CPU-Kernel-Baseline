@@ -20,9 +20,6 @@ class IsaSpec:
     features: list[str]
     labels: list[str]
     instance_type: str
-    # Host-provided features a baseline may use but the candidate may not
-    # (see kernel_contracts.yaml's m4-neon/m4-ssve). [] for most tiers.
-    host_features: list[str]
 
 
 @lru_cache(maxsize=1)
@@ -42,7 +39,6 @@ def _isa_table() -> dict[str, IsaSpec]:
             features=list(spec["features"]),
             labels=list(spec["labels"]),
             instance_type=spec["instance_type"],
-            host_features=list(spec.get("host_features", [])),
         )
         for isa, spec in _load()["isa"].items()
     }
