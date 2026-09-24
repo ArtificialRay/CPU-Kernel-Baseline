@@ -202,11 +202,32 @@ references and the family rule calls them weak.
 
 ## 5. ISA target does not matter
 
-E1 on the new subset (n=32): **neon 1.209 / sve 1.193 / sve2 1.229** — a 3.0% spread against a
-**4.37% agent-resampling floor** measured by repeating one identical cell (S7 seed 1 vs the E1
-sve arm). The arms differ from each other by less than the same agent differs from itself.
-Per-kernel the median spread between identical runs is **15.9%**, and one kernel (`loop_120`)
-went 1.70x → 5.64x between two identical runs.
+E1 on the new subset (n=32): **neon 1.209 / sve 1.193 / sve2 1.229** — a 3.0% spread.
+
+**CORRECTED 2026-09-24.** This previously read "a 3.0% spread against a 4.37% agent-resampling
+floor ... the arms differ by less than the same agent differs from itself." That floor came
+from pairing S7 seed 1 against the E1 sve arm — a valid second sample, but the two differ in
+bookkeeping. With seed 2 complete, the like-for-like seed-vs-seed figure
+(`scripts/e2e/s7_variance.py`, 44 paired kernels) is **tighter**:
+
+| | seed-vs-seed | old (seed 1 vs E1 arm) |
+|---|---|---|
+| geomean spread | **1.38%** | 4.37% |
+| median per-kernel spread | **6.47%** | 15.9% |
+| 90th percentile per-kernel | **53.4%** | — |
+| max per-kernel | **121.7%** (`loop_121` 44.681 → 10.877) | — |
+
+A 1.38% range over two samples implies sigma ~1.2% at the geomean level, so three arms drawn
+from it would have an expected range near 2.1%. The observed ISA spread of 3.0% is **above**
+that, not inside it. **Do not claim the ISA arms are indistinguishable on this evidence.** The
+defensible statement today is that the spread is comparable to agent resampling noise; seed 3
+gives a real three-sample sigma and should settle it.
+
+What is unaffected: agent noise is still ~3.5x the measurement floor at the geomean level and
+~8x per kernel (S9: 0.40% / 0.82%), so the variance remains overwhelmingly the model rather
+than the machine. And the tail is the stronger argument anyway — **one kernel in ten varies by
+more than 53% between identical runs**, which rules out n=1 per-kernel comparison regardless of
+what the aggregate does.
 
 That floor is not the stopwatch. **S9** re-times fixed code (autovec vs `baseline-sve2`, 13
 definitions, 3 repeats on one box, nothing about the agent varying):
