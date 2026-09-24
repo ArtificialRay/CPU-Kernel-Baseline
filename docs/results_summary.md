@@ -149,6 +149,14 @@ Two confounds to state rather than have found: the arms differ in three ways at 
 `armv8-a` has neither `fullfp16` nor `dotprod`), and E1 is supplementary — the workbook's ISA
 row is S2a, which we have.
 
+A third, structural one, found while completing the 33rd definition: **an ISA ablation can only
+compare tiers where an expert baseline exists.** The subset's `gemm_fp32_n512_k512` is scored
+against KleidiAI's own kernel, whose spec declares `isa_features: ["sve"]` and builds
+`-march=armv8.2-a+sve`. There is no neon-tier KleidiAI reference, so the harness's isa-filter
+drops the definition under `--isa neon` and E1's neon arm is **structurally 32/33** — not a gap
+more compute can close. Vendor-optimized references are themselves written for a chosen ISA
+tier, which bounds what any hardware ablation over agent-written kernels can measure.
+
 ## 6. Test-time scaling — returns exhausted early
 
 S1, geomean by **tool-call** budget (the harness caps tool calls; each evaluation costs a
