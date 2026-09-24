@@ -525,20 +525,38 @@ bool armbench_override_mul_mat(const struct ggml_compute_params * params, struct
     if (k->abi == ARMBENCH_ABI_ENTRY_ROWS && !g_force_single && params->nth > 1) {
         const int ith = params->ith, nth = params->nth;
         int rc = 0;
-        if (M == 1) {
-            // decode: split N across threads in chunks that are multiples of ARMBENCH_N_CHUNK rows
+        if (M < nth) {
+            // Not enough activation rows to keep every thread busy, so split N instead of M.
+            // M-splitting here is what made small micro-batches catastrophic: at M=2 with 16
+            // threads only 2 threads got work and the build ran ~4.7x SLOWER than stock ggml,
+            // which parallelises over N and uses all of them. Covers decode (M==1) and the
+            // small-batch prefill / speculative-decode range in one branch.
             const int64_t chunk = ((N + nth - 1) / nth + ARMBENCH_N_CHUNK - 1) / ARMBENCH_N_CHUNK * ARMBENCH_N_CHUNK;
             const int64_t r0 = (int64_t) ith * chunk;
             if (r0 >= N) return true;
             const int64_t n_i = (r0 + chunk < N ? r0 + chunk : N) - r0;
-            uint16_t * A = scratch_get((size_t) K * sizeof(uint16_t));
+            // The rows ABI writes a contiguous [M, n_i] block (row stride n_i), but dst has row
+            // stride N -- so for M == 1 we can aim it straight at dst, and for M > 1 we need a
+            // staging buffer and a per-row copy. One allocation, carved in two.
+            const size_t a_bytes   = (size_t) M * (size_t) K * sizeof(uint16_t);
+            const size_t out_bytes = (M > 1) ? (size_t) M * (size_t) n_i * sizeof(float) : 0;
+            uint16_t * A = scratch_get(a_bytes + out_bytes);
             if (!A) goto oom;
-            ggml_cpu_fp32_to_bf16((const float *) src1->data, (ggml_bf16_t *) A, K);
+            for (int64_t m = 0; m < M; m++) {
+                const float * row = (const float *) ((const char *) src1->data + m * src1->nb[1]);
+                ggml_cpu_fp32_to_bf16(row, (ggml_bf16_t *) (A + m * K), K);
+            }
+            float * out = (M > 1) ? (float *) ((char *) A + a_bytes) : (float *) dst->data + r0;
             if (ith == 0) note_hit(k, src0, K, N, M, params->nth, "N-split");
-            rc = ((armbench_entry_gemm_rows_fn) k->fn_rows)(A, (float *) dst->data + r0,
-                     (const uint8_t *) src0->data + r0 * src0->nb[1], 1, (int) n_i);
+            rc = ((armbench_entry_gemm_rows_fn) k->fn_rows)(A, out,
+                     (const uint8_t *) src0->data + r0 * src0->nb[1], (int) M, (int) n_i);
+            if (M > 1) {
+                for (int64_t m = 0; m < M; m++) {
+                    memcpy((float *) dst->data + m * N + r0, out + m * n_i, (size_t) n_i * sizeof(float));
+                }
+            }
         } else {
-            // prefill: split M across threads; full-N entry (output row stride N is correct there)
+            // prefill with M >= nth: split M across threads; full-N entry (row stride N is correct there)
             const int64_t mpt = (M + nth - 1) / nth;
             const int64_t m0  = (int64_t) ith * mpt;
             if (m0 >= M) return true;
