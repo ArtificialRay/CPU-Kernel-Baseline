@@ -67,6 +67,11 @@ NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
 # nanobot prefers <workspace>/skills/<name>/ over its own stale builtin copy; SKILL.md only 
 NANOBOT_SKILL_FILE = REPO_ROOT / "skills" / "nanobot" / "nanobot-kernel-session" / "SKILL.md"
 NANOBOT_SKILL_NAME = "nanobot-kernel-session"
+# ablation/shared-workspace-notepad: a cross-job notes file, author-scoped,
+# living alongside this run's other results. It copied into each job's workspace before it runs, and
+# copied back out after, so later definitions in the same run can read what
+# earlier ones learned.
+NANOBOT_SHARED_NOTES_FILENAME = "SHARED_NOTES.md"
 
 # dataset -> the mcpServers key nanobot's config.json wires to a fixed
 # local port (always overwritten per-run below, so the base config's port
@@ -375,12 +380,21 @@ class NanobotAdapter(HarnessAdapter):
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         self._author = author
         session = time.strftime("%Y%m%d-%H%M%S")
-        with self.prepare_workspace(job) as workspace:
+        with self.prepare_workspace(job, author) as workspace:
             cmd = [
                 "nanobot", "agent", "--logs", "-m", job.prompt,
                 "-w", str(workspace), "-c", str(self.config_path), "--session", session,
             ]
-            return _run_and_tee(cmd, log_path=log_path)
+            rc = _run_and_tee(cmd, log_path=log_path)
+            notes_out = workspace / NANOBOT_SHARED_NOTES_FILENAME
+            if notes_out.exists():
+                notes_dst = self.shared_notes_path(author)
+                notes_dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(notes_out, notes_dst)
+            return rc
+
+    def shared_notes_path(self, author: str) -> Path:
+        return REPO_ROOT / f"agent-runs-{author}" / NANOBOT_SHARED_NOTES_FILENAME
 
     def _job_ws(self, job: Job) -> Path:
         """Workspace path for `job`, keyed by both author and definition.
@@ -396,7 +410,7 @@ class NanobotAdapter(HarnessAdapter):
         return NANOBOT_JOB_WORKSPACES_DIR / stem
 
     @contextmanager
-    def prepare_workspace(self, job: Job):
+    def prepare_workspace(self, job: Job, author: str):
         """Per-job workspace isolation so memory/sessions never bleed
         between jobs. Must live outside any git repo — nanobot's GitStore
         refuses to init nested inside one."""
@@ -414,6 +428,9 @@ class NanobotAdapter(HarnessAdapter):
             skill_dir.unlink()
         skill_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(NANOBOT_SKILL_FILE, skill_dir / "SKILL.md")
+        notes_src = self.shared_notes_path(author)
+        if notes_src.exists():
+            shutil.copyfile(notes_src, job_ws / NANOBOT_SHARED_NOTES_FILENAME)
         yield job_ws
 
     def cleanup_workspace(self, job: Job) -> None:

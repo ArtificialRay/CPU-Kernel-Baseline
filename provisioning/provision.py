@@ -34,10 +34,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from contracts import ISA_INSTANCE_MAP
 from provisioning.remote import InstanceHandle
-from provisioning.workspaces import current_workspace_config, workspace_account_ids
+from provisioning.workspaces import current_workspace, current_workspace_config, workspace_account_ids
 
-load_dotenv()
 REPO_ROOT = Path(__file__).parent.parent
+load_dotenv(REPO_ROOT / ".env")
 TERRAFORM_DIR = REPO_ROOT / "terraform"
 EVAL_CONFIG_PATH = Path(__file__).parent / "eval_config.json"
 
@@ -158,9 +158,11 @@ def _tf(*args, capture: bool = False, extra_env: dict | None = None) -> subproce
     cmd = ["terraform"] + list(args)
     ws_cfg = current_workspace_config()
     base_env = {
+        "TF_WORKSPACE": current_workspace(),
         "TF_VAR_namespace": ws_cfg.get("namespace") or "",
         "TF_VAR_workspace_account_ids": json.dumps(workspace_account_ids()),
         "TF_VAR_aws_region": ws_cfg["aws_region"],
+        "TF_VAR_security_group_id": ws_cfg["security_group_id"],
     }
     if ws_cfg.get("aws_profile"):
         base_env["AWS_PROFILE"] = ws_cfg["aws_profile"]

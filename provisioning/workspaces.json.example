@@ -1,14 +1,9 @@
 {
-  "default": {
-    "account_id": "111111111111",
-    "namespace": "",
-    "aws_profile": null,
-    "aws_region": "us-west-2"
-  },
   "my-workspace": {
     "account_id": "222222222222",
     "namespace": "my-workspace",
     "aws_profile": "my-aws-profile",
-    "aws_region": "us-west-2"
+    "aws_region": "us-west-2",
+    "security_group_id": "sg-0123456789abcdef0"
   }
 }
