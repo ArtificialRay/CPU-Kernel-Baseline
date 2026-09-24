@@ -261,6 +261,18 @@ from a coarse regex classifier, so they are suggestive rather than instruction-l
 The paper's Sec 5 disassembly plan (count generation-specific instruction classes in each
 final kernel) would upgrade this, and is now clearly worth doing.
 
+**Agents almost never used the `disassemble` tool.** Checking whether Sec 5's pass could run
+off stored output: across 44 kernels per arm there are only **11 (neon) / 12 (sve) `.s` files
+in total**, and the agent's own best version has one for **1/44 (neon) and 0/44 (sve)**. So
+they called it roughly a dozen times in 44 optimization runs and essentially never on the
+version they submitted.
+
+Two consequences. (1) Sec 5's disassembly is not free — it needs recompiling the best kernel
+per (definition, arm), ~90 compiles, one c8g.xlarge for ~30 min. (2) It predicts the outcome
+of the planned **"− disassemble tool"** ablation (Table 3b): removing a tool nobody calls
+should measure a null. That is worth reporting on its own — we gave agents instruction-level
+inspection and they declined to use it, while still adapting their code per ISA (above).
+
 A third, structural one, found while completing the 33rd definition: **an ISA ablation can only
 compare tiers where an expert baseline exists.** The subset's `gemm_fp32_n512_k512` is scored
 against KleidiAI's own kernel, whose spec declares `isa_features: ["sve"]` and builds
