@@ -43,7 +43,11 @@ Claims below are what we can currently defend, with provenance. Workbook: Google
 ## 1. Benchmark validity — the strongest result
 
 A standard kernel gate (random inputs, fixed 20 dB SQNR floor) **certified 11 of 11 kernels
-correct. Five of them raised end-to-end perplexity by 44%** (10.06 → 14.45 on Qwen3.5-4B).
+correct. Deployed together they raised end-to-end perplexity by 44%** (10.06 → 14.45 on
+Qwen3.5-4B). Overriding one kernel at a time isolates **three** as the cause — ffn gate/up
+q4_K (11.51), GDN in-proj q5_K (11.23), GDN z-gate q4_K (10.87) — which are exactly the
+kernels fed the normalized hidden state, where activations carry large channel outliers.
+(Five kernels were re-optimized for gate v2; that is a different five.)
 
 Root cause: the M≥2 batched path requantized Q8_K block sums under one exponent shared across
 the batch — invisible to random data, ruinous on real activations. Proven by forcing M=1
