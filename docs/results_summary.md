@@ -67,19 +67,36 @@ passes at most the single M=1 workload and one passes none. The re-optimized set
 Qwen3.5-4B-Q4_K_M, c8g.4xlarge (Graviton4), 16 threads, vs stock llama.cpp **with its repack
 fast path on** (turning repack off costs stock 46% of prefill, so the baseline is real).
 
-| | speedup |
-|---|---|
-| prefill @512 (`-fa off`) | **1.373x** |
-| prefill @8192 | 1.277x |
-| decode, depth 0 → 32k | 1.074x → 1.041x |
-| micro-batch `-ub` 1 / 2 / 8 / 64 / 512 | 1.086 / 1.439 / 1.339 / 1.059 / 1.324 |
-| perplexity (64 chunks) | **+0.62%** |
+All figures below are the **definitive run** (`measure5c`, 2026-09-24, one box, one kernel set,
+every axis settled together — `scripts/e2e/../measure5.sh`, results `~/e2e/definitive/`):
 
-+0.62% is **half what the 4-bit quantization itself costs** (+1.27% vs BF16) and a sixth of one
-quantization level (Q4→Q3 = +3.61%).
+| | stock | agent | speedup |
+|---|---|---|---|
+| prefill @512, t=16 | 158.2 tok/s | 210.3 | **1.33x** |
+| decode @t=16 | 39.07 tok/s | 42.10 | **1.08x** |
+| prefill @512 (`-fa off`, r=3) | 173.6 | 238.9 | 1.377x |
+| prefill @8192 (`-fa off`) | 138.5 | 177.1 | 1.279x |
+| decode (`-fa off`, r=10) | 38.14 | 41.76 | 1.095x |
+| micro-batch `-ub` 1 / 2 / 8 / 64 / 512 | | | 1.086 / 1.438 / 1.339 / 1.090 / 1.371 |
+| perplexity, 64 chunks | 9.503 | 9.562 | **+0.6%** |
+
+**The decode figure is settled at 1.08x** (1.095x measured on the fast attention path with
+r=10), not the 1.025x an earlier `-fa auto` run suggested.
+
+**The quality number reproduced exactly.** Two independent 64-chunk runs two days apart give
+`fable_gatev2` PPL **9.5617** both times, against stock 9.503/9.5029. The `norepack` control
+lands at 9.495 (-0.1%), confirming the splice itself is numerically neutral.
+
++0.6% is **half what the 4-bit quantization itself costs** (+1.27% vs BF16) and a sixth of one
+quantization level (Q4→Q3 = +3.61%). Quote it against the ladder, not against the per-estimate
+standard error (±0.20): the ladder orders correctly at 64 chunks (BF16 9.3841 → Q6_K 9.4364 →
+Q4_K_M 9.5029 → Q3_K_M 9.8459), which is what demonstrates the measurement resolves sub-1%
+differences. At 8 chunks it does *not* order (Q4_K_S beat Q4_K_M, Q5_K_M was worse than
+Q4_K_M), so the 8-chunk delta of +1.0% should not be used.
 
 **Caveats that must travel with these numbers.** `-fa auto` selects flash attention, which is
-~2x *slower* here — measured on that path the prefill figures drop to 1.328/1.119. And the
+~2x *slower* here — measured on that path the prefill figures drop to 1.328/1.119, and decode
+reads 1.025x instead of 1.095x. And the
 `-ub` row required fixing our own splice: dispatch M-split whenever M>1, starving 14 of 16
 threads at small batch, which made the build **4.7x slower than stock at `-ub 2`** until
 commit `33f370c`. Four prior measurements at the default `ub=512` never saw it.
