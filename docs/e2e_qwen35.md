@@ -614,3 +614,63 @@ catastrophic regression (the broken kernels' +44% was never in doubt) and not en
 a small one. A ladder that fails to order itself monotonically is the cheap tell that the
 sample is too small, and it should disqualify the comparison before conclusions are drawn
 from it, not after.
+
+### The headline was a single operating point (2026-09-24)
+
+Every end-to-end number above was measured at one configuration: `pp512`, llama-bench's default
+micro-batch of 512, and `-fa auto`. Sweeping the axes we had never swept changed two of the
+three conclusions.
+
+**Prompt length, and the flash-attention trap.** Prefill speedup falls with context — but far
+less than the first sweep suggested, because `-fa auto` selects flash attention, which on this
+Graviton4 is roughly **2x slower** than no-FA at long prompts (stock 138 vs 67 tok/s at pp8192).
+The first curve was measured on the slow path:
+
+| prompt | `-fa off` | `-fa on` |
+|---|---|---|
+| 512 | **1.373x** | 1.328x |
+| 2048 | **1.350x** | 1.240x |
+| 4096 | **1.321x** | 1.178x |
+| 8192 | **1.277x** | 1.119x |
+
+A control run reproduced the `-fa on` column exactly against the original sweep
+(1.328/1.240/1.178/1.119 vs 1.328/1.237/1.175/1.119), so the difference is the attention path
+and nothing else. **On the path you would actually deploy, the speedup holds: 1.28x at 8k.**
+
+**Micro-batch — where it was catastrophic.** `-ub` sets the M dimension the kernels see, and
+M>=2 is where the original precision shortcut lived, so it is the obvious axis to sweep. It had
+never been swept:
+
+| `-ub` | before | after |
+|---|---|---|
+| 1 | 1.078x | 1.086x |
+| **2** | **0.213x** | **1.439x** |
+| **8** | **0.382x** | **1.339x** |
+| 64 | 1.060x | 1.059x |
+| 512 | 1.324x | 1.324x |
+
+At micro-batch 2 the spliced build ran **4.7x slower than stock**. Not the agent's kernels —
+`armbench_override.c` branched on `M == 1` for N-split and M-split everything else, so at M=2
+with 16 threads exactly 2 threads worked and 14 idled while stock ggml parallelises over N.
+Fixed by N-splitting whenever `M < nth` (commit 33f370c); small batches are now the *best*
+cells, since small M is where ggml's own kernels are weakest.
+
+**Decode is barely context-sensitive** — 1.074x at depth 0, 1.041x at depth 32768 — and
+quantized KV (q8_0) changes nothing (1.053x vs 1.059x). A combined `-pg 2048,128` turn measures
+1.206x, which matches what the per-rate arithmetic predicted, so that method is sound at
+moderate lengths; only the long-context extrapolation was wrong.
+
+**Revised honest claim: ~1.37x prefill at short context, 1.28x at 8k, 1.32-1.44x across batch
+shapes, at +0.62% perplexity** — better than the original claim once measured on the right
+attention path and with the dispatch bug fixed.
+
+**Methods note, and it is the same lesson the rest of this document is about.** Three separate
+errors in one evening, all from treating a tool default as a property of the system: a latency
+table extrapolated from a single pp512 rate (predicted 29% at 8k, truth 12%); a "decays to
+parity" conclusion drawn on an attention path `auto` had chosen; and four prior end-to-end
+measurements that all ran at `ub=512` and so never saw a 4.7x regression sitting one axis away.
+Pin `-fa`, sweep `-ub`, and never extrapolate a rate measured at one shape.
+
+*Unresolved:* the decode control returned 1.025x on the second box against 1.074x on the first.
+The patch is functionally identical at M=1, so this is probably cross-box variation, but it has
+not been shown, and no decode figure should be quoted until it is.
