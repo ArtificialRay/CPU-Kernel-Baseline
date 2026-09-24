@@ -258,8 +258,13 @@ def build_jobs(
 def _baseline_isa_compatible(
     dataset: str, baseline_author: str, op_type: str, name: str, isa: str,
 ) -> bool:
-    """True unless this definition's local baseline solution declares
-    isa_features the current --isa can't satisfy 、
+    """Whether the selected baseline can run alongside the candidate ISA.
+
+    `portable` constrains only the agent's candidate kernel. Its default host
+    is Graviton3 (SVE-capable), so an SVE baseline remains a valid performance
+    reference even though its features are intentionally outside the
+    candidate's portable ISA. The session validates baseline features against
+    the actual host before evaluating it.
     """
     sol_path = (
         REPO_ROOT / "bench-trace" / "solutions" / dataset / baseline_author / op_type / f"{name}.json"
@@ -269,6 +274,12 @@ def _baseline_isa_compatible(
     isa_features = json.loads(sol_path.read_text()).get("spec", {}).get("isa_features", [])
     if not isa_features:
         return True
+    if isa == "portable":
+        # Candidate code still compiles with portable flags and is checked
+        # against the portable source restrictions. Permit an SVE baseline as
+        # the comparison reference; runtime baseline validation checks the
+        # actual machine's capabilities.
+        return isa_satisfies(isa_features, "sve")
     return isa_satisfies(isa_features, isa)
 
 

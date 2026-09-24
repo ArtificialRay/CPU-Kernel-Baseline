@@ -67,6 +67,10 @@ NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
 # nanobot prefers <workspace>/skills/<name>/ over its own stale builtin copy; SKILL.md only 
 NANOBOT_SKILL_FILE = REPO_ROOT / "skills" / "nanobot" / "nanobot-kernel-session" / "SKILL.md"
 NANOBOT_SKILL_NAME = "nanobot-kernel-session"
+# Full NCNN/LLM evaluations can take longer than nanobot's 900s config in
+# individual workloads. Keep the MCP request alive long enough for the remote
+# evaluator to finish instead of severing the session mid-evaluation.
+NANOBOT_MCP_TOOL_TIMEOUT_S = 3600
 # dataset -> the mcpServers key nanobot's config.json wires to a fixed
 # local port (always overwritten per-run below, so the base config's port
 # value is just a placeholder).
@@ -362,6 +366,10 @@ class NanobotAdapter(HarnessAdapter):
         else:
             self.model = cfg["agents"]["defaults"]["model"]
         cfg["tools"]["mcpServers"][server_name]["url"] = f"http://127.0.0.1:{local_port}/mcp"
+        cfg["tools"]["mcpServers"][server_name]["toolTimeout"] = max(
+            int(cfg["tools"]["mcpServers"][server_name].get("toolTimeout", 0)),
+            NANOBOT_MCP_TOOL_TIMEOUT_S,
+        )
         fh = tempfile.NamedTemporaryFile(
             "w", prefix="nanobot-fleet-config-", suffix=".json", delete=False
         )
