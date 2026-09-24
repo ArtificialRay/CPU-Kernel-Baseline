@@ -4,6 +4,18 @@ Models are entries in `config/e2e_models.json`; everything below is derived from
 
 Branches `feat/e2e-qwen35` (4B) → `feat/e2e-qwen38-27b` (adds the 27B + model registry). Status: **4B run complete (2026-09-21)** — see Results at the end.
 
+> **What this document is.** A chronological engineering record: design, then every
+> measurement in the order it was taken, including the ones that were wrong and what
+> replaced them. It is the provenance trail, not the paper narrative — several sections
+> below are deliberately written as defect reports because that is what they were.
+>
+> **The paper-facing document is [`results_summary.md`](results_summary.md)**, which leads
+> with the model findings. Do not lift this file's framing into the paper: a benchmark
+> paper's news is what the benchmark says about models, and the instrument's own
+> failure modes appear only where they are a design contribution (the correctness gate
+> is one — KernelBench explicitly leaves systematic correctness evaluation to future
+> work). Use this file to check *how* a number was obtained, and to reconstruct any run.
+
 ## Question
 Take one real model, let the agent optimize every kernel family that matters for
 its CPU inference, splice the kernels back into the runtime, and measure the
