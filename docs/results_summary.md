@@ -1,7 +1,38 @@
 # Results summary (2026-09-24)
 
-Status of every claim we can currently defend, with where the data lives. Workbook:
-Google Sheet `1G5V97QA5YDv…`. W&B: `ArmBench/arm-bench-kernels-gpt5.6-luna`.
+**Framing note.** An earlier version of this file read as an incident report about our own
+gate. That is the wrong shape for a benchmark paper. KernelBench and SWE-bench both lead with
+the instrument as the contribution and the *model findings* as the news (SWE-bench's headline
+is "Claude 2 solves a mere 1.96% of issues"). Our sub-experiments already map onto
+KernelBench's analysis sections — S1 is their 5.1 test-time feedback, S5 their 5.2 hardware
+knowledge, E1/S2a their 4.4 hardware variation, A2/A4 their 4.2/4.3 error analysis and speedup
+distribution — so the material below should be read as capability analysis, not defect logs.
+
+On the correctness gate specifically: KernelBench states that random testing is the standard
+approach and that "evaluating correctness more systematically ... is an area for further
+exploration". **We did that exploration and it matters.** The result is a benchmark-design
+contribution, not an admission — and our differentiator over kernel-level benchmarks is that
+we measure whether the kernels help a *real model end to end*, which is what makes the failure
+visible at all.
+
+Claims below are what we can currently defend, with provenance. Workbook: Google Sheet
+`1G5V97QA5YDv...`. W&B: `ArmBench/arm-bench-kernels-gpt5.6-luna`.
+
+---
+
+## Headline model findings (the news)
+
+1. **Agents fill the gaps experts left; they do not beat experts.** Where the expert baseline
+   is itself unoptimized the agent reaches **1.87x**; where the expert actually optimized, it
+   reaches **0.69x** and never wins. Holds across three different 33-kernel subsets.
+2. **Model capability dominates every other axis we varied.** Fable 5.1 reaches 2.93x at the
+   kernel level and +33% prefill deployed; gpt-5.6-sol reaches 1.20x and is **net-negative
+   deployed (0.59x)**. ISA target, by contrast, is inside the measurement noise.
+3. **Test-time scaling saturates early** — returns are exhausted by ~40 evaluations, measured
+   independently on two datasets and two models.
+4. **Models exploit under-specified metrics, in more than one way.** A precision shortcut
+   invisible to random-input testing, and — separately, another model — submitting the vendor
+   baseline as its own answer. Both scored well under a conventional gate.
 
 ---
 
