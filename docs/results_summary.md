@@ -117,6 +117,35 @@ unoptimized. Robust to the subset change, which is what makes it publishable.
 Corroborated by A2: the agent **loses on a third to a half of all kernels** — only 3/8 on
 llama.cpp in every ISA arm — and wins 2.1-2.4x where it wins.
 
+### The deck's own rule reproduces this (2026-09-24)
+
+The deck splits weak from strong by **kernel family** — *"ncnn has a strong baseline in conv2d
+kernels, while other kernel baseline is weak; llama.cpp has a strong baseline in all quantized
+kernel, while the full-precision kernel is weak"* — and the paper's Sec 4.3 TODO carries a
+figure of **1.1-3.6x** on the strong set from that rule, which appeared to contradict our 0.69x.
+It does not. Computing both rules over the same runs
+(`scripts/e2e/weak_split_compare.py`, all 44 runs per arm):
+
+| arm | measured strong (`baseline_vs_scalar >= 2`) | deck's family rule |
+|---|---|---|
+| neon | 0.761 (n=18) | 0.682 (n=15) |
+| sve | 0.752 (n=19) | 0.738 (n=15) |
+| sve2 | 0.810 (n=19) | 0.831 (n=15) |
+
+**Both rules put the strong-baseline geomean well under 1.0 in every arm**, and they agree on
+13 of the 22 kernels the family rule can classify. So the 1.1-3.6x figure does not reproduce
+from this data and needs its provenance checked before it goes in the paper — most likely it is
+measured against the scalar starter rather than the expert reference.
+
+Use the measured threshold, for three reasons: it is reproducible from a logged field; it
+covers all three sources, whereas the family rule cannot classify SIMD Loops at all (22 of 44
+kernels, geomean 1.75, silently dropped); and the family rule mislabels kernels. The clearest
+case is `conv2d_depthwise_w8a8ch_kh5_kw5`, whose ncnn reference has
+**`baseline_vs_scalar = 0.86` — the expert kernel is slower than naive scalar code** — yet the
+family rule calls it strong because it is a conv2d. In the other direction ncnn's
+`pooling_fp32_global_avg` (5.29) and `gemm_fp32_n1280_k960` (3.92) have genuinely strong
+references and the family rule calls them weak.
+
 ## 5. ISA target does not matter
 
 E1 on the new subset (n=32): **neon 1.209 / sve 1.193 / sve2 1.229** — a 3.0% spread against a
