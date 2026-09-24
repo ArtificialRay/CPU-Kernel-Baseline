@@ -48,7 +48,7 @@ import analysis.wandb_log_run as wandb_log_run
 import skills.launch.launch_session as launch_session
 from skills.launch.launch_session import RemoteTarget, prepare_session, stop_tunnel, sync_results
 from contracts import ISA_INSTANCE_MAP, baseline_author_for
-from mcp_app.agent_tools.isa import isa_satisfies
+from mcp_app.agent_tools.isa import SUPPORTED_ISAS, isa_host_satisfies
 
 # harness_adapters.py lives alongside this script — Python puts a directly
 # run script's own directory on sys.path[0] automatically (same idiom
@@ -269,7 +269,9 @@ def _baseline_isa_compatible(
     isa_features = json.loads(sol_path.read_text()).get("spec", {}).get("isa_features", [])
     if not isa_features:
         return True
-    return isa_satisfies(isa_features, isa)
+    # host_features count too: the baseline runs on the host, not under the
+    # candidate's restrictions (e.g. SME2 baselines on m4-neon/m4-ssve).
+    return isa_host_satisfies(isa_features, isa)
 
 
 def _trajectory_complete(local_results_dir: Path, job_name: str, min_iterations: int) -> bool:
@@ -630,7 +632,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--dataset", required=True, nargs="+", choices=["ncnn", "simd-loop", "llama.cpp", "kleidiai"],
                    help="One or more datasets (space-separated). More than one requires "
                         "--until-complete, which interleaves them round-robin.")
-    p.add_argument("--isa", default="sve", choices=["neon", "sve", "sve2", "sme2", "portable"])
+    p.add_argument("--isa", default="sve", choices=sorted(SUPPORTED_ISAS))
     p.add_argument("--model", default=None,
                    help="model override. claude-code: passed as --model to the CLI "
                         "(empty = CLI default). nanobot: patched into a temp copy of "

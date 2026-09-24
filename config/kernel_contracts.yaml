@@ -162,6 +162,35 @@ isa:
     features: ["sme2"]
     labels: ["apple-m4", "aarch64-sme2"]
     instance_type: "mac-m4.metal"
+  # Evolving-ISA ablation on ONE Apple M4: m4-neon -> m4-ssve -> sme2 isolates
+  # the SME instruction change without a second chip. All three tiers run on
+  # the same host against the same baseline, only the candidate's allowed
+  # instructions differ.
+  #
+  # host_features: what the HOST provides beyond `features`, i.e. what a
+  # baseline may use but the candidate may not. Consulted only by the
+  # baseline isa-filter (mcp_app/agent_tools/isa.py::isa_host_satisfies), so
+  # kleidiai's SME2 baselines are not skipped on the restricted tiers.
+  # Omitted = []; every pre-existing tier behaves exactly as before.
+  m4-neon:
+    # NEON only: no SVE, no streaming mode, no ZA. "+nosme" drops SME/SME2
+    # from apple-m4 so SME intrinsics fail at compile time.
+    # TODO(verify on mac-m4.metal): Apple clang accepts "+nosme" here.
+    march: "-mcpu=apple-m4+nosme"
+    features: []
+    host_features: ["sme2"]
+    labels: ["apple-m4", "aarch64-neon"]
+    instance_type: "mac-m4.metal"
+  m4-ssve:
+    # Streaming SVE/SVE2 (__arm_locally_streaming / __arm_streaming) allowed,
+    # ZA/ZT0 storage forbidden. No compiler flag separates the two (SME
+    # implies ZA), so the split is enforced by disallowed_source_patterns +
+    # disallowed_asm_patterns below.
+    march: "-mcpu=apple-m4"
+    features: []
+    host_features: ["sme2"]
+    labels: ["apple-m4", "aarch64-ssve"]
+    instance_type: "mac-m4.metal"
 
 # Disallowed-source-pattern policy for agent-submitted kernel.cpp, consumed
 # by mcp_app's compile() tool (mcp_app/agent_tools/base.py::
@@ -204,6 +233,42 @@ disallowed_source_patterns:
       - '#\s*include\s*[<"]arm_sve\.h[>"]'
       - '\bfloat(16|32|64)x[0-9]+x?[0-9]*_t\b'
       - '\bv(ld|st|add|mul|fma|mla|mls|sub|dup)[a-z0-9_]*_[fsu](8|16|32|64)\b'
+    m4-neon:
+      - '#\s*include\s*[<"]arm_sve\.h[>"]'
+      - '#\s*include\s*[<"]arm_sme\.h[>"]'
+      - '\b__arm_(streaming|streaming_compatible|locally_streaming|new|in|out|inout|preserves|agnostic)\b'
+      - '\bsv(bool|float|int|uint|bfloat|mfloat)[0-9x_]*_t\b'
+      - '\bsmstart\b'
+      - '\bsmstop\b'
+      - '\.inst\b'
+    m4-ssve:
+      # ZA/ZT0 state attributes (streaming attributes stay allowed).
+      - '\b__arm_(new|in|out|inout|preserves|agnostic)\s*\('
+      - '\b__arm_new_za\b'
+      # ZA/ZT0 intrinsics: svmopa_za32_*, svzero_za, svread_hor_za*,
+      # svld1_hor_za*, svldr_za, svluti2_lane_zt, svzero_zt, ...
+      - '\bsv[a-z0-9_]*_za[a-z0-9_]*\b'
+      - '\bsv[a-z0-9_]*_zt[a-z0-9_]*\b'
+      - '\bsmstart\s+za\b'
+      - '\.inst\b'
+
+# Same shape as disallowed_source_patterns.by_isa, but matched line by line
+# against `llvm-objdump -d` of the compiled .so after compile() succeeds —
+# catches what a source regex can't see (inline asm, macros, compiler
+# output). Consumed by mcp_app/agent_tools/base.py::check_binary_policy().
+disallowed_asm_patterns:
+  by_isa:
+    m4-neon:
+      - '\bsmstart\b'
+      - '\bsmstop\b'
+      - '\bz[0-9]{1,2}\.[bhsdq]\b'
+      - '\b(za[0-9]*[hv]?(\.[bhsdq])?|zt0)\b'
+    m4-ssve:
+      # bare "smstart" enables SM *and* ZA; "smstart sm" is the allowed form.
+      - '\bsmstart\s*$'
+      - '\bsmstart\s+za\b'
+      - '\b[a-z]*mop[as]\b'
+      - '\b(za[0-9]*[hv]?(\.[bhsdq])?|zt0)\b'
 
 # eval/evaluator.py::run_agentic_eval's litellm turn loop — consumed via
 # contracts.AGENT_LOOP_DEFAULTS.

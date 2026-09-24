@@ -20,6 +20,9 @@ class IsaSpec:
     features: list[str]
     labels: list[str]
     instance_type: str
+    # Host-provided features a baseline may use but the candidate may not
+    # (see kernel_contracts.yaml's m4-neon/m4-ssve). [] for most tiers.
+    host_features: list[str]
 
 
 @lru_cache(maxsize=1)
@@ -39,6 +42,7 @@ def _isa_table() -> dict[str, IsaSpec]:
             features=list(spec["features"]),
             labels=list(spec["labels"]),
             instance_type=spec["instance_type"],
+            host_features=list(spec.get("host_features", [])),
         )
         for isa, spec in _load()["isa"].items()
     }
@@ -89,6 +93,12 @@ DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE: dict[str, list[str]] = {
 DISALLOWED_SOURCE_PATTERNS_BY_ISA: dict[str, list[str]] = {
     isa: list(patterns) for isa, patterns in _DISALLOWED_SOURCE_PATTERNS["by_isa"].items()
 }
+# isa -> regexes matched against the compiled .so's disassembly — consumed by
+# mcp_app/agent_tools/base.py::check_binary_policy().
+DISALLOWED_ASM_PATTERNS_BY_ISA: dict[str, list[str]] = {
+    isa: list(patterns)
+    for isa, patterns in ((_load().get("disallowed_asm_patterns") or {}).get("by_isa") or {}).items()
+}
 
 # eval/evaluator.py::run_agentic_eval's litellm turn loop (completion timeout,
 # temperature, retry budget) and eval/mcp_client.py's MCP session (per-call timeouts) — raw dicts, same treatment as EVAL_DEFAULTS above.
@@ -111,6 +121,7 @@ __all__ = [
     "DISALLOWED_SOURCE_PATTERNS_DEFAULT",
     "DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE",
     "DISALLOWED_SOURCE_PATTERNS_BY_ISA",
+    "DISALLOWED_ASM_PATTERNS_BY_ISA",
     "AGENT_LOOP_DEFAULTS",
     "MCP_CLIENT_DEFAULTS",
 ]

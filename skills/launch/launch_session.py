@@ -545,7 +545,7 @@ def main(argv: list[str] | None = None) -> None:
                             "f'{author}_{definition.name}', nothing else disambiguates isa).")
     prep.add_argument("--baseline-author", default=None,
                        help="Override only — the server auto-derives this from --dataset.")
-    prep.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
+    prep.add_argument("--isa", required=True, choices=sorted(ISA_INSTANCE_MAP))
     prep.add_argument("--local-port", type=int, default=8888,
                        help="Fix the local tunnel port instead of picking a random free "
                             "one each run, so a reused mcp client config (e.g. nanobot's) "
@@ -579,7 +579,7 @@ def main(argv: list[str] | None = None) -> None:
     sync.set_defaults(func=_cli_sync)
 
     def _add_provision_args(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--isa", required=True, choices=["neon", "sve", "sve2", "sme2"])
+        sp.add_argument("--isa", required=True, choices=sorted(ISA_INSTANCE_MAP))
         sp.add_argument("--label", default=None,
                          help="Name identifying this instance — one per concurrently-desired "
                               "instance (see provisioning/provision.py's module docstring). Default: "

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional, Protocol
 
 from bench.data.json_utils import save_json_file
 from contracts import (
+    DISALLOWED_ASM_PATTERNS_BY_ISA,
     DISALLOWED_SOURCE_PATTERNS_BY_ISA,
     DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE,
     DISALLOWED_SOURCE_PATTERNS_DEFAULT,
@@ -260,6 +261,24 @@ class KernelSession(ABC):
                 return pattern
         return None
 
+    def check_binary_policy(self, so_path: str) -> Optional[str]:
+        """Return a rejection message if the compiled .so's disassembly matches
+        one of this isa's disallowed_asm_patterns (kernel_contracts.yaml), or
+        None if clean / the isa declares none. Fails closed: a .so that can't
+        be disassembled is rejected rather than trusted."""
+        patterns = DISALLOWED_ASM_PATTERNS_BY_ISA.get(self._isa, [])
+        if not patterns:
+            return None
+        scan = ops.scan_so_disassembly(so_path, patterns)
+        if "error" in scan:
+            return f"could not disassemble the compiled kernel to verify isa {self._isa!r}: {scan['error']}"
+        if scan:
+            return (
+                f"compiled kernel uses an instruction not allowed under isa {self._isa!r}: "
+                f"{scan['match']!r} (matched {scan['pattern']!r})"
+            )
+        return None
+
     def check_progress(self, definition: str) -> dict:
         """Read run_dir/<definition>/trajectory.jsonl directly off disk, bypassing
         self._definitions / session_definitions entirely.
@@ -336,6 +355,16 @@ class KernelSession(ABC):
                 metrics={"status": result.get("status", "COMPILE_ERROR")},
             )
             return result
+
+        binary_rejection = self.check_binary_policy(result["so_path"])
+        if binary_rejection is not None:
+            shutil.rmtree(Path(result["so_path"]).parent, ignore_errors=True)
+            state["trajectory"].write_turn(
+                turn=state["turn"],
+                tool="compile",
+                metrics={"status": "REJECTED", "binary_policy": binary_rejection},
+            )
+            return {"status": "REJECTED", "error": binary_rejection}
 
         version = state["trajectory"].next_version()
         source_file = state["trajectory"].write_source(code, version)

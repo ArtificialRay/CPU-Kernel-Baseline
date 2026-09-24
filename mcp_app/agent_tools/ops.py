@@ -8,6 +8,7 @@ from disk on every tool call.
 from __future__ import annotations
 
 import ctypes
+import re
 import shutil
 import subprocess
 import traceback as tb
@@ -230,4 +231,30 @@ def disassemble_so(so_path: str, symbol: str) -> dict:
         return {"error": str(e)}
 
 
-__all__ = ["compile_kernel", "evaluate_kernel", "disassemble_so"]
+def scan_so_disassembly(so_path: str, patterns: list[str]) -> dict:
+    """Disassemble the whole .so and return {"match": line, "pattern": p} for
+    the first line any of `patterns` matches, {} if none does, or
+    {"error": ...} if it couldn't be disassembled (callers fail closed)."""
+    objdump = _find_llvm_objdump()
+    if not objdump:
+        return {"error": "llvm-objdump not found on PATH"}
+    try:
+        result = subprocess.run(
+            [objdump, "-d", "--no-show-raw-insn", so_path],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception as e:
+        return {"error": str(e)}
+    if result.returncode != 0:
+        return {"error": result.stderr.strip() or f"llvm-objdump exited {result.returncode}"}
+    compiled = [re.compile(p) for p in patterns]
+    for line in result.stdout.splitlines():
+        # Only the instruction text: drop "<addr>:" prefix and "// comments".
+        insn = line.split(":", 1)[-1].split("//", 1)[0].strip().lower()
+        for pattern in compiled:
+            if pattern.search(insn):
+                return {"match": line.strip(), "pattern": pattern.pattern}
+    return {}
+
+
+__all__ = ["compile_kernel", "evaluate_kernel", "disassemble_so", "scan_so_disassembly"]

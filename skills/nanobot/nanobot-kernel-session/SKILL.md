@@ -29,6 +29,10 @@ you.
   "DEF_CHECK_FAILED"}` instead of it silently acting on the wrong one.
 - If you are targeted to optimize one or more definition in one specific ISA, DO NOT fall back to use another ISA (e.g. `sve2` → `sve`) unless the prompt explicitly allows it.
 - If the target ISA is `portable`, your kernel must NOT use any hand-written NEON/SVE intrinsics, `arm_neon.h`/`arm_sve.h`, or SIMD vector types (e.g. `float32x4_t`) . Please optimize via plain C/C++ 
+- If the target ISA is `m4-neon` (Apple M4), use NEON only (`arm_neon.h`, including dotprod/i8mm/bf16/fp16 NEON intrinsics). No SVE/SME: no `arm_sve.h`/`arm_sme.h`, no `__arm_streaming`/`__arm_locally_streaming` or other `__arm_*` state attributes, no `smstart`/`smstop`, no `.inst` encodings.
+- If the target ISA is `m4-ssve` (Apple M4), you may use streaming SVE/SVE2 (`__arm_locally_streaming` or `__arm_streaming` functions with `arm_sve.h`/`arm_sme.h` vector intrinsics, `smstart sm`), but NOT the ZA array or ZT0: no `__arm_new`/`__arm_in`/`__arm_out`/`__arm_inout`/`__arm_preserves("za"/"zt0")`, no `*_za*`/`*_zt*` intrinsics (e.g. `svmopa_za32_*`, `svzero_za`, `svread_hor_za*`), no outer-product (`*mopa`/`*mops`) instructions, no `.inst` encodings.
+- If the target ISA is `sme2` (Apple M4), full SME2 is allowed, including ZA/ZT0 and outer products. Plain (non-streaming) SVE does not exist on M4 — SVE code must run inside a streaming function.
+- Under `m4-neon`/`m4-ssve`, `compile()` also scans the compiled binary's disassembly and returns `{"status": "REJECTED"}` naming the offending instruction if a forbidden one appears.
 
 ### NEVER USE OPENMP PARALLELIZATION
 - Kernel implementation that use OpenMp will be rejected by the evaluator
