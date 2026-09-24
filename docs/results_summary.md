@@ -200,6 +200,32 @@ tool calls — **contradicting the deck**, which expects ~80 for ncnn/llama.cpp 
 simd-loop. Independently corroborated by the e2e sweep, where the best kernel appeared by turn
 30-33 and turns 34-42 bought ~0.1%.
 
+### The plateau is not uniform — it is where the expert baseline is weak (2026-09-24)
+
+Truncating each S1 run at 40 tool calls and comparing to its own final best-so-far
+(`scripts/e2e/scaling_by_baseline.py`; within-run, so hardware, baseline, model and seed are
+fixed by construction and S7's resampling spread does not apply):
+
+| baseline | n | @40 | @end | gain (geomean) | median | improved |
+|---|---|---|---|---|---|---|
+| weak | 28 | 1.972 | 2.060 | +4.5% | +0.6% | 20/28 |
+| **strong** | 16 | 0.624 | 0.761 | **+21.9%** | +4.5% | 13/16 |
+| all | 44 | 1.298 | 1.434 | +10.5% | +0.9% | 33/44 |
+
+**Extra budget pays where the expert actually optimized and buys almost nothing where it did
+not.** On a weak reference the agent takes the easy win early and stops; against a real expert
+kernel it is still climbing at 40 calls. Quote the medians (+4.5% vs +0.6%) and the improvement
+rates (81% vs 71%) rather than the geomean, which is inflated by one kernel
+(`conv2d_fp32_kh3_kw3`, 0.138 → 0.488).
+
+Benchmark-design implication: **a 40-call budget under-measures agent capability precisely on
+the hardest and most interesting subset** — the kernels whose references are genuinely tuned.
+
+Do NOT reconstruct this by comparing the S1 runs against the E1 sve arm. That comparison is
+confounded: S1 ran on c7g.xlarge (Graviton3), E1 sve on c8g.xlarge (Graviton4), and E1 pins
+`--baseline-author baseline-sve2` for simd-loop where S1 takes the per-ISA default. It yields a
+similar-looking +23.4% for the wrong reason.
+
 ## 7. Where the agent wins and loses (A4)
 
 gemm **0.807** and conv2d **0.553** are the *worst* op types; moe, rms_norm and simd-loop are
