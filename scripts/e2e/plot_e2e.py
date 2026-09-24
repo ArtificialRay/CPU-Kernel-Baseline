@@ -27,6 +27,8 @@ TPUT = {  # build -> (prefill tok/s, decode tok/s) per thread count
 # definitive run, "=== pp ===" sweep, -fa off, r=3
 PP = [(512, 173.55, 238.90), (2048, 165.92, 224.05),
       (4096, 155.43, 205.23), (8192, 138.50, 177.08)]
+# ppsweep.sh depth sweep (2026-09-23), -d 0/2048/8192/32768, tg128: (depth, stock, agent)
+DEPTH = [(0, 38.95, 41.82), (2048, 37.03, 39.73), (8192, 33.03, 34.96), (32768, 22.17, 23.08)]
 # definitive run, "=== ubatch ===" sweep, -fa off, r=3
 UB = [(1, 43.41, 47.13), (2, 57.12, 82.16), (8, 127.37, 170.58),
       (64, 182.30, 198.63), (512, 173.80, 238.36)]
@@ -82,17 +84,35 @@ def f_ladder(ax):
 
 
 def f_pp(ax):
+    """Both sequence-length sweeps on one y-scale.
+
+    Prefill varies the PROMPT length; decode varies the CONTEXT DEPTH behind a 128-token
+    generation. Different x-axes, so they are drawn as two series against a shared index
+    rather than a shared numeric axis -- but the same y-scale, because the point is that
+    prefill gains are large and decay while decode gains are small throughout.
+    """
     xs = [p[0] for p in PP]
     sp = [a / s for _, s, a in PP]
-    ax.plot(range(len(xs)), sp, "o-", color=C_AGENT, lw=2, ms=6)
+    ax.plot(range(len(xs)), sp, "o-", color=C_AGENT, lw=2, ms=6, label="prefill (vs prompt length)")
     for i, v in enumerate(sp):
         ax.annotate(f"{v:.3f}x", (i, v), textcoords="offset points",
-                    xytext=(0, 9), ha="center", fontsize=8.5)
-    ax.axhline(1.0, color=C_STOCK, lw=1, ls="--")
-    ax.text(0.02, 1.004, "stock llama.cpp", fontsize=8, color=C_STOCK)
-    ax.set_xticks(range(len(xs))); ax.set_xticklabels([str(x) for x in xs])
-    ax.set_ylim(0.98, 1.44)
-    style(ax, "Prefill gain decays with prompt length", "prompt tokens", "speedup vs stock")
+                    xytext=(0, 9), ha="center", fontsize=8.5, color=C_AGENT)
+
+    dsp = [a / s for _, s, a in DEPTH]
+    ax.plot(range(len(DEPTH)), dsp, "s--", color="#8e44ad", lw=2, ms=5.5,
+            label="decode (vs context depth)")
+    for i, v in enumerate(dsp):
+        ax.annotate(f"{v:.3f}x", (i, v), textcoords="offset points",
+                    xytext=(0, -15), ha="center", fontsize=8.5, color="#8e44ad")
+
+    ax.axhline(1.0, color=C_STOCK, lw=1, ls=":")
+    ax.text(0.02, 1.006, "stock llama.cpp", fontsize=8, color=C_STOCK)
+    ax.set_xticks(range(len(xs)))
+    ax.set_xticklabels([f"{p}\n(d={d})" for p, (d, _, _) in zip(xs, DEPTH)], fontsize=8)
+    ax.set_ylim(0.97, 1.46)
+    ax.legend(fontsize=8, frameon=False, loc="center left")
+    style(ax, "Both gains decay as the un-accelerated share grows",
+          "prompt tokens  /  context depth", "speedup vs stock")
 
 
 def f_tput(ax):
@@ -169,7 +189,7 @@ def f_gate(ax):
             color=C_BAD, fontweight="bold")
 
 
-FIGS = [("ppl_ladder", f_ladder), ("prefill_decay", f_pp), ("throughput", f_tput),
+FIGS = [("ppl_ladder", f_ladder), ("decay", f_pp), ("throughput", f_tput),
         ("microbatch", f_ub), ("model_vs_deployed", f_models), ("gate", f_gate)]
 
 
