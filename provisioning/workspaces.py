@@ -24,6 +24,7 @@ class WorkspaceConfig(TypedDict, total=False):
     namespace: str
     aws_profile: Optional[str]
     aws_region: str
+    security_group_id: str
 
 
 def _load() -> dict[str, WorkspaceConfig]:
@@ -53,14 +54,15 @@ def current_workspace_config() -> WorkspaceConfig:
     so an workspace nobody has registered yet doesn't hard-fail, it just
     isn't protected against the name-collision this module exists to avoid.
 
-    `aws_region` has no default and is required
+    `aws_region` and `security_group_id` have no defaults and are required.
     """
     ws = current_workspace()
     cfg = _load().get(ws, WorkspaceConfig(account_id="", namespace="", aws_profile=None))
-    if not cfg.get("aws_region"):
+    missing = [key for key in ("aws_region", "security_group_id") if not cfg.get(key)]
+    if missing:
         raise RuntimeError(
-            f"Terraform workspace {ws!r} has no `aws_region` in {_WORKSPACES_JSON} — "
-            "add it (see workspaces.json.example)."
+            f"Terraform workspace {ws!r} is missing {', '.join(repr(key) for key in missing)} "
+            f"in {_WORKSPACES_JSON} — add them (see workspaces.json.example)."
         )
     return cfg
 

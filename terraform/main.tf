@@ -87,6 +87,11 @@ variable "aws_region" {
   type        = string
 }
 
+variable "security_group_id" {
+  description = "Existing AWS security group to reuse for benchmark instances; configured per Terraform workspace."
+  type        = string
+}
+
 variable "namespace" {
   description = <<-EOT
     Suffix for the account-global names this config creates (security group,
@@ -157,25 +162,11 @@ data "aws_subnet" "mac" {
 
 
 # ---------------------------------------------------------------------------
-# Security group — SSH only
+# Security group — supplied by the workspace, never created or destroyed here
 # ---------------------------------------------------------------------------
 
-resource "aws_security_group" "kernel_testing" {
-  name = "kernel-testing-sg${local.name_suffix}"
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+data "aws_security_group" "kernel_testing" {
+  id = var.security_group_id
 }
 
 # ---------------------------------------------------------------------------
@@ -212,7 +203,7 @@ resource "aws_instance" "labeled" {
   ami                    = local.is_mac[each.key] ? "ami-0e971f0ce976b2435" : "ami-012798e88aebdba5c"
   instance_type          = each.value
   key_name               = aws_key_pair.labeled[each.key].key_name
-  vpc_security_group_ids = [aws_security_group.kernel_testing.id]
+  vpc_security_group_ids = [data.aws_security_group.kernel_testing.id]
 
   # null for every non-Mac label, i.e. default tenancy in the default subnet.
   # Mac hosts are inputs (var.mac_host_ids), never managed here.

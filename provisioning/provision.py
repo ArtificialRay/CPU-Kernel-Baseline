@@ -161,6 +161,7 @@ def _tf(*args, capture: bool = False, extra_env: dict | None = None) -> subproce
         "TF_VAR_namespace": ws_cfg.get("namespace") or "",
         "TF_VAR_workspace_account_ids": json.dumps(workspace_account_ids()),
         "TF_VAR_aws_region": ws_cfg["aws_region"],
+        "TF_VAR_security_group_id": ws_cfg["security_group_id"],
     }
     if ws_cfg.get("aws_profile"):
         base_env["AWS_PROFILE"] = ws_cfg["aws_profile"]
