@@ -114,6 +114,39 @@ Same benchmark, gate, prompt and hardware; 11 Qwen kernels:
 | Claude Fable 5.1 | **2.932x** | 1.33x |
 | gpt-5.6-sol | 1.201x | **0.59x** |
 
+### Which ggml the 2.93x is against (2026-09-24) — quote 1.33x, not 2.93x
+
+The kernel-level baseline (`baseline-llamacpp-arm`) calls real ggml — `ggml_mul_mat` on a
+GGML_TYPE_QX_K tensor — so it is genuine vendor NEON/SVE, not scalar C++. But it builds its own
+graph in a plain `ggml_init` context and runs `ggml_graph_plan(..., n_threads=1, ...)`, so it
+gets **neither repack nor threads**. llama.cpp's interleaved i8mm fast path only engages when
+weights live in the repack extra-buffer-type, which happens inside the model loader.
+
+So the two headline numbers are against two different references:
+
+| | reference | result |
+|---|---|---|
+| kernel level | ggml standard `vec_dot`, 1 thread | 2.93x |
+| deployed | stock llama.cpp, repack on, 16 threads | **1.33x** |
+
+Repack alone is worth ~1.85x (norepack is 0.54x of stock), and 2.93 / 1.85 = 1.58, with the
+rest of the way to 1.33x explained by bandwidth-bound decode and the ops the hook does not
+replace. **The gap is arithmetic, not mystery.**
+
+**Paper consequence: lead with 1.33x.** It is the harder number and the defensible one —
+beating llama.cpp exactly as shipped, on a real model, at +0.6% perplexity. Describing 2.93x
+as "beats the production library" is wrong and a ggml-literate reviewer will say so.
+
+The honest full claim: *agents beat a general-purpose production library on a specific
+deployment, partly because they are allowed to specialize* (constants baked per shape, which a
+shipped library cannot do). That is limitation (6) in the paper's current draft; it is better
+read as the mechanism of the win and a real use case — per-deployment kernel generation — than
+as a caveat.
+
+**TODO before claiming this for other sources:** check whether the ncnn and SIMD Loops
+baselines are similarly configured below what production uses. If they are, "beats the
+production library" needs the same correction there.
+
 **Fable wins all 11 kernels** (narrowest margin 1.80x). Sol's kernels are numerically clean but
 make the model *slower than doing nothing* — they beat the generic ggml path by ~1.2x while
 ggml's repack path beats it by ~1.85x. Sol also submitted the baseline itself for one kernel
