@@ -8,7 +8,7 @@ terraform {
 }
 
 provider "aws" {
-  region = "us-west-2"
+  region = var.aws_region
 
   # Refuse to run under credentials for any account but the one the current
   # workspace lives in — see var.workspace_account_ids.
@@ -75,14 +75,16 @@ variable "mac_host_ids" {
     label -> id of an ALREADY-ALLOCATED Dedicated Host to place that label's
     EC2 Mac instance on (e.g. {"ncnn-sme2" = "h-029b7735a4392cedc"}).
 
-    A mac label absent from this map gets a host allocated for it by
-    aws_ec2_host.mac below. AWS bills every freshly allocated Mac host for a
-    24-hour minimum and refuses to release it before that elapses, so pass an
-    existing host id whenever there is one — eval/provision.py forwards
-    $ARMBENCH_MAC_HOST_ID into this map.
+    Required for every mac label: this config only CONSUMES host ids, it never
+    allocates or releases hosts.
   EOT
   type        = map(string)
   default     = {}
+}
+
+variable "aws_region" {
+  description = "AWS region for everything in this config, set from the current workspace's `aws_region` in provisioning/workspaces.json (provision.py injects TF_VAR_aws_region). No default. The AMI ids below are region-specific — changing this also means swapping them."
+  type        = string
 }
 
 variable "namespace" {
@@ -109,12 +111,6 @@ variable "ssh_key_files" {
   default     = {}
 }
 
-variable "mac_availability_zone" {
-  description = "AZ for Mac hosts this config allocates itself. Ignored for ids passed in through var.mac_host_ids — those bring their own AZ, which is read back off the host."
-  type        = string
-  default     = "us-west-2a"
-}
-
 
 # ---------------------------------------------------------------------------
 # Mac tier — the sme2 target, and the only tier here that is not a Linux spot
@@ -132,46 +128,25 @@ variable "mac_availability_zone" {
 locals {
   is_mac = { for label, it in var.instances : label => startswith(it, "mac") }
 
-  # Mac labels this config has to allocate a host for: those with no id given.
-  mac_hosts_to_allocate = {
-    for label, it in var.instances : label => it
-    if startswith(it, "mac") && lookup(var.mac_host_ids, label, "") == ""
-  }
-
   name_suffix = var.namespace == "" ? "" : "-${var.namespace}"
 
   ssh_user = { for label, _ in var.instances : label => local.is_mac[label] ? "ec2-user" : "ubuntu" }
 
-  # Mac labels in this apply — keys derived only from var.instances, never
-  # from aws_ec2_host.mac itself
-  mac_labels = { for label, it in var.instances : label => it if startswith(it, "mac") }
-}
-
-# A targeted destroy removes the instance and its dependents, not its
-# dependencies, so a host allocated here survives teardown and can be reused —
-# which is what you want given the 24-hour minimum.
-resource "aws_ec2_host" "mac" {
-  for_each = local.mac_hosts_to_allocate
-
-  instance_type     = each.value
-  availability_zone = var.mac_availability_zone
-  auto_placement    = "off" # only instances naming this host land on it
-  host_recovery     = "off"
-
-  tags = {
-    Name = "kernel-testing-host-${each.key}"
+  # Mac labels that have a host id supplied (a label without one fails the
+  # precondition on its aws_instance instead of erroring here for every label).
+  mac_labels = {
+    for label, it in var.instances : label => it
+    if startswith(it, "mac") && contains(keys(var.mac_host_ids), label)
   }
 }
 
 # An instance has to sit in a subnet in its host's own AZ, and this VPC has a
 # default subnet in all four — leave subnet_id implicit and AWS is free to pick
-# a mismatched one. Read the AZ back off the host (works for both supplied and
-# allocated ids) and pin the matching default subnet.
+# a mismatched one. Read the AZ back off the supplied host and pin the
+# matching default subnet.
 data "aws_ec2_host" "mac" {
   for_each = local.mac_labels
-  # Direct each.key indexing into aws_ec2_host.mac (not through an
-  # aggregating local) — same reasoning as aws_instance.labeled's host_id.
-  host_id = coalesce(lookup(var.mac_host_ids, each.key, ""), try(aws_ec2_host.mac[each.key].id, ""))
+  host_id  = var.mac_host_ids[each.key]
 }
 
 data "aws_subnet" "mac" {
@@ -240,12 +215,9 @@ resource "aws_instance" "labeled" {
   vpc_security_group_ids = [aws_security_group.kernel_testing.id]
 
   # null for every non-Mac label, i.e. default tenancy in the default subnet.
-  # Use direct indexing (`aws_ec2_host.mac[each.key]`) instead of `local.mac_host_id`.
-  # `local.mac_host_id` aggregates across all labels, creating cross-label dependencies
-  # that cause single-label applies (`TF_VAR_instances={label: type}`) to attempt 
-  # destroying other active Mac hosts.
+  # Mac hosts are inputs (var.mac_host_ids), never managed here.
   tenancy   = local.is_mac[each.key] ? "host" : null
-  host_id   = local.is_mac[each.key] ? coalesce(lookup(var.mac_host_ids, each.key, ""), try(aws_ec2_host.mac[each.key].id, null)) : null
+  host_id   = local.is_mac[each.key] ? lookup(var.mac_host_ids, each.key, null) : null
   subnet_id = try(data.aws_subnet.mac[each.key].id, null)
 
   # terminate all non-spot instance(with true shutdown but not stop the instance)
@@ -270,6 +242,10 @@ resource "aws_instance" "labeled" {
   # 24-hour minimum.
   lifecycle {
     ignore_changes = [key_name]
+    precondition {
+      condition     = !local.is_mac[each.key] || contains(keys(var.mac_host_ids), each.key)
+      error_message = "Mac label ${each.key} has no entry in var.mac_host_ids — eval/provision.py must supply an existing Dedicated Host id for it."
+    }
   }
 }
 

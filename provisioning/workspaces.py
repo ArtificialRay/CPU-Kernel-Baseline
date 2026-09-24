@@ -23,6 +23,7 @@ class WorkspaceConfig(TypedDict, total=False):
     account_id: str
     namespace: str
     aws_profile: Optional[str]
+    aws_region: str
 
 
 def _load() -> dict[str, WorkspaceConfig]:
@@ -51,9 +52,17 @@ def current_workspace_config() -> WorkspaceConfig:
     terraform/main.tf's own var.workspace_account_ids docstring describes,
     so an workspace nobody has registered yet doesn't hard-fail, it just
     isn't protected against the name-collision this module exists to avoid.
+
+    `aws_region` has no default and is required
     """
     ws = current_workspace()
-    return _load().get(ws, WorkspaceConfig(account_id="", namespace="", aws_profile=None))
+    cfg = _load().get(ws, WorkspaceConfig(account_id="", namespace="", aws_profile=None))
+    if not cfg.get("aws_region"):
+        raise RuntimeError(
+            f"Terraform workspace {ws!r} has no `aws_region` in {_WORKSPACES_JSON} — "
+            "add it (see workspaces.json.example)."
+        )
+    return cfg
 
 
 def workspace_account_ids() -> dict[str, str]:

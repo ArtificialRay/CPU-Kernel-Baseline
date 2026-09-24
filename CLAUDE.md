@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Implementation Guide
 
 - USE AS LESS HIDDEN FUNCTION (function with "_" beforehead) AS YOU CAN IN YOUR IMPLEMENTATION
+- DO NOT INITIAIZE MORE THAN 5 BACKGROUND TASKS, THEY WILL CRASH THE WSL!!
 
 ## What this repo is
 

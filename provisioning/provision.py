@@ -87,18 +87,67 @@ def _tier_for_instance_type(instance_type: str) -> str:
     return "c8g" if "c8g" in instance_type else "c7g"
 
 
-def _mac_host_ids(label: str, instance_type: str) -> str:
-    """TF_VAR_mac_host_ids for this label, as JSON.
+def _tf_instance_env(label: str, instance_type: str) -> dict:
+    """Generates TF_VAR_instances and TF_VAR_mac_host_ids scoped to `label`.
 
-    EC2 Mac instance types run only on Dedicated Hosts, and AWS bills a freshly
-    allocated one for a 24-hour minimum. $ARMBENCH_MAC_HOST_ID names a host to
-    reuse; left unset, terraform/main.tf allocates one (and keeps it across a
-    targeted teardown). No-op for every non-Mac instance type.
+    Must be called inside `_tf_lock()` to ensure atomic host assignment across concurrent processes.
+
+    Key Invariants:
+    - TF_VAR_instances: Combines target `label` with ALL existing labels in the current
+    Terraform state (`terraform show -json`). Omitting state labels causes Terraform's
+    `for_each` to destroy active instances. Source state is read from TF directly rather
+    than `eval_config.json` to avoid cross-checkout pollution.
+    - TF_VAR_mac_host_ids: Maps Mac labels to existing, available Dedicated Hosts (validating
+    against AWS). Assigns the newest idle host to new Mac labels or raises if none are free;
+    never allocates new hosts due to 24h minimum billing limits.
     """
-    host_id = os.environ.get("ARMBENCH_MAC_HOST_ID", "").strip()
-    if not instance_type.startswith("mac") or not host_id:
-        return json.dumps({})
-    return json.dumps({label: host_id})
+    instances: dict[str, str] = {}
+    hosts: dict[str, str] = {}
+    result = _tf("show", "-json", capture=True)
+    if result.returncode == 0 and result.stdout:
+        try:
+            state = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            state = {}
+        for r in state.get("values", {}).get("root_module", {}).get("resources", []):
+            v = r.get("values") or {}
+            if (r.get("type"), r.get("name")) == ("aws_instance", "labeled") and r.get("index") and v.get("instance_type"):
+                instances[r["index"]] = v["instance_type"]
+                if v["instance_type"].startswith("mac") and v.get("host_id"):
+                    hosts[r["index"]] = v["host_id"]
+    instance_type = instances.setdefault(label, instance_type)
+
+    if instance_type.startswith("mac") or hosts:
+        ws_cfg = current_workspace_config()
+        cmd = ["aws", "ec2", "describe-hosts", "--region", ws_cfg["aws_region"], "--output", "json"]
+        if ws_cfg.get("aws_profile"):
+            cmd += ["--profile", ws_cfg["aws_profile"]]
+        described = subprocess.run(cmd, capture_output=True, text=True)
+        if described.returncode != 0:
+            raise RuntimeError(f"aws ec2 describe-hosts failed:\n{described.stderr}")
+        all_hosts = json.loads(described.stdout)["Hosts"]
+        live = {h["HostId"] for h in all_hosts if h["State"] != "released"}
+        hosts = {l: h for l, h in hosts.items() if h in live}
+
+        if instance_type.startswith("mac") and label not in hosts:
+            free = [h for h in all_hosts
+                    if h["State"] == "available" and not h.get("Instances")
+                    and h["HostProperties"]["InstanceType"] == instance_type
+                    and h["HostId"] not in hosts.values()]
+            if not free:
+                by_state = {}
+                for h in all_hosts:
+                    by_state[h["State"]] = by_state.get(h["State"], 0) + 1
+                raise RuntimeError(
+                    f"No free {instance_type} Dedicated Host for label {label!r} (hosts by state: {by_state}). "
+                    "A host that just lost its instance stays `pending` while AWS scrubs it — retry later. "
+                    "To allocate one (24h minimum billing), run: aws ec2 allocate-hosts "
+                    f"--instance-type {instance_type} --availability-zone <az> --quantity 1 "
+                    f"--region {ws_cfg['aws_region']}"
+                )
+            hosts[label] = max(free, key=lambda h: h["AllocationTime"])["HostId"]
+            print(f"[provision] Picked Dedicated Host {hosts[label]} for {label!r}")
+    return {"TF_VAR_instances": json.dumps(instances), "TF_VAR_mac_host_ids": json.dumps(hosts)}
 
 
 def _tf(*args, capture: bool = False, extra_env: dict | None = None) -> subprocess.CompletedProcess:
@@ -111,6 +160,7 @@ def _tf(*args, capture: bool = False, extra_env: dict | None = None) -> subproce
     base_env = {
         "TF_VAR_namespace": ws_cfg.get("namespace") or "",
         "TF_VAR_workspace_account_ids": json.dumps(workspace_account_ids()),
+        "TF_VAR_aws_region": ws_cfg["aws_region"],
     }
     if ws_cfg.get("aws_profile"):
         base_env["AWS_PROFILE"] = ws_cfg["aws_profile"]
@@ -349,22 +399,12 @@ def provision(
     vars = [f"-var=on_demand={'true' if on_demand else 'false'}"]
     if initial_build:
         vars.append(f"-var=build_target={initial_build}")
-    # -target scopes what gets APPLIED to just this label's instance + deploy
-    # resource, but var.instances' for_each set is still computed from the
-    # full TF_VAR_instances map regardless of -target — merge in every
-    # already-known label (_all_recorded_instances) so that set doesn't
-    # shrink to just this one and mark every OTHER label's resources "not in
-    # for_each map" (see _all_recorded_instances' docstring).
-    all_instances = {**_all_recorded_instances(), label: instance_type}
     with _tf_lock():
         result = _tf(
             "apply", "-auto-approve", *vars,
             f'-target=aws_instance.labeled["{label}"]',
             f'-target=null_resource.deploy["{label}"]',
-            extra_env={
-                "TF_VAR_instances": json.dumps(all_instances),
-                "TF_VAR_mac_host_ids": _mac_host_ids(label, instance_type),
-            },
+            extra_env=_tf_instance_env(label, instance_type),
         )
 
         if result.returncode != 0:
@@ -433,20 +473,12 @@ def teardown(label: str | None = None):
     _validate_label(label)
     instance_type = _recorded_instance_type(label) or "c7g.large"
     print(f"[teardown] Destroying label={label!r}...")
-    # Same reasoning as provision()'s all_instances: without this merge, a
-    # destroy scoped to just `label` would still shrink var.instances down to
-    # one entry and mark every OTHER label's aws_ec2_host.mac as "not in
-    # for_each map" too.
-    all_instances = {**_all_recorded_instances(), label: instance_type}
     with _tf_lock():
         result = _tf(
             "destroy", "-auto-approve",
             f'-target=aws_instance.labeled["{label}"]',
             f'-target=null_resource.deploy["{label}"]',
-            extra_env={
-                "TF_VAR_instances": json.dumps(all_instances),
-                "TF_VAR_mac_host_ids": _mac_host_ids(label, instance_type),
-            },
+            extra_env=_tf_instance_env(label, instance_type),
         )
         if result.returncode != 0:
             raise RuntimeError(f"terraform destroy failed for label={label!r}")
@@ -463,58 +495,6 @@ def _recorded_instance_type(label: str) -> str | None:
         return None
     config = json.loads(EVAL_CONFIG_PATH.read_text())
     return config.get("instances", {}).get(label, {}).get("instance_type")
-
-
-def _allocated_mac_hosts() -> dict[str, str]:
-    """{label: instance_type} for every aws_ec2_host.mac[label] Terraform
-    currently has in state, read straight from `terraform show -json` —
-    NOT from eval_config.json. A completed label's teardown() pops it out
-    of eval_config.json's `instances` map (its whole point is tracking
-    *active* instances), but a targeted destroy deliberately leaves the
-    Dedicated Host behind (24h minimum, see aws_ec2_host.mac's comment in
-    main.tf) — so relying on eval_config.json alone for the TF_VAR_instances
-    merge re-opens the exact for_each-shrinks-and-destroys-it hole
-    _all_recorded_instances() exists to close, just one completed job
-    later. Confirmed live 2026-09-23: kleidiai-codex-gpt-5.6-luna-sme2
-    finished, its eval_config.json entry vanished, and the very next
-    apply for an unrelated label tried to release its still-allocated host."""
-    result = _tf("show", "-json", capture=True)
-    if result.returncode != 0 or not result.stdout:
-        return {}
-    try:
-        state = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return {}
-    resources = state.get("values", {}).get("root_module", {}).get("resources", [])
-    return {
-        r["index"]: r["values"]["instance_type"]
-        for r in resources
-        if r.get("type") == "aws_ec2_host" and r.get("name") == "mac"
-    }
-
-
-def _all_recorded_instances() -> dict[str, str]:
-    """{label: instance_type} for every label that needs to stay in
-    var.instances' for_each set: everything eval_config.json currently
-    tracks as an active instance, PLUS every label with an already-
-    allocated (but currently instance-less) mac host per
-    _allocated_mac_hosts(). Every apply()/teardown() call merges this into
-    TF_VAR_instances (rather than sending just the one label being acted on)
-    so var.instances' for_each set never shrinks relative to what's actually
-    live — see terraform/main.tf's var.instances docstring and
-    aws_ec2_host.mac: a single-label TF_VAR_instances makes every OTHER
-    label's resources "not in for_each map" and destroys them. That's
-    silently harmless for aws_key_pair.labeled/aws_instance.labeled (cheap
-    to recreate) but fatal for aws_ec2_host.mac on the mac tier, whose
-    24-hour minimum allocation makes AWS refuse the destroy outright and
-    abort the whole apply — confirmed live 2026-09-23."""
-    merged = dict(_allocated_mac_hosts())
-    if EVAL_CONFIG_PATH.exists():
-        config = json.loads(EVAL_CONFIG_PATH.read_text())
-        for l, inst in config.get("instances", {}).items():
-            if inst.get("instance_type"):
-                merged[l] = inst["instance_type"]
-    return merged
 
 
 def get_running_instance(label: str) -> InstanceHandle | None:
