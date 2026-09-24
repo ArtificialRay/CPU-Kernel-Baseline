@@ -28,6 +28,7 @@ import argparse
 import base64
 import json
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -55,7 +56,7 @@ from mcp_app.agent_tools.isa import isa_satisfies
 # skills/launch/launch_session.py uses for its sibling remote.py).
 from harness_adapters import (
     HarnessAdapter, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, NanobotAdapter,
-    OwnHarnessAdapter, SingleShotAdapter, Job,
+    OwnHarnessAdapter, SingleShotAdapter, Job, NANOBOT_SHARED_NOTES_FILENAME,
 )
 
 DEFINITIONS_DIR = REPO_ROOT / "bench-trace" / "definitions"
@@ -409,6 +410,12 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             print(f"=== [{time.strftime('%H:%M:%S')}] job {job.name} finished -> {log_path} ===")
             sync_job_results(label, author, job.name, local_results_dir)
             wandb_log_job(job.name, dataset, isa, args, author, local_results_dir)
+            if isinstance(adapter, NanobotAdapter):
+                notes_path = adapter.shared_notes_path(author)
+                if notes_path.is_file():
+                    shutil.copyfile(
+                        notes_path, local_results_dir / NANOBOT_SHARED_NOTES_FILENAME,
+                    )
 
         print(f"All jobs done. Logs in {log_dir}")
         if hasattr(adapter, "cleanup"):
