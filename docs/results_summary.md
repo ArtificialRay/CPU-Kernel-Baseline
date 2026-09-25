@@ -204,50 +204,31 @@ references and the family rule calls them weak.
 
 E1 on the new subset (n=32): **neon 1.209 / sve 1.193 / sve2 1.229** — a 3.0% spread.
 
-**CORRECTED 2026-09-24.** This previously read "a 3.0% spread against a 4.37% agent-resampling
-floor ... the arms differ by less than the same agent differs from itself." That floor came
-from pairing S7 seed 1 against the E1 sve arm — a valid second sample, but the two differ in
-bookkeeping. With seed 2 complete, the like-for-like seed-vs-seed figure
-(`scripts/e2e/s7_variance.py`, 44 paired kernels) is **tighter**:
+**FINAL, n=3 (2026-09-24).** This section was corrected twice today; the numbers below are the
+ones to use. Report **sigma / CV, never range** — `(max-min)/mean` grows with sample count, so
+the same population gives 1.38% at n=2 and 3.95% at n=3. Comparing an n=2 range against a
+3-arm range is what produced the bogus intermediate "correction".
 
-| | seed-vs-seed | old (seed 1 vs E1 arm) |
+All three quantities at n=3, so directly comparable (`scripts/e2e/s7_variance.py`,
+`scripts/e2e/s9_table.py`):
+
+| | CV (geomean) | median per-kernel CV |
 |---|---|---|
-| geomean spread | **1.38%** | 4.37% |
-| median per-kernel spread | **6.47%** | 15.9% |
-| 90th percentile per-kernel | **53.4%** | — |
-| max per-kernel | **121.7%** (`loop_121` 44.681 → 10.877) | — |
+| measurement only (S9, fixed code) | **0.23%** | 0.41% |
+| agent resampling (S7, 3 seeds, 44 kernels) | **2.01%** | 8.81% |
+| the three ISA arms (E1) | **1.49%** | — |
 
-A 1.38% range over two samples implies sigma ~1.2% at the geomean level, so three arms drawn
-from it would have an expected range near 2.1%. The observed ISA spread of 3.0% is **above**
-that, not inside it. **Do not claim the ISA arms are indistinguishable on this evidence.** The
-defensible statement today is that the spread is comparable to agent resampling noise; seed 3
-gives a real three-sample sigma and should settle it.
+**The ISA arms vary less (1.49%) than the same cell varies across seeds (2.01%).** The arms
+differ from each other by less than the agent differs from itself, so they are
+indistinguishable — the original claim, on a proper estimator this time.
 
-What is unaffected: agent noise is still ~3.5x the measurement floor at the geomean level and
-~8x per kernel (S9: 0.40% / 0.82%), so the variance remains overwhelmingly the model rather
-than the machine. And the tail is the stronger argument anyway — **one kernel in ten varies by
-more than 53% between identical runs**, which rules out n=1 per-kernel comparison regardless of
-what the aggregate does.
+**Agent noise is 8.7x measurement noise at the aggregate level and ~21x per kernel.** The
+variance in a reported speedup is the model, not the machine. And the tail rules out n=1
+regardless of the aggregate: the 90th-percentile per-kernel CV is **28.6%**, and
+`moe_q4_k_m_e64_k8` spans 0.139-0.568 across three identical runs.
 
-That floor is not the stopwatch. **S9** re-times fixed code (autovec vs `baseline-sve2`, 13
-definitions, 3 repeats on one box, nothing about the agent varying):
-
-| | measurement-only (S9) | agent resampling (S7) | ratio |
-|---|---|---|---|
-| geomean spread | **0.40%** | 4.37% | 11x |
-| median per-kernel spread | **0.82%** | 15.9% | 19x |
-| worst kernel | 2.97% (`loop_108`) | 1.70x → 5.64x (`loop_120`) | — |
-
-**The harness measures to a few tenths of a percent; ~99% of the variance in a reported
-speedup is the model resampling, not the timer.** This is the finding that licenses the ISA
-null: a 3.0% spread is 7x the measurement floor but well under the sampling floor, so the arms
-are indistinguishable *for the reason that matters* — you cannot resolve them without more
-agent runs, and no amount of extra timing repeats will help.
-
-It also sets the protocol for anyone using this benchmark: **report n≥3 independent agent runs;
-do not spend the budget on timing repetitions.** Single-run kernel comparisons — the norm in
-this literature, and what KernelBench's temperature-0 sampling gives — cannot resolve
-differences of the size routinely reported.
+Protocol for benchmark users: **report n>=3 independent agent runs and quote a standard
+deviation; extra timing repetitions buy nothing.**
 
 Two confounds to state rather than have found: the arms differ in three ways at once (neon's
 `armv8-a` has neither `fullfp16` nor `dotprod`), and E1 is supplementary — the workbook's ISA

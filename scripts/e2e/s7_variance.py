@@ -54,6 +54,19 @@ def main():
         spreads.append((max(xs) - min(xs)) / statistics.mean(xs) * 100)
     geos = [g([v[s] for v in paired.values()]) for s in seeds]
 
+    # Range grows with sample count, so (max-min)/mean is NOT comparable across different
+    # numbers of seeds: the same population gives 1.38% at n=2 and 3.95% at n=3. Report the
+    # sample standard deviation as well, which is what should be compared against anything.
+    cvs = []
+    for k, v in paired.items():
+        xs = [v[s_] for s_ in seeds]
+        cvs.append(statistics.stdev(xs) / statistics.mean(xs) * 100)
+    gsd = statistics.stdev(geos) if len(geos) > 1 else float("nan")
+    print(f"--- sample-size-independent (use these) ---")
+    print(f"geomean-level sigma      : {gsd:.4f}  ({gsd / statistics.mean(geos) * 100:.2f}% CV)")
+    print(f"median per-kernel CV     : {statistics.median(cvs):.2f}%")
+    print(f"90th   per-kernel CV     : {sorted(cvs)[int(0.9 * len(cvs))]:.2f}%")
+    print(f"--- range-based (n-dependent, do not compare across n) ---")
     print(f"median per-kernel spread : {statistics.median(spreads):.2f}%")
     print(f"mean   per-kernel spread : {statistics.mean(spreads):.2f}%")
     print(f"90th   per-kernel spread : {sorted(spreads)[int(0.9 * len(spreads))]:.2f}%")
