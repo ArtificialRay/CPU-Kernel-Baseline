@@ -99,6 +99,15 @@ relate.
 
 ## Benchmarking Entrypoint(`test_scripts/bench_fleet.py`)
 
+Our project use terraform to initialize and provision AWS instances, we support two type instances: `graviton` instances and `macm4.metal`.
+
+At the first time to use our project tools, please init your terraform with:
+
+```bash
+cd terraform/
+terraform init
+```
+
 One parametrized entry point for driving a batch kernel-optimization run
 against any of this repo's harnesses — provisions/reuses an instance, starts
 an `mcp_app` session, runs every matching definition through the chosen
