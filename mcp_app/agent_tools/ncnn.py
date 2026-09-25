@@ -80,12 +80,6 @@ class NCNNKernelSession(KernelSession):
             sources=[*harness, agent_kernel],
         )
 
-    def disassemble(self, definition: str, version: int, fn: Optional[str] = None) -> dict:
-        """Disassemble the agent's inner kernel (not the binding wrapper)."""
-        if fn is None:
-            fn = f"inner_{self._definition.op_type}"
-        return super().disassemble(definition=definition, version=version, fn=fn)
-
     @classmethod
     def tool_schemas(cls) -> list[dict]:
         return standard_tool_schemas()

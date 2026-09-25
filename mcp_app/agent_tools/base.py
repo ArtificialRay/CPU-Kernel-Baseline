@@ -33,9 +33,6 @@ if TYPE_CHECKING:
     from bench.data.trace_set import TraceSet
 
 
-ASM_TRUNCATE_LINES: int = 300
-
-
 class KernelSessionLike(Protocol):
     """Structural interface mcp_app/server.py actually needs from `tools` —
     satisfied by both a plain per-dataset KernelSession and by
@@ -91,8 +88,7 @@ class KernelSession(ABC):
         self._run_dir = run_dir
         self._isa = isa
         self._instance_label = instance_label
-        # Hard per-definition ceiling on trajectory-recorded tool calls
-        # (compile/evaluate/disassemble/submit) 
+        # Hard per-definition ceiling on trajectory-recorded tool calls.
         self._max_iterations = max_iterations
 
         # definition name -> {definition, trajectory, turn, last_compile, best_compile}
@@ -196,7 +192,7 @@ class KernelSession(ABC):
         and mcp_app/server.py's _call_tool runs each dispatch on its own
         thread — so e.g. two compile() calls for different definitions
         issued in the same turn can race on self._active_definition with no
-        error either way, and a subsequent evaluate()/disassemble()/submit()
+        error either way, and a subsequent evaluate()/submit()
         would then silently act on whichever one won the race. See
         SKILL.md's "Ground rules: one definition at a time".
         """
@@ -221,7 +217,7 @@ class KernelSession(ABC):
                     f"this definition has already recorded {state['turn']} tool call(s) "
                     f"to trajectory, at or above this server's --max-iterations="
                     f"{self._max_iterations} limit — no further compile/evaluate/"
-                    "disassemble/submit calls will be accepted for it. Submit your "
+                    "submit calls will be accepted for it. Submit your "
                     "best version now if you haven't already."
                 ),
             }
@@ -272,7 +268,7 @@ class KernelSession(ABC):
         This is safe to expose regardless of resource-visibility scoping
         (see mcp_app/resources.py) because `definition` is a required,
         explicit argument the caller already named — same shape as compile()/
-        evaluate()/disassemble() — so it can never be used to browse an
+        evaluate() — so it can never be used to browse an
         unrelated definition's history the way list_resources() could.
 
         Only reports the best-so-far *submitted* version
@@ -297,7 +293,7 @@ class KernelSession(ABC):
         }
 
     def compile(self, definition: str, code: str) -> dict:
-        """Compile agent code in-process for `definition`; store so_path for evaluate/disassemble."""
+        """Compile agent code in-process for `definition`; store so_path for evaluate."""
         is_new = definition not in self._definitions
         state = self._get_or_create_definition(definition)
         if is_new:
@@ -461,58 +457,6 @@ class KernelSession(ABC):
 
         return result
 
-    def disassemble(self, definition: str, version: int, fn: Optional[str] = None) -> dict:
-        """Disassemble the active definition's current .so; write full asm to disk.
-
-        `definition`/`version` are required and validated the same way as
-        evaluate()'s — see its docstring for why.
-        """
-        mismatch = self._check_definition_arg(definition)
-        if mismatch is not None:
-            return mismatch
-        state = self._definitions[self._active_definition]
-        budget_error = self._check_iteration_budget(state)
-        if budget_error is not None:
-            return budget_error
-        state["turn"] += 1
-        if state["last_compile"] is None:
-            return {"error": "nothing compiled yet — call compile() first"}
-        if state["last_compile"]["version"] != version:
-            return {
-                "error": (
-                    f"requested version {version!r} of {definition!r}, but the last "
-                    f"compiled version is {state['last_compile']['version']!r} — it was "
-                    "recompiled since your compile() call; use that version's number, "
-                    "or compile() your code again."
-                ),
-            }
-
-        lc = state["last_compile"]
-        symbol = fn or lc["solution"].get_entry_symbol()
-
-        result = ops.disassemble_so(lc["so_path"], symbol)
-
-        asm_file: Optional[str] = None
-        if "asm" in result:
-            asm_file = state["trajectory"].write_asm(result["asm"], lc["version"])
-            lines = result["asm"].splitlines()
-            if len(lines) > ASM_TRUNCATE_LINES:
-                n_truncated = len(lines) - ASM_TRUNCATE_LINES
-                lines = lines[:ASM_TRUNCATE_LINES] + [
-                    f"... ({n_truncated} more lines truncated)"
-                ]
-                result = {**result, "asm": "\n".join(lines)}
-
-        state["trajectory"].write_turn(
-            turn=state["turn"],
-            tool="disassemble",
-            asm_file=asm_file,
-            metrics={"symbol": symbol, "lines": result["asm"].count("\n") if "asm" in result else 0},
-        )
-        if asm_file is not None:
-            result = {**result, "asm_file": str(self._run_dir / self._active_definition / asm_file)}
-        return result
-
     def submit(self, definition: str, explanation: str = "") -> dict:
         """Persist the best version seen so far this session and record
         `explanation` against it in the trajectory.
@@ -642,6 +586,6 @@ class KernelSession(ABC):
 
 
 __all__ = [
-    "KernelSession", "KernelSessionLike", "ASM_TRUNCATE_LINES",
+    "KernelSession", "KernelSessionLike",
     "REFERENCE_SCALAR_FILENAME",
 ]

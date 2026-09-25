@@ -288,7 +288,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--baseline-parallelism", type=int, default=4)
     p.add_argument("--session-timeout-s", type=float, default=1800,
                     help="Give up on a single definition's MCP session (compile/evaluate/"
-                         "disassemble/submit) after this many seconds with no response, "
+                         "submit) after this many seconds with no response, "
                          "reporting status=TIMEOUT instead of hanging forever.")
     p.add_argument("--bench-trace-root", default=str(BENCH_TRACE))
     args = p.parse_args(argv)

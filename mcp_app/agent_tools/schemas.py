@@ -40,8 +40,8 @@ _COMPILE_SCHEMA = {
         "You can call this with different `definition` values across the "
         "session; each definition keeps its own compile/evaluate history. "
         "Returns {\"status\": \"OK\", \"definition\": ..., \"version\": N} on "
-        "success — pass both `definition` and `version` back into evaluate()/"
-        "disassemble() to confirm you're acting on this exact compile, not one "
+        "success — pass both `definition` and `version` back into evaluate() "
+        "to confirm you're acting on this exact compile, not one "
         "from another definition or a later recompile. Or "
         "{\"status\": \"COMPILE_ERROR\", \"error\": \"...\"} on failure."
     ),
@@ -110,43 +110,12 @@ _EVALUATE_SCHEMA = {
     },
 }
 
-_DISASSEMBLE_SCHEMA = {
-    "name": "disassemble",
-    "description": (
-        "Disassemble the compiled .so identified by (`definition`, `version`) "
-        "(up to 300 lines of AArch64 assembly). Defaults to this definition's "
-        "own kernel entry symbol (the function you implemented); pass `fn` to "
-        "inspect a different symbol. `definition`/`version` are required and "
-        "validated the same way as evaluate()'s — see its description."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "definition": {
-                "type": "string",
-                "description": "Must match the `definition` from your last compile() call.",
-            },
-            "version": {
-                "type": "integer",
-                "description": "Must match the `version` from your last compile() call.",
-            },
-            "fn": {
-                "type": "string",
-                "description": "Symbol to disassemble. Omit to use this definition's own kernel entry symbol.",
-            },
-        },
-        "required": ["definition", "version"],
-    },
-}
-
-
 def standard_tool_schemas() -> list[dict]:
     """The standard agent tool schemas, identical across datasets."""
     return [
         _CHECK_PROGRESS_SCHEMA,
         _COMPILE_SCHEMA,
         _EVALUATE_SCHEMA,
-        _DISASSEMBLE_SCHEMA,
     ]
 
 

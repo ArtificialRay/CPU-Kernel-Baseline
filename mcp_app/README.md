@@ -1,6 +1,6 @@
 # mcp_app — MCP server for kernel-optimization sessions
 
-Exposes `compile`/`evaluate`/`disassemble`/`submit` as an MCP server running
+Exposes `check_progress`/`compile`/`evaluate`/`submit` as an MCP server running
 in-process on the target instance, so an external agent harness (nanobot,
 etc.) can drive kernel-optimization sessions. Zero coupling to `eval/` or
 `skills/` — never provisions instances, never imports either.
@@ -10,7 +10,7 @@ etc.) can drive kernel-optimization sessions. Zero coupling to `eval/` or
 ```
 mcp_app/
     agent_tools/
-        base.py                 # KernelSession ABC — compile/evaluate/disassemble/submit.
+        base.py                 # KernelSession ABC — check_progress/compile/evaluate/submit.
                                  #   Multi-definition: self._definitions keyed by definition
                                  #   name, nothing evicted for the process's life.
         baseline_readiness.py   # per-definition baseline check-then-collect + the
@@ -18,7 +18,7 @@ mcp_app/
                                  #   from KernelSession.compile() on first touch
         ncnn.py, simd_loop.py, llama_cpp.py   # per-dataset KernelSession subclasses
         registry.py              # resolve_tools(dataset) -> Type[KernelSession]
-        ops.py                    # compile_kernel/evaluate_kernel/disassemble_so
+        ops.py                    # compile_kernel/evaluate_kernel
         isa.py                     # march_for_isa(isa) + verify_isa_available(isa)
         trajectory.py                # TrajectoryWriter — per-definition audit trail
         schema.py                 # tool schema

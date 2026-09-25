@@ -1,10 +1,10 @@
 """MCP Resources over a session's run_dir.
 
-Reading vN.cpp/vN.s/trajectory.jsonl/reference-scalar-kernel.cpp happens via
+Reading vN.cpp/trajectory.jsonl/reference-scalar-kernel.cpp happens via
 the protocol's native Resources mechanism — works identically regardless of
 transport or harness co-location, unlike a bare filesystem path (which
-compile()'s `source_file` and disassemble()'s `asm_file` responses also
-return, as a convenience for co-located callers).
+compile()'s `source_file` response also returns, as a convenience for
+co-located callers).
 """
 
 from __future__ import annotations

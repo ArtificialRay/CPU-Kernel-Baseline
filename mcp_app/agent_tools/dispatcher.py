@@ -56,9 +56,6 @@ class DispatcherKernelSession:
     def evaluate(self, definition: str, version: int) -> dict:
         return self._session_for(definition).evaluate(definition, version)
 
-    def disassemble(self, definition: str, version: int, fn: str | None = None) -> dict:
-        return self._session_for(definition).disassemble(definition, version, fn)
-
     def submit(self, definition: str, explanation: str = "") -> dict:
         return self._session_for(definition).submit(definition, explanation)
 

@@ -1,6 +1,6 @@
 """mcp_app.server — the MCP server process: one per (instance, dataset) session.
 
-Registers compile/evaluate/disassemble/submit as MCP tools and the session's
+Registers check_progress/compile/evaluate/submit as MCP tools and the session's
 trajectory files as MCP Resources (mcp_app/resources.py), backed by
 mcp_app/agent_tools's in-process KernelSession (this process runs directly on
 the target instance). `compile` takes `definition` as a per-call argument —
@@ -204,7 +204,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--bind-host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--max-iterations", type=int, default=None,
-                    help="Hard per-definition ceiling on compile/evaluate/disassemble calls "
+                    help="Hard per-definition ceiling on tool calls "
                          "None (default) = unlimited.")
     args = p.parse_args(argv)
     args.dataset = list(dict.fromkeys(args.dataset))  # dedupe, preserve order

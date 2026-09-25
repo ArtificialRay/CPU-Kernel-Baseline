@@ -4,8 +4,6 @@ Layout under `agent-runs-mcp/<def_name>/`:
     trajectory.jsonl   — one JSON line per turn, written immediately after each tool call
     v1.cpp             — full source for compile version 1
     v2.cpp             — full source for compile version 2 (etc.)
-    v1.s               — full asm for version 1 (written when disassemble is called)
-    v3.s               — full asm for version 3 (etc.; gap is fine if not disassembled)
 
 The version/turn counters are internal to TrajectoryWriter, seeded from
 whatever's already in trajectory.jsonl on construction (see

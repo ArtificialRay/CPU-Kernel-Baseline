@@ -2,7 +2,6 @@
 
 Drives list_tools() (assert no read_code) -> call_tool("compile", {"definition":
 ..., "code": ...}) -> call_tool("evaluate", {"definition": ..., "version": ...}) ->
-call_tool("disassemble", {"definition": ..., "version": ...}) ->
 list_resources()/read_resource() -> call_tool("submit", {"definition": ..., ...})
 for one definition. Exposes both a callable API (used by mcp_app/smoke_test_driver.py)
 and a standalone CLI for manual runs.
@@ -48,7 +47,7 @@ async def run_tool_sequence(
     submit_explanation: str = "smoke test",
     verbose: bool = True,
 ) -> dict[str, Any]:
-    """Drive one full compile/evaluate/disassemble/submit sequence for
+    """Drive one full compile/evaluate/submit sequence for
     `definition` over an already-initialized ClientSession. Raises
     AssertionError on any check failure. Returns submit()'s result dict.
     """
@@ -57,7 +56,7 @@ async def run_tool_sequence(
     tools_result = await session.list_tools()
     tool_names = {t.name for t in tools_result.tools}
     assert "read_code" not in tool_names, f"read_code should be retired, got {tool_names}"
-    assert tool_names == {"compile", "evaluate", "disassemble"}, tool_names
+    assert tool_names == {"check_progress", "compile", "evaluate", "submit"}, tool_names
     if verbose:
         print(f"  tools: {sorted(tool_names)}")
 
@@ -82,12 +81,6 @@ async def run_tool_sequence(
     assert eval_result.get("status") == "PASSED", eval_result
     if verbose:
         print(f"  evaluate: {eval_result.get('performance')}")
-
-    r = await session.call_tool("disassemble", {"definition": definition, "version": version})
-    disasm_result = _tool_result_dict(r)
-    assert "asm" in disasm_result, disasm_result
-    if verbose:
-        print(f"  disassemble: {disasm_result.get('asm', '').count(chr(10))} lines")
 
     v1_name = f"{definition}/v1.cpp"
     resources = await session.list_resources()
@@ -152,7 +145,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--spawn-args", nargs="*", default=[], help="stdio mode: spawn command args.")
     p.add_argument("--endpoint", help="streamable-http mode: e.g. http://127.0.0.1:8888/mcp")
     p.add_argument("--definition", required=True,
-                    help="Definition name to compile/evaluate/disassemble/submit.")
+                    help="Definition name to compile/evaluate/submit.")
     p.add_argument("--code-file", help="Path to a kernel.cpp to compile; defaults to "
                                         "the session's reference-scalar-kernel.cpp resource.")
     args = p.parse_args(argv)
