@@ -28,7 +28,7 @@ you.
   `compile()`'d — if it doesn't match, you get back `{"status":
   "DEF_CHECK_FAILED"}` instead of it silently acting on the wrong one.
 - If you are targeted to optimize one or more definition in one specific ISA, DO NOT fall back to use another ISA (e.g. `sve2` → `sve`) unless the prompt explicitly allows it.
-- If the target ISA is `portable`, do not use SIMD in the candidate kernel. Write scalar, plain C/C++ only. This prohibits NEON/SVE/SME or other SIMD intrinsics and headers, vector types or vector extensions, SIMD builtins, inline assembly, and handwritten assembly. Do not  introduce SIMD instructions, if you write it, your code will be rejected. Let the normal compiler build the scalar C/C++ source; do not write code whose purpose is to request explicit SIMD. (The compiler may still auto-vectorize ordinary scalar loops.)
+- If the target ISA is `portable`, use scalar, plain C/C++ only. Do not use NEON/SVE/SME or other SIMD intrinsics and headers, vector types or vector extensions, SIMD builtins, inline assembly, or handwritten assembly. Portable compilation disables loop and SLP auto-vectorization. The kernel service checks the compiled agent kernel function and rejects disassembly containing vector registers or SIMD-only instructions. Do not try to bypass either check. If a candidate is rejected, rewrite it using scalar operations.
 
 ### NEVER USE OPENMP PARALLELIZATION
 - Kernel implementation that use OpenMp will be rejected by the evaluator

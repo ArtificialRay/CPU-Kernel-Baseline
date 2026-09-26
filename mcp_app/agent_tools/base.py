@@ -34,6 +34,15 @@ if TYPE_CHECKING:
 
 
 ASM_TRUNCATE_LINES: int = 300
+# LLVM objdump's AArch64 syntax names vector registers as vN.<lanes> (or qN).
+# Scalar FP operands use sN/dN and remain valid in portable kernels.
+_AARCH64_VECTOR_REG = re.compile(r"\b(?:v\d+(?:\.[0-9]+[bhsd])?(?:\[\d+\])?|q\d+)\b", re.IGNORECASE)
+# A few Advanced SIMD instructions accept the D-register alias without printing
+# a V-register operand. Catch those separately (notably `movi d0, #imm`).
+_AARCH64_SIMD_ONLY_MNEMONIC = re.compile(
+    r"(?m)^\s*[0-9a-f]+:\s+[0-9a-f]+\s+(?:movi|mvni)\b",
+    re.IGNORECASE,
+)
 
 
 class KernelSessionLike(Protocol):
@@ -227,6 +236,18 @@ class KernelSession(ABC):
             }
         return None
 
+    def _portable_candidate_symbol(self, solution: "Solution") -> str:
+        """Return the agent-written kernel symbol, excluding framework code.
+
+        Some datasets link prebuilt libraries (for example ggml) that contain
+        unrelated SIMD code. The portable contract applies to the agent's
+        candidate kernel, so scan its implementation symbol rather than every
+        function pulled into the shared object.
+        """
+        if self.dataset in {"ncnn", "simd-loop", "llama.cpp", "kleidiai"}:
+            return f"inner_{self._definition.op_type}"
+        return solution.get_entry_symbol()
+
     def note_session_definition(self, session: Any, definition: str) -> None:
         """Record that `session` has itself successfully compile()'d `definition`.
 
@@ -336,6 +357,34 @@ class KernelSession(ABC):
                 metrics={"status": result.get("status", "COMPILE_ERROR")},
             )
             return result
+
+        if self._isa == "portable":
+            # Scan the agent's implementation symbol, not linked harness or
+            # framework code, which may contain unrelated SIMD kernels.
+            asm_result = ops.disassemble_so(
+                result["so_path"], self._portable_candidate_symbol(solution),
+            )
+            asm = asm_result.get("asm")
+            if (
+                not asm
+                or "Disassembly of section" not in asm
+                or _AARCH64_VECTOR_REG.search(asm)
+                or _AARCH64_SIMD_ONLY_MNEMONIC.search(asm)
+            ):
+                shutil.rmtree(Path(result["so_path"]).parent, ignore_errors=True)
+                reason = (
+                    "could not inspect generated candidate instructions"
+                    if not asm or "Disassembly of section" not in asm else
+                    "generated candidate contains an AArch64 vector register/instruction"
+                )
+                state["trajectory"].write_turn(
+                    turn=state["turn"], tool="compile",
+                    metrics={"status": "REJECTED_SIMD", "reason": reason},
+                )
+                return {
+                    "status": "REJECTED_SIMD",
+                    "error": f"portable candidate rejected: {reason}; use scalar code only.",
+                }
 
         version = state["trajectory"].next_version()
         source_file = state["trajectory"].write_source(code, version)

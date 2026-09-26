@@ -61,7 +61,7 @@ class LlamaCppKernelSession(KernelSession):
             f for f in ref.spec.compile_flags
             if not f.startswith("-O") and not f.startswith("-march=")
         ]
-        compile_flags = ["-O3", march, *base_flags]
+        compile_flags = ["-O3", march, *isa.compile_flags_for_isa(self._isa), *base_flags]
 
         return Solution(
             name=f"{self._author}_{self._definition.name}",

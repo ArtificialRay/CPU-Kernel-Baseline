@@ -26,20 +26,26 @@ from contracts import ISA_TABLE
 
 # isa name -> (march flag, isa_features, target_hardware label), from contracts.py
 # (shared with provisioning/provision.py etc.) plus a local
-# "portable" alias: same -march as neon (armv8-a mandates NEON); the "no
-# hand-written SIMD" constraint is a PROMPT concern (nanobot skill), not a
-# compile flag, so "portable" isn't a real hardware tier in contracts.yaml.
+# "portable" is a scalar-only candidate mode. Its source policy and generated
+# code check enforce that contract while its compiler flags disable widening.
 _ISA_MARCH: dict[str, tuple[str, list[str], list[str]]] = {
     isa: (spec.march, spec.features, spec.labels) for isa, spec in ISA_TABLE.items()
 }
-# Same compile flags as neon (armv8-a mandates NEON), but its own generic
-# target_hardware label — "portable" solutions aren't claiming NEON-specific
-# intent, just whatever the compiler auto-vectorizes.
-_ISA_MARCH["portable"] = (ISA_TABLE["neon"].march, list(ISA_TABLE["neon"].features), ["aarch64"])
+# Keep the generic AArch64 target so scalar math headers remain available; the
+# post-compile checker rejects vector instructions from the candidate symbol.
+_ISA_MARCH["portable"] = (ISA_TABLE["neon"].march, [], ["aarch64"])
+_ISA_COMPILE_FLAGS: dict[str, list[str]] = {
+    "portable": ["-fno-vectorize", "-fno-slp-vectorize"],
+}
+
+
+def compile_flags_for_isa(isa: str) -> list[str]:
+    """Return extra compiler flags required to enforce a candidate ISA."""
+    return list(_ISA_COMPILE_FLAGS.get(isa, []))
 
 # isa name -> /proc/cpuinfo "Features" tokens that must ALL be present.
 _ISA_CPUINFO_TOKENS: dict[str, list[str]] = {
-    "portable": ["asimd"],
+    "portable": [],
     "neon": ["asimd"],
     "sve": ["sve"],
     "sve2": ["sve2"],
@@ -182,6 +188,6 @@ def isa_satisfies_on_host(required: list[str], *, cpuinfo_path: Path = Path("/pr
 
 
 __all__ = [
-    "MarchInfo", "SUPPORTED_ISAS", "march_for_isa", "verify_isa_available",
+    "MarchInfo", "SUPPORTED_ISAS", "march_for_isa", "compile_flags_for_isa", "verify_isa_available",
     "isa_satisfies", "isa_satisfies_on_host", "detected_solution_features",
 ]

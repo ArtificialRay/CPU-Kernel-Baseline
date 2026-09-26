@@ -65,7 +65,7 @@ class KleidiaiKernelSession(KernelSession):
                 entry_point=ref.spec.entry_point,
                 dependencies=list(ref.spec.dependencies),
                 isa_features=isa_features,
-                compile_flags=["-O3", march, "-std=c++17"],
+                compile_flags=["-O3", march, *isa.compile_flags_for_isa(self._isa), "-std=c++17"],
                 link_flags=list(ref.spec.link_flags),
             ),
             sources=[*harness, agent_kernel],

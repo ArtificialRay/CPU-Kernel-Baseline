@@ -34,9 +34,8 @@ class SIMDLoopKernelSession(KernelSession):
 
         Harness files (loop_NNN.h + loop_NNN.cpp) are lifted from the baseline
         reference solution. compile_flags/isa_features/target_hardware are
-        derived from the session's explicit isa; the reference's scalar-only
-        flags (-fno-vectorize/-fno-slp-vectorize/-O*) are dropped so the
-        candidate can vectorize with -O3 + the requested isa's march.
+        derived from the session's explicit isa. Portable mode reapplies the
+        scalar-only vectorizer flags after dropping reference-specific flags.
         """
         ref_author = self._bench_cfg.baseline_author  # "reference" for simd-loop
         ref = self._trace_set.get_baseline_solution(self._definition.name, ref_author)
@@ -66,7 +65,7 @@ class SIMDLoopKernelSession(KernelSession):
             and not f.startswith("-march=")
             and f not in ("-fno-vectorize", "-fno-slp-vectorize")
         ]
-        compile_flags = ["-O3", march, *base_flags]
+        compile_flags = ["-O3", march, *isa.compile_flags_for_isa(self._isa), *base_flags]
 
         return Solution(
             name=f"{self._author}_{self._definition.name}",
