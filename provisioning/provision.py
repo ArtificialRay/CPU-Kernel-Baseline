@@ -292,11 +292,8 @@ def _linux_dep_steps() -> list[tuple[str, str, int]]:
             "sudo apt-get install -y -qq python3-pip clang-18 cmake libomp-18-dev",
             300,
         ),
-        (
-            "pip packages",
-            "pip3 install --user --break-system-packages -r ~/arm-bench/requirements.txt",
-            120,
-        ),
+        _uv_install_step(),
+        *_venv_steps(_UV_LINUX),
         (
             "perf counters",
             "sudo sysctl -w kernel.perf_event_paranoid=1",
@@ -305,10 +302,45 @@ def _linux_dep_steps() -> list[tuple[str, str, int]]:
     ]
 
 
+# Both tiers run bench/ and mcp_app/ out of the same uv-managed venv, same
+# path and same Python — see InstanceHandle.python. 
+_UV_MAC = "/opt/homebrew/bin/uv"
+_UV_LINUX = "~/.local/bin/uv"
+_VENV_PYTHON = "~/venv/bin/python3"
+_PYTHON_VERSION = "3.12"
+
+
+def _uv_install_step() -> tuple[str, str, int]:
+    """Linux only — the mac tier gets uv from brew (see _macos_dep_steps).
+    astral's installer drops uv in ~/.local/bin, which (like brew's dir on the
+    mac tier) is not on a non-login SSH shell's PATH, hence _UV_LINUX."""
+    return (
+        "uv",
+        f"test -x {_UV_LINUX} || curl -LsSf https://astral.sh/uv/install.sh | sh",
+        120,
+    )
+
+
+def _venv_steps(uv: str) -> list[tuple[str, str, int]]:
+    """The two uv steps shared by every tier: create ~/venv, then install
+    requirements.txt into it. Both no-op once done, so they are safe to re-run."""
+    return [
+        (
+            "python venv",
+            f"test -x {_VENV_PYTHON} || {uv} venv ~/venv --python {_PYTHON_VERSION}",
+            300,
+        ),
+        (
+            "pip packages",
+            f"{uv} pip install --python {_VENV_PYTHON} -r ~/arm-bench/requirements.txt",
+            600,
+        ),
+    ]
+
+
 # Homebrew's own install path on Apple silicon. Not on a non-login shell's PATH,
 # so every step below names it explicitly rather than relying on shellenv.
 _BREW = "/opt/homebrew/bin/brew"
-_UV = "/opt/homebrew/bin/uv"
 
 
 def _macos_dep_steps() -> list[tuple[str, str, int]]:
@@ -342,16 +374,7 @@ def _macos_dep_steps() -> list[tuple[str, str, int]]:
             f"{_BREW} install cmake uv llvm",
             900,
         ),
-        (
-            "python venv",
-            f"test -x ~/venv/bin/python || {_UV} venv ~/venv --python 3.12",
-            300,
-        ),
-        (
-            "pip packages",
-            f"{_UV} pip install --python ~/venv/bin/python -r ~/arm-bench/requirements.txt",
-            300,
-        ),
+        *_venv_steps(_UV_MAC),
     ]
 
 
@@ -367,6 +390,24 @@ def _install_deps(handle: InstanceHandle) -> None:
         rc, _, err = handle.run(cmd, timeout=timeout)
         if rc != 0:
             print(f"[provision] WARNING: {label} failed: {err[:200]}")
+
+
+def ensure_env_ready(handle: InstanceHandle) -> None:
+    """Make sure ~/venv satisfies requirements.txt on a REUSED instance.
+    Only the Python steps run (not apt/brew). Raises on any failure, so a
+    broken env surfaces here with a reason instead of mid-eval.
+    """
+    handle.rsync_to(str(REPO_ROOT), "~/arm-bench", paths=["requirements.txt"])
+    if handle.instance_type.startswith("mac"):
+        steps = _venv_steps(_UV_MAC)
+    else:
+        steps = [_uv_install_step(), *_venv_steps(_UV_LINUX)]
+    for label, cmd, timeout in steps:
+        rc, _, err = handle.run(cmd, timeout=timeout)
+        if rc != 0:
+            raise RuntimeError(
+                f"Python env not ready on {handle.host}: {label} failed (rc={rc}): {err[:300]}"
+            )
 
 
 def provision(
@@ -535,6 +576,7 @@ def get_or_provision(
     handle = get_running_instance(label)
     if handle and _is_reachable(handle, attempts=3):
         print(f"[provision] Reusing existing instance at {handle.host} (label={label!r})")
+        ensure_env_ready(handle)
         if dataset:
             ensure_dataset_ready(handle, dataset)
         return handle

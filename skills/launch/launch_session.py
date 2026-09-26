@@ -176,14 +176,8 @@ def _spawn_command(
     mcp_app/agent_tools/dispatcher.py."""
     run_dir = f"{remote_root}/agent-runs-mcp/{author}"
     dataset_flags = " ".join(f"--dataset {ds}" for ds in datasets)
-    # RemoteTarget carries no instance_type, so it can't expose
-    # provisioning/remote.py::InstanceHandle's `.python` property directly —
-    # but that property's mac branch (~/venv/bin/python) is where
-    # provisioning/provision.py::_macos_dep_steps() actually creates the
-    # uv-managed venv, confirmed by SSHing into a live mac host (2026-09-23):
-    # {remote_root}/.venv (the path this used to hardcode instead) does not
-    # exist there, `~/venv/bin/python3` does and has `mcp` importable.
-    python = "~/venv/bin/python3" if instance_type.startswith("mac") else "python3"
+    # python is tier to a uv managed environment
+    python = "~/venv/bin/python3"
     cmd = (
         f"cd {remote_root} && {python} -m mcp_app.server {dataset_flags} "
         f"--author {author} --isa {isa} --run-dir {run_dir} "

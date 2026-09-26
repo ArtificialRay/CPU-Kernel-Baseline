@@ -33,11 +33,14 @@ class InstanceHandle:
     def python(self) -> str:
         """Interpreter to run bench/ and mcp_app/ with on THIS instance.
 
-        macOS ships a python3 (3.9.6) too old for requirements.txt, so the
-        Apple-silicon tier runs out of the uv-managed venv that
-        provisioning/provision.py::_install_deps creates.
+        Every tier runs out of the same uv-managed venv that
+        provisioning/provision.py::_install_deps creates — macOS's system
+        python3 (3.9.6) is too old for requirements.txt and Ubuntu's is
+        externally managed, so neither is used. Same path on every instance
+        type: callers that don't know the type (skills/launch, bench_fleet)
+        just hardcode it.
         """
-        return "~/venv/bin/python" if self.instance_type.startswith("mac") else "python3"
+        return "~/venv/bin/python3"
 
     def ssh_base_args(self) -> list[str]:
         key = os.path.expanduser(self.key_file)

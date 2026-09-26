@@ -122,17 +122,11 @@ def ensure_baselines(
     """
     baseline_author = baseline_author_for(dataset, isa)
     target = instance.target
-    # RemoteTarget (skills/launch/remote.py) carries no instance_type, so it
-    # can't expose provisioning/remote.py::InstanceHandle's `.python` property
-    # directly — but that property's mac branch (~/venv/bin/python) is where
-    # provisioning/provision.py::_macos_dep_steps() actually creates the
-    # uv-managed venv, confirmed by SSHing into a live mac host (2026-09-23):
-    # {remote_root}/.venv (the path this used to hardcode instead) does not
-    # exist there, `~/venv/bin/python3` does and has `mcp` importable.
-    python = (
-        "~/venv/bin/python3" if instance.instance_type.startswith("mac")
-        else "python3"
-    )
+    # Every tier's uv-managed venv (provisioning/provision.py::_venv_steps) —
+    # same path as provisioning/remote.py::InstanceHandle.python, which
+    # RemoteTarget can't expose directly (skills/launch/remote.py carries no
+    # instance_type, and none is needed any more).
+    python = "~/venv/bin/python3"
 
     print(f"[sync] Syncing benchmark inputs to {target.host} before baseline collection...")
     target.rsync_to(str(REPO_ROOT), remote_root, paths=launch_session.RSYNC_ALLOWLIST)
