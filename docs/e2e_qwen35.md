@@ -686,3 +686,25 @@ Pin `-fa`, sweep `-ub`, and never extrapolate a rate measured at one shape.
 *Unresolved:* the decode control returned 1.025x on the second box against 1.074x on the first.
 The patch is functionally identical at M=1, so this is probably cross-box variation, but it has
 not been shown, and no decode figure should be quoted until it is.
+
+## Llama-3.1-8B-Instruct and kernel-vs-repack (2026-09-25)
+
+Second model: `llama-3.1-8b` (Q4_K_M), 7 packed gemm definitions (Q4_K / Q6_K), gate v2 with
+real activations captured by `drivers/llama_dump_fix.sh` (note `--no-warmup`: llama-perplexity's
+warmup pass otherwise gets captured). Claude Code + Fable 5.1, budget 40/50, 3 lanes
+(`drivers/e2e_llama_lane.sh`); per-kernel harness speedups 2.44--3.04x.
+
+End-to-end (`drivers/measure_llama.sh`, c8g.4xlarge, medians of 5, ppl 64 chunks; W&B `5btrsb2q`):
+prefill 1.365 / 1.352 / 1.306x and decode 1.081 / 1.045 / 1.112x at 1 / 4 / 16 threads vs stock
+llama.cpp (repack on); perplexity 7.8793 stock / 7.8797 norepack / 7.8795 agent. Sweeps (-fa off,
+16 threads): prompt 512/2048/4096/8192 = 1.393/1.322/1.255/1.184x; micro-batch 1/2/8/64/512 =
+1.090/1.636/1.524/0.989/1.397x; decode r=10 1.104x.
+
+Per-kernel vs llama.cpp's own repacked (i8mm `*_8x8`) kernels, single-threaded, identical inputs
+(`kernel_vs_repack/`): Qwen3.5-4B 1.63x geomean, faster in 83/84 shape x M cases; Llama-3.1-8B
+1.62x, 52/52. Accuracy vs FP64: agent 41--43 dB, repack 43 dB. All 18 agent kernels contain
+i8mm (SMMLA/USMMLA) instructions; llama.cpp v0.4.1 never uses USMMLA.
+
+perf profile of the Qwen build (`drivers/profile_run2.sh`, 16 threads): the replaced matmuls are
+70.5% of stock prefill at 512 tokens and 58.4% at 8192; attention grows 2.9% -> 20.9%; decode is
+47% matmul + 45% thread wait.

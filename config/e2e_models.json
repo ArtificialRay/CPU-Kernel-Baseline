@@ -5,6 +5,11 @@
     "arch": "qwen35", "released": "2026-02", "lm_head": "tied Q6_K", "bytes_per_token_gb": 2.73,
     "min_measure_instance": "c8g.xlarge", "note": "smallest hybrid-GDN Qwen; ~24 tok/s @4 threads class"
   },
+  "llama-3.1-8b": {
+    "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "size_gb": 4.92,
+    "arch": "llama", "released": "2024-07", "lm_head": "untied Q6_K", "bytes_per_token_gb": 4.62,
+    "min_measure_instance": "c8g.4xlarge", "note": "second e2e model: standard dense transformer (Meta); Q4_K/Q6_K only, 7 mul_mat shapes"
+  },
   "qwen3.8-27b": {
     "repo": "bartowski/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-Q4_K_M.gguf", "size_gb": 17.0,
     "arch": "qwen35", "released": "2026-08-13", "lm_head": "untied Q6_K", "bytes_per_token_gb": 16.4,
