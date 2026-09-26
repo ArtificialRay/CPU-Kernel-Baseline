@@ -84,11 +84,14 @@ class Job:
     prompt: str
 
 
-def _run_and_tee(cmd: list[str], *, log_path: Path, cwd: Optional[Path] = None) -> int:
+def _run_and_tee(
+    cmd: list[str], *, log_path: Path, cwd: Optional[Path] = None, env: Optional[dict] = None,
+) -> int:
     """Run `cmd`, streaming its combined stdout/stderr live to the terminal
-    while also writing it to log_path (bash's `tee` idiom, ported)."""
+    while also writing it to log_path (bash's `tee` idiom, ported). `env`, if
+    given, is the child's complete environment (None = inherit ours)."""
     with log_path.open("w") as log_fh, subprocess.Popen(
-        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1,
     ) as proc:
         assert proc.stdout is not None
@@ -201,11 +204,20 @@ class CodexAdapter(HarnessAdapter):
         if subprocess.run(["which", "codex"], capture_output=True).returncode != 0:
             raise RuntimeError("codex CLI not found on PATH — install Codex CLI first.")
         self.skill_text = CODEX_SKILL_FILE.read_text()
-        # Optional: point codex at a custom OpenAI-compatible endpoint via
-        # .env instead of whatever account `codex login` already persisted
-        # to ~/.codex/auth.json. 
-        self.dotenv_base_url = os.environ.get("OPENAI_API_BASE") or os.environ.get("OPENAI_BASE_URL")
-        self.dotenv_key_is_set = bool(os.environ.get("OPENAI_API_KEY"))
+        # Optional: point codex at a custom OpenAI-compatible endpoint instead of
+        # whatever account `codex login` already persisted to ~/.codex/auth.json.
+        # Per field, first hit wins: OPENAI_API_BASE / OPENAI_BASE_URL /
+        # OPENAI_API_KEY in the environment  > `codex login`.
+        codex_config = CODEX_SKILL_FILE.parent / "config.json"
+        provider = (
+            json.loads(codex_config.read_text()).get("model_provider", {})
+            if codex_config.exists() else {}
+        )
+        self.base_url = (
+            os.environ.get("OPENAI_API_BASE") or os.environ.get("OPENAI_BASE_URL")
+            or provider.get("base_url")
+        )
+        self.api_key = os.environ.get("OPENAI_API_KEY") or provider.get("api_key")
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         with self.prepare_workspace(job) as workspace:
@@ -220,11 +232,15 @@ class CodexAdapter(HarnessAdapter):
                 "-c", f"mcp_servers.{CODEX_MCP_SERVER_NAME}.tool_timeout_sec=1200",
                 "--json",
             ]
-            if self.dotenv_base_url and self.dotenv_key_is_set:
+            child_env = None
+            if self.base_url and self.api_key:
                 p = CODEX_DOTENV_PROVIDER_NAME
+                # The key reaches only the codex child's environment (which is
+                # where env_key below points), not this process or the shell.
+                child_env = {**os.environ, "OPENAI_API_KEY": self.api_key}
                 cmd += [
                     "-c", f'model_providers.{p}.name="{p}"',
-                    "-c", f'model_providers.{p}.base_url="{self.dotenv_base_url}"',
+                    "-c", f'model_providers.{p}.base_url="{self.base_url}"',
                     # Value is the *name* of the env var codex reads the key
                     # from at request time — never the key itself.
                     "-c", f'model_providers.{p}.env_key="OPENAI_API_KEY"',
@@ -238,7 +254,7 @@ class CodexAdapter(HarnessAdapter):
             if self.model:
                 cmd += ["-m", self.model]
             cmd.append(job.prompt)
-            return _run_and_tee(cmd, log_path=log_path)
+            return _run_and_tee(cmd, log_path=log_path, env=child_env)
 
     @contextmanager
     def prepare_workspace(self, job: Job):
@@ -267,12 +283,26 @@ class ClineAdapter(HarnessAdapter):
         if subprocess.run(["which", "cline"], capture_output=True).returncode != 0:
             raise RuntimeError("cline CLI not found on PATH — install Cline CLI first.")
         self.skill_text = CLINE_SKILL_FILE.read_text()
-        self.base_url = os.environ.get("OPENAI_API_BASE") or os.environ.get("OPENAI_BASE_URL")
-        self.api_key = os.environ.get("OPENAI_API_KEY")
+        # Per field, first hit wins: OPENAI_API_BASE / OPENAI_BASE_URL /
+        # OPENAI_API_KEY in the environment 
+        # > the "model_provider" table of the git-ignored config.json next to
+        # SKILL.md (copy config.json.example).
+        cline_config = CLINE_SKILL_FILE.parent / "config.json"
+        provider = (
+            json.loads(cline_config.read_text()).get("model_provider", {})
+            if cline_config.exists() else {}
+        )
+        self.base_url = (
+            os.environ.get("OPENAI_API_BASE") or os.environ.get("OPENAI_BASE_URL")
+            or provider.get("base_url")
+        )
+        self.api_key = os.environ.get("OPENAI_API_KEY") or provider.get("api_key")
         if not self.base_url or not self.api_key:
             raise RuntimeError(
-                "OPENAI_API_BASE and OPENAI_API_KEY must both be set in .env for --harness "
-                "cline — unlike codex, cline has no already-logged-in account to fall back to."
+                f"--harness cline needs an endpoint: fill in base_url and api_key in "
+                f"{cline_config} (copy config.json.example), or set OPENAI_API_BASE and "
+                "OPENAI_API_KEY — unlike codex, cline has no already-logged-in account "
+                "to fall back to."
             )
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
@@ -329,9 +359,21 @@ class NanobotAdapter(HarnessAdapter):
 
     @classmethod
     def default_model(cls) -> Optional[str]:
+        if not NANOBOT_CONFIG_BASE.exists():
+            raise RuntimeError(
+                f"{NANOBOT_CONFIG_BASE} not found — copy {NANOBOT_CONFIG_BASE.name}.example "
+                "next to it and fill in your provider's apiKey (or point NANOBOT_CONFIG_BASE "
+                "at another config)."
+            )
         return json.loads(NANOBOT_CONFIG_BASE.read_text())["agents"]["defaults"]["model"]
 
     def __init__(self, *, dataset: str, model: Optional[str], local_port: int):
+        if not NANOBOT_CONFIG_BASE.exists():
+            raise RuntimeError(
+                f"{NANOBOT_CONFIG_BASE} not found — copy {NANOBOT_CONFIG_BASE.name}.example "
+                "next to it and fill in your provider's apiKey (or point NANOBOT_CONFIG_BASE "
+                "at another config)."
+            )
         if subprocess.run(["which", "nanobot"], capture_output=True).returncode != 0:
             raise RuntimeError(
                 "nanobot CLI not found on PATH — pip install nanobot-ai (pinned in "

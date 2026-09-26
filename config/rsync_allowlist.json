@@ -1,0 +1,12 @@
+{
+  "paths": [
+    "bench",
+    "bench-trace/definitions",
+    "bench-trace/solutions",
+    "bench-trace/workloads",
+    "mcp_app",
+    "requirements.txt",
+    "contracts.py",
+    "config"
+  ]
+}

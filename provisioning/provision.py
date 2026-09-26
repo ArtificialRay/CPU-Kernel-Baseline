@@ -43,12 +43,13 @@ EVAL_CONFIG_PATH = Path(__file__).parent / "eval_config.json"
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see InstanceHandle.rsync_to's docstring.
-# NOTE: bench-trace is listed by sub-directory, not whole. traces/ is not included
-# as archive traces may pollute speedup geomean calculation
-# Set in .env (comma-separated) — see .env.example.
-RSYNC_ALLOWLIST = [p.strip() for p in os.environ.get("RSYNC_ALLOWLIST", "").split(",") if p.strip()]
-if not RSYNC_ALLOWLIST:
-    raise RuntimeError("RSYNC_ALLOWLIST is unset or empty — set it in .env (see .env.example).")
+# Persistent default: config/rsync_allowlist.json (shared with skills/launch and
+# mcp_app, which don't import from here). RSYNC_ALLOWLIST in .env
+# (comma-separated) overrides it for a one-off experiment.
+RSYNC_ALLOWLIST = (
+    [p.strip() for p in os.environ.get("RSYNC_ALLOWLIST", "").split(",") if p.strip()]
+    or json.loads((REPO_ROOT / "config" / "rsync_allowlist.json").read_text())["paths"]
+)
 
 DATASET_BUILDS_PATH = REPO_ROOT / "config" / "dataset_builds.json"
 

@@ -50,12 +50,12 @@ PROVISION_SCRIPT = REPO_ROOT / "provisioning" / "provision.py"
 
 # Repo-root-relative paths mcp_app/bench actually need on the remote side.
 # Allow-list, not a deny-list — see RemoteTarget.rsync_to's docstring.
-# NOTE: bench-trace is listed by sub-directory, not whole. traces/ is not included
-# as archive traces may pollute speedup geomean calculation
-# Set in .env (comma-separated) — see .env.example.
-RSYNC_ALLOWLIST = [p.strip() for p in os.environ.get("RSYNC_ALLOWLIST", "").split(",") if p.strip()]
-if not RSYNC_ALLOWLIST:
-    raise RuntimeError("RSYNC_ALLOWLIST is unset or empty — set it in .env (see .env.example).")
+# Persistent default: config/rsync_allowlist.json. RSYNC_ALLOWLIST in .env
+# (comma-separated) overrides it for a one-off experiment.
+RSYNC_ALLOWLIST = (
+    [p.strip() for p in os.environ.get("RSYNC_ALLOWLIST", "").split(",") if p.strip()]
+    or json.loads((REPO_ROOT / "config" / "rsync_allowlist.json").read_text())["paths"]
+)
 
 # Shared with provisioning/provision.py and mcp_app/smoke_test_driver.py — lives at
 # the repo root (like contracts.py/config/kernel_contracts.yaml) so none of

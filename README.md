@@ -51,17 +51,70 @@ Download kernel dataset to the main directory of your local repository, then run
 pip install -r requirements.txt
 ```
 
-Provisioning and remote runs need an AWS account with Terraform configured
-(`terraform/`) and an SSH key. See `provisioning/eval_config.json.example`.
+Provisioning and remote runs need an AWS account, Terraform, an SSH key, and
+the config files described under [Configuration](#configuration) below
+(start with `provisioning/workspaces.json`).
 
 ## Configuration
 
-| Config | Purpose |
+There are a lot of config files, but they fall into three groups and only the
+first one is something you have to set up yourself.
+
+### 1. Set up once (git-ignored — copy each from the `.example` next to it)
+
+| File | What goes in it | Needed for |
+|---|---|---|
+| `provisioning/workspaces.json` | **Exactly one** entry: the Terraform workspace this checkout uses. The key is the workspace name (selected automatically — do **not** set `TF_WORKSPACE`). Fields: `account_id` (AWS account guard), `namespace` (suffix for AWS resource names), `aws_profile`, `aws_region`, `security_group_id` (an *existing* security group that allows SSH — Terraform does not create it). This is the single source for AWS account/region/profile: don't repeat any of it in `.env`. | any provisioning / remote run |
+| `eval/llm_providers.json` | Per-provider `api_key` / `api_base` for the litellm loop; anything left out falls back to the provider's usual environment variable. | `--harness own` |
+| `skills/nanobot/nanobot-kernel-session/config.json` | nanobot's model, provider + API key, and MCP server wiring. | `--harness nanobot` |
+| `skills/codex/codex-kernel-session/config.json` | Optional custom endpoint (`base_url`, `api_key`); without it codex uses the account `codex login` set up. | `--harness codex` |
+| `skills/cline/cline-kernel-session/config.json` | Custom endpoint (`base_url`, `api_key`) — required, cline has no login to fall back to. | `--harness cline` |
+
+`--harness claude-code` uses the account `claude login` set up.
+
+`.env` (from `.env.example`) is **optional** and only for one-off overrides of
+the above, e.g. `NANOBOT_CONFIG_BASE` to try another nanobot config. A value
+there wins over the file it overrides.
+
+### 2. Checked-in defaults (edit only to change how kernels are evaluated or built)
+
+| File | Purpose |
 |---|---|
 | `config/kernel_contracts.yaml` | Kernel evaluation parameters: op-type correctness/timing overrides, disallowed source patterns, ISA→march mapping, baseline authors |
 | `config/dataset_builds.json` | Step-by-step clone/build of each dataset's native lib (ncnn, ggml) on a remote instance |
-| `.env` (copy from `.env.example`) | System parameters: harness config paths, API keys, `RSYNC_ALLOWLIST` |
-| `skills/<harness>/<harness>-kernel-session/config.json` | Per-harness config (e.g. nanobot's model/provider + MCP server wiring) |
+| `config/rsync_allowlist.json` | Repo paths synced to instances before a session (override once with `RSYNC_ALLOWLIST` in `.env`) |
+
+### 3. Written by the tools (do not edit by hand)
+
+| File | Purpose |
+|---|---|
+| `provisioning/eval_config.json` | The instances currently up (host, user, key). Created and updated by `provision.py`; `eval_config.json.example` only shows the format. |
+| `terraform/terraform.tfstate.d/` | Local Terraform state, one directory per workspace |
+| `agent-runs-<author>/`, `harness_trajs/` | Per-kernel trajectories and logs synced back from the instances |
+
+### Notes on remote instances
+
+- **Python environment:** every instance (Graviton and Mac alike) runs `bench/`
+  and `mcp_app/` from one uv-managed venv at `~/venv`, built from
+  `requirements.txt` by `provision.py`. Nothing to set up by hand, and a reused
+  instance is checked (and repaired if a package is missing) before a run.
+- **Mac (`mac-m4.metal`) needs a Dedicated Host.** Provisioning picks an
+  existing `available` host with no instance on it and never allocates one
+  itself (AWS bills a 24-hour minimum). Allocate one first:
+  `aws ec2 allocate-hosts --instance-type mac-m4.metal --availability-zone <az> --quantity 1`.
+  A host that just lost its instance stays `pending` for a while while AWS
+  scrubs it.
+
+### Optional environment variables
+
+Only needed in specific cases, set in `.env` or the shell.
+
+| Variable | Effect |
+|---|---|
+| `NCNN_ROOT`, `LLAMA_CPP_ROOT` | Point the local `bench/` harness at an existing ncnn / llama.cpp checkout |
+| `ARMBENCH_NOTEPAD=1` | Give the `own` harness's agent a persistent scratchpad tool |
+| `OPENROUTER_API_KEY` | Used by `scripts/bench_loop_agent.py` |
+| `WANDB_INSTANCE_TYPE` | Label recorded on runs logged with `--wandb` |
 
 ### Apple Silicon / Mac baseline collection
 
