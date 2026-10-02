@@ -3,42 +3,16 @@
 `gen_inputs_for_workload` is the main entry point — it reads each input's type
 from `workload.inputs` and either returns the scalar value directly or generates
 a bounded-uniform random tensor seeded from the workload's uuid.
-
-The legacy `make_weights` / `make_mat_ramp` / `make_mat_ramp_2d` functions are
-kept for standalone testing but are no longer called by the harness.
 """
 
 import hashlib
-from typing import Dict, Iterable, Tuple
+from typing import Dict
 
 import ml_dtypes
 import numpy as np
 
 from bench.data.definition import AxisConst, Definition, DType
 from bench.data.workload import Workload
-
-
-# ── Legacy bit-exact ports of ncnn_helpers.h (kept for standalone use) ────────
-
-def make_weights(n: int, scale: float = 1.0) -> np.ndarray:
-    """Port of ncnn_helpers.h `make_weights` (LCG, values in [-0.5, 0.5]*scale)."""
-    i = np.arange(n, dtype=np.int64)
-    lcg = (i * 1234567 + 7654321) % 1000
-    return (lcg.astype(np.float32) / 1000.0 - 0.5).astype(np.float32) * np.float32(scale)
-
-
-def make_mat_ramp(shape_chw: Tuple[int, int, int]) -> np.ndarray:
-    """Port of ncnn_helpers.h `make_mat_ramp` (values 0.1..10.0 cycling, CHW layout)."""
-    c, h, w = shape_chw
-    idx = np.arange(c * h * w, dtype=np.int64)
-    return (((idx % 100) + 1).astype(np.float32) * np.float32(0.1)).reshape(c, h, w)
-
-
-def make_mat_ramp_2d(shape_hw: Tuple[int, int]) -> np.ndarray:
-    """Port of ncnn_helpers.h `make_mat_ramp_2d` (values 0.1..10.0 cycling, HW layout)."""
-    h, w = shape_hw
-    idx = np.arange(h * w, dtype=np.int64)
-    return (((idx % 100) + 1).astype(np.float32) * np.float32(0.1)).reshape(h, w)
 
 
 # ── Random input generation ────────────────────────────────────────────────────
@@ -221,17 +195,6 @@ def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
     return out
 
 
-def shape_of(arr_or_scalar: object) -> Tuple[int, ...]:
-    """Best-effort shape extraction for either numpy arrays or python scalars."""
-    if hasattr(arr_or_scalar, "shape"):
-        return tuple(arr_or_scalar.shape)  # type: ignore[attr-defined]
-    return ()
-
-
 __all__ = [
-    "make_weights",
-    "make_mat_ramp",
-    "make_mat_ramp_2d",
     "gen_inputs_for_workload",
-    "shape_of",
 ]

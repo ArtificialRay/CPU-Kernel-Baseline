@@ -60,8 +60,8 @@ RSYNC_ALLOWLIST = (
     or json.loads((REPO_ROOT / "config" / "rsync_allowlist.json").read_text())["paths"]
 )
 
-# baseline_author from contracts.BASELINE_AUTHORS (shared with eval/run_benchmark.py
-# and mcp_app/agent_tools/baseline_readiness.py); isa_hint is display-only, local to
+# baseline_author from contracts.BASELINE_AUTHORS (shared with
+# mcp_app/agent_tools/baseline_readiness.py); isa_hint is display-only, local to
 # this smoke-test driver.
 DATASET_REFERENCE = {
     dataset: {"baseline_author": author, "isa_hint": "sve (Graviton3) / sve2 (Graviton4)"}

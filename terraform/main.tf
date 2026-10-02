@@ -54,11 +54,11 @@ variable "instances" {
   description = <<-EOT
     label -> EC2 instance type, one entry per concurrently-desired instance
     (e.g. {"ncnn-sve" = "c7g.large", "llama.cpp-sve" = "c7g.large"}). Driven
-    by eval/provision.py's --label — see its module docstring.
+    by provisioning/provision.py's --label — see its module docstring.
 
     IMPORTANT: every apply against this config MUST be scoped with
     -target=aws_instance.labeled["<label>"] (and the matching null_resource.deploy
-    target) — eval/provision.py already always does this. 
+    target) — provisioning/provision.py already always does this. 
   EOT
   type        = map(string)
   default     = {}
@@ -235,7 +235,7 @@ resource "aws_instance" "labeled" {
     ignore_changes = [key_name]
     precondition {
       condition     = !local.is_mac[each.key] || contains(keys(var.mac_host_ids), each.key)
-      error_message = "Mac label ${each.key} has no entry in var.mac_host_ids — eval/provision.py must supply an existing Dedicated Host id for it."
+      error_message = "Mac label ${each.key} has no entry in var.mac_host_ids — provisioning/provision.py must supply an existing Dedicated Host id for it."
     }
   }
 }
@@ -244,7 +244,7 @@ resource "aws_instance" "labeled" {
 # Deploy: wait for each instance's own bootstrap to finish.
 # Source sync (allow-listed to RSYNC_ALLOWLIST — bench/, bench-trace/,
 # mcp_app/, requirements.txt) and any initial build happen afterward, from
-# eval/provision.py's own rsync_to()/run() calls once this resource
+# provisioning/provision.py's own rsync_to()/run() calls once this resource
 # completes — not here, so there's a single place that decides what gets
 # synced instead of this resource's own separate deny-list rsync drifting
 # out of sync with RSYNC_ALLOWLIST.
@@ -276,7 +276,7 @@ resource "null_resource" "deploy" {
 }
 
 # ---------------------------------------------------------------------------
-# Outputs — maps keyed by label, so eval/provision.py can read out.instance_public_ips[label].
+# Outputs — maps keyed by label, so provisioning/provision.py can read out.instance_public_ips[label].
 # ---------------------------------------------------------------------------
 
 output "instance_public_ips" {
@@ -288,7 +288,7 @@ output "instance_ids" {
 }
 
 # Which SSH user each label takes — ec2-user on Mac, ubuntu elsewhere. Read by
-# eval/provision.py so the Mac/Linux split lives here and not in two places.
+# provisioning/provision.py so the Mac/Linux split lives here and not in two places.
 #
 # Read off each instance's OWN instance_type, like the two outputs above.
 # Computed from var.instances instead, it breaks twice over: every apply here

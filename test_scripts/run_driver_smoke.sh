@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Runs mcp_app.smoke_test_driver (the non-nanobot MCP smoke-test driver —
 # pushes the reference-scalar kernel through compile/evaluate/disassemble/
-# submit over stdio-over-ssh) for a list of problems, per dataset. Mirrors
-# run_eval_batch.sh's shape but drives mcp_app.smoke_test_driver instead of
-# eval.run_benchmark. Edit NCNN_PROBLEMS/LLAMACPP_PROBLEMS below to change
-# which problems get smoke-tested.
+# submit over stdio-over-ssh) for a list of problems, per dataset. Edit
+# NCNN_PROBLEMS/LLAMACPP_PROBLEMS below to change which problems get
+# smoke-tested.
 #
 # Host/user/key are read from provisioning/eval_config.json (same file
-# eval/run_benchmark.py uses) under LABEL (default: $ISA, matching
+# test_scripts/bench_fleet.py uses) under LABEL (default: $ISA, matching
 # provisioning/provision.py's default_label() when no --dataset is given — this
 # script drives both ncnn and llama.cpp smoke tests off the same instance).
 # Override with HOST/SSH_USER/KEY_FILE env vars, or provision one first:

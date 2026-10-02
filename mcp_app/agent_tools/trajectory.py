@@ -65,10 +65,6 @@ class TrajectoryWriter:
         return self._version
 
     @property
-    def current_version(self) -> int:
-        return self._version
-
-    @property
     def last_turn(self) -> int:
         """Highest turn number already recorded (0 if this definition has no
         prior trajectory) — the turn counter a resuming KernelSession should

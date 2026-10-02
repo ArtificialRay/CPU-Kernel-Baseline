@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local agentic loop: LLM iterates on a SIMD loop problem using the bench harness.
 
-Unlike the SSH eval (eval/run_benchmark.py), this runs entirely in-process:
+Unlike the remote runs (test_scripts/bench_fleet.py), this runs entirely in-process:
 the LLM generates a kernel, bench compiles and runs it locally (or on the
 current machine if deployed to Graviton), and any compile/correctness failures
 go straight back to the LLM as feedback.
