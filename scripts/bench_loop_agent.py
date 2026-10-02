@@ -166,7 +166,6 @@ def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
                 continue
 
             out = ds.unwrap_output(ctx)
-            ref_run_ns: dict = {}
             # Compute reference
             exec_ns: dict = {}
             exec(d.reference, exec_ns)
