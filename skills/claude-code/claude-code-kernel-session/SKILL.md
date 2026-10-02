@@ -41,6 +41,10 @@ it beats your previous best; see "Finish and report" below.
   during the process — e.g. `disassemble` output, `evaluate` logs, or your
   own notes.
 - Feel free to use the Read tool to re-read anything you wrote earlier.
+- File tools (Read/Write/Edit/Glob/Grep) only work inside your current
+  working directory, which starts empty for every session; paths outside it
+  are denied. Your kernel versions, disassembly and trajectory are available
+  as MCP resources instead.
 - `disassemble` is a good friend for checking whether SIMD is really
   helping, or for understanding why an optimization isn't working as
   expected — it shows you the generated assembly and can help you spot

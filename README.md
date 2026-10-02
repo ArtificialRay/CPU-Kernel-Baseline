@@ -113,6 +113,7 @@ Only needed in specific cases, set in `.env` or the shell.
 |---|---|
 | `NCNN_ROOT`, `LLAMA_CPP_ROOT` | Point the local `bench/` harness at an existing ncnn / llama.cpp checkout |
 | `ARMBENCH_NOTEPAD=1` | Give the `own` harness's agent a persistent scratchpad tool |
+| `ARMBENCH_CC_JOB_ROOT` | Parent of the per-job working directories `--harness claude-code` creates (default: the system temp dir); must be outside this repo |
 | `OPENROUTER_API_KEY` | Used by `scripts/bench_loop_agent.py` |
 | `WANDB_INSTANCE_TYPE` | Label recorded on runs logged with `--wandb` |
 
@@ -205,6 +206,12 @@ kernels per dataset, no LLM involved.
 its API key) still comes from that checked-in config, so switching to a
 model from a different provider needs its own base config. Set
 `NANOBOT_CONFIG_BASE` in `.env` (see `.env.example`) to point at one instead.
+
+`--harness claude-code` runs every job in its own empty directory outside
+this repo, with `--permission-mode dontAsk`: the agent gets this session's
+MCP tools plus file tools confined to that directory, and auto-memory is off.
+It cannot read `bench-trace/` (hidden workloads, expert solutions), and
+nothing carries over from one job to the next.
 
 ### Supported harness (claude-code / nanobot / own)
 
