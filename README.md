@@ -1,42 +1,24 @@
 # CPU-Kernel-Baseline
 
-Evaluates LLMs on writing optimized AArch64 SIMD kernels for ncnn / llama.cpp /
-synthetic simd-loop benchmarks. 
+Evaluates LLMs on writing optimized AArch64 SIMD kernels (Neon / SVE / SVE2 /
+SME2), scored against production and expert implementations from four sources:
 
-FP32 Kernels available:
-| Kernel Name | Type | Source |
-|---|---|---|
-| RMSNorm | Memory Bound | llama.cpp |
-| Conv2D Depthwise | Memory Bound | ncnn |
-| Pooling (Reduction) | Memory Bound | ncnn |
-| Conv2D | Compute Bound | ncnn |
-| GEMM | Compute Bound | ncnn |
+| Source | Kernels | Precisions | Definitions |
+|---|---|---|---|
+| [ncnn](https://github.com/Tencent/ncnn) | Conv2D (compute bound); Conv2D Depthwise, Pooling (memory bound) | FP32, INT8 (`w8a8ch`) | 23 |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | GEMM (compute bound); RMSNorm (memory bound); MHA, GQA, MLA (prefill and decode), MoE (fused) | FP32, BF16, INT8 (`q8_0`), 4- to 6-bit (`q4_k_m`, ggml `q4_K` / `q5_K` / `q6_K`) | 44 |
+| [Arm SIMD Loops](https://gitlab.arm.com/architecture/simd-loops) | Standalone loops (`loop_001` … `loop_223`) | per loop | 47 |
+| [KleidiAI](https://gitlab.arm.com/kleidi/kleidiai) | GEMM, Conv2D, Conv2D Depthwise micro-kernels | FP32, F16, BF16, INT4 (`qs4c32`, `qs4cx`) | 10 |
 
-BF16 Kernels available:
-| Kernel Name | Type | Source |
-|---|---|---|
-| GEMM | Compute Bound | llama.cpp |
-| MHA | Fused | llama.cpp |
-| GQA | Fused | llama.cpp |
-| MLA (both prefill and decode) | Fused | llama.cpp |
-| MoE | Fused | llama.cpp |
+Counts are for dataset revision `def2c3e` (2026-09-26);
+`python -m bench.cli list-definitions` prints what your copy contains. 18 of
+the llama.cpp GEMMs (`gemm_ggml_*`) are the quantized matmul shapes of
+Qwen3.5-4B and Llama-3.1-8B, used for end-to-end runs.
 
-INT8 Kernels available:
-| Kernel Name | Type | Source |
-|---|---|---|
-| Conv2D Depthwise | Memory Bound | ncnn (w8a8ch) |
-| Conv2D | Compute Bound | ncnn (w8a8ch) |
-| GEMM | Memory Bound/Compute Bound | ncnn (w8a8ch), llama.cpp (q8_0) |
-| MoE | Fused | llama.cpp (q8_0) |
-
-INT4 Kernels available:
-| Kernel Name | Type | Source |
-|---|---|---|
-| GEMM | Compute Bound | llama.cpp (q4_k_m) |
-| MoE | Fused | llama.cpp (q4_k_m) |
-
-
-Kernel definitions are extracted from real model architectures: qwen1.5-moe-a2.7b, olmoe-1b-7b, deepseek-v3, llama-3.1-8b, mistral-7b-v0.1, resnet50, mobilenetv3-large, alexnet, googlenet, squeezenet1_1, vgg16, deepspeech2
+ncnn and llama.cpp kernel shapes and workloads are extracted from real models:
+resnet50, mobilenetv3-large, alexnet, googlenet, squeezenet1_1, vgg16 (ncnn);
+qwen1.5-moe-a2.7b, olmoe-1b-7b, deepseek-v3, llama-3.1-8b, mistral-7b-v0.1,
+qwen3.5-4b (llama.cpp).
 
 kernel dataset (bench-trace):
 https://huggingface.co/datasets/arm-bench/arm-bench-trace
@@ -45,10 +27,12 @@ https://huggingface.co/datasets/arm-bench/arm-bench-trace
 
 ## Prerequisites
 
-Download kernel dataset to the main directory of your local repository, then run dependency installation:
+Install the dependencies, then download the kernel dataset into `bench-trace/`
+at the root of your local repository (every tool here reads it from there):
 
 ```bash
 pip install -r requirements.txt
+huggingface-cli download arm-bench/arm-bench-trace --repo-type dataset --local-dir bench-trace
 ```
 
 Provisioning and remote runs need an AWS account, Terraform, an SSH key, and
@@ -122,21 +106,31 @@ Only needed in specific cases, set in `.env` or the shell.
 | `OPENROUTER_API_KEY` | Used by `scripts/bench_loop_agent.py` |
 | `WANDB_INSTANCE_TYPE` | Label recorded on runs logged with `--wandb` |
 
-### Apple Silicon / Mac baseline collection
+### Timing protocol
 
-When benchmarking your agent with kernel optimization on an EC2 Mac instance, use these timing defaults in `config/kernel_contracts.yaml`:
+`eval_defaults` in `config/kernel_contracts.yaml` applies to every target:
 
 ```yaml
 eval_defaults:
   warmup: 10
   repeat: 50
   inner_iters: auto
+  target_sample_ns: 1000000
 ```
 
-`inner_iters: auto` enlarges short timed windows to reduce Apple Silicon
-frequency-ramp and timer-resolution noise. Keep Mac traces collected with
-these settings separate from older traces collected with `warmup: 5` and
-`inner_iters: 1`; do not mix the two timing protocols in one baseline set.
+With `inner_iters: auto`, each of the `repeat` timed samples calls the kernel
+back to back until the window is about `target_sample_ns` long, and reports
+the time per call. The baseline's count comes from probing it; a candidate's
+count is derived from its baseline's time. This is what makes µs-scale kernels
+measurable on Apple Silicon, where the clock in use has 1 µs resolution and
+short bursts run before the core has ramped up.
+
+Every trace records the `inner_iters` it was measured with. Traces collected
+with the earlier defaults (`warmup: 5`, `inner_iters: 1`) follow a different
+timing protocol: do not mix the two in one baseline set. An instance that
+still holds baseline traces from the old protocol needs them re-collected
+before new candidates are scored against them, because an existing passed
+baseline trace is reused as is.
 
 ## Two ways to run an agent against this benchmark
 
@@ -178,19 +172,26 @@ python3 test_scripts/bench_fleet.py --harness claude-code \
     --dataset ncnn --isa sve2 --model anthropic/claude-opus-4-8
 ```
 
-Use `--definitions` to control what kernel you'd like agent to optimize, you can add one or multiple kernels if you wish. If `--definitions` is not parsed, the entrypoint will run all definitions in that dataset
+Use `--definitions` to control which kernels the agent optimizes: one name, a
+space-separated list, or a JSON array (quote it, so the shell passes it through
+unchanged). Without `--definitions`, the entrypoint runs every definition in
+that dataset.
 
 ```bash
 python3 test_scripts/bench_fleet.py --harness nanobot \
     --dataset ncnn --isa sve --definitions "conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1"
-python3 test_scripts/bench_fleet.py --harness own \
-    --dataset llama.cpp --isa sve2 --definitions ["gemm_q4_k_m_n2048_k1408","gemm_q4_k_m_n2048_k2048","gemm_q8_0_n1024_k2048","gemm_q8_0_n1408_k2048","gemm_q8_0_n2048_k1024"]
+python3 test_scripts/bench_fleet.py --harness own --model anthropic/claude-opus-4-8 \
+    --dataset llama.cpp --isa sve2 \
+    --definitions '["gemm_q4_k_m_n2048_k1536","gemm_q4_k_m_n2048_k2048","gemm_q8_0_n1024_k2048","gemm_q8_0_n1408_k2048","gemm_q8_0_n2048_k1024"]'
 ```
 
 Each harness's own `HarnessAdapter` lives in its own module under `test_scripts/harness_adapters/`. Run
 `python3 test_scripts/bench_fleet.py --help` for the full flag reference
 (`--definitions`, `--min-iterations`/`--max-iterations`, `--retries`,
-`--sync-solutions`, `--on-demand`, ...).
+`--sync-solutions`, `--on-demand`, `--until-complete`, `--wandb`, ...).
+`--dataset` is one of `ncnn`, `simd-loop`, `llama.cpp`, `kleidiai`; `--isa` is
+one of `neon`, `sve`, `sve2`, `sme2`, `portable` (plain C/C++, no SIMD
+intrinsics).
 
 `test_scripts/run_driver_smoke.sh` is a separate, narrower smoke-test:
 compile/evaluate/disassemble/submit against a couple of reference-scalar
@@ -202,8 +203,11 @@ kernels per dataset, no LLM involved.
 | Harness | `--harness` value | Requires |
 |---|---|---|
 | Claude Code | `claude-code` | `claude` CLI on PATH |
+| Codex | `codex` | `codex` CLI on PATH |
+| Cline | `cline` | `cline` CLI on PATH, `--model`, and an endpoint in `skills/cline/cline-kernel-session/config.json` |
 | nanobot | `nanobot` | `nanobot` CLI on PATH + a bootstrapped `~/.nanobot/workspace` |
-| This repo's own loop | `own` | none (no external CLI) |
+| This repo's own loop | `own` | `--model` (no external CLI) |
+| Single shot, no tools | `single-shot` | `--model` (no external CLI) |
 
 `--harness nanobot` reads its base config from
 `skills/nanobot/nanobot-kernel-session/config.json` by default. Passing
@@ -212,7 +216,7 @@ its API key) still comes from that checked-in config, so switching to a
 model from a different provider needs its own base config. Set
 `NANOBOT_CONFIG_BASE` in `.env` (see `.env.example`) to point at one instead.
 
-### Supported harness (claude-code / nanobot / own)
+### Supported harness (claude-code / codex / cline / nanobot / own / single-shot)
 
 If your harness already has a `HarnessAdapter`
 (`test_scripts/harness_adapters/`), you can use `test_scripts/bench_fleet.py` (see
@@ -240,7 +244,12 @@ matching `--dataset` (narrow with `--definitions`) until the model stops or
 
 **--model** is a required argument for own harness as there are no default model provided for own harness
 
-See [`eval/README.md`](eval/README.md) for `eval/evaluator.py`'s agent-loop
+`--harness single-shot` uses the same in-process path
+(`eval/single_shot.py::run_single_shot`) but gives the model one completion
+with no tools, `--samples` times per definition, and measures each result
+through the same MCP `compile`/`evaluate`.
+
+See [`eval/README.md`](eval/README.md) for the agent-loop and single-shot
 details, `provisioning/provision.py`'s standalone provisioning commands, and where
 results/traces end up.
 
@@ -248,7 +257,7 @@ results/traces end up.
 
 ### Custom MCP server session
 
-For a harness that isn't one of the three supported adapters (or for
+For a harness that isn't one of the supported adapters (or for
 debugging the MCP surface directly), specify your own `--dataset`,
 `--author`, and `--isa` and start the session with
 `skills/launch/launch_session.py`:

@@ -1,6 +1,18 @@
-# eval/ — own harness (in-repo litellm agent loop)
+# eval/ — own harness (in-repo litellm agent loop) and single-shot
 
-The repo provide a in-repo litellm agent loop to use mcp tools for test and fun
+Two ways to run a model against the MCP server without an external agent CLI.
+Both are driven by `test_scripts/bench_fleet.py`, which owns the same
+lifecycle it gives every other harness: provision or reuse the instance,
+start `mcp_app/server.py` on it, run the jobs, sync results back.
+
+- `--harness own` — `eval/evaluator.py::run_agentic_eval`, a litellm tool-call
+  loop. The model calls `check_progress` / `compile` / `evaluate` /
+  `disassemble` until it stops or runs out of budget. There is no separate
+  submit tool here: `evaluate()` persists the best version on the instance.
+- `--harness single-shot` — `eval/single_shot.py::run_single_shot`. One
+  completion with no tools, `--samples` times per definition. Each kernel that
+  comes back is compiled and measured once through the same MCP
+  `compile`/`evaluate`, so the number is comparable with a multi-turn run.
 
 ## Prerequisites
 
@@ -8,112 +20,118 @@ The repo provide a in-repo litellm agent loop to use mcp tools for test and fun
 pip install -r requirements.txt   # from repo root
 ```
 
-- A `.env` file at the repo root with the API key for whichever provider
-  `--model` names (e.g. `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`) — loaded
-  via `python-dotenv`.
-- An AWS account with Terraform configured (`terraform/`) and an SSH key, if
-  you'll be provisioning instances (not needed if you're only pointing at an
-  already-running instance recorded in `eval_config.json`).
-- `provisioning/eval_config.json` — copy from `provisioning/eval_config.json.example`.
-  Records `host`/`user`/`key_file`/`instance_type` per label (default label
-  is `f"{dataset}-{isa}"`). Shared with `skills/launch/`'s own provisioning,
-  so an instance either side brought up is visible to the other.
+- The kernel dataset in `bench-trace/` at the repo root (see the top-level
+  README).
+- Model credentials: either the provider's usual environment variable
+  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, ..., from the
+  shell or a `.env` at the repo root), or `eval/llm_providers.json` (copy
+  `llm_providers.json.example`), which sets `api_key` / `api_base` per
+  provider and falls back to the environment for anything left out.
+- For provisioning: an AWS account, Terraform (`terraform/`), an SSH key and
+  `provisioning/workspaces.json` (see the top-level README's Configuration
+  section). `provisioning/eval_config.json` is written by the tools and
+  records the instances that are up, one per label.
 
 ## Quickstart
 
 ```bash
-python eval/run_benchmark.py --problem <op_type> --dataset <dataset> --model <model>
+python3 test_scripts/bench_fleet.py --harness own \
+    --dataset ncnn --isa sve --model anthropic/claude-opus-4-8
 ```
 
 What this does, end to end:
-1. Provisions a fresh instance or reuses one already recorded in
-   `eval_config.json` for this `{dataset}-{isa}` label (`provisioning/provision.py`).
-2. Starts `mcp_app.server` on it and opens an MCP client session
-   (`eval/mcp_client.py`), reused across every definition in this run.
-3. Runs the litellm agent loop (`eval/evaluator.py::run_agentic_eval`) for
-   each definition: the model calls `compile`/`evaluate`/`disassemble`
-   against the MCP session until it stops or `--max-turns` is hit.
-4. Saves the run's result to `results/` (unless `--no-save`); the best
-   kernel itself is already persisted to `bench-trace/` by the MCP server on
-   every new best, independent of this.
-5. Tears the instance down if `--teardown` was passed.
+1. Provisions a fresh instance, or reuses a reachable one recorded in
+   `provisioning/eval_config.json` under this run's label, and collects any
+   missing baseline traces on it.
+2. Starts `mcp_app.server` there and opens one MCP client session
+   (`eval/mcp_client.py::attach()`), shared by every definition in the run.
+3. Runs the loop for each definition matching `--dataset` (narrow with
+   `--definitions`). The MCP server rejects further compile/evaluate/
+   disassemble calls after `--max-iterations` of them.
+4. Syncs each definition's run directory back and writes the result JSON
+   (see "Results" below).
+5. Tears down the instance the run used.
 
 ## Usage examples
 
-**Single definition (ncnn dataset, SVE2 / Graviton4 by default):**
+**One definition:**
 ```bash
-python eval/run_benchmark.py --problem conv2d --dataset ncnn --model anthropic/claude-opus-4-8
+python3 test_scripts/bench_fleet.py --harness own --model anthropic/claude-opus-4-8 \
+    --dataset ncnn --isa sve --definitions "conv2d_fp32_kh3_kw3_sh1_sw1_dh1_dw1_p1"
 ```
 
-**All definitions for a dataset:**
+**Another dataset or ISA** (`--dataset`: `ncnn`, `simd-loop`, `llama.cpp`,
+`kleidiai`; `--isa`: `neon`, `sve`, `sve2`, `sme2`, `portable`):
 ```bash
-python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-8
+python3 test_scripts/bench_fleet.py --harness own --model anthropic/claude-opus-4-8 \
+    --dataset simd-loop --isa sve2
 ```
 
-**Provision a fresh instance, run, then tear it down automatically:**
+**The `portable` C/C++-only ablation** (agent code may not use NEON/SVE
+intrinsics; compiled with the same flags as `neon`):
 ```bash
-python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-8 \
-    --provision --teardown
+python3 test_scripts/bench_fleet.py --harness own --model anthropic/claude-opus-4-8 \
+    --dataset simd-loop --isa portable
 ```
 
-**Reuse an instance already recorded in `eval_config.json`** (default —
-just omit `--provision`):
+**Single shot, five samples per definition:**
 ```bash
-python eval/run_benchmark.py --problem conv2d --dataset ncnn --model anthropic/claude-opus-4-8
+python3 test_scripts/bench_fleet.py --harness single-shot --model anthropic/claude-opus-4-8 \
+    --dataset llama.cpp --isa sve --samples 5
 ```
 
-**Override ISA (e.g. Graviton3 SVE), or run the `portable` C/C++-only ablation**
-(agent-submitted code may not use NEON/SVE intrinsics; compares agent-optimized
-plain C++ against hand-written SIMD):
+**Keep resuming until every definition has a complete trajectory** (not
+available for `single-shot`, which never submits):
 ```bash
-python eval/run_benchmark.py --all --dataset simd-loop --model anthropic/claude-opus-4-8 \
-    --isa sve
-python eval/run_benchmark.py --all --dataset simd-loop --model anthropic/claude-opus-4-8 \
-    --isa portable
+python3 test_scripts/bench_fleet.py --harness own --model anthropic/claude-opus-4-8 \
+    --dataset ncnn llama.cpp --isa sve --until-complete
 ```
 
-**simd-loop / llama.cpp datasets:**
-```bash
-python eval/run_benchmark.py --problem loop_001 --dataset simd-loop --model anthropic/claude-opus-4-8
-python eval/run_benchmark.py --all --dataset llama.cpp --model anthropic/claude-opus-4-8
-```
+## Options that matter here
 
-**Quiet batch run, keep full trajectories, skip already-collected baselines:**
-```bash
-python eval/run_benchmark.py --all --dataset ncnn --model anthropic/claude-opus-4-8 \
-    --quiet --save-trace --skip-baselines
-```
-
-## `run_benchmark.py` options
+Run `python3 test_scripts/bench_fleet.py --help` for the full list.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--problem <name>` | — | Definition name or op_type prefix (e.g. `conv2d`) |
-| `--all` | — | Run all definitions for the dataset (mutually exclusive with `--problem`) |
-| `--dataset` | `ncnn` | Dataset to benchmark: `ncnn`, `simd-loop`, or `llama.cpp` |
-| `--model` | (required) | LiteLLM model string, e.g. `anthropic/claude-opus-4-8` |
-| `--isa` | `sve2` | ISA target: `neon`, `sve`, `sve2`, `sme2`, `portable` (plain C/C++, no SIMD intrinsics allowed) |
-| `--provision` | off | Provision a new instance even if one is already configured for this label |
-| `--teardown` | off | Destroy the instance after evaluation |
-| `--max-turns` | `20` | Max agent turns per definition |
-| `--quiet` | off | Suppress per-turn output |
-| `--no-save` | off | Don't write this run's result to `results/` |
-| `--save-trace` | off | Also save the full `version_history` to `traces/` |
-| `--skip-baselines` | off | Skip lazy baseline collection (use if baselines are already present) |
+| `--model` | (required) | litellm model string, e.g. `anthropic/claude-opus-4-8` |
+| `--dataset` | (required) | `ncnn`, `simd-loop`, `llama.cpp` or `kleidiai` |
+| `--isa` | `sve` | `neon`, `sve`, `sve2`, `sme2`, `portable` |
+| `--definitions` | all | One name, a space-separated list, or a quoted JSON array |
+| `--max-iterations` | `40` | Hard cap on compile/evaluate/disassemble calls per definition, enforced by the MCP server and stated in the prompt. The `own` loop itself stops after three times as many turns. |
+| `--min-iterations` | `15` | Floor: the model is told not to stop earlier |
+| `--samples` | `3` | `single-shot` only: independent generations per definition. Failed samples are kept, so the pass rate is part of the result. |
+| `--temperature` | `1.0` | `single-shot` only |
+| `--retries` | `3` | Retries for transient infrastructure failures |
+| `--on-demand` | off | On-demand instead of spot, when a fresh instance is provisioned |
+
+Two more knobs live outside the command line:
+
+- `ARMBENCH_NOTEPAD=1` gives the `own` loop's agent a `notepad` tool whose
+  contents survive history compression.
+- `tool_call_loop` in `config/kernel_contracts.yaml` holds the loop's
+  temperature, completion timeout, retry budget and MCP client timeouts, plus
+  the per-model exceptions (models that reject `temperature`, and models that
+  need the Responses API instead of Chat Completions, handled in
+  `eval/llm_call.py`).
 
 ### Instance types
 
+`--isa` picks the instance type (`isa` table in `config/kernel_contracts.yaml`);
+`--instance` overrides it.
+
 | ISA | Instance | Notes |
 |-----|----------|-------|
-| `neon` / `portable` | `c7g.large` | Graviton3, 128-bit NEON only |
-| `sve` | `c7g.large` | Graviton3, Neoverse V1, 256-bit SVE |
-| `sve2` | `c8g.large` | Graviton4, Neoverse V2, 128-bit SVE2 (default) |
+| `neon` | `c7g.xlarge` | Graviton3 |
+| `portable` | `c7g.large` | Graviton3; not in the `isa` table, so `bench_fleet.py`'s fallback type applies |
+| `sve` | `c7g.xlarge` | Graviton3, Neoverse V1, 256-bit SVE |
+| `sve2` | `c8g.xlarge` | Graviton4, Neoverse V2, 128-bit SVE2 |
+| `sme2` | `mac-m4.metal` | Apple M4; needs a Dedicated Host (see the top-level README) |
 
 ## Provisioning (`provisioning/provision.py`)
 
-Standalone script — `run_benchmark.py --provision`/`--teardown` just call
+Standalone script; `bench_fleet.py` and `skills/launch/launch_session.py` call
 into it. Useful directly when you want an instance to persist across several
-`run_benchmark.py` invocations, or to check/tear down what's currently up.
+runs, or to check or tear down what is currently up.
 
 ```bash
 python provisioning/provision.py --isa sve2                    # provision (label defaults to isa)
@@ -127,7 +145,7 @@ python provisioning/provision.py --isa sve2 --on-demand            # on-demand, 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--isa` | — | ISA target: `neon`, `sve`, `sve2`, `sme2`. Drives the default instance type. |
-| `--instance` | derived from `--isa` | EC2 instance type override, e.g. `c8g.xlarge` |
+| `--instance` | derived from `--isa` | EC2 instance type override, e.g. `c8g.2xlarge` |
 | `--label` | `f"{dataset}-{isa}"`, else `isa`, else the instance-type tier | Identifies this instance — one per concurrently-desired instance |
 | `--dataset` | skip | Build this dataset's native lib (ncnn/llama.cpp) right after provisioning |
 | `--initial-build` | skip | Run `make <target>` after provisioning a *fresh* instance only |
@@ -135,26 +153,28 @@ python provisioning/provision.py --isa sve2 --on-demand            # on-demand, 
 | `--teardown` | — | Destroy the instance(s) — all recorded labels if `--label` omitted |
 | `--status` | — | Show instance status |
 
-## Results and traces
+## Results
 
-- `results/<definition>_<dataset>_<model>.json` and `.jsonl` — this run's
-  outcome per definition (unless `--no-save`).
-- `traces/<...>.json` — the full turn-by-turn `version_history`, only with
-  `--save-trace`.
-- `bench-trace/solutions/` and `bench-trace/traces/` — the kernel itself and
-  its evaluation trace, persisted by the MCP server on every new best
-  *during* the run, independent of `--no-save`/`--save-trace`.
-- `agent-runs-mcp/` — synced back from the remote instance after the run
-  (compiled sources, disassembly, trajectory) via
-  `mcp_client.sync_bench_trace_back()`.
+`<author>` defaults to `<harness>-<model>-<isa>`, e.g.
+`own-claude-opus-4-8-sve`.
+
+- `harness_trajs/<harness>/<author>/<dataset>_<isa>_<definition>.log` — the
+  result JSON of that definition. `own`: `status` (`PASSED` with the best
+  version of the session, or `NO_SUBMIT`), `time_speedup`, `cycle_speedup`
+  and the full `version_history`. `single-shot`: one row per sample plus the
+  `pass_rate`.
+- `agent-runs-<author>/<definition>/` — synced back from the instance:
+  `trajectory.jsonl`, every compiled version (`v<N>.cpp`), disassembly, and
+  the reference scalar kernel.
+- `bench-trace/solutions/` on the instance holds the persisted kernels; pass
+  `--sync-solutions` to pull them back as well.
 
 ## File map
 
 | File | Role |
 |---|---|
-| `provision.py` | Terraform lifecycle (provision/status/teardown) for Graviton EC2 instances |
-| `run_benchmark.py` | CLI entry point; per-definition loop; writes `results/`/`traces/` |
-| `evaluator.py` | The agent turn loop itself: system/user prompts, tool-call dispatch, retries, history compression |
-| `mcp_client.py` | MCP client bridge to `mcp_app/server.py` — the same server nanobot/Claude Code drive in Path 2 |
-| `remote.py` | `InstanceHandle` — SSH connection details for a provisioned instance |
-| `eval_config.json` | Shared "what's currently up" record, read/written by both `provision.py` and `skills/launch/` |
+| `evaluator.py` | The agent turn loop: system/user prompts, tool-call dispatch, retries, history compression, optional notepad |
+| `single_shot.py` | One completion, no tools; extracts the kernel, then compiles and measures it over MCP |
+| `mcp_client.py` | MCP client bridge to `mcp_app/server.py` — the same server the external harnesses drive |
+| `llm_call.py` | Chooses Chat Completions or the Responses API per model and normalizes the reply |
+| `llm_providers.py` | Optional per-provider `api_key` / `api_base` overrides from `llm_providers.json` |
