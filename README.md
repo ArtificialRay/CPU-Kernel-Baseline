@@ -71,6 +71,11 @@ first one is something you have to set up yourself.
 | `skills/cline/cline-kernel-session/config.json` | Custom endpoint (`base_url`, `api_key`) — required, cline has no login to fall back to. | `--harness cline` |
 
 `--harness claude-code` uses the account `claude login` set up.
+It runs every job in its own empty directory outside this repo, with
+`--permission-mode dontAsk`: the agent gets this session's MCP tools plus file
+tools confined to that directory, and auto-memory is off. It cannot read
+`bench-trace/` (hidden workloads, expert solutions), and nothing carries over
+from one job to the next.
 
 `.env` (from `.env.example`) is **optional** and only for one-off overrides of
 the above, e.g. `NANOBOT_CONFIG_BASE` to try another nanobot config. A value
@@ -206,12 +211,6 @@ kernels per dataset, no LLM involved.
 its API key) still comes from that checked-in config, so switching to a
 model from a different provider needs its own base config. Set
 `NANOBOT_CONFIG_BASE` in `.env` (see `.env.example`) to point at one instead.
-
-`--harness claude-code` runs every job in its own empty directory outside
-this repo, with `--permission-mode dontAsk`: the agent gets this session's
-MCP tools plus file tools confined to that directory, and auto-memory is off.
-It cannot read `bench-trace/` (hidden workloads, expert solutions), and
-nothing carries over from one job to the next.
 
 ### Supported harness (claude-code / nanobot / own)
 
