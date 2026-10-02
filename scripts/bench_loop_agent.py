@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import json
 import os
 import platform
 import re
@@ -33,7 +32,6 @@ from bench.compile.builders.simd_loop import SimdLoopBuilder
 from bench.data.definition import Definition
 from bench.data.solution import Solution, SolutionSpec, SourceFile, SupportedDatasets
 from bench.data.trace_set import TraceSet
-from bench.data.workload import Workload
 from bench.datasets.simd_loop import sig_from_definition, SimdLoopDataset
 from bench.runtime.inputs import gen_inputs_for_workload
 from bench.runtime.timing import time_callable

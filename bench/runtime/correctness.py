@@ -9,7 +9,7 @@ fail, which is useful for MoE / low-bit operators where a small percentage of el
 may be non-deterministic or quantised differently.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np

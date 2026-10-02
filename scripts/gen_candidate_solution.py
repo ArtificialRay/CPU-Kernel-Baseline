@@ -50,7 +50,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 _REPO = Path(__file__).resolve().parents[1]
 _TMPL_DIR = _REPO / "scripts" / "candidate_binding_templates"

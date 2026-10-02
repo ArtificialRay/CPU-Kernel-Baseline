@@ -42,7 +42,6 @@ from typing import List, Optional
 REPO          = Path(__file__).resolve().parent.parent
 PROBLEMS_DIR  = REPO / "dataset" / "problems"
 BENCH_TRACE   = REPO / "bench-trace"
-SIMD_LOOP_PY  = REPO / "bench" / "datasets" / "simd_loop.py"
 LOOPS_DIR     = REPO / "loops"
 
 # ── C type → numpy dtype string ──────────────────────────────────────────────

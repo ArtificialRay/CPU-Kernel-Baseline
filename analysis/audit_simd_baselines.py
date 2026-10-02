@@ -8,7 +8,7 @@ and does the compiled baseline pass correctness against the reference.
 Prints a per-loop table + category summary. Run from the repo root on a
 provisioned box:  python analysis/audit_simd_baselines.py
 """
-import json, re, sys, traceback
+import json, re, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bench.data.solution import Solution
@@ -16,7 +16,6 @@ from bench.data.definition import Definition
 from bench.data.trace_set import TraceSet
 from bench.config import BenchmarkConfig
 from bench.compile.builders.simd_loop import SimdLoopBuilder
-from bench.compile.builder import CompileError
 from mcp_app.agent_tools import ops
 
 ROOT = Path(__file__).resolve().parent.parent
