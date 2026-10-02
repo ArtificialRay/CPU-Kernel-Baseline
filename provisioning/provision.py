@@ -441,8 +441,6 @@ def provision(
           f"{' (on-demand)' if on_demand else ' (spot)'}...")
 
     vars = [f"-var=on_demand={'true' if on_demand else 'false'}"]
-    if initial_build:
-        vars.append(f"-var=build_target={initial_build}")
     with _tf_lock():
         result = _tf(
             "apply", "-auto-approve", *vars,

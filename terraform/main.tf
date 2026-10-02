@@ -39,17 +39,6 @@ variable "workspace_account_ids" {
   default     = {}
 }
 
-variable "build_target" {
-  description = "arm-bench make target (scalar, neon, sve, sve2, sme2, all, ...)"
-  default     = "sve"
-  # c7g          = Graviton3 (Neoverse V1) — SVE at 256-bit (no SVE2, no SME)
-  # c8g          = Graviton4 (Neoverse V2) — SVE2 at 128-bit (no SME)
-  # mac-m4.metal = Apple M4                — SME2 at 512-bit streaming SVL
-  # No Graviton generation implements SME/SME2 (it is optional in Armv9.2-A and
-  # AWS did not take it), so sme2 is the one tier that lands on Apple silicon —
-  # see the "Mac tier" section below and config/kernel_contracts.yaml's isa.sme2.
-}
-
 variable "instances" {
   description = <<-EOT
     label -> EC2 instance type, one entry per concurrently-desired instance
