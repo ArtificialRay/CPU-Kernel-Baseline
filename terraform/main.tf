@@ -232,7 +232,7 @@ resource "aws_instance" "labeled" {
 # ---------------------------------------------------------------------------
 # Deploy: wait for each instance's own bootstrap to finish.
 # Source sync (allow-listed to RSYNC_ALLOWLIST — bench/, bench-trace/,
-# mcp_app/, requirements.txt) and any initial build happen afterward, from
+# mcp_app/, requirements.txt) and the dataset builds happen afterward, from
 # provisioning/provision.py's own rsync_to()/run() calls once this resource
 # completes — not here, so there's a single place that decides what gets
 # synced instead of this resource's own separate deny-list rsync drifting
