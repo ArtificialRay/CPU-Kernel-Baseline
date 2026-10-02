@@ -304,7 +304,7 @@ class KernelSession(ABC):
             # lazliy collect baseline for new definition
             from . import baseline_readiness
             baseline_readiness.ensure_baseline_collected(
-                self._trace_set, definition, self._bench_cfg.baseline_author,
+                self._trace_set, definition, self._bench_cfg,
             )
         self._active_definition = definition
 

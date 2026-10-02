@@ -71,6 +71,10 @@ class Performance(BaseModelWithDocstrings):
     """Inner calls per timed sample. Recorded because the value changes what is
     measured, not just its resolution, and because "auto" picks it per
     workload — without it a number cannot be reproduced or compared."""
+    timing_protocol: Optional[str] = None
+    """`EvalConfig.timing_protocol` of the run that measured this. None on
+    traces that predate the field; those never match a current config, so they
+    are not reused as baselines."""
     repeat: int = Field(ge=1)
     warmup: int = Field(ge=0)
 

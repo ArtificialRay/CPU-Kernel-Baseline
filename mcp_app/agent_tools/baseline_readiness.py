@@ -7,12 +7,13 @@ immediately with no reload/synchronization gap.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from bench.data.trace import EvaluationStatus
 from contracts import BASELINE_AUTHORS
 
 if TYPE_CHECKING:
+    from bench.config import BenchmarkConfig
     from bench.data.trace_set import TraceSet
 
 # From contracts.py — shared with eval/run_benchmark.py::_DATASET_BASELINE_AUTHOR
@@ -20,29 +21,20 @@ if TYPE_CHECKING:
 DEFAULT_BASELINE_AUTHOR: dict[str, str] = BASELINE_AUTHORS
 
 
-def _has_passed_baseline(
-    trace_set: "TraceSet", definition_name: str, baseline_author: str
-) -> bool:
-    baseline = trace_set.get_baseline_solution(definition_name, baseline_author)
-    if baseline is None:
-        return False
-    for trace in trace_set.get_traces_by_solution(baseline.name):
-        ev = trace.evaluation
-        if ev is not None and ev.status == EvaluationStatus.PASSED:
-            return True
-    return False
-
-
 def ensure_baseline_collected(
-    trace_set: "TraceSet", definition_name: str, baseline_author: str,
+    trace_set: "TraceSet", definition_name: str, bench_cfg: "BenchmarkConfig",
 ) -> None:
-    """Make sure `definition_name` has a PASSED baseline trace for `baseline_author`.
+    """Make sure `definition_name` has a PASSED baseline trace for
+    `bench_cfg.baseline_author`, measured under `bench_cfg`'s timing protocol.
 
     No-op if one already exists. Otherwise runs the baseline Solution
     in-process against `trace_set` (which mutates it directly via
     `Benchmark.run_solution` -> `trace_set.add_traces`, so the check above
     reflects it on any later call — no reload needed) and records the
-    resulting trace.
+    resulting trace. A baseline left over from a different protocol (other
+    `inner_iters` / `target_sample_ns` / `warmup` / `repeat`) counts as
+    missing and is replaced: the session's candidates are timed with
+    `bench_cfg`, and a speedup must not mix two ways of timing.
 
     Best-effort by design: if the baseline solution can't be found or fails
     to compile/evaluate, this silently returns rather than raising —
@@ -54,16 +46,14 @@ def ensure_baseline_collected(
     delete build directories other already-compiled definitions still
     reference; cache teardown stays solely `KernelSession.cleanup()`'s job.
     """
-    if _has_passed_baseline(trace_set, definition_name, baseline_author):
+    definition = trace_set.get_definition(definition_name)
+    timing_protocol = bench_cfg.resolve_eval_config(definition).timing_protocol
+    if trace_set.has_baseline(definition_name, bench_cfg.baseline_author, timing_protocol):
         return
 
-    from bench.benchmark import Benchmark, BenchmarkConfig
+    from bench.benchmark import Benchmark
 
-    bench = Benchmark(
-        trace_set,
-        BenchmarkConfig(baseline_author=baseline_author, definitions=[definition_name]),
-    )
-    bench.collect_baselines()
+    Benchmark(trace_set, replace(bench_cfg, definitions=[definition_name])).collect_baselines()
 
 
 __all__ = ["DEFAULT_BASELINE_AUTHOR", "ensure_baseline_collected"]

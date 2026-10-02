@@ -166,6 +166,21 @@ class EvalConfig:
     # speedup
     baseline_author: str = DEFAULT_BASELINE_AUTHOR
 
+    @property
+    def timing_protocol(self) -> str:
+        """How a sample is timed under this config, as one comparable string.
+
+        Stored on every measurement (`Performance.timing_protocol`). A speedup
+        divides two measurements, so a baseline only counts for a candidate
+        when both carry the same value: changing any timing knob retires the
+        baselines collected before it instead of silently mixing them in.
+        """
+        if self.inner_iters == "auto":
+            loop = f"auto:{self.target_sample_ns}ns"
+        else:
+            loop = f"fixed:{self.inner_iters}"
+        return f"inner_iters={loop} warmup={self.warmup} repeat={self.repeat}"
+
 
 __all__ = [
     "BenchmarkConfig",

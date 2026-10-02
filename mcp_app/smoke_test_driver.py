@@ -34,6 +34,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from bench.config import EvalConfig
 from bench.data.trace_set import TraceSet
 from contracts import BASELINE_AUTHORS
 
@@ -143,10 +144,13 @@ def _find_missing_baselines(
     # prefix — a COMPILE_ERROR/RUNTIME_ERROR baseline trace still "exists"
     # but doesn't satisfy the requirement (exactly what a missing
     # native-library build produces — see ensure_dataset_ready above).
+    # It must also carry the current timing protocol: one timed another way
+    # is re-collected (same rule as agent_tools/baseline_readiness.py).
     check_code = (
         "import json; from pathlib import Path\n"
         f"bench = Path({remote_root!r}).expanduser() / 'bench-trace'\n"
         f"auth = {baseline_author!r}\n"
+        f"protocol = {EvalConfig().timing_protocol!r}\n"
         f"names = {[d.name for d in definitions]!r}\n"
         "td = bench / 'traces'\n"
         "for n in names:\n"
@@ -158,8 +162,10 @@ def _find_missing_baselines(
         "                    line = line.strip()\n"
         "                    if not line: continue\n"
         "                    rec = json.loads(line)\n"
+        "                    ev = rec.get('evaluation') or {}\n"
         "                    if (rec.get('solution', '').startswith(auth)\n"
-        "                            and (rec.get('evaluation') or {}).get('status') == 'PASSED'):\n"
+        "                            and ev.get('status') == 'PASSED'\n"
+        "                            and (ev.get('performance') or {}).get('timing_protocol') == protocol):\n"
         "                        found = True; break\n"
         "            except Exception:\n"
         "                pass\n"
