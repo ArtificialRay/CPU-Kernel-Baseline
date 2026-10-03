@@ -1,5 +1,6 @@
 *.zip
 CLAUDE.md
+MEMORY.md
 */build/
 *.cmake
 .venv/

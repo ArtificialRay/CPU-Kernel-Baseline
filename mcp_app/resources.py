@@ -27,12 +27,6 @@ _MIME_TYPES = {
 # `visible_definitions`
 _REFERENCE_PATTERN = REFERENCE_SCALAR_FILENAME
 
-# Static hardware optimization guides written to `run_dir/docs/*.md` at startup
-# (see session.py::_write_hardware_docs). Dataset-independent reference material
-# (per-instruction latency/throughput tables), visible to every session like the
-# reference-scalar starter — never another session's solution.
-_DOCS_DIRNAME = "docs"
-
 # Glob patterns for files exposed as resources, in listing order.
 _PATTERNS = ["trajectory.jsonl", _REFERENCE_PATTERN, "v*.cpp", "v*.s"]
 
@@ -88,22 +82,6 @@ def list_run_dir_resources(
                         mimeType=_MIME_TYPES.get(path.suffix, "text/plain"),
                     )
                 )
-    # Static hardware optimization guides (run_dir/docs/*.md) — always visible,
-    # like the reference-scalar starter, never scoped to visible_definitions.
-    for path in sorted((run_dir / _DOCS_DIRNAME).glob("*.md")):
-        if not path.is_file():
-            continue
-        rel = str(path.relative_to(run_dir))
-        if rel in seen:
-            continue
-        seen.add(rel)
-        resources.append(
-            types.Resource(
-                uri=f"file://{path.resolve()}",
-                name=rel,
-                mimeType=_MIME_TYPES.get(path.suffix, "text/plain"),
-            )
-        )
     return resources
 
 
@@ -131,7 +109,6 @@ def read_run_dir_resource(
     definition = rel.parts[0] if rel.parts else ""
     if (
         target.name != _REFERENCE_PATTERN
-        and definition != _DOCS_DIRNAME
         and definition not in visible_definitions
     ):
         raise ValueError(
