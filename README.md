@@ -71,6 +71,11 @@ first one is something you have to set up yourself.
 | `skills/cline/cline-kernel-session/config.json` | Custom endpoint (`base_url`, `api_key`) — required, cline has no login to fall back to. | `--harness cline` |
 
 `--harness claude-code` uses the account `claude login` set up.
+It runs every job in its own empty directory outside this repo, with
+`--permission-mode dontAsk`: the agent gets this session's MCP tools plus file
+tools confined to that directory, and auto-memory is off. It cannot read
+`bench-trace/` (hidden workloads, expert solutions), and nothing carries over
+from one job to the next.
 
 `.env` (from `.env.example`) is **optional** and only for one-off overrides of
 the above, e.g. `NANOBOT_CONFIG_BASE` to try another nanobot config. A value
@@ -113,6 +118,7 @@ Only needed in specific cases, set in `.env` or the shell.
 |---|---|
 | `NCNN_ROOT`, `LLAMA_CPP_ROOT` | Point the local `bench/` harness at an existing ncnn / llama.cpp checkout |
 | `ARMBENCH_NOTEPAD=1` | Give the `own` harness's agent a persistent scratchpad tool |
+| `ARMBENCH_CC_JOB_ROOT` | Parent of the per-job working directories `--harness claude-code` creates (default: the system temp dir); must be outside this repo |
 | `OPENROUTER_API_KEY` | Used by `scripts/bench_loop_agent.py` |
 | `WANDB_INSTANCE_TYPE` | Label recorded on runs logged with `--wandb` |
 
