@@ -214,13 +214,8 @@ class ClaudeCodeAdapter(HarnessAdapter):
     @contextmanager
     def prepare_workspace(self, job: Job):
         """Fresh, empty working directory for one run_job() call, outside
-        this repo, removed again afterwards.
-
-        Claude Code's file tools and its per-directory memory are both rooted
-        at cwd. Run from the repo root with bypassPermissions, the agent could
-        Read/Glob/Grep bench-trace (hidden workloads, definitions, expert
-        solutions), and auto-memory carried one job's notes into later jobs.
-        A unique directory per call also keeps concurrent queues apart."""
+        this repo, removed again afterwards. So non of benchmarking scaffold or
+        dataset would be seen."""
         root = os.environ.get(CLAUDE_JOB_ROOT_ENV) or None
         if root is not None:
             root_path = Path(root).expanduser().resolve()
