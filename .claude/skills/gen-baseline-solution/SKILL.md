@@ -153,6 +153,10 @@ rsync -az --delete \
 
 # Collect baselines on remote to verify they compile and run correctly
 ssh ubuntu@<host> "cd arm-bench && python3 -m bench.cli collect-baselines --baseline-author baseline-ncnn-arm 2>&1"
+
+# Inclusion check (see "Inclusion check" below): no baseline may be more than 2x slower
+# than the auto-vectorized scalar starting point on this machine
+ssh ubuntu@<host> "cd arm-bench && python3 scripts/check_baseline_vs_autovec.py --dataset ncnn --isa sve 2>&1"
 ```
 
 **How ctx (the `{{placeholder}}` values) is built** — no config, always the same two rules:
@@ -296,7 +300,27 @@ for name, sols in ts.solutions.items():
 
 # On Graviton: collect baselines to confirm compile + correctness
 ssh ubuntu@<host> "cd arm-bench && python3 -m bench.cli collect-baselines --baseline-author baseline-ncnn-arm 2>&1"
+
+# On Graviton: inclusion check against the auto-vectorized starting point
+ssh ubuntu@<host> "cd arm-bench && python3 scripts/check_baseline_vs_autovec.py --dataset ncnn --isa sve 2>&1"
 ```
+
+---
+
+## Inclusion check: at most 2x slower than autovec
+
+A baseline only counts as an expert reference if it is at least half as fast as the
+compiler's auto-vectorized build of the scalar starting point on the same machine.
+`scripts/check_baseline_vs_autovec.py` builds the starting point (`reference-scalar`, or
+`reference` for simd-loop) with its own `-O2` flags plus the tier's march flag from
+`config/kernel_contracts.yaml`, times it and the tier's baseline
+(`baseline_author_for(dataset, isa)`) on every workload under the same `EvalConfig`, and
+flags every definition where `geomean(baseline min_ns) / geomean(autovec min_ns) > 2`.
+Run it on the tier's own machine (Graviton3 for `sve`, Graviton4 for `sve2`, M4 for `sme2`)
+whenever a baseline is added or regenerated, or a tier gets a new machine. A flagged
+definition is dropped from that tier (or its baseline fixed) before any agent run; an
+ERROR line means one side failed to build, run or pass correctness and needs the same
+look. The script exits 1 if anything is flagged or errors.
 
 ---
 
