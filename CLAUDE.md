@@ -25,7 +25,7 @@ execution surface for every agent-driven path:
   own litellm loop as the client instead of an external harness. Driven via
   `test_scripts/bench_fleet.py --harness own` — the same batch-fleet entry
   point Path 3's harnesses use (`OwnHarnessAdapter` in
-  `test_scripts/harness_adapters.py` calls `run_agentic_eval` in-process,
+  `test_scripts/harness_adapters/own.py` calls `run_agentic_eval` in-process,
   no external CLI subprocess). (Previously had its own independent
   SSH-based tool system, `eval/agent_tools/`, then its own standalone CLI,
   `eval/run_benchmark.py` — both retired once bench_fleet.py covered the
@@ -266,7 +266,7 @@ test_scripts/                   # Batch-fleet entry point, shared across all thr
   bench_fleet.py                 # `--harness {claude-code,nanobot,own}` — compute author/label
                                  #   once, provision, prepare_session, retry/log/sync loop over
                                  #   every definition matching --dataset
-  harness_adapters.py           # Per-harness HarnessAdapter (ClaudeCodeAdapter/NanobotAdapter/
+  harness_adapters/             # One module per harness: HarnessAdapter (ClaudeCodeAdapter/NanobotAdapter/
                                  #   OwnHarnessAdapter) — what's genuinely harness-specific: how
                                  #   each is invoked, how it connects to the MCP endpoint
 

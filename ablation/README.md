@@ -2,7 +2,7 @@
 
 One sub-directory per ablation study. The rule that makes this directory
 worth having: **an ablation never edits the main harness files**
-(`test_scripts/bench_fleet.py`, `test_scripts/harness_adapters.py`,
+(`test_scripts/bench_fleet.py`, `test_scripts/harness_adapters/`,
 `mcp_app/`, `skills/`). It composes them instead — subclassing an adapter,
 wrapping a launch step, post-processing a box — so the production sweep path
 stays exactly what it is and an ablation can be deleted without leaving

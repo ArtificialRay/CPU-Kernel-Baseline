@@ -227,7 +227,7 @@ tool_call_loop:
   # tools, use /v1/responses or set reasoning_effort to 'none'."). Routed
   # through litellm.responses() instead (eval/llm_call.py) rather than
   # worked around with reasoning_effort="none" — see also
-  # harness_adapters.py's ClineAdapter._provider_id() for the same model's
+  # harness_adapters/cline.py's ClineAdapter._provider_id() for the same model's
   # /v1/responses-only fix on that harness.
   models_using_responses_api: ["gpt-5.6-luna"]
   # Retry budget for rate-limit/server-error responses (exponential backoff:

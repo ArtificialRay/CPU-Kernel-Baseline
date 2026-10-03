@@ -187,7 +187,7 @@ python3 test_scripts/bench_fleet.py --harness own \
     --dataset llama.cpp --isa sve2 --definitions ["gemm_q4_k_m_n2048_k1408","gemm_q4_k_m_n2048_k2048","gemm_q8_0_n1024_k2048","gemm_q8_0_n1408_k2048","gemm_q8_0_n2048_k1024"]
 ```
 
-Each harness's own `HarnessAdapter` lives in `test_scripts/harness_adapters.py`. Run
+Each harness's own `HarnessAdapter` lives in its own module under `test_scripts/harness_adapters/`. Run
 `python3 test_scripts/bench_fleet.py --help` for the full flag reference
 (`--definitions`, `--min-iterations`/`--max-iterations`, `--retries`,
 `--sync-solutions`, `--on-demand`, ...).
@@ -215,7 +215,7 @@ model from a different provider needs its own base config. Set
 ### Supported harness (claude-code / nanobot / own)
 
 If your harness already has a `HarnessAdapter`
-(`test_scripts/harness_adapters.py`), you can use `test_scripts/bench_fleet.py` (see
+(`test_scripts/harness_adapters/`), you can use `test_scripts/bench_fleet.py` (see
 "Benchmarking Entrypoint" above) directly, it provisions the instance, starts the MCP
 session, and drives the harness end to end in one command:
 
