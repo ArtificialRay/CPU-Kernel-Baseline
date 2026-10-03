@@ -60,18 +60,18 @@ class NanobotAdapter(HarnessAdapter):
     def default_model(cls) -> Optional[str]:
         if not NANOBOT_CONFIG_BASE.exists():
             raise RuntimeError(
-                f"{NANOBOT_CONFIG_BASE} not found — copy {NANOBOT_CONFIG_BASE.name}.example "
-                "next to it and fill in your provider's apiKey (or point NANOBOT_CONFIG_BASE "
-                "at another config)."
+                f"{NANOBOT_CONFIG_BASE} not found — point NANOBOT_CONFIG_BASE at a nanobot "
+                "config; the default one is checked in at "
+                "skills/nanobot/nanobot-kernel-session/config.json."
             )
         return json.loads(NANOBOT_CONFIG_BASE.read_text())["agents"]["defaults"]["model"]
 
     def __init__(self, *, dataset: str, model: Optional[str], local_port: int):
         if not NANOBOT_CONFIG_BASE.exists():
             raise RuntimeError(
-                f"{NANOBOT_CONFIG_BASE} not found — copy {NANOBOT_CONFIG_BASE.name}.example "
-                "next to it and fill in your provider's apiKey (or point NANOBOT_CONFIG_BASE "
-                "at another config)."
+                f"{NANOBOT_CONFIG_BASE} not found — point NANOBOT_CONFIG_BASE at a nanobot "
+                "config; the default one is checked in at "
+                "skills/nanobot/nanobot-kernel-session/config.json."
             )
         if subprocess.run(["which", "nanobot"], capture_output=True).returncode != 0:
             raise RuntimeError(
