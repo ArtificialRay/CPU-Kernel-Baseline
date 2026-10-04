@@ -275,6 +275,7 @@ scripts/
   gen_simd_loop_harness.py      # Code-gen all simd-loop harnesses + bench-trace artifacts
   bench_loop_agent.py           # Local iterative LLM agent (Path 2)
   test_reference_scalars.py     # Correctness smoke-test for all reference-scalar solutions
+  check_baseline_vs_autovec.py  # Inclusion check: flags baselines >2x slower than the autovec starting point
 
 case-study/                     # Per-definition optimization write-ups
 terraform/                      # Graviton EC2 Terraform config
@@ -319,6 +320,12 @@ python -m bench.cli bench --definition conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1
 ### Correctness smoke-test
 ```bash
 python scripts/test_reference_scalars.py      # should print all workloads PASSED
+```
+
+### Baseline inclusion check (on the tier's machine)
+```bash
+# flags every baseline more than 2x slower than the scalar starting point auto-vectorized for --isa
+python3 scripts/check_baseline_vs_autovec.py --dataset simd-loop --isa sve
 ```
 
 ### MCP session (Path 3)
