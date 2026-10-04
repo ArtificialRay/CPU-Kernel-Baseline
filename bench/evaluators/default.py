@@ -25,7 +25,6 @@ from bench.data.workload import Workload
 from bench.runtime.correctness import compare
 from bench.runtime.inputs import gen_inputs_for_workload
 from bench.runtime.timing import (
-    DEFAULT_TARGET_SAMPLE_NS,
     WatchdogTimeout,
     pick_inner_iters,
     time_callable,
@@ -175,7 +174,7 @@ class DefaultEvaluator(Evaluator):
             # A candidate repeats the kernel as often per sample as its
             # baseline did; only a baseline (or a candidate without one) probes.
             inner_iters = ref_inner_iters or pick_inner_iters(
-                invoke, target_sample_ns=cfg.target_sample_ns or DEFAULT_TARGET_SAMPLE_NS
+                invoke, target_sample_ns=cfg.target_sample_ns
             )
 
         try:
