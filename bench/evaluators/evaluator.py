@@ -39,6 +39,7 @@ from bench.data.trace import (
     Performance,
 )
 from bench.data.workload import Workload
+from contracts import setup_weights_for
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,21 @@ class BoundKernel:
             np_inputs, self.op_type, self.entry._lib,  # noqa: SLF001
             definition=definition, out_shape=out_shape,
         )
+
+    @property
+    def has_setup(self) -> bool:
+        """True if the .so exports armbench_setup_<op_type>."""
+        return getattr(self.entry, "_setup", None) is not None
+
+    def setup(self, setup_ctx: Any) -> int:
+        """Call armbench_setup_<op_type> with a ctx built from weights-only
+        inputs (see Evaluator.evaluate). Not timed."""
+        return self.entry._setup(*setup_ctx.entry_args)  # noqa: SLF001
+
+    def teardown(self) -> int:
+        """Call armbench_teardown_<op_type>, if exported. Not timed."""
+        fn = getattr(self.entry, "_teardown", None)
+        return 0 if fn is None else fn()
 
     def invoke(self, ctx: Any) -> int:
         """One kernel call; returns the C return code."""
@@ -189,7 +205,35 @@ class Evaluator(ABC):
             log = f"adapter.wrap_inputs failed: {e}\n{traceback.format_exc()}"
             return _error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log)
 
+        # Untimed setup: once per workload, before the correctness call and the
+        # timed loop, for baselines and candidates alike. Setup gets a second
+        # ctx in which only the definition's declared weights are real; every
+        # other input and the output are zero-filled stand-ins of the same
+        # shape, so it can repack weights but cannot precompute the result.
+        # No declared weights, or no exported symbol -> setup is not called.
+        setup_ctx = None
+        setup_done = False
         try:
+            weights = setup_weights_for(definition) if kernel.has_setup else []
+            if weights:
+                stand_ins = {
+                    name: (val if name in weights or not isinstance(val, np.ndarray)
+                           else np.zeros_like(val))
+                    for name, val in baseline.np_inputs.items()
+                }
+                try:
+                    setup_ctx = kernel.prepare(
+                        stand_ins, definition, out_shape=baseline.ref_np.shape
+                    )
+                    rc = kernel.setup(setup_ctx)
+                except Exception as e:  # noqa: BLE001
+                    log = f"armbench_setup_{kernel.op_type} failed: {e}\n{traceback.format_exc()}"
+                    return _error(EvaluationStatus.RUNTIME_ERROR, env, timestamp, log)
+                setup_done = True
+                if rc != 0:
+                    return _error(EvaluationStatus.RUNTIME_ERROR, env, timestamp,
+                                  f"armbench_setup_{kernel.op_type} returned {rc}")
+
             correctness, ev = cls.check_correctness(
                 definition, kernel, ctx, baseline, cfg, env, timestamp
             )
@@ -212,10 +256,20 @@ class Evaluator(ABC):
                 performance=performance,
             )
         finally:
-            try:
-                kernel.release(ctx)
-            except Exception:  # noqa: BLE001
-                logger.exception("adapter.release raised")
+            if setup_done:
+                try:
+                    kernel.teardown()
+                except Exception:  # noqa: BLE001
+                    logger.exception("armbench_teardown raised")
+            # The setup ctx lives until after teardown: whatever setup kept a
+            # pointer to stays valid for every entry call.
+            for c in (setup_ctx, ctx):
+                if c is None:
+                    continue
+                try:
+                    kernel.release(c)
+                except Exception:  # noqa: BLE001
+                    logger.exception("adapter.release raised")
 
 
 def _error(status: EvaluationStatus, env: Environment, ts: str, log: str) -> Evaluation:

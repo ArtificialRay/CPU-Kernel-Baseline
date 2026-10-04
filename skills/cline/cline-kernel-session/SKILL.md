@@ -100,6 +100,17 @@ them at the end to report how much you improved over the naive starting
 point, not just over the competitive baseline. If you already have these
 numbers from resources written before this run, you can skip this step.
 
+### Optional: untimed weight preparation
+
+Every definition also has a `<definition>/setup-hook.md` resource. If the
+definition has weight inputs, your kernel.cpp may export
+`armbench_setup_<op_type>` (same parameters as the entry) and
+`armbench_teardown_<op_type>`. Setup runs once per workload outside the
+timing and receives only the weights for real (activations and output are
+zero-filled stand-ins), so weights can be repacked once instead of on every
+call. Read that resource for the exact signature and the list of weight
+inputs. The expert baseline uses the same hook.
+
 ## 2. Optimize
 
 Standard loop for the definition you're currently working on:

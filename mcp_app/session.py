@@ -13,7 +13,12 @@ from typing import Optional
 
 from bench.config import BenchmarkConfig
 from bench.data.trace_set import TraceSet
-from contracts import REFERENCE_SCALAR_AUTHORS, REFERENCE_SCALAR_FILENAME, baseline_author_for
+import re
+
+from contracts import (
+    REFERENCE_SCALAR_AUTHORS, REFERENCE_SCALAR_FILENAME, SETUP_HOOK_FILENAME,
+    baseline_author_for, setup_weights_for,
+)
 
 from .agent_tools import isa as isa_mod
 from .agent_tools import resolve_tools
@@ -94,6 +99,61 @@ def _write_reference_scalar_kernels(ts: TraceSet, dataset: str, run_dir: Path) -
         (definition_dir / REFERENCE_SCALAR_FILENAME).write_text(
             kernel_src.content, encoding="utf-8"
         )
+        definition = ts.definitions.get(def_name)
+        if definition is not None:
+            (definition_dir / SETUP_HOOK_FILENAME).write_text(
+                _setup_hook_note(definition, ref), encoding="utf-8"
+            )
+
+
+_ENTRY_RE = re.compile(r"int\s+(armbench_entry_\w+)\s*\(([^)]*)\)", re.S)
+
+
+def _setup_hook_note(definition, ref) -> str:
+    """The agent-facing description of the optional untimed setup hook for one
+    definition: which inputs it sees for real, and the signature to copy."""
+    op = definition.op_type
+    weights = setup_weights_for(definition)
+    if not weights:
+        return (
+            f"# Untimed setup: not available for {definition.name}\n\n"
+            "This definition has no weight inputs, so `armbench_setup_"
+            f"{op}` is never called and every call is timed whole.\n"
+        )
+    params = None
+    for s in ref.sources:
+        m = _ENTRY_RE.search(s.content)
+        if m and m.group(1) == f"armbench_entry_{op}":
+            params = " ".join(m.group(2).split())
+            break
+    signature = (f'extern "C" int armbench_setup_{op}({params});' if params is not None
+                 else f'extern "C" int armbench_setup_{op}(/* same parameters as armbench_entry_{op} */);')
+    listed = ", ".join(f"`{w}`" for w in weights)
+    return f"""# Optional untimed setup for {definition.name}
+
+Libraries usually prepare weights once (repacking, layout transforms) and
+reuse them for every call. Your kernel may do the same, outside the timing,
+by exporting two more functions from kernel.cpp:
+
+```cpp
+{signature}
+extern "C" int armbench_teardown_{op}(void);
+```
+
+`armbench_setup_{op}` takes exactly the parameters of `armbench_entry_{op}`,
+the function the harness calls on every timed iteration.
+
+- Setup runs once per workload, before the first correctness call and the
+  timed loop; teardown runs after the last call. Neither is timed.
+- Weights of this definition: {listed}. Setup receives these for real. Every
+  other input and the output arrive as zero-filled stand-ins with the same
+  shapes; scalar and shape arguments are real. Prepare weights here, never
+  results.
+- Every timed call to `armbench_entry_{op}` receives the real arguments.
+  Keep what setup prepared in static storage and free it in teardown.
+  Return 0 on success.
+- Both functions are optional. The expert baseline uses the same hook.
+"""
 
 
 __all__ = ["SessionConfig", "build_tools"]

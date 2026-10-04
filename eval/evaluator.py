@@ -71,6 +71,14 @@ If no prior progress found above. Establish the starting-point baseline first:
      over the competitive baseline.
   3. Only after this pair of calls should you start optimizing below.
 
+Optional untimed weight preparation: read_code({{"filename": "setup-hook.md"}})
+says whether this definition has weight inputs. If it does, kernel.cpp may
+export armbench_setup_<op_type> (same parameters as the entry) and
+armbench_teardown_<op_type>; setup runs once per workload outside the timing
+and receives only the weights for real (activations and output are
+zero-filled stand-ins), so weights can be repacked once instead of on every
+call. The expert baseline uses the same hook.
+
 Workflow (after v1 above, or after re-establishing best-so-far per step 3 above):
   1. compile() your next attempt.
   2. evaluate()     — checks correctness first (fail-fast); if that passes, also

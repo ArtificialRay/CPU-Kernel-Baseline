@@ -16,6 +16,39 @@ contracts:
   # (MCP resource name in mcp_app; also the file eval/'s AgentTools shows the
   # agent as its starter code).
   reference_scalar_filename: "reference-scalar-kernel.cpp"
+  # Per-definition note on the optional untimed setup hook, exposed next to
+  # the starting-point kernel (see setup_weights below).
+  setup_hook_filename: "setup-hook.md"
+
+# Untimed setup (this branch): a kernel may export
+#   extern "C" int armbench_setup_<op_type>(<the entry's parameters>);
+#   extern "C" int armbench_teardown_<op_type>(void);
+# The evaluator calls setup once per workload, before the correctness call
+# and the timed loop, and teardown after; neither is timed. Baselines and
+# candidates are treated the same way.
+#
+# Setup must only be able to prepare weights, never to precompute a result.
+# So it gets the entry's argument list with the real tensors listed here and,
+# for every other input and for the output, a zero-filled stand-in of the
+# same shape and dtype; scalar and shape arguments are passed unchanged. The
+# entry then receives the real arguments. A definition with no input listed
+# here never gets setup called (fail closed): attention K/V are activations,
+# not weights (issue #85), so mha / gqa / mla_prefill have none.
+#
+# Keys are op_types; a definition name as key overrides its op_type. Names
+# not among a definition's inputs are ignored.
+setup_weights:
+  conv2d: [weight, bias, weight_scales]
+  conv2d_depthwise: [weight, bias, weight_scales, input_scales]
+  gemm: [B, B_q4, B_scales, B_mins, bias]
+  moe: [router_weight,
+        gate_proj, up_proj, down_proj,
+        gate_scales, up_scales, down_scales,
+        gate_proj_q4, gate_proj_scales, gate_proj_mins,
+        up_proj_q4, up_proj_scales, up_proj_mins,
+        down_proj_q4, down_proj_scales, down_proj_mins]
+  rms_norm: [weight]
+  mla_decode: [v_mla]
 
 # dataset -> the Solution.author tag for that dataset's reference/starting-point
 # scalar kernel (what an agent begins from, NOT the speedup baseline below).

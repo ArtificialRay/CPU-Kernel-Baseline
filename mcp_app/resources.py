@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import mcp.types as types
-from contracts import REFERENCE_SCALAR_FILENAME
+from contracts import REFERENCE_SCALAR_FILENAME, SETUP_HOOK_FILENAME
 
 _MIME_TYPES = {
     ".cpp": "text/x-c++src",
@@ -26,9 +26,12 @@ _MIME_TYPES = {
 # authored by an agent. Visible to every MCP session regardless of
 # `visible_definitions`
 _REFERENCE_PATTERN = REFERENCE_SCALAR_FILENAME
+# Same standing for the per-definition setup-hook note (also written at
+# startup, part of the problem statement rather than anyone's solution).
+_ALWAYS_VISIBLE = {_REFERENCE_PATTERN, SETUP_HOOK_FILENAME}
 
 # Glob patterns for files exposed as resources, in listing order.
-_PATTERNS = ["trajectory.jsonl", _REFERENCE_PATTERN, "v*.cpp", "v*.s"]
+_PATTERNS = ["trajectory.jsonl", _REFERENCE_PATTERN, SETUP_HOOK_FILENAME, "v*.cpp", "v*.s"]
 
 
 def list_run_dir_resources(
@@ -63,7 +66,7 @@ def list_run_dir_resources(
     seen: set[str] = set()
     resources: list[types.Resource] = []
     for pattern in _PATTERNS:
-        if pattern == _REFERENCE_PATTERN:
+        if pattern in _ALWAYS_VISIBLE:
             definition_dirs = sorted(d for d in run_dir.glob("*") if d.is_dir())
         else:
             definition_dirs = [run_dir / d for d in sorted(visible_definitions)]
@@ -108,7 +111,7 @@ def read_run_dir_resource(
 
     definition = rel.parts[0] if rel.parts else ""
     if (
-        target.name != _REFERENCE_PATTERN
+        target.name not in _ALWAYS_VISIBLE
         and definition not in visible_definitions
     ):
         raise ValueError(

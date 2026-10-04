@@ -262,11 +262,24 @@ def _bind_entry(lib: ctypes.CDLL, op_type: str):
 
     Adapters construct fully-typed ctypes objects in entry_args, so no
     argtypes table is needed here.
+
+    Also resolves the optional armbench_setup_<op_type> (same parameters as the
+    entry) and armbench_teardown_<op_type>(void) and stashes them on the entry
+    as `_setup` / `_teardown`; absent symbols leave them at None, so every
+    solution without the hook runs exactly as before. See
+    Evaluator.evaluate for when they are called.
     """
     fn = getattr(lib, f"armbench_entry_{op_type}")
     fn.restype = ctypes.c_int
     # Stash the lib so adapters can bind their own symbols (e.g. mat_factory).
     fn._lib = lib  # type: ignore[attr-defined]
+    for hook in ("setup", "teardown"):
+        try:
+            h = getattr(lib, f"armbench_{hook}_{op_type}")
+            h.restype = ctypes.c_int
+        except AttributeError:
+            h = None
+        setattr(fn, f"_{hook}", h)
     return fn
 
 

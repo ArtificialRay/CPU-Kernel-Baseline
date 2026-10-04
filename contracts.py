@@ -46,6 +46,19 @@ def _isa_table() -> dict[str, IsaSpec]:
 
 AGENT_KERNEL_FILENAME: str = _contracts()["agent_kernel_filename"]
 REFERENCE_SCALAR_FILENAME: str = _contracts()["reference_scalar_filename"]
+SETUP_HOOK_FILENAME: str = _contracts()["setup_hook_filename"]
+SETUP_WEIGHTS: dict[str, list[str]] = {
+    k: list(v) for k, v in (_load().get("setup_weights") or {}).items()
+}
+
+
+def setup_weights_for(definition) -> list[str]:
+    """Inputs of `definition` that armbench_setup_<op_type> receives for real
+    (every other tensor reaches setup as a zero-filled stand-in). Empty means
+    setup is never called for this definition. A definition-name key in
+    setup_weights overrides its op_type key."""
+    names = SETUP_WEIGHTS.get(definition.name, SETUP_WEIGHTS.get(definition.op_type, []))
+    return [n for n in names if n in definition.inputs]
 REFERENCE_SCALAR_AUTHORS: dict[str, str] = dict(_load()["reference_scalar_authors"])
 BASELINE_AUTHORS: dict[str, str] = dict(_load()["baseline_authors_default"])
 BASELINE_AUTHORS_BY_ISA: dict[str, dict[str, str]] = {
@@ -99,6 +112,9 @@ __all__ = [
     "IsaSpec",
     "AGENT_KERNEL_FILENAME",
     "REFERENCE_SCALAR_FILENAME",
+    "SETUP_HOOK_FILENAME",
+    "SETUP_WEIGHTS",
+    "setup_weights_for",
     "REFERENCE_SCALAR_AUTHORS",
     "BASELINE_AUTHORS",
     "BASELINE_AUTHORS_BY_ISA",
