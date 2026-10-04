@@ -179,7 +179,9 @@ class EvalConfig:
             loop = f"auto:{self.target_sample_ns}ns"
         else:
             loop = f"fixed:{self.inner_iters}"
-        return f"inner_iters={loop} warmup={self.warmup} repeat={self.repeat}"
+        # ablation/untimed-setup: kernels' one-time setup runs outside the
+        # timing here, so these measurements must never mix with main's.
+        return f"inner_iters={loop} warmup={self.warmup} repeat={self.repeat} setup=untimed"
 
 
 __all__ = [
