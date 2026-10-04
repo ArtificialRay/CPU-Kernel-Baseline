@@ -95,13 +95,6 @@ def pin_to_cpu(cpu: int) -> Optional[int]:
         return None
 
 
-# Target sample duration when inner_iters is auto-tuned.
-# A candidate is timed with its baseline's count, so one 200x faster than the
-# baseline still gets 50 µs windows, far above the clock's resolution, while
-# a baseline workload costs about repeat * 10 ms.
-DEFAULT_TARGET_SAMPLE_NS = 10_000_000
-
-
 def round_pow2(n: int) -> int:
     """Round up to a power of two, so probe noise cannot shift the choice.
 
@@ -115,7 +108,7 @@ def round_pow2(n: int) -> int:
 def pick_inner_iters(
     inner: Callable[[], None],
     *,
-    target_sample_ns: int = DEFAULT_TARGET_SAMPLE_NS,
+    target_sample_ns: int,
     max_inner_iters: int = 1 << 20,
 ) -> int:
     """Choose inner_iters so one timed window spans ~target_sample_ns.
@@ -275,7 +268,6 @@ def time_callable(
 
 
 __all__ = [
-    "DEFAULT_TARGET_SAMPLE_NS",
     "TimingResult",
     "WatchdogTimeout",
     "pick_inner_iters",
