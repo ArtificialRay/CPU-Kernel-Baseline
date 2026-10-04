@@ -67,11 +67,6 @@ class BuilderRegistry:
             cls._instance = BuilderRegistry(builders)
         return cls._instance
 
-    @classmethod
-    def reset_instance(cls) -> None:
-        """Drop the singleton (mainly for tests)."""
-        cls._instance = None
-
     def build(
         self, definition: Definition, solution: Solution, is_baseline: bool
     ) -> CompileResult:

@@ -50,7 +50,7 @@ first one is something you have to set up yourself.
 |---|---|---|
 | `provisioning/workspaces.json` | **Exactly one** entry: the Terraform workspace this checkout uses. The key is the workspace name (selected automatically — do **not** set `TF_WORKSPACE`). Fields: `account_id` (AWS account guard), `namespace` (suffix for AWS resource names), `aws_profile`, `aws_region`, `security_group_id` (an *existing* security group that allows SSH — Terraform does not create it). This is the single source for AWS account/region/profile: don't repeat any of it in `.env`. | any provisioning / remote run |
 | `eval/llm_providers.json` | Per-provider `api_key` / `api_base` for the litellm loop; anything left out falls back to the provider's usual environment variable. | `--harness own` |
-| `skills/nanobot/nanobot-kernel-session/config.json` | nanobot's model, provider + API key, and MCP server wiring. | `--harness nanobot` |
+| `skills/nanobot/nanobot-kernel-session/config.json` | nanobot's model, provider + API key, and MCP server wiring. The one exception here: it is checked in as the default, with every key empty. Fill in your provider's `apiKey`, or keep the key out of git by pointing `NANOBOT_CONFIG_BASE` at a copy. | `--harness nanobot` |
 | `skills/codex/codex-kernel-session/config.json` | Optional custom endpoint (`base_url`, `api_key`); without it codex uses the account `codex login` set up. | `--harness codex` |
 | `skills/cline/cline-kernel-session/config.json` | Custom endpoint (`base_url`, `api_key`) — required, cline has no login to fall back to. | `--harness cline` |
 

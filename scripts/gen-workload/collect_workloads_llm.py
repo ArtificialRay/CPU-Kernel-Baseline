@@ -38,20 +38,20 @@ definition to an already-registered op_type needs no script changes.
 Usage
 -----
     # Reuse an already-running instance recorded under label "sve":
-    python scripts/collect_workloads_llm.py \\
+    python scripts/gen-workload/collect_workloads_llm.py \\
         --label sve \\
         --model ~/models/Llama-3.2-1B-Instruct-Q8_0.gguf \\
         --op-type gemm --definition gemm_fp32_n2048_k2048 \\
         --num-prompts 200
 
     # No instance running yet under this label — provision one (any ISA works):
-    python scripts/collect_workloads_llm.py \\
+    python scripts/gen-workload/collect_workloads_llm.py \\
         --label sve --isa sve \\
         --model ~/models/Llama-3.2-1B-Instruct-Q8_0.gguf \\
         --op-type mha --definition mha_fp32_h16_d128_kvh16 \\
         --num-prompts 50 --dry-run
 
-    python scripts/collect_workloads_llm.py --list-op-types
+    python scripts/gen-workload/collect_workloads_llm.py --list-op-types
 """
 
 from __future__ import annotations

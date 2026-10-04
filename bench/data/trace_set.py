@@ -10,10 +10,8 @@ in bench/benchmark.py (Benchmark); bench/cli.py dispatches into that.
 
 from __future__ import annotations
 
-import shutil
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -357,15 +355,6 @@ class TraceSet:
         if self.root is not None:
             path = self.workloads_path / d.op_type / f"{d.name}.jsonl"
             append_jsonl_file(workloads, path)
-
-    def backup_traces(self) -> None:
-        """Move traces/ aside (timestamped) so a fresh run starts clean."""
-        root = self._require_root()
-        traces_path = self.traces_path
-        backup = root / f"traces_bak_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
-        if traces_path.exists():
-            shutil.move(str(traces_path), str(backup))
-        traces_path.mkdir(parents=True, exist_ok=True)
 
     # The benchmark run loops live in bench/benchmark.py (Benchmark.bench /
     # collect_baselines / run_all). TraceSet stays a pure warehouse: load,

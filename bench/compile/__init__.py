@@ -6,12 +6,10 @@ by the orchestration layer (`bench/benchmark.py`) and threaded in as an
 `is_baseline` flag.
 
 Back-compat surface kept for the runner and any external importer:
-  CompileError, CompileResult, cleanup_build_dir, Builder, BuilderRegistry.
+  CompileError, CompileResult, Builder, BuilderRegistry.
 """
 
 from __future__ import annotations
-
-import shutil
 
 from .builder import (
     BuildError,
@@ -22,22 +20,10 @@ from .builder import (
 from .registry import BuilderRegistry
 
 
-def cleanup_build_dir(result: CompileResult) -> None:
-    """Remove a single CompileResult's build dir. Idempotent.
-
-    Lifecycle is normally owned by BuilderRegistry.cleanup() / Benchmark.close();
-    this helper remains for callers that build a one-off result outside the
-    registry.
-    """
-    if result.build_dir.exists():
-        shutil.rmtree(result.build_dir, ignore_errors=True)
-
-
 __all__ = [
     "Builder",
     "BuildError",
     "BuilderRegistry",
     "CompileError",
     "CompileResult",
-    "cleanup_build_dir",
 ]

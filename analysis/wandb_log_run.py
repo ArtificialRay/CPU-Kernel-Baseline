@@ -28,7 +28,6 @@ from __future__ import annotations
 import glob
 import hashlib
 import json
-import math
 import os
 import re
 import sys

@@ -122,9 +122,6 @@ class Solution(BaseModelWithDocstrings):
             raise ValueError(f"entry_point file '{entry_file}' not present in sources")
         return self
 
-    def get_entry_file(self) -> str:
-        return self.spec.entry_point.split("::")[0]
-
     def get_entry_symbol(self) -> str:
         return self.spec.entry_point.split("::")[1]
 

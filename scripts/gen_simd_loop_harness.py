@@ -42,7 +42,6 @@ from typing import List, Optional
 REPO          = Path(__file__).resolve().parent.parent
 PROBLEMS_DIR  = REPO / "dataset" / "problems"
 BENCH_TRACE   = REPO / "bench-trace"
-SIMD_LOOP_PY  = REPO / "bench" / "datasets" / "simd_loop.py"
 LOOPS_DIR     = REPO / "loops"
 
 # ── C type → numpy dtype string ──────────────────────────────────────────────
@@ -656,7 +655,6 @@ def _gen_reference(info: LoopInfo) -> str:
 
 def _extract_scalar_kernel(loop_id: str) -> str:
     """Extract the HAVE_AUTOVEC scalar function from loops/loop_NNN.c."""
-    loop_num = re.search(r'loop_(\d+)', loop_id).group(1)
     c_file = LOOPS_DIR / f"{loop_id}.c"
     if not c_file.exists():
         return ""
@@ -2270,8 +2268,6 @@ extern "C" int armbench_entry_{lid}({args}) {{
 
 def _write_multi_axis(info: MultiAxisInfo) -> None:
     lid = info.loop_id
-    h_content   = _gen_ma_harness_h(info)
-    cpp_content = _gen_ma_harness_cpp(info)
 
     # 1. Definition. `dtypes` overrides the component dtype for fields whose C type
     #    isn't a plain scalar (e.g. complex `cfloat32_t` → "float32").

@@ -9,11 +9,11 @@ New workloads use the `inputs` dict format; existing workloads in the old
 Usage examples:
 
     # Add two workloads to a conv2d definition
-    python scripts/gen_workload.py conv2d_kh1_kw1_sh1_sw1_dh1_dw1_c64_c256 \\
+    python scripts/gen-workload/gen_workload.py conv2d_kh1_kw1_sh1_sw1_dh1_dw1_c64_c256 \\
         --add N=1,H=28,W=28 --add N=1,H=112,W=112
 
     # Preview without writing
-    python scripts/gen_workload.py conv2d_kh3_kw3_sh1_sw1_dh1_dw1_c64_c128 \\
+    python scripts/gen-workload/gen_workload.py conv2d_kh3_kw3_sh1_sw1_dh1_dw1_c64_c128 \\
         --add N=1,H=80,W=80 --dry-run
 """
 

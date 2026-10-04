@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from enum import Enum
 from functools import cached_property
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Union
 
 from pydantic import Field, model_validator
 
@@ -144,26 +144,3 @@ class Definition(BaseModelWithDocstrings):
     @cached_property
     def var_axes(self) -> List[str]:
         return [n for n, a in self.axes.items() if isinstance(a, AxisVar)]
-
-    def resolve_shape(
-        self, tensor_name: str, workload_axes: Dict[str, int]
-    ) -> Optional[Tuple[int, ...]]:
-        """Resolve a tensor's symbolic shape given concrete values for var axes."""
-        spec = self.inputs.get(tensor_name) or self.outputs.get(tensor_name)
-        if spec is None:
-            raise KeyError(f"Unknown tensor: {tensor_name}")
-        if spec.shape is None:
-            return None
-        out: List[int] = []
-        for axis_name in spec.shape:
-            ax = self.axes[axis_name]
-            if isinstance(ax, AxisConst):
-                out.append(ax.value)
-            else:
-                if axis_name not in workload_axes:
-                    raise ValueError(
-                        f"Tensor '{tensor_name}' needs value for var axis '{axis_name}' "
-                        f"but workload provides only {sorted(workload_axes)}"
-                    )
-                out.append(workload_axes[axis_name])
-        return tuple(out)

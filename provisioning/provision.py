@@ -414,7 +414,6 @@ def ensure_env_ready(handle: InstanceHandle) -> None:
 def provision(
     label: str,
     instance_type: str = "c7g.large",
-    initial_build: str = "",
     dataset: str = "",
     on_demand: bool = False,
 ) -> InstanceHandle:
@@ -431,7 +430,6 @@ def provision(
         label: Arbitrary name identifying this instance — see module docstring
             and default_label(). Must match LABEL_RE.
         instance_type: EC2 instance type string (e.g. "c7g.large", "c8g.large", "c8g.xlarge")
-        initial_build: make target for initial build, e.g. "c-scalar". Empty = skip.
         dataset: Dataset name (e.g. "ncnn") — triggers build steps from dataset_builds.json.
         on_demand: If True, provision on-demand instead of the default spot — AWS
             won't reclaim the instance mid-run, at a higher hourly price.
@@ -441,8 +439,6 @@ def provision(
           f"{' (on-demand)' if on_demand else ' (spot)'}...")
 
     vars = [f"-var=on_demand={'true' if on_demand else 'false'}"]
-    if initial_build:
-        vars.append(f"-var=build_target={initial_build}")
     with _tf_lock():
         result = _tf(
             "apply", "-auto-approve", *vars,
@@ -478,12 +474,6 @@ def provision(
         "~/arm-bench",
         paths=RSYNC_ALLOWLIST,
     )
-
-    if initial_build:
-        print(f"[provision] Building initial target {initial_build!r}...")
-        rc, _, err = handle.run(f"cd ~/arm-bench && make {initial_build}", timeout=300)
-        if rc != 0:
-            print(f"[provision]   WARNING: initial build {initial_build!r} failed: {err[:200]}")
 
     _install_deps(handle)
     if dataset:
@@ -689,9 +679,6 @@ if __name__ == "__main__":
                              f"{LABEL_RE.pattern}.")
     parser.add_argument("--teardown", action="store_true", help="Destroy the instance")
     parser.add_argument("--status", action="store_true", help="Show instance status")
-    parser.add_argument("--initial-build", default="",
-                        help="Run make <target> after provision, only when provisioning "
-                             "a fresh instance (default: skip)")
     parser.add_argument("--dataset", default="",
                         help="Dataset to build after provisioning (e.g. ncnn). "
                              "Default: skip — instance will lack that dataset's build artifacts.")
@@ -720,7 +707,7 @@ if __name__ == "__main__":
             if args.dataset:
                 ensure_dataset_ready(handle, args.dataset)
         else:
-            handle = provision(label, instance_type, args.initial_build, dataset=args.dataset,
+            handle = provision(label, instance_type, dataset=args.dataset,
                                on_demand=args.on_demand)
         print(f"\nInstance handle: {handle}")
         print(f"label={label} host={handle.host} user={handle.user} key_file={handle.key_file} "

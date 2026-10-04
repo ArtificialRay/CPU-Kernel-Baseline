@@ -148,7 +148,6 @@ python provisioning/provision.py --isa sve2 --on-demand            # on-demand, 
 | `--instance` | derived from `--isa` | EC2 instance type override, e.g. `c8g.2xlarge` |
 | `--label` | `f"{dataset}-{isa}"`, else `isa`, else the instance-type tier | Identifies this instance — one per concurrently-desired instance |
 | `--dataset` | skip | Build this dataset's native lib (ncnn/llama.cpp) right after provisioning |
-| `--initial-build` | skip | Run `make <target>` after provisioning a *fresh* instance only |
 | `--on-demand` | off | Provision on-demand instead of spot — won't be reclaimed mid-run, at a higher hourly price |
 | `--teardown` | — | Destroy the instance(s) — all recorded labels if `--label` omitted |
 | `--status` | — | Show instance status |

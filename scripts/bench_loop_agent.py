@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local agentic loop: LLM iterates on a SIMD loop problem using the bench harness.
 
-Unlike the SSH eval (eval/run_benchmark.py), this runs entirely in-process:
+Unlike the remote runs (test_scripts/bench_fleet.py), this runs entirely in-process:
 the LLM generates a kernel, bench compiles and runs it locally (or on the
 current machine if deployed to Graviton), and any compile/correctness failures
 go straight back to the LLM as feedback.
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import json
 import os
 import platform
 import re
@@ -33,7 +32,6 @@ from bench.compile.builders.simd_loop import SimdLoopBuilder
 from bench.data.definition import Definition
 from bench.data.solution import Solution, SolutionSpec, SourceFile, SupportedDatasets
 from bench.data.trace_set import TraceSet
-from bench.data.workload import Workload
 from bench.datasets.simd_loop import sig_from_definition, SimdLoopDataset
 from bench.runtime.inputs import gen_inputs_for_workload
 from bench.runtime.timing import time_callable
@@ -168,7 +166,6 @@ def _eval_kernel(kernel_code: str, prob: dict, ts: TraceSet,
                 continue
 
             out = ds.unwrap_output(ctx)
-            ref_run_ns: dict = {}
             # Compute reference
             exec_ns: dict = {}
             exec(d.reference, exec_ns)
