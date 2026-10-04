@@ -60,7 +60,10 @@ def evaluate_kernel(
     """
     from bench.runtime.isolation import SubprocessCrashed, SubprocessTimeout, run_in_subprocess
 
-    snapshot = trace_set.freeze_for(definition.name, bench_cfg.baseline_author)
+    snapshot = trace_set.freeze_for(
+        definition.name, bench_cfg.baseline_author,
+        bench_cfg.resolve_eval_config(definition).timing_protocol,
+    )
     try:
         return run_in_subprocess(
             _evaluate_kernel_direct,
@@ -81,7 +84,7 @@ def _evaluate_kernel_direct(
 ) -> dict:
     """The actual dlopen + per-workload evaluate work — runs inside the
     isolated subprocess `evaluate_kernel` spawns. `trace_set` here is a
-    TraceSetSnapshot when called that way (duck-typed against the 3 lookup
+    TraceSetSnapshot when called that way (duck-typed against the lookup
     methods this function and the evaluator it drives actually use), or a
     real TraceSet if you're calling this directly for local debugging (e.g.
     with a debugger attached, where subprocess isolation gets in the way).

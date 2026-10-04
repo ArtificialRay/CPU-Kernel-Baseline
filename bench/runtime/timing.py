@@ -5,17 +5,23 @@ Port of the LOOP_DECL pattern from arm-bench/common/loops.h:
     LOOP_START()
     for _w in range(warmup):    inner()       # untimed warmup
     for _r in range(repeat):                  # timed segments
-        t0 = clock_gettime(CLOCK_MONOTONIC)
+        t0 = perf_counter_ns()
         for _ in range(inner_iters): inner()
-        t1 = clock_gettime(CLOCK_MONOTONIC)
+        t1 = perf_counter_ns()
         record (t1 - t0) / inner_iters
     LOOP_STOP()
     return min, p5
 
 The C++ version had `g_warmup_iters` + `g_reps` + an inner loop count `l`
 inside each timed segment (for kernels too fast for a single clock_gettime
-window). We expose the same three knobs; defaults pick a single inner call
-per timed sample which suits ms-scale convolutions.
+window). We expose the same three knobs. `time_callable` itself defaults to
+a single inner call per timed sample; the benchmark's own default
+(`inner_iters: auto` in config/kernel_contracts.yaml) picks the count per
+workload with `pick_inner_iters`.
+
+The clock is `time.perf_counter_ns()`: `clock_gettime(CLOCK_MONOTONIC)` on
+Linux, `mach_absolute_time()` on macOS. Asking for CLOCK_MONOTONIC by name
+instead gives a clock that only advances in 1 µs steps on macOS.
 
 CPU pinning uses os.sched_setaffinity on Linux; on other platforms the call
 is silently a no-op (timing still works, just noisier).
@@ -90,8 +96,9 @@ def pin_to_cpu(cpu: int) -> Optional[int]:
 
 
 # Target sample duration when inner_iters is auto-tuned.
-# 10 ms keeps quantization error ≤2% even for candidates 200x faster than 
-# baseline (macOS 1 µs clock precision), while capping workload cost at repeat * 10 ms.
+# A candidate is timed with its baseline's count, so one 200x faster than the
+# baseline still gets 50 µs windows, far above the clock's resolution, while
+# a baseline workload costs about repeat * 10 ms.
 DEFAULT_TARGET_SAMPLE_NS = 10_000_000
 
 
@@ -119,10 +126,10 @@ def pick_inner_iters(
     """
     n = 1
     while n < max_inner_iters:
-        t0 = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+        t0 = time.perf_counter_ns()
         for _ in range(n):
             inner()
-        elapsed = time.clock_gettime_ns(time.CLOCK_MONOTONIC) - t0
+        elapsed = time.perf_counter_ns() - t0
         if elapsed >= target_sample_ns:
             return round_pow2(n)
         # elapsed can read 0 on a coarse clock; treat it as "far too fast".
@@ -152,8 +159,8 @@ def time_callable(
     repeat
         Number of timed samples (the min across these is reported).
     inner_iters
-        Inner calls inside one timed window. Bump above 1 only for kernels too
-        fast for `clock_gettime` resolution (~50 ns on Linux).
+        Inner calls inside one timed window; a sample is the window's time
+        divided by this count. See `pick_inner_iters` for choosing it.
     cpu
         Pin to this CPU core. Set to None to skip pinning.
     watchdog_s
@@ -207,10 +214,10 @@ def time_callable(
         if time.monotonic() > deadline:
             aborted_at = r
             break
-        t0 = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+        t0 = time.perf_counter_ns()
         for _ in range(inner_iters):
             inner()
-        t1 = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+        t1 = time.perf_counter_ns()
         samples.append((t1 - t0) // inner_iters)
 
     totals = None

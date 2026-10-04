@@ -71,7 +71,10 @@ def run_solution_on_workloads(
     workload gets a TIMEOUT/RUNTIME_ERROR Trace the same way.
     """
     cfg = cfg or EvalConfig()
-    snapshot = trace_set.freeze_for(definition.name, cfg.baseline_author) if trace_set is not None else None
+    snapshot = (
+        trace_set.freeze_for(definition.name, cfg.baseline_author, cfg.timing_protocol)
+        if trace_set is not None else None
+    )
 
     try:
         return run_in_subprocess(

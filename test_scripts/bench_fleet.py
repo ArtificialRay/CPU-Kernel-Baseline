@@ -47,6 +47,7 @@ import analysis.wandb_log_run as wandb_log_run
 # imports its public functions.
 import skills.launch.launch_session as launch_session
 from skills.launch.launch_session import RemoteTarget, prepare_session, stop_tunnel, sync_results
+from bench.config import EvalConfig
 from contracts import ISA_INSTANCE_MAP, baseline_author_for
 from mcp_app.agent_tools.isa import isa_satisfies
 
@@ -171,8 +172,11 @@ def _has_passed_baseline(
     target, python: str, definition: str, baseline_author: str, remote_root: str,
 ) -> bool:
     """True when `definition` already has a PASSED trace for `baseline_author`
-    on this host. Host-specific on purpose: baselines are absolute timings, so
-    one is only valid on the machine that measured it."""
+    on this host, measured under the current timing protocol. Host-specific on
+    purpose: baselines are absolute timings, so one is only valid on the
+    machine that measured it. Protocol-specific for the same reason the
+    server's own check is (mcp_app/agent_tools/baseline_readiness.py): a
+    baseline timed another way must be re-collected, not reused."""
     check = (
         "import json,sys\n"
         "from pathlib import Path\n"
@@ -185,7 +189,9 @@ def _has_passed_baseline(
         "        r = json.loads(line)\n"
         f"        sol = r.get('solution','')\n"
         f"        ev = r.get('evaluation') or {{}}\n"
-        f"        if sol.startswith({baseline_author!r}) and ev.get('status') == 'PASSED':\n"
+        f"        perf = ev.get('performance') or {{}}\n"
+        f"        if (sol.startswith({baseline_author!r}) and ev.get('status') == 'PASSED'\n"
+        f"                and perf.get('timing_protocol') == {EvalConfig().timing_protocol!r}):\n"
         "            sys.exit(0)\n"
         "sys.exit(1)\n"
     )

@@ -115,22 +115,25 @@ eval_defaults:
   warmup: 10
   repeat: 50
   inner_iters: auto
-  target_sample_ns: 1000000
+  target_sample_ns: 10000000
 ```
 
 With `inner_iters: auto`, each of the `repeat` timed samples calls the kernel
-back to back until the window is about `target_sample_ns` long, and reports
-the time per call. The baseline's count comes from probing it; a candidate's
-count is derived from its baseline's time. This is what makes µs-scale kernels
-measurable on Apple Silicon, where the clock in use has 1 µs resolution and
-short bursts run before the core has ramped up.
+back to back and reports the time per call; the fastest sample is the result.
+A baseline's count is probed so that one sample lasts about
+`target_sample_ns` (10 ms), and a candidate is timed with its baseline's
+count. Timing a single call per sample instead is noisy for calls shorter
+than about 1 ms, most of all on Apple Silicon.
 
-Every trace records the `inner_iters` it was measured with. Traces collected
-with the earlier defaults (`warmup: 5`, `inner_iters: 1`) follow a different
-timing protocol: do not mix the two in one baseline set. An instance that
-still holds baseline traces from the old protocol needs them re-collected
-before new candidates are scored against them, because an existing passed
-baseline trace is reused as is.
+Every trace records its `inner_iters` and a `timing_protocol` string built
+from the four values above. A baseline counts for a candidate only when both
+carry the same `timing_protocol`, so measurements taken another way (for
+example with the earlier defaults, `warmup: 5` and `inner_iters: 1`) are
+never mixed in. A session re-collects such a baseline before it scores
+anything against it, which means that changing any of the four values
+re-collects the baselines on every instance. With `bench.cli`, run
+`collect-baselines` again; until then `bench` reports no speedup rather than
+one against the old baseline.
 
 ## Two ways to run an agent against this benchmark
 

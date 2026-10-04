@@ -15,12 +15,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from .definition import Definition
 from .json_utils import append_jsonl_file, load_json_file, load_jsonl_file, save_jsonl_file
 from .solution import Solution
-from .trace import EvaluationStatus, Trace
+from .trace import EvaluationStatus, Performance, Trace
 from .workload import Workload
 
 
@@ -216,21 +216,22 @@ class TraceSet:
             )
         return candidates[0]
 
-    def get_baseline_min_ns(
+    def _baseline_performances(
         self,
         def_name: str,
         workload_uuid: str,
         baseline_author: str,
-    ) -> Optional[int]:
-        """Return the cached baseline `min_ns` for (def_name, workload_uuid).
+        timing_protocol: Optional[str],
+    ) -> Iterator[Performance]:
+        """PASSED baseline measurements of (def_name, workload_uuid).
 
-        Returns None if no PASSED baseline trace exists for that workload — caller leaves `reference_min_ns`
-        and `speedup` as None in that case.
+        With `timing_protocol` set, only those measured under it: a baseline
+        timed any other way is not a valid denominator for the caller's
+        speedup. None accepts every measurement.
         """
         baseline = self.get_baseline_solution(def_name, baseline_author)
         if baseline is None:
-            return None
-        best: Optional[int] = None
+            return
         for t in self.traces.get(def_name, []):
             if t.solution != baseline.name:
                 continue
@@ -239,43 +240,79 @@ class TraceSet:
             ev = t.evaluation
             if ev is None or ev.status != EvaluationStatus.PASSED or ev.performance is None:
                 continue
-            ns = ev.performance.min_ns
-            if best is None or ns < best:
-                best = ns
-        return best
+            if timing_protocol is not None and ev.performance.timing_protocol != timing_protocol:
+                continue
+            yield ev.performance
+
+    def has_baseline(
+        self, def_name: str, baseline_author: str, timing_protocol: Optional[str] = None
+    ) -> bool:
+        """True if any workload of `def_name` has a usable baseline measurement
+        (see `_baseline_performances` for what `timing_protocol` restricts)."""
+        return any(
+            True
+            for wl in self.get_workloads(def_name)
+            for _ in self._baseline_performances(def_name, wl.uuid, baseline_author, timing_protocol)
+        )
+
+    def get_baseline_min_ns(
+        self,
+        def_name: str,
+        workload_uuid: str,
+        baseline_author: str,
+        timing_protocol: Optional[str] = None,
+    ) -> Optional[int]:
+        """Return the cached baseline `min_ns` for (def_name, workload_uuid).
+
+        Returns None if no usable PASSED baseline trace exists for that workload — caller leaves `reference_min_ns`
+        and `speedup` as None in that case.
+        """
+        return min(
+            (p.min_ns for p in self._baseline_performances(
+                def_name, workload_uuid, baseline_author, timing_protocol)),
+            default=None,
+        )
 
     def get_baseline_min_cycles(
         self,
         def_name: str,
         workload_uuid: str,
         baseline_author: str,
+        timing_protocol: Optional[str] = None,
     ) -> Optional[int]:
         """Return the cached baseline `cycles` for (def_name, workload_uuid).
 
         Cycles analog of `get_baseline_min_ns` — the speedup denominator now that
-        cycles is the canonical metric. Returns None if no PASSED baseline trace
-        with a non-null `cycles` exists for that workload (older traces predating
+        cycles is the canonical metric. Returns None if no usable PASSED baseline
+        trace with a non-null `cycles` exists for that workload (older traces predating
         the perf-counter rollout have `cycles=None`); caller then leaves
         `reference_cycles` / `speedup` as None (or falls back to the ns ratio).
         """
-        baseline = self.get_baseline_solution(def_name, baseline_author)
-        if baseline is None:
-            return None
-        best: Optional[int] = None
-        for t in self.traces.get(def_name, []):
-            if t.solution != baseline.name:
-                continue
-            if t.workload.uuid != workload_uuid:
-                continue
-            ev = t.evaluation
-            if ev is None or ev.status != EvaluationStatus.PASSED or ev.performance is None:
-                continue
-            cyc = ev.performance.cycles
-            if cyc is None:
-                continue
-            if best is None or cyc < best:
-                best = cyc
-        return best
+        return min(
+            (p.cycles for p in self._baseline_performances(
+                def_name, workload_uuid, baseline_author, timing_protocol)
+             if p.cycles is not None),
+            default=None,
+        )
+
+    def get_baseline_inner_iters(
+        self,
+        def_name: str,
+        workload_uuid: str,
+        baseline_author: str,
+        timing_protocol: Optional[str] = None,
+    ) -> Optional[int]:
+        """Return the `inner_iters` of the measurement `get_baseline_min_ns` reports.
+
+        A candidate is timed with this count, so both sides of its speedup
+        repeat the kernel the same number of times per sample.
+        """
+        best = min(
+            self._baseline_performances(def_name, workload_uuid, baseline_author, timing_protocol),
+            key=lambda p: p.min_ns,
+            default=None,
+        )
+        return best.inner_iters if best is not None else None
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -337,25 +374,32 @@ class TraceSet:
 
     # ── Isolated-evaluation snapshot ────────────────────────────────────────────
 
-    def freeze_for(self, def_name: str, baseline_author: str) -> "TraceSetSnapshot":
+    def freeze_for(
+        self, def_name: str, baseline_author: str, timing_protocol: Optional[str] = None
+    ) -> "TraceSetSnapshot":
         """A read-only, picklable slice of this definition's workloads + baseline
         lookups — everything bench/runtime/isolation.py's isolated evaluate
         subprocess needs from a TraceSet, and nothing else (no other
         definitions' data, no add_traces/root — the subprocess has no way to
         touch the warehouse even in principle). Computed here, in the parent,
         from already-loaded in-memory data — no disk I/O.
+
+        `timing_protocol` restricts the baseline lookups exactly as it does on
+        the live TraceSet; the snapshot answers for that protocol only.
         """
         workloads = self.get_workloads(def_name)
-        baseline = {
-            wl.uuid: {
-                "min_ns": self.get_baseline_min_ns(def_name, wl.uuid, baseline_author),
-                "cycles": self.get_baseline_min_cycles(def_name, wl.uuid, baseline_author),
+        baseline = {}
+        for wl in workloads:
+            key = (def_name, wl.uuid, baseline_author, timing_protocol)
+            baseline[wl.uuid] = {
+                "min_ns": self.get_baseline_min_ns(*key),
+                "cycles": self.get_baseline_min_cycles(*key),
+                "inner_iters": self.get_baseline_inner_iters(*key),
             }
-            for wl in workloads
-        }
         return TraceSetSnapshot(
             definition_name=def_name,
             baseline_author=baseline_author,
+            timing_protocol=timing_protocol,
             _workloads=workloads,
             _baseline=baseline,
         )
@@ -382,19 +426,21 @@ class TraceSetSnapshot:
 
     Produced by TraceSet.freeze_for() and handed to an isolated evaluate
     subprocess (bench/runtime/isolation.py) in place of a live TraceSet: it
-    exposes the same 3 read-only lookup methods evaluate paths actually call
-    (get_workloads / get_baseline_min_ns / get_baseline_min_cycles), backed by
-    a small pre-computed slice instead of the whole warehouse — cheap to
-    pickle across the process boundary, and structurally incapable of writing
-    to the warehouse (no add_traces, no root) even if something inside the
-    subprocess tried.
+    exposes the same read-only lookup methods evaluate paths actually call
+    (get_workloads / get_baseline_min_ns / get_baseline_min_cycles /
+    get_baseline_inner_iters), backed by a small pre-computed slice instead of
+    the whole warehouse — cheap to pickle across the process boundary, and
+    structurally incapable of writing to the warehouse (no add_traces, no
+    root) even if something inside the subprocess tried.
     """
 
     definition_name: str
     baseline_author: str
+    timing_protocol: Optional[str]
+    """The protocol the baseline lookups were frozen for (None: any)."""
     _workloads: List[Workload]
-    _baseline: Dict[str, Dict[str, Optional[float]]]
-    """workload uuid -> {"min_ns": ..., "cycles": ...}."""
+    _baseline: Dict[str, Dict[str, Optional[int]]]
+    """workload uuid -> {"min_ns": ..., "cycles": ..., "inner_iters": ...}."""
 
     def get_workloads(self, def_name: str) -> List[Workload]:
         assert def_name == self.definition_name, (
@@ -402,18 +448,32 @@ class TraceSetSnapshot:
         )
         return list(self._workloads)
 
-    def get_baseline_min_ns(
-        self, def_name: str, workload_uuid: str, baseline_author: Optional[str] = None
+    def _baseline_field(
+        self, field: str, def_name: str, workload_uuid: str, timing_protocol: Optional[str]
     ) -> Optional[int]:
         assert def_name == self.definition_name, (
             f"TraceSetSnapshot is scoped to {self.definition_name!r}, got {def_name!r}"
         )
-        return self._baseline.get(workload_uuid, {}).get("min_ns")
+        assert timing_protocol == self.timing_protocol, (
+            f"TraceSetSnapshot was frozen for timing protocol {self.timing_protocol!r}, "
+            f"got {timing_protocol!r}"
+        )
+        return self._baseline.get(workload_uuid, {}).get(field)
+
+    def get_baseline_min_ns(
+        self, def_name: str, workload_uuid: str, baseline_author: Optional[str] = None,
+        timing_protocol: Optional[str] = None,
+    ) -> Optional[int]:
+        return self._baseline_field("min_ns", def_name, workload_uuid, timing_protocol)
 
     def get_baseline_min_cycles(
-        self, def_name: str, workload_uuid: str, baseline_author: Optional[str] = None
+        self, def_name: str, workload_uuid: str, baseline_author: Optional[str] = None,
+        timing_protocol: Optional[str] = None,
     ) -> Optional[int]:
-        assert def_name == self.definition_name, (
-            f"TraceSetSnapshot is scoped to {self.definition_name!r}, got {def_name!r}"
-        )
-        return self._baseline.get(workload_uuid, {}).get("cycles")
+        return self._baseline_field("cycles", def_name, workload_uuid, timing_protocol)
+
+    def get_baseline_inner_iters(
+        self, def_name: str, workload_uuid: str, baseline_author: Optional[str] = None,
+        timing_protocol: Optional[str] = None,
+    ) -> Optional[int]:
+        return self._baseline_field("inner_iters", def_name, workload_uuid, timing_protocol)

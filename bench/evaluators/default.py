@@ -28,7 +28,6 @@ from bench.runtime.timing import (
     DEFAULT_TARGET_SAMPLE_NS,
     WatchdogTimeout,
     pick_inner_iters,
-    round_pow2,
     time_callable,
 )
 
@@ -155,27 +154,29 @@ class DefaultEvaluator(Evaluator):
         is_baseline: bool,
         trace_set: Optional[Any],
     ) -> Tuple[Optional[Performance], Optional[Evaluation]]:
-        # Baseline lookup happens BEFORE timing
+        # Baseline lookup happens BEFORE timing. Only a baseline measured under
+        # this config's timing protocol counts.
         ref_cycles: Optional[int] = None
         ref_min_ns: Optional[int] = None
+        ref_inner_iters: Optional[int] = None
         cycle_speedup: Optional[float] = None
         time_speedup: Optional[float] = None
         if trace_set is not None and not is_baseline:
-            ref_cycles = trace_set.get_baseline_min_cycles(
-                definition.name, workload.uuid, baseline_author=cfg.baseline_author
-            )
-            ref_min_ns = trace_set.get_baseline_min_ns(
-                definition.name, workload.uuid, baseline_author=cfg.baseline_author
+            lookup = dict(baseline_author=cfg.baseline_author, timing_protocol=cfg.timing_protocol)
+            ref_cycles = trace_set.get_baseline_min_cycles(definition.name, workload.uuid, **lookup)
+            ref_min_ns = trace_set.get_baseline_min_ns(definition.name, workload.uuid, **lookup)
+            ref_inner_iters = trace_set.get_baseline_inner_iters(
+                definition.name, workload.uuid, **lookup
             )
 
         invoke = lambda: kernel.invoke(ctx)  # noqa: E731
         inner_iters = cfg.inner_iters
         if inner_iters == "auto":
-            target = getattr(cfg, "target_sample_ns", DEFAULT_TARGET_SAMPLE_NS)
-            if ref_min_ns:
-                inner_iters = round_pow2(-(-target // ref_min_ns)) # use inner iter from target at first, if no target, pick one inner iters
-            else:
-                inner_iters = pick_inner_iters(invoke, target_sample_ns=target)
+            # A candidate repeats the kernel as often per sample as its
+            # baseline did; only a baseline (or a candidate without one) probes.
+            inner_iters = ref_inner_iters or pick_inner_iters(
+                invoke, target_sample_ns=cfg.target_sample_ns or DEFAULT_TARGET_SAMPLE_NS
+            )
 
         try:
             timing = time_callable(
@@ -196,6 +197,7 @@ class DefaultEvaluator(Evaluator):
             Performance(
                 min_ns=timing.min_ns,
                 inner_iters=timing.inner_iters,
+                timing_protocol=cfg.timing_protocol,
                 p5_ns=timing.p5_ns,
                 reference_min_ns=ref_min_ns,
                 cycle_speedup=cycle_speedup,
