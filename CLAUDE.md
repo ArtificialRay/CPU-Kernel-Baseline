@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 **CPU-Kernel-Baseline** evaluates LLMs on their ability to write optimized AArch64
-SIMD kernels for ncnn / llama.cpp / synthetic simd-loop benchmarks. Three evaluation
+SIMD kernels for ncnn / llama.cpp / Arm SIMD Loops / KleidiAI. Three evaluation
 paths, all built on the same `bench/` harness, the same `bench-trace/` warehouse,
 and — as of the eval/mcp_client.py migration — the same `mcp_app/server.py` tool
 execution surface for every agent-driven path:
@@ -288,8 +288,8 @@ config/kernel_contracts.yaml    # Single source of truth: ISA mappings, evaluato
 
 ### Provision & teardown
 ```bash
-python provisioning/provision.py --isa sve2       # Graviton4 c8g.large (SVE2=128-bit)
-python provisioning/provision.py --isa sve        # Graviton3 c7g.large (SVE=256-bit)
+python provisioning/provision.py --isa sve2       # Graviton4 c8g.xlarge (SVE2=128-bit)
+python provisioning/provision.py --isa sve        # Graviton3 c7g.xlarge (SVE=256-bit)
 python provisioning/provision.py --teardown
 ```
 
@@ -351,10 +351,10 @@ HOST=1.2.3.4 ./sync_remote.sh                 # different instance
 
 | ISA | Instance | March flag | Notes |
 |-----|----------|------------|-------|
-| NEON | c7g.large | `-march=armv8-a` | 128-bit NEON only |
-| SVE | c7g.large | `-march=armv8.2-a+sve` | Graviton3, Neoverse V1, 256-bit SVE |
-| SVE2 | c8g.large | `-march=armv9-a+sve2` | Graviton4, Neoverse V2, 128-bit SVE2 |
-| SME2 | — | `-march=armv9-a+sve2+sme2` | No AWS instance supports SME2 yet |
+| NEON | c7g.xlarge | `-march=armv8-a` | 128-bit NEON only |
+| SVE | c7g.xlarge | `-march=armv8.2-a+sve` | Graviton3, Neoverse V1, 256-bit SVE |
+| SVE2 | c8g.xlarge | `-march=armv9-a+sve2` | Graviton4, Neoverse V2, 128-bit SVE2 |
+| SME2 | mac-m4.metal | `-mcpu=apple-m4` | Apple M4 on an EC2 Mac Dedicated Host; SME2 with a 512-bit streaming vector length, no SVE/SVE2 outside streaming mode |
 
 ---
 

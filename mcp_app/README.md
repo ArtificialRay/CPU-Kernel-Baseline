@@ -1,8 +1,8 @@
 # mcp_app — MCP server for kernel-optimization sessions
 
-Exposes `compile`/`evaluate`/`disassemble`/`submit` as an MCP server running
-in-process on the target instance, so an external agent harness (nanobot,
-etc.) can drive kernel-optimization sessions. Zero coupling to `eval/` or
+Exposes `check_progress`/`compile`/`evaluate`/`disassemble`/`submit` as an MCP
+server running in-process on the target instance, so an external agent harness
+(nanobot, Claude Code, Codex, ...) can drive kernel-optimization sessions. Zero coupling to `eval/` or
 `skills/` — never provisions instances, never imports either.
 
 ## 1. Components
@@ -16,12 +16,14 @@ mcp_app/
         baseline_readiness.py   # per-definition baseline check-then-collect + the
                                  #   dataset -> baseline_author default table; called lazily
                                  #   from KernelSession.compile() on first touch
-        ncnn.py, simd_loop.py, llama_cpp.py   # per-dataset KernelSession subclasses
+        ncnn.py, simd_loop.py, llama_cpp.py, kleidiai.py   # per-dataset KernelSession subclasses
         registry.py              # resolve_tools(dataset) -> Type[KernelSession]
+        dispatcher.py            # one tool surface over several datasets' sessions
+                                 #   (used when --dataset is passed more than once)
         ops.py                    # compile_kernel/evaluate_kernel/disassemble_so
         isa.py                     # march_for_isa(isa) + verify_isa_available(isa)
         trajectory.py                # TrajectoryWriter — per-definition audit trail
-        schema.py                 # tool schema
+        schemas.py                # tool schemas
     session.py                # SessionConfig + build_tools() — server-side bootstrap;
                                #   also eagerly writes every definition's
                                #   reference-scalar-kernel.cpp at startup
@@ -38,16 +40,18 @@ mcp_app/
 
 ```bash
 # On the target instance, once the repo is synced there.
-python -m mcp_app.server --dataset <ncnn|simd-loop|llama.cpp> --author <tag> \
-    --isa <neon|sve|sve2|sme2> --run-dir ~/arm-bench/agent-runs-mcp/<author> \
+python -m mcp_app.server --dataset <ncnn|simd-loop|llama.cpp|kleidiai> --author <tag> \
+    --isa <neon|sve|sve2|sme2|portable> --run-dir ~/arm-bench/agent-runs-mcp/<author>
 ```
 
 One process serves **every** definition in `--dataset` — `compile()` takes
-`definition` as a per-call argument, not a startup flag. `--baseline-author`
-is optional (auto-derived from `--dataset`).
+`definition` as a per-call argument, not a startup flag. Pass `--dataset` more
+than once to serve several datasets over one connection. `--baseline-author`
+is optional (auto-derived from `--dataset`), and `--max-iterations` puts a hard
+per-definition cap on compile/evaluate/disassemble calls (default: unlimited).
 
 This mcp application provides two transport options:
-- streamable-http: run the mcp at a remote instance, e.g. AWS gravision
+- streamable-http (default): run the mcp at a remote instance, e.g. AWS Graviton
 - stdio: run the mcp at the local
 
 ## 3. Starting the server before agent harness
@@ -61,7 +65,7 @@ that harness's MCP config :
 
 ```bash
 python3 skills/launch/launch_session.py launch \
-    --isa <sve|sve2> --dataset <ncnn|simd-loop|llama.cpp> \
+    --isa <neon|sve|sve2|sme2> --dataset <ncnn|simd-loop|llama.cpp|kleidiai> \
     --local-repo-dir <path to your local CPU-Kernel-Baseline checkout>
 ```
 

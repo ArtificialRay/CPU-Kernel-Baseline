@@ -57,10 +57,13 @@ eval_defaults:
 # and iteration count alters cache behavior (e.g., 2.3x throughput on Apple silicon 
 # at 1000 vs 1 iter due to hot working sets).
 #
-# To ensure fair comparisons, candidates inherit their baseline's `inner_iters`.
+# To ensure fair comparisons, a candidate's `inner_iters` is derived from its
+# baseline's time.
 #
-# NOTE: Currently disabled (default=1) so existing benchmark results remain reproducible.
-  inner_iters: auto # could set to "auto", see above comment
+# NOTE: "auto" (with warmup: 10) is the default for every target. Traces
+# collected with the earlier defaults (warmup: 5, inner_iters: 1) follow a
+# different timing protocol -- never mix the two in one baseline set.
+  inner_iters: auto
   target_sample_ns: 1000000
   cpu: 0
   watchdog_s: 30.0
