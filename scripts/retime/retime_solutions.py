@@ -11,7 +11,7 @@ geomean(time_speedup) -- the same number evaluate() reports -- plus each
 workload's min_ns. Results are appended to --out (JSON lines) as they come,
 and a rerun skips what --out already has.
 
-    python3 scripts/retime_solutions.py --root bench-trace --dataset simd-loop --isa sve \\
+    python3 scripts/retime/retime_solutions.py --root bench-trace --dataset simd-loop --isa sve \\
         --index runs-sve/extracted.json --extra-authors reference autovec \\
         --pass-id a1 --out retime-a1.jsonl
 """
@@ -24,7 +24,7 @@ import tempfile
 import time
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from bench.benchmark import Benchmark  # noqa: E402
@@ -47,7 +47,7 @@ def main() -> int:
     ap.add_argument("--root", default=str(REPO / "bench-trace"))
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--isa", required=True)
-    ap.add_argument("--index", required=True, help="extracted.json from scripts/extract_run_solutions.py")
+    ap.add_argument("--index", required=True, help="extracted.json from scripts/retime/extract_run_solutions.py")
     ap.add_argument("--extra-authors", nargs="*", default=[],
                     help="also re-time these authors' solutions for the same definitions (e.g. reference autovec)")
     ap.add_argument("--pass-id", required=True, help="label stored with every result of this pass")

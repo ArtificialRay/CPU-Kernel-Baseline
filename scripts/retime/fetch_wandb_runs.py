@@ -7,11 +7,11 @@ separate variant cell (`__sandboxed` reruns count as the main cell), and within
 a cell the newest run per definition wins. Then it downloads each selected
 run's `kernel` artifact (trajectory.jsonl + v1.cpp ... vN.cpp) into
 <out>/<cell>/<definition>/ and writes <out>/manifest.json, the input of
-scripts/extract_run_solutions.py.
+scripts/retime/extract_run_solutions.py.
 
-    python3 scripts/fetch_wandb_runs.py --dataset simd-loop --isa sve \\
+    python3 scripts/retime/fetch_wandb_runs.py --dataset simd-loop --isa sve \\
         --definitions-file bench-trace/expected_sets_sve.json --out runs-sve
-    python3 scripts/fetch_wandb_runs.py --dataset simd-loop --isa sve --list   # cells only
+    python3 scripts/retime/fetch_wandb_runs.py --dataset simd-loop --isa sve --list   # cells only
 
 Needs `wandb` and a logged-in W&B account.
 """

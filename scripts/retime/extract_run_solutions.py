@@ -8,15 +8,15 @@ session did when the agent compiled it (the dataset's KernelSession
 .make_solution: harness files from the reference solution, -O3 and the isa's
 march). The Solution is written under
 <root>/solutions/<dataset>/<author>/<op_type>/<definition>.json, with
-author = "<prefix><cell>", so `bench.cli` / scripts/retime_solutions.py can
+author = "<prefix><cell>", so `bench.cli` / scripts/retime/retime_solutions.py can
 run it against the current baselines.
 
-    python3 scripts/extract_run_solutions.py --runs runs-sve --root bench-trace \\
+    python3 scripts/retime/extract_run_solutions.py --runs runs-sve --root bench-trace \\
         --dataset simd-loop --isa sve
-    python3 scripts/extract_run_solutions.py ... --turns 0     # best version overall
+    python3 scripts/retime/extract_run_solutions.py ... --turns 0     # best version overall
 
 Run it on a machine of the target isa: building a solution checks that the
-host can run the baseline. The run dirs come from scripts/fetch_wandb_runs.py
+host can run the baseline. The run dirs come from scripts/retime/fetch_wandb_runs.py
 (manifest.json) or any directory laid out as <cell>/<definition>/.
 """
 import argparse
@@ -25,7 +25,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from bench.config import BenchmarkConfig  # noqa: E402
