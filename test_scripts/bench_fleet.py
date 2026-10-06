@@ -206,7 +206,9 @@ def build_jobs(
 ) -> list[Job]:
     """Build one Job (with its rendered prompt) per definition matching
     `dataset`, narrowed to `definitions_filter` if non-empty (a JSON array
-    or space-separated list of names). 
+    or space-separated list of names). Definitions tagged `e2e:<model>`
+    (k-quant gemms taken from a model's matmul shapes) are run only when
+    named in `definitions_filter`, never as part of a whole-dataset sweep.
     """
     definitions_filter = definitions_filter.strip()
     if definitions_filter.startswith("["):
@@ -222,6 +224,7 @@ def build_jobs(
     baseline_author = baseline_author_for(dataset, isa)
     jobs: list[Job] = []
     isa_skipped: list[str] = []
+    e2e_skipped: list[str] = []
     for path in sorted(DEFINITIONS_DIR.rglob("*.json")):
         d = json.loads(path.read_text())
         tags = d.get("tags", [])
@@ -233,6 +236,9 @@ def build_jobs(
         name = d["name"]
         if wanted and name not in wanted:
             continue
+        if not wanted and any(t.startswith("e2e:") for t in tags):
+            e2e_skipped.append(name)
+            continue
         if not _baseline_isa_compatible(dataset, baseline_author, d["op_type"], name, isa):
             isa_skipped.append(name)
             continue
@@ -240,6 +246,12 @@ def build_jobs(
         prompt = prompt_template % args[:template_args]
         jobs.append(Job(name=name, prompt=prompt))
 
+    if e2e_skipped:
+        print(
+            f"[e2e-filter] skipping {len(e2e_skipped)} e2e definition(s); name them in "
+            f"--definitions to run them: {', '.join(e2e_skipped)}",
+            file=sys.stderr,
+        )
     if isa_skipped:
         print(
             f"[isa-filter] skipping {len(isa_skipped)} definition(s) whose baseline solution's "
@@ -653,7 +665,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "Default: 40, the benchmark's 40-step budget")
     p.add_argument("--definitions", default="",
                    help="JSON array or space-separated definition names to narrow the run "
-                        "to. Empty = every definition matching --dataset.")
+                        "to. Empty = every definition matching --dataset, except the ones "
+                        "tagged e2e:<model>, which run only when named here.")
     p.add_argument("--retries", type=int, default=3,
                    help="Retries for transient infra failures. Total attempts = retries+1.")
     p.add_argument("--author", default=None, help="Override the computed author (advanced).")
