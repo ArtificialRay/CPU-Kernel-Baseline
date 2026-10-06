@@ -100,6 +100,15 @@ class TraceSet:
         """
         root = Path(root)
         root.mkdir(parents=True, exist_ok=True)
+        # Let `{"type": "tensor"}` workload inputs resolve their paths against this root.
+        # Imported here because bench.runtime imports bench.data; a caller without
+        # numpy only reads the schema and has no inputs to resolve.
+        try:
+            from bench.runtime.inputs import set_trace_root
+        except ImportError:
+            pass
+        else:
+            set_trace_root(root)
         ts = cls(root=root)
 
         # Definitions
