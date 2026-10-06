@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional, Protocol
 
 from bench.data.json_utils import save_json_file
 from contracts import (
+    DISALLOWED_SOURCE_PATTERNS_BY_DATASET,
     DISALLOWED_SOURCE_PATTERNS_BY_ISA,
     DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE,
     DISALLOWED_SOURCE_PATTERNS_DEFAULT,
@@ -245,12 +246,13 @@ class KernelSession(ABC):
 
     def _disallowed_source_patterns(self, definition: "Definition") -> list[str]:
         """All disallowed-source-pattern lists that apply to this compile,
-        including op-type disallowed source pattern and isa disallowed source pattern
+        including op-type, isa and dataset disallowed source patterns
         """
         op_type_override = DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE.get(definition.op_type)
         return [
             *(op_type_override if op_type_override is not None else DISALLOWED_SOURCE_PATTERNS_DEFAULT),
             *DISALLOWED_SOURCE_PATTERNS_BY_ISA.get(self._isa, []),
+            *DISALLOWED_SOURCE_PATTERNS_BY_DATASET.get(self.dataset, []),
         ]
 
     def _check_source_policy(self, definition: "Definition", code: str) -> Optional[str]:

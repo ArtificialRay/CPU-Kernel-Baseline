@@ -209,6 +209,15 @@ disallowed_source_patterns:
       - '#\s*include\s*[<"]arm_sve\.h[>"]'
       - '\bfloat(16|32|64)x[0-9]+x?[0-9]*_t\b'
       - '\bv(ld|st|add|mul|fma|mla|mls|sub|dup)[a-z0-9_]*_[fsu](8|16|32|64)\b'
+  # dataset -> pattern list ADDED ON TOP of everything above.
+  by_dataset:
+    # The llama.cpp harness links ggml, so a kernel that calls ggml's own routine
+    # (e.g. ggml_vec_dot_q5_K_q8_K) compiles, passes and scores ~1.00x: it submits the
+    # baseline. It also cannot be spliced into llama.cpp (the symbol does not resolve
+    # under dlopen). Headers/types are fine; calling ggml functions is not.
+    llama.cpp:
+      - '\bggml_[A-Za-z0-9_]*\s*\('
+      - '\b(de)?quantize_row_(q[0-9]|iq[0-9]|tq[0-9]|mxfp|nvfp|f16|bf16)[A-Za-z0-9_]*\s*\('
 
 # eval/evaluator.py::run_agentic_eval's litellm turn loop — consumed via
 # contracts.AGENT_LOOP_DEFAULTS.
