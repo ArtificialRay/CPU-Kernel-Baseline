@@ -53,6 +53,14 @@ class RefBaseline:
 
     np_inputs: Dict[str, Any]
     ref_np: np.ndarray
+    sqnr_floor_db: Optional[float] = None
+    """Workload-specific SQNR pass floor (dB) for `correctness:sqnr` definitions:
+    the reference implementation's own SQNR on this workload minus
+    EvalConfig.sqnr_margin_db. None when the workload was never calibrated, in which
+    case the absolute EvalConfig.min_sqnr_db applies."""
+    sqnr_floor_author: Optional[str] = None
+    """Which solution author the floor was measured from (workload tag
+    `baseline_sqnr_author`, written by scripts/e2e/calibrate_sqnr_floor.py)."""
 
 
 @dataclass
