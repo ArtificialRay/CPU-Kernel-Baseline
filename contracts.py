@@ -89,6 +89,9 @@ DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE: dict[str, list[str]] = {
 DISALLOWED_SOURCE_PATTERNS_BY_ISA: dict[str, list[str]] = {
     isa: list(patterns) for isa, patterns in _DISALLOWED_SOURCE_PATTERNS["by_isa"].items()
 }
+DISALLOWED_SOURCE_PATTERNS_BY_DATASET: dict[str, list[str]] = {
+    ds: list(patterns) for ds, patterns in _DISALLOWED_SOURCE_PATTERNS.get("by_dataset", {}).items()
+}
 
 # eval/evaluator.py::run_agentic_eval's litellm turn loop (completion timeout,
 # temperature, retry budget) and eval/mcp_client.py's MCP session (per-call timeouts) — raw dicts, same treatment as EVAL_DEFAULTS above.
@@ -111,6 +114,7 @@ __all__ = [
     "DISALLOWED_SOURCE_PATTERNS_DEFAULT",
     "DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE",
     "DISALLOWED_SOURCE_PATTERNS_BY_ISA",
+    "DISALLOWED_SOURCE_PATTERNS_BY_DATASET",
     "AGENT_LOOP_DEFAULTS",
     "MCP_CLIENT_DEFAULTS",
 ]
