@@ -2,7 +2,10 @@
 """Generate simd-loop bench-trace artifacts for all supported loops.
 
 Run from repo root:
-    python scripts/gen_simd_loop_harness.py
+    python scripts/gen_simd_loop_harness.py [--loops loop_216,loop_217] [--emit-sme2]
+
+--loops limits generation to the named loops; everything else in bench-trace is
+left as it is.
 
 The harness shim (loop_NNN.{h,cpp}) is fused directly into each solution's
 `sources` — like the ncnn baseline ships its own binding.cpp — so solutions are
@@ -761,6 +764,29 @@ _SVE_TIERS = {
             "loop_128",
         },
     },
+    # SME: Arm's HAVE_SME_INTRINSICS build, for Apple M4 (contracts.ISA_TABLE
+    # "sme2": -mcpu=apple-m4, where SVE runs only in streaming mode). For most
+    # loops that is the SVE kernel run in streaming mode; the 2xx matrix loops
+    # have real ZA-tile kernels. Emitted only with --emit-sme2; correctness is
+    # checked under QEMU with analysis/sme_qemu_check.py.
+    "sme2": {
+        "author": "baseline-sme2",
+        "isa_features": ["sme2"],
+        "defines": ["-DHAVE_SME_INTRINSICS"],
+        # Arm gates the fp64 ZA kernels on __ARM_FEATURE_SME_F64F64. M4 has
+        # FEAT_SME_F64F64 and clang's apple-m4 target compiles the instructions,
+        # but clang does not define the macro, so select those branches directly.
+        "loop_defines": {"loop_218": ["-DLOOP_218_SME"], "loop_221": ["-DLOOP_221_SME"]},
+        "asm_fallback": set(),
+        "skip": {
+            # no SME branch upstream
+            "loop_008", "loop_103", "loop_120", "loop_121", "loop_122", "loop_123", "loop_124",
+            "loop_102", "loop_104",
+            # feature-gated beyond the tier march / SVE2-only matmul variants
+            "loop_101", "loop_106", "loop_130", "loop_135",
+            "loop_128",
+        },
+    },
     "sve2": {
         "author": "baseline-sve2",
         "isa_features": ["sve2"],
@@ -785,6 +811,7 @@ _SVE_TIERS = {
 # generator's own sve2 output (new extractor, cross-compiled, never run on a
 # c8g) is a candidate replacement to audit first.
 _EMIT_SVE2 = "--emit-sve2" in sys.argv
+_EMIT_SME2 = "--emit-sme2" in sys.argv
 
 
 def _cpp_target(tier: str) -> list:
@@ -819,7 +846,9 @@ def _cpp_select(src: Path, intrinsics: bool, from_line: int = 1, tier: str = "sv
         copy = Path(td) / src.name
         shutil.copy(src, copy)
         cmd = [_clang(), "-E", "-fdirectives-only", "-nostdinc", "-I", str(inc),
-               *_cpp_target(tier), *(["-DHAVE_SVE_INTRINSICS"] if intrinsics else []),
+               *_cpp_target(tier),
+               *(_SVE_TIERS[tier].get("defines", ["-DHAVE_SVE_INTRINSICS"]) if intrinsics else []),
+               *_SVE_TIERS[tier].get("loop_defines", {}).get(src.stem, []),
                "-x", "c", str(copy)]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
@@ -837,11 +866,14 @@ def _cpp_select(src: Path, intrinsics: bool, from_line: int = 1, tier: str = "sv
     return "\n".join(out)
 
 
-def _tidy_extracted(code: str) -> str:
+def _tidy_extracted(code: str, tier: str = "sve") -> str:
     """The C→self-contained-C++ adaptations applied to every selected block.
-    Arm's SVE code is otherwise verbatim."""
-    code = re.sub(r'^\s*#\s*define\s+LOOP_ATTR\b.*$', '', code, flags=re.MULTILINE)
-    code = re.sub(r'\bLOOP_ATTR\b', '', code)        # SVE target attr (empty on non-SME)
+    Arm's SVE code is otherwise verbatim. On the sme2 tier the LOOP_ATTR /
+    OUTER_LOOP_ATTR streaming attributes are kept (the prelude defines them
+    as in common/loops.h); elsewhere they are empty and are dropped."""
+    if tier != "sme2":
+        code = re.sub(r'^\s*#\s*define\s+LOOP_ATTR\b.*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'\bLOOP_ATTR\b', '', code)    # SVE target attr (empty on non-SME)
     code = re.sub(r'\bstatic\b\s*', '', code)
     code = re.sub(r'\b__restrict__\b', '', code)
     code = re.sub(r'\brestrict\b', '', code)
@@ -889,15 +921,89 @@ def _extract_sve_kernel(loop_id: str, tier: str = "sve") -> str:
     code = "\n".join(lines).strip()
     if not re.search(rf"\binner_loop_{num}\s*\(", code):
         return ""
-    code = _tidy_extracted(code)
+    code = _tidy_extracted(code, tier)
+    # On the sme2 tier a loop's own `#define LOOP_ATTR ...` may sit above its
+    # first conditional (dropped by the cut): carry those lines over.
+    if tier == "sme2":
+        pre = [ln for ln in raw_lines[:first_cond - 1]
+               if re.match(r"\s*#\s*define\s+(OUTER_)?LOOP_ATTR\b", ln)]
+        code = "\n".join(pre + [code])
     # Loops that lean on common/sort.c (shared OET/insertion/radix helpers)
     # get that file's matching branch appended — Arm-authored as well.
     if re.search(r'#include\s+"(common/)?sort\.h"', raw):
-        common = _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.h", intrinsics, tier=tier))
-        common += "\n" + _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.c", intrinsics, tier=tier))
+        common = _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.h", intrinsics, tier=tier), tier)
+        common += "\n" + _tidy_extracted(_cpp_select(LOOPS_DIR / "common" / "sort.c", intrinsics, tier=tier), tier)
         code = common + "\n" + code
     code = re.sub(rf'^void\s+(NOINLINE\s+)?inner_loop_{num}\b', rf'extern "C" void inner_loop_{num}',
                   code, flags=re.MULTILINE)
+    return code
+
+
+# common/loops.h's attribute block for an SME build (__ARM_FEATURE_SME defined),
+# swapped into the prelude on the sme2 tier.
+_SME_ATTRS = """#include <arm_sme.h>
+#define SC_SVE_LOOP_ATTR __arm_locally_streaming
+#define S_LOOP_ATTR __arm_locally_streaming __arm_new("za", "zt0")
+#define NS_SVE_LOOP_ATTR
+#define SC_SVE_ATTR __arm_streaming_compatible
+#define S_SVE_ATTR __arm_streaming
+#define SC_SVE_ZT0_ATTR __arm_streaming_compatible __arm_inout("zt0") __arm_preserves("za")
+#define SME_ZA_ZT0_ATTR __arm_streaming __arm_inout("za", "zt0")
+#define SME_ZA_ATTR __arm_streaming __arm_inout("za") __arm_preserves("zt0")
+static inline uint32_t get_sme_vl(void) {
+  uint64_t svl = 0; asm volatile("rdsvl %[svl], #8" : [svl] "+r"(svl) : :);
+  return (uint32_t)svl;
+}
+"""
+
+
+def _prelude(tier: str) -> str:
+    p = _SVE_PRELUDE
+    if tier == "sme2":
+        p = p.replace("#define SC_SVE_ATTR\n#define SC_SVE_LOOP_ATTR\n#define NS_SVE_LOOP_ATTR\n", _SME_ATTRS)
+        p = p.replace("static inline uint32_t get_sve_vl(void) {", "static inline uint32_t get_sve_vl(void) SC_SVE_ATTR {")
+        p = p.replace("static inline uint32_t get_vl(void) { return get_sve_vl(); }",
+                      "static inline uint32_t get_vl(void) { return get_sme_vl(); }")
+        assert "arm_sme.h" in p and "get_sme_vl()" in p
+    return p
+
+
+def _sme_loop_attrs(lid: str) -> tuple:
+    """(LOOP_ATTR, driver attribute) of a loop's SME build: the attribute Arm
+    puts on inner_loop_NNN, and the one on upstream's LOOP_DECL driver that
+    calls it (__arm_locally_streaming, plus __arm_new("za","zt0") for ZA
+    kernels)."""
+    raw = (LOOPS_DIR / f"{lid}.c").read_text()
+    sel = _cpp_select(LOOPS_DIR / f"{lid}.c", True, tier="sme2")
+    defs = dict(re.findall(r"^\s*#\s*define\s+((?:OUTER_)?LOOP_ATTR)\s*(.*?)\s*$", raw.split("#if")[0], re.MULTILINE))
+    defs.update(re.findall(r"^\s*#\s*define\s+((?:OUTER_)?LOOP_ATTR)\s*(.*?)\s*$", sel, re.MULTILINE))
+    inner_attr = defs.get("LOOP_ATTR", "SC_SVE_ATTR")
+    m = re.search(r"LOOP_DECL\(\s*\d+\s*,\s*([A-Z_0-9]+)\s*\)", raw)
+    outer = m.group(1) if m else "SC_SVE_LOOP_ATTR"
+    if outer == "OUTER_LOOP_ATTR":
+        outer = defs.get("OUTER_LOOP_ATTR", "SC_SVE_LOOP_ATTR")
+    return inner_attr, outer
+
+
+def _sme_streaming_entry(lid: str, code: str) -> str:
+    """Make inner_loop_NNN itself locally streaming. -mcpu=apple-m4 has no
+    non-streaming SVE, so the kernel body has to run in streaming mode however
+    it is entered. A ZA kernel also gets its own ZA state (__arm_new("za")) in
+    place of Arm's shared-ZA LOOP_ATTR."""
+    num = re.search(r"loop_(\d+)", lid).group(1)
+    za = _sme_loop_attrs(lid)[0] == "SME_ZA_ATTR"
+    prefix = '__arm_locally_streaming __arm_new("za") ' if za else "__arm_locally_streaming "
+    # Helpers that share the kernel's streaming-compatible LOOP_ATTR (loop_105)
+    # use SVE intrinsics too, so they become streaming; the entry then drops
+    # LOOP_ATTR, which can't be combined with __arm_locally_streaming.
+    helpers = not za and len(re.findall(r"^LOOP_ATTR\b", code, flags=re.MULTILINE)) > 1
+    if helpers:
+        code = re.sub(r"^#define LOOP_ATTR SC_SVE_ATTR$", "#define LOOP_ATTR S_SVE_ATTR", code,
+                      flags=re.MULTILINE)
+    pattern = rf'^extern "C" void (inner_loop_{num}\([^)]*\))' + (r"\s*LOOP_ATTR\b" if za or helpers else "")
+    code, n = re.subn(pattern, lambda mt: f'extern "C" {prefix}void {mt.group(1)}', code,
+                      count=1, flags=re.MULTILINE)
+    assert n == 1, f"{lid}: inner_loop definition not found in the SME kernel"
     return code
 
 
@@ -906,7 +1012,9 @@ def _sve_kernel_src(lid: str, tier: str = "sve") -> str:
     extracted = _extract_sve_kernel(lid, tier)
     if not extracted:
         return ""
-    return f'#include "{lid}.h"\n' + _SVE_PRELUDE + "\n" + extracted + "\n"
+    if tier == "sme2":
+        extracted = _sme_streaming_entry(lid, extracted)
+    return f'#include "{lid}.h"\n' + _prelude(tier) + "\n" + extracted + "\n"
 
 
 # ── Writers ───────────────────────────────────────────────────────────────────
@@ -1088,14 +1196,7 @@ def _write_solution_pair(lid: str, sources: list) -> None:
 # copies the valid region back. Perf workloads all satisfy the rules, so the
 # timed path is the plain call. Rules are in vector-length units (svcntw /
 # svcnth) so the same binding serves the sve and sve2 tiers.
-_SVE_PAD_PRELUDE = """// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
-// Expert-baseline binding: pads edge-size workloads to the sizes Arm's kernel
-// supports (see _SVE_PAD_BINDINGS in the generator). Plain call otherwise.
-#include "{lid}.h"
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
-// Vector-length units for the padding rules below. Arm's kernel is built for
+_PAD_VL_UNITS = """// Vector-length units for the padding rules below. Arm's kernel is built for
 // 128-bit SVE (Graviton3/4), so a build without SVE (the neon arm of an ISA
 // ablation lifts this binding too) pads to the same sizes with constants.
 #if defined(__ARM_FEATURE_SVE)
@@ -1106,7 +1207,16 @@ _SVE_PAD_PRELUDE = """// Auto-generated by scripts/gen_simd_loop_harness.py — 
 #define _VLW() ((uint64_t)4)
 #define _VLH() ((uint64_t)8)
 #endif
+"""
 
+_SVE_PAD_PRELUDE = """// Auto-generated by scripts/gen_simd_loop_harness.py — do not hand-edit.
+// Expert-baseline binding: pads edge-size workloads to the sizes Arm's kernel
+// supports (see _SVE_PAD_BINDINGS in the generator). Plain call otherwise.
+#include "{lid}.h"
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+""" + _PAD_VL_UNITS + """
 extern "C" void inner_{lid}(struct {lid}_data *data);
 
 static inline uint64_t _round_up(uint64_t v, uint64_t m) {{ return (v + m - 1) / m * m; }}
@@ -1306,12 +1416,73 @@ extern "C" int armbench_entry_loop_114(void *data, int64_t n_in, int64_t lags_in
 }
 
 
-def _sve_binding(lid: str, base_cpp: str) -> str:
+def _sve_binding(lid: str, base_cpp: str, tier: str = "sve") -> str:
     """The expert authors' loop_NNN.cpp: the padded binding for loops in
-    _SVE_PAD_BINDINGS, else the shared auto-generated one."""
-    if lid not in _SVE_PAD_BINDINGS:
-        return base_cpp
-    return _SVE_PAD_PRELUDE.format(lid=lid) + _SVE_PAD_BINDINGS[lid]
+    _SVE_PAD_BINDINGS, else the shared auto-generated one. On the sme2 tier the
+    kernel is streaming(-compatible), so the binding declares it with Arm's
+    LOOP_ATTR and calls it from a wrapper carrying the LOOP_DECL attribute
+    (__arm_locally_streaming, plus __arm_new("za","zt0") for ZA kernels),
+    exactly as upstream's inner_loops_NNN driver does; padding rules switch
+    to the streaming vector length."""
+    cpp = base_cpp if lid not in _SVE_PAD_BINDINGS else _SVE_PAD_PRELUDE.format(lid=lid) + _SVE_PAD_BINDINGS[lid]
+    if tier != "sme2":
+        return cpp
+    inner_attr, outer = _sme_loop_attrs(lid)
+    num = re.search(r"loop_(\d+)", lid).group(1)
+    wrapper = (f"extern \"C\" void inner_loop_{num}(struct loop_{num}_data *data) {inner_attr};\n"
+               # __arm_locally_streaming / __arm_new are declaration attributes:
+               # they go before the declarator, as in upstream's LOOP_DECL.
+               f"{outer} static void __attribute__((noinline)) _armbench_call_{num}(struct loop_{num}_data *d) "
+               f"{{ inner_loop_{num}(d); }}\n")
+    cpp = re.sub(rf'^extern "C" void inner_loop_{num}\(struct loop_{num}_data \*data\);\s*$',
+                 lambda _: _SME_ATTRS + wrapper, cpp, count=1, flags=re.MULTILINE)
+    assert f"_armbench_call_{num}" in cpp, f"{lid}: inner_loop declaration not found in binding"
+    cpp = re.sub(rf"\binner_loop_{num}\((&\w+)\);", rf"_armbench_call_{num}(\1);", cpp)
+    # The pad prelude falls back to 128-bit constants without __ARM_FEATURE_SVE,
+    # which -mcpu=apple-m4 never defines: pad by the streaming vector length.
+    cpp = cpp.replace(_PAD_VL_UNITS, "#include <arm_sve.h>\n")
+    cpp = cpp.replace("_VLW()", "svcntsw()").replace("_VLH()", "svcntsh()")
+    cpp = cpp.replace("svcntw()", "svcntsw()").replace("svcnth()", "svcntsh()")
+    if lid == "loop_219":
+        # Arm's SME2 matmul tiles m by 4*SVL bytes of uint32 output (16 words
+        # per streaming word-vector), twice the SVE asm kernel's tile.
+        cpp = cpp.replace("(8 * vlw > 64 ? 8 * vlw : 64)", "(16 * vlw > 64 ? 16 * vlw : 64)")
+        assert "16 * vlw" in cpp
+    if lid in _SME_SHAPE_RULES:
+        guard = ("    // Arm's documented shape rule for this kernel (see loops/{lid}.c);\n"
+                 "    // the workloads satisfy it, any other shape is refused.\n"
+                 f"    if (!({_SME_SHAPE_RULES[lid]})) return 1;\n").replace("{lid}", lid)
+        cpp, n = re.subn(rf"^(extern \"C\" int armbench_entry_{lid}\([^)]*\) \{{\n)",
+                         lambda mt: mt.group(1) + guard, cpp, count=1, flags=re.MULTILINE)
+        assert n == 1, f"{lid}: entry function not found in binding"
+    return cpp
+
+
+# Shape rules of Arm's SME2 matrix kernels, from the Constraints comment at the
+# top of each loops/loop_NNN.c, in streaming vector-length units.
+_SME_SHAPE_RULES = {
+    "loop_216": "m % (16 * svcntsw()) == 0 && n % 4 == 0",
+    "loop_217": "m % 8 == 0 && n % (4 * svcntsb()) == 0",
+    "loop_218": "m % (16 * svcntsd()) == 0 && n % 2 == 0",
+    "loop_220": "m % 4 == 0 && n % (4 * svcntsw()) == 0",
+    "loop_221": "m % 4 == 0 && n % (4 * svcntsd()) == 0",
+    "loop_223": "m % 16 == 0",
+}
+
+
+# Minimal SME ABI routines, shipped with every baseline-sme2 solution because
+# not every toolchain links them (Ubuntu's clang compiler-rt omits sme-abi.S,
+# so __arm_new("za") functions fail to link). They are only correct when no
+# caller keeps live ZA state across a lazy-save block, which holds for the
+# harness: it makes one kernel call at a time.
+_SME_ABI_STUB = """// Minimal SME ABI support routines (see scripts/gen_simd_loop_harness.py).
+extern "C" {
+__attribute__((naked)) void __arm_tpidr2_save(void) { __asm__ volatile("ret"); }
+__attribute__((naked)) void __arm_tpidr2_restore(void *) { __asm__ volatile("ret"); }
+__attribute__((naked)) void __arm_za_disable(void) { __asm__ volatile("smstop za\\n ret"); }
+__attribute__((naked)) void __arm_sme_state(void) { __asm__ volatile("mrs x0, svcr\\n mrs x1, tpidr2_el0\\n ret"); }
+}
+"""
 
 
 def _write_sve_solution(lid: str, base_sources: list) -> None:
@@ -1323,6 +1494,8 @@ def _write_sve_solution(lid: str, base_sources: list) -> None:
     for tier, spec in _SVE_TIERS.items():
         if tier == "sve2" and not _EMIT_SVE2:
             continue  # bench-trace's baseline-sve2 is the frozen 2026-07-23 set (see _EMIT_SVE2)
+        if tier == "sme2" and not _EMIT_SME2:
+            continue
         if lid in spec["skip"]:
             continue
         kernel = _sve_kernel_src(lid, tier)
@@ -1333,9 +1506,11 @@ def _write_sve_solution(lid: str, base_sources: list) -> None:
             if src["path"] == "kernel.cpp":
                 sources.append({"path": "kernel.cpp", "content": kernel})
             elif src["path"] == f"{lid}.cpp":
-                sources.append({"path": src["path"], "content": _sve_binding(lid, src["content"])})
+                sources.append({"path": src["path"], "content": _sve_binding(lid, src["content"], tier)})
             else:
                 sources.append(src)
+        if tier == "sme2":
+            sources.append({"path": "sme_abi_stub.cpp", "content": _SME_ABI_STUB})
         author = spec["author"]
         out_dir = BENCH_TRACE / "solutions" / "simd-loop" / author / lid
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1360,7 +1535,8 @@ def _write_sve_solution(lid: str, base_sources: list) -> None:
                 "link_flags": [],
             },
             "sources": sources,
-            "description": f"Arm hand-written SVE kernel for {lid} ({tier} tier expert ceiling).",
+            "description": f"Arm hand-written SVE kernel for {lid} ({tier} tier expert ceiling)."
+                           + (" [M4: locally-streaming entry, -mcpu=apple-m4]" if tier == "sme2" else ""),
         }
         content = json.dumps(solution, indent=2) + "\n"
         if not out_path.exists() or out_path.read_text() != content:
@@ -1450,6 +1626,23 @@ class MultiAxisInfo:
         return next(f for f in self.fields if f.name == name)
 
 
+# Matrix loops (216-221, 223): m = 256 rows and a perf sweep over n, sized so
+# the matrix is ~535 MB at the top of every sweep. Every n is a multiple of 256
+# so Arm's SME2 kernels run as written on M4 (512-bit streaming vectors): the
+# tightest of their documented shape rules is loop_217's "N multiple of 4*SVLb".
+_MATRIX_PERF_N = {
+    "uint8": [49920, 79872, 126976, 203008, 323072, 515072, 822016, 1309952, 2088960],
+    "fp32": [49920, 67072, 90112, 121088, 162048, 217088, 291072, 389888, 521984],
+    "fp64": [49920, 60928, 76032, 92928, 113920, 140032, 173056, 211968, 261120],
+    "transpose": [49920, 61952, 76032, 92928, 113920, 141056, 173056, 212992, 261888],
+}
+
+
+def _matrix_sizes(sweep: str) -> dict:
+    return {"edge": [{"m": 256, "n": 256}],
+            "perf": [{"m": 256, "n": n} for n in _MATRIX_PERF_N[sweep]]}
+
+
 _MULTI_AXIS: dict[str, dict] = {
     "loop_223": {
         "axes":   ["m", "n"],
@@ -1460,11 +1653,7 @@ _MULTI_AXIS: dict[str, dict] = {
             "def run(a):\n"
             "    return np.ascontiguousarray(a.T)\n"
         ),
-        "sizes": {
-            "edge": [{"m": 1, "n": 1}, {"m": 2, "n": 3}, {"m": 8, "n": 8},
-                     {"m": 17, "n": 15}, {"m": 33, "n": 4}],
-            "perf": [{"m": 256, "n": 256}],
-        },
+        "sizes": _matrix_sizes("transpose"),
         # Real inner_loop_223 lives under `#if defined(HAVE_AUTOVEC)...` (not #elif),
         # which the generic extractor misses — supply it directly.
         "scalar": (
@@ -1491,11 +1680,7 @@ _MULTI_AXIS: dict[str, dict] = {
             "def run(a, x):\n"
             "    return (a.astype(np.float64) @ x.astype(np.float64)).astype(np.float32)\n"
         ),
-        "sizes": {
-            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
-                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
-            "perf": [{"m": 256, "n": 256}],
-        },
+        "sizes": _matrix_sizes("fp32"),
         "scalar": (
             '#include "loop_220.h"\n'
             '#include <stdint.h>\n\n'
@@ -1523,11 +1708,7 @@ _MULTI_AXIS: dict[str, dict] = {
             "def run(a, x):\n"
             "    return a.astype(np.float64) @ x.astype(np.float64)\n"
         ),
-        "sizes": {
-            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
-                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
-            "perf": [{"m": 256, "n": 256}],
-        },
+        "sizes": _matrix_sizes("fp64"),
         "scalar": (
             '#include "loop_221.h"\n'
             '#include <stdint.h>\n\n'
@@ -1556,11 +1737,7 @@ _MULTI_AXIS: dict[str, dict] = {
             "def run(a, x):\n"
             "    return (a.astype(np.float64).T @ x.astype(np.float64)).astype(np.float32)\n"
         ),
-        "sizes": {
-            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
-                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
-            "perf": [{"m": 256, "n": 256}],
-        },
+        "sizes": _matrix_sizes("fp32"),
         "scalar": (
             '#include "loop_216.h"\n'
             '#include <stdint.h>\n\n'
@@ -1588,11 +1765,7 @@ _MULTI_AXIS: dict[str, dict] = {
             "def run(a, x):\n"
             "    return a.astype(np.float64).T @ x.astype(np.float64)\n"
         ),
-        "sizes": {
-            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
-                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
-            "perf": [{"m": 256, "n": 256}],
-        },
+        "sizes": _matrix_sizes("fp64"),
         "scalar": (
             '#include "loop_218.h"\n'
             '#include <stdint.h>\n\n'
@@ -1620,11 +1793,7 @@ _MULTI_AXIS: dict[str, dict] = {
             "def run(a, b):\n"
             "    return (a.astype(np.uint64) @ b.astype(np.uint64)).astype(np.uint32)\n"
         ),
-        "sizes": {
-            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
-                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
-            "perf": [{"m": 256, "n": 256}],
-        },
+        "sizes": _matrix_sizes("uint8"),
         "scalar": (
             '#include "loop_217.h"\n'
             '#include <stdint.h>\n\n'
@@ -1652,11 +1821,7 @@ _MULTI_AXIS: dict[str, dict] = {
             "def run(a, b):\n"
             "    return (a.astype(np.uint64).T @ b.astype(np.uint64)).astype(np.uint32)\n"
         ),
-        "sizes": {
-            "edge": [{"m": 1, "n": 1}, {"m": 3, "n": 5}, {"m": 8, "n": 8},
-                     {"m": 17, "n": 15}, {"m": 4, "n": 33}],
-            "perf": [{"m": 256, "n": 256}],
-        },
+        "sizes": _matrix_sizes("uint8"),
         "scalar": (
             '#include "loop_219.h"\n'
             '#include <stdint.h>\n\n'
@@ -2607,10 +2772,18 @@ TARGET_LOOP_IDS = [
 def main() -> None:
     import sys
     dry_run = "--dry-run" in sys.argv
+    only = None
+    if "--loops" in sys.argv:
+        only = set(sys.argv[sys.argv.index("--loops") + 1].split(","))
+        unknown = only - set(TARGET_LOOP_IDS) - set(_MULTI_AXIS) - set(_SENTINEL)
+        if unknown:
+            sys.exit(f"--loops: unknown loop(s) {sorted(unknown)}")
 
     all_infos: list[LoopInfo] = []
 
     for loop_id in TARGET_LOOP_IDS:
+        if only is not None and loop_id not in only:
+            continue
         # Find the problem directory
         prob_dirs = [d for d in PROBLEMS_DIR.iterdir()
                      if d.name.startswith(loop_id + "_")]
@@ -2654,6 +2827,8 @@ def main() -> None:
     # ── Multi-axis loops (m/n/k) ──────────────────────────────────────────────
     ma_count = 0
     for loop_id in _MULTI_AXIS:
+        if only is not None and loop_id not in only:
+            continue
         ma = _build_multi_axis_info(loop_id)
         if ma is None:
             print(f"[skip] {loop_id}: problem dir / struct not found")
@@ -2668,6 +2843,8 @@ def main() -> None:
     # ── Sentinel loops (begin/end pointer ABI) ────────────────────────────────
     sn_count = 0
     for loop_id in _SENTINEL:
+        if only is not None and loop_id not in only:
+            continue
         cfg = _SENTINEL[loop_id]
         print(f"[gen]  {loop_id} (sentinel {cfg['layout']}): {cfg['buffers']} + n -> "
               f"{cfg['result']}")
