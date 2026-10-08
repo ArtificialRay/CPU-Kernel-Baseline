@@ -782,9 +782,11 @@ _SVE_TIERS = {
             # no SME branch upstream
             "loop_008", "loop_103", "loop_120", "loop_121", "loop_122", "loop_123", "loop_124",
             "loop_102", "loop_104",
+            # svbgrp in streaming mode needs FEAT_SSVE_BitPerm (Armv9.6), which
+            # M4 does not have; Arm's branch is gated on it accordingly
+            "loop_106",
             # feature-gated beyond the tier march / SVE2-only matmul variants
-            "loop_101", "loop_106", "loop_130", "loop_135",
-            "loop_128",
+            "loop_130", "loop_135",
         },
     },
     "sve2": {
@@ -1366,6 +1368,33 @@ extern "C" int armbench_entry_loop_219(void *a, void *b, int64_t m_in, int64_t n
     inner_loop_219(&_kd);
     memcpy(res_out, pc, m * sizeof(uint32_t));
     free(pa); free(pb); free(pc);
+    return 0;
+}
+""",
+    # uint32 add with an aliasing check: Arm's kernel builds its predicate with
+    # svwhilelt_b32 on byte addresses, so its last iteration covers a whole
+    # vector even when fewer elements are left, and writes past c (upstream's
+    # arena allocation hides that). Run it in place on the whole vectors and on
+    # the tail through a one-vector zero-padded copy.
+    "loop_128": """
+extern "C" int armbench_entry_loop_128(void *a, void *b, int64_t n_in, void *res_out) {
+    const uint64_t n = (uint64_t)n_in, vlw = _VLW(), main_n = n / vlw * vlw, tail = n - main_n;
+    uint32_t *pa = static_cast<uint32_t *>(a), *pb = static_cast<uint32_t *>(b);
+    uint32_t *pc = static_cast<uint32_t *>(res_out);
+    struct loop_128_data _kd;
+    if (main_n) {
+        _kd.a = pa; _kd.b = pb; _kd.c = pc; _kd.n = (int)main_n;
+        inner_loop_128(&_kd);
+    }
+    if (tail) {
+        uint32_t *ta = (uint32_t *)_zeroed(3 * vlw * sizeof(uint32_t)), *tb = ta + vlw, *tc = tb + vlw;
+        memcpy(ta, pa + main_n, tail * sizeof(uint32_t));
+        memcpy(tb, pb + main_n, tail * sizeof(uint32_t));
+        _kd.a = ta; _kd.b = tb; _kd.c = tc; _kd.n = (int)tail;
+        inner_loop_128(&_kd);
+        memcpy(pc + main_n, tc, tail * sizeof(uint32_t));
+        free(ta);
+    }
     return 0;
 }
 """,
