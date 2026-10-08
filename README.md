@@ -70,7 +70,8 @@ there wins over the file it overrides.
 | File | Purpose |
 |---|---|
 | `config/kernel_contracts.yaml` | Kernel evaluation parameters: op-type correctness/timing overrides, disallowed source patterns, ISA→march mapping, baseline authors |
-| `config/dataset_builds.json` | Step-by-step clone/build of each dataset's native lib (ncnn, ggml) on a remote instance |
+| `config/dataset_builds.json` | Step-by-step clone/build of each dataset's native lib (ncnn, ggml) on a remote instance, plus the pinned llama.cpp tools tree for the end-to-end runs |
+| `config/e2e_models.json` | Models for the end-to-end tokens/s runs (`scripts/e2e/`) |
 | `config/rsync_allowlist.json` | Repo paths synced to instances before a session (override once with `RSYNC_ALLOWLIST` in `.env`) |
 
 ### 3. Written by the tools (do not edit by hand)
@@ -179,7 +180,8 @@ Use `--definitions` to control which kernels the agent optimizes: one name, a
 space-separated list, or a JSON array (quote it, so the shell passes it through
 unchanged). Without `--definitions`, the entrypoint runs every definition in
 that dataset except the end-to-end ones (tagged `e2e:<model>`), which run only
-when named.
+when named. Measuring those kernels inside llama.cpp (tokens/s and perplexity)
+is described in [scripts/e2e/README.md](scripts/e2e/README.md).
 
 ```bash
 python3 test_scripts/bench_fleet.py --harness nanobot \
