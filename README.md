@@ -87,6 +87,14 @@ there wins over the file it overrides.
   and `mcp_app/` from one uv-managed venv at `~/venv`, built from
   `requirements.txt` by `provision.py`. Nothing to set up by hand, and a reused
   instance is checked (and repaired if a package is missing) before a run.
+- **Linux boxes shut themselves down when nobody is driving them.** Provisioning
+  schedules a shutdown 3 hours out, and `bench_fleet.py` pushes it to
+  `--watchdog-minutes` (default 120) past now before and during every job.
+  Terraform turns that shutdown into a termination, so a box left behind by a
+  crashed driver or a closed laptop stops billing within about 2 hours. A box
+  you keep around between runs is reprovisioned on the next run if the
+  watchdog took it. `--watchdog-minutes 0` cancels it. Mac instances are not
+  watched: their Dedicated Host bills either way.
 - **Mac (`mac-m4.metal`) needs a Dedicated Host.** Provisioning picks an
   existing `available` host with no instance on it and never allocates one
   itself (AWS bills a 24-hour minimum). Allocate one first:

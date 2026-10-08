@@ -31,6 +31,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -326,6 +327,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     instance = launch_session._provision(
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
     )
+    launch_session.arm_watchdog(instance, args.watchdog_minutes)
 
     # Build the job list first: ensure_baselines() needs the definition names,
     # and it has to run between the repo sync and the MCP server start.
@@ -394,7 +396,8 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             while True:
                 print(f"=== [{time.strftime('%H:%M:%S')}] starting job: {job.name} "
                       f"(attempt {attempt + 1}/{args.retries + 1}) ===")
-                rc = adapter.run_job(job, endpoint=prepared["endpoint"], author=author, log_path=log_path)
+                with WatchdogKeeper(instance, args.watchdog_minutes):
+                    rc = adapter.run_job(job, endpoint=prepared["endpoint"], author=author, log_path=log_path)
                 if rc == 0:
                     break
                 if attempt >= args.retries:
@@ -442,6 +445,31 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     return label
 
 
+class WatchdogKeeper:
+    """Re-arm the box's watchdog on entry and then every third of the window
+    while a job runs: a 40-iteration job can outlast one window, and the box
+    must not shut down under it. No-op with minutes <= 0."""
+
+    def __init__(self, instance, minutes: int) -> None:
+        self.instance, self.minutes = instance, minutes
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.keep_armed, daemon=True, name="watchdog-keeper")
+
+    def keep_armed(self) -> None:
+        period_s = max(5, self.minutes // 3) * 60
+        while not self.stopped.wait(period_s):
+            launch_session.arm_watchdog(self.instance, self.minutes)
+
+    def __enter__(self) -> "WatchdogKeeper":
+        if self.minutes > 0:
+            launch_session.arm_watchdog(self.instance, self.minutes)
+            self.thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stopped.set()
+
+
 def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: list[str], author: str) -> None:
     """One round's chunk = one fresh `bench_fleet.py` subprocess (plain,
     non-until-complete invocation of this same script). Deliberately a
@@ -474,6 +502,7 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         cmd += ["--instance", args.instance]
     if args.on_demand:
         cmd.append("--on-demand")
+    cmd += ["--watchdog-minutes", str(args.watchdog_minutes)]
     if args.local_results_dir:
         cmd += ["--local-results-dir", args.local_results_dir]
     if args.sync_solutions:
@@ -666,6 +695,11 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "provisioned instance).")
     p.add_argument("--local-results-dir", default=None,
                    help="Default: agent-runs-<author>/ under the repo root.")
+    p.add_argument("--watchdog-minutes", type=int, default=120,
+                   help="Cost guard for Linux boxes: the box shuts itself down (and terraform "
+                        "terminates it) this many minutes after the last re-arm. Re-armed before "
+                        "and during every job, so it only fires once the driver is gone. 0 "
+                        "cancels it. Default: 120"),
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
                         "remote instance (not bench-trace/traces/ — that data's already in "

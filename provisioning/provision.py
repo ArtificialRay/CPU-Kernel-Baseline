@@ -300,6 +300,17 @@ def _linux_dep_steps() -> list[tuple[str, str, int]]:
             "sudo sysctl -w kernel.perf_event_paranoid=1",
             10,
         ),
+        (
+            # Cost guard: the box shuts itself down in 3 h unless a driver
+            # pushes the deadline out (launch_session.arm_watchdog, which
+            # bench_fleet.py calls before and during every job). terraform's
+            # instance_initiated_shutdown_behavior makes that a termination for
+            # on-demand boxes, as a one-time spot request already is, so a box
+            # orphaned by a dead driver bills for hours, not days.
+            "shutdown watchdog (3h)",
+            "sudo shutdown -h +180 'arm-bench watchdog'",
+            10,
+        ),
     ]
 
 
