@@ -8,7 +8,7 @@ a bounded-uniform random tensor seeded from the workload's uuid.
 import hashlib
 import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 import ml_dtypes
 import numpy as np
@@ -243,25 +243,21 @@ def _dtype_to_np(dt: DType):
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
-_TRACE_ROOT: Optional[Path] = None
-
-
 def set_trace_root(root) -> None:
     """Record the warehouse root so `{"type": "tensor"}` workload inputs resolve.
 
-    TraceSet.from_path calls this; ARMBENCH_TRACE_ROOT overrides it for callers that
-    build a Definition/Workload pair by hand (the e2e scripts do).
+    Kept in the environment, not a global: the harness evaluates in a spawned
+    subprocess, which inherits the environment and nothing else. TraceSet.from_path
+    calls this; callers that build a Definition/Workload pair by hand (the e2e
+    scripts do) can set ARMBENCH_TRACE_ROOT themselves.
     """
-    global _TRACE_ROOT
-    _TRACE_ROOT = Path(root)
+    os.environ["ARMBENCH_TRACE_ROOT"] = str(Path(root).resolve())
 
 
 def _trace_root() -> Path:
     env = os.environ.get("ARMBENCH_TRACE_ROOT")
     if env:
         return Path(env)
-    if _TRACE_ROOT is not None:
-        return _TRACE_ROOT
     return Path(__file__).resolve().parent.parent.parent / "bench-trace"
 
 
