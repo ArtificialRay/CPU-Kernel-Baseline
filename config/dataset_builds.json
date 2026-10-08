@@ -20,7 +20,7 @@
     ]
   },
   "llama.cpp": {
-    "ready_check": "test -f ~/llama.cpp/build/ggml/src/libggml.a",
+    "ready_check": "git -C ~/llama.cpp describe --tags --exact-match 2>/dev/null | grep -qx v0.4.1 && test -f ~/llama.cpp/build/ggml/src/libggml.a",
     "steps": [
       {
         "label": "clone llama.cpp (pinned v0.4.1)",
@@ -38,11 +38,11 @@
         "timeout": 900
       }
     ],
-    "_comment": "Kernel dataset build (ggml static libs only). Pinned to a release tag so every solution/baseline trace across a sweep sees the same ggml; bump deliberately and re-collect baselines."
+    "_comment": "Kernel dataset build (ggml static libs only). Pinned to a release tag so every solution/baseline trace across a sweep sees the same ggml; ready_check also checks the tag, so a box on another checkout is rebuilt. Bump deliberately (clone step and ready_check) and re-collect baselines."
   },
   "llama.cpp-e2e": {
-    "_comment": "End-to-end build for scripts/e2e: full llama.cpp tools (llama-bench, llama-perplexity; v0.4.1 has no llama-cli target) at the same pin, in a separate tree so the kernel-dataset build above is untouched; the model GGUF is fetched separately by scripts/e2e/fetch_model.sh from config/e2e_models.json. 'stock' = upstream CPU backend as shipped (the baseline tokens/s); scripts/e2e/build_agent_llamacpp.sh derives the 'agent' build (override hook applied) from this tree.",
-    "ready_check": "test -x ~/llama.cpp-e2e/build-stock/bin/llama-bench",
+    "_comment": "End-to-end build for scripts/e2e: full llama.cpp tools (llama-bench, llama-perplexity; v0.4.1 has no llama-cli target) at the same pin, in a separate tree so the kernel-dataset build above is untouched; the model GGUF is fetched separately by scripts/e2e/provision_e2e.py --model from config/e2e_models.json. 'stock' = upstream CPU backend as shipped (the baseline tokens/s); scripts/e2e/build_agent_llamacpp.sh derives the 'agent' build (override hook applied) from this tree.",
+    "ready_check": "git -C ~/llama.cpp-e2e describe --tags --exact-match 2>/dev/null | grep -qx v0.4.1 && test -x ~/llama.cpp-e2e/build-stock/bin/llama-bench",
     "steps": [
       {
         "label": "clone llama.cpp (pinned v0.4.1) for e2e",
