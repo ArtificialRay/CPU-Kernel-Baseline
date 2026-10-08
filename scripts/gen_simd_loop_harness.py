@@ -782,9 +782,11 @@ _SVE_TIERS = {
             # no SME branch upstream
             "loop_008", "loop_103", "loop_120", "loop_121", "loop_122", "loop_123", "loop_124",
             "loop_102", "loop_104",
+            # svbgrp in streaming mode needs FEAT_SSVE_BitPerm (Armv9.6), which
+            # M4 does not have; Arm's branch is gated on it accordingly
+            "loop_106",
             # feature-gated beyond the tier march / SVE2-only matmul variants
-            "loop_101", "loop_106", "loop_130", "loop_135",
-            "loop_128",
+            "loop_130", "loop_135",
         },
     },
     "sve2": {
@@ -1007,6 +1009,18 @@ def _sme_streaming_entry(lid: str, code: str) -> str:
     return code
 
 
+def _sme2_kernel_tags(lid: str) -> list:
+    """Definition tag saying what kind of kernel the loop's baseline-sme2 is:
+    `sme2-kernel:za` for Arm's ZA-tile kernels (LOOP_ATTR SME_ZA_ATTR), else
+    `sme2-kernel:streaming-sve` (the SVE kernel run in streaming mode), so
+    results can be reported separately. No tag when the loop has no sme2
+    baseline. Derived from the upstream source, not from --emit-sme2."""
+    if lid in _SVE_TIERS["sme2"]["skip"] or not _extract_sve_kernel(lid, "sme2"):
+        return []
+    za = _sme_loop_attrs(lid)[0] == "SME_ZA_ATTR"
+    return ["sme2-kernel:za" if za else "sme2-kernel:streaming-sve"]
+
+
 def _sve_kernel_src(lid: str, tier: str = "sve") -> str:
     """kernel.cpp for the tier's baseline author, or "" if no SVE block exists."""
     extracted = _extract_sve_kernel(lid, tier)
@@ -1051,7 +1065,7 @@ def _write_definition(info: LoopInfo) -> None:
             "name": info.loop_id,
             "op_type": info.loop_id,
             "description": _description(info),
-            "tags": ["simd-loop"],
+            "tags": ["simd-loop", *_sme2_kernel_tags(info.loop_id)],
             "axes": {"N": {"type": "var", "description": "Array length"}},
             "inputs": inputs,
             "outputs": {out_name: out_spec},
@@ -1086,7 +1100,7 @@ def _write_definition(info: LoopInfo) -> None:
         "name": info.loop_id,
         "op_type": info.loop_id,
         "description": _description(info),
-        "tags": ["simd-loop"],
+        "tags": ["simd-loop", *_sme2_kernel_tags(info.loop_id)],
         "axes": {"N": {"type": "var", "description": "Array length"}},
         "inputs": inputs,
         "outputs": {out_name: out_spec},
@@ -1366,6 +1380,33 @@ extern "C" int armbench_entry_loop_219(void *a, void *b, int64_t m_in, int64_t n
     inner_loop_219(&_kd);
     memcpy(res_out, pc, m * sizeof(uint32_t));
     free(pa); free(pb); free(pc);
+    return 0;
+}
+""",
+    # uint32 add with an aliasing check: Arm's kernel builds its predicate with
+    # svwhilelt_b32 on byte addresses, so its last iteration covers a whole
+    # vector even when fewer elements are left, and writes past c (upstream's
+    # arena allocation hides that). Run it in place on the whole vectors and on
+    # the tail through a one-vector zero-padded copy.
+    "loop_128": """
+extern "C" int armbench_entry_loop_128(void *a, void *b, int64_t n_in, void *res_out) {
+    const uint64_t n = (uint64_t)n_in, vlw = _VLW(), main_n = n / vlw * vlw, tail = n - main_n;
+    uint32_t *pa = static_cast<uint32_t *>(a), *pb = static_cast<uint32_t *>(b);
+    uint32_t *pc = static_cast<uint32_t *>(res_out);
+    struct loop_128_data _kd;
+    if (main_n) {
+        _kd.a = pa; _kd.b = pb; _kd.c = pc; _kd.n = (int)main_n;
+        inner_loop_128(&_kd);
+    }
+    if (tail) {
+        uint32_t *ta = (uint32_t *)_zeroed(3 * vlw * sizeof(uint32_t)), *tb = ta + vlw, *tc = tb + vlw;
+        memcpy(ta, pa + main_n, tail * sizeof(uint32_t));
+        memcpy(tb, pb + main_n, tail * sizeof(uint32_t));
+        _kd.a = ta; _kd.b = tb; _kd.c = tc; _kd.n = (int)tail;
+        inner_loop_128(&_kd);
+        memcpy(pc + main_n, tc, tail * sizeof(uint32_t));
+        free(ta);
+    }
     return 0;
 }
 """,
@@ -2449,7 +2490,7 @@ def _write_multi_axis(info: MultiAxisInfo) -> None:
         "name": lid,
         "op_type": lid,
         "description": _description_ma(info),
-        "tags": ["simd-loop"],
+        "tags": ["simd-loop", *_sme2_kernel_tags(lid)],
         "axes": axes_spec,
         "inputs": inputs,
         "outputs": {out_name: {"shape": out_ax, "dtype": out_dtype,
@@ -2698,7 +2739,7 @@ def _write_sentinel(loop_id: str) -> None:
     definition = {
         "name": loop_id, "op_type": loop_id,
         "description": _description(_FakeInfo(loop_id)),
-        "tags": ["simd-loop"],
+        "tags": ["simd-loop", *_sme2_kernel_tags(loop_id)],
         "axes": {"N": {"type": "var", "description": "Buffer length (bytes)"}},
         "inputs": {b: {"shape": ["N"], "dtype": elem_dtype} for b in buffers},
         "outputs": {result: {"shape": None, "dtype": r_dtype, "description": "Scalar checksum"}},
