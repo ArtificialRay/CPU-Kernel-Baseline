@@ -1,5 +1,5 @@
 {
-  "_comment": "Models for the end-to-end tokens/s experiment (scripts/e2e). Keys are the --model tags; gguf is fetched by scripts/e2e/fetch_model.sh into ~/models/<file>. bytes_per_token from scripts/e2e/qwen35_inventory.py (Q4_K_M, decode).",
+  "_comment": "Models for the end-to-end tokens/s experiment (scripts/e2e). Keys are the --model tags; gguf is fetched by scripts/e2e/provision_e2e.py --model into ~/models/<file>. bytes_per_token from scripts/e2e/qwen35_inventory.py (Q4_K_M, decode).",
   "qwen3.5-4b": {
     "repo": "unsloth/Qwen3.5-4B-GGUF", "file": "Qwen3.5-4B-Q4_K_M.gguf", "size_gb": 2.74,
     "arch": "qwen35", "released": "2026-02", "lm_head": "tied Q6_K", "bytes_per_token_gb": 2.73,
