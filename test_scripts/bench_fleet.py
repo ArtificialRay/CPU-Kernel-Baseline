@@ -327,8 +327,6 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     instance = launch_session._provision(
         isa, instance_type, dataset, label=label, on_demand=args.on_demand,
     )
-    launch_session.arm_watchdog(instance, args.watchdog_minutes)
-
     # Build the job list first: ensure_baselines() needs the definition names,
     # and it has to run between the repo sync and the MCP server start.
     # Use the class (not `adapter`) — for --harness own, adapter isn't
@@ -338,10 +336,13 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
         dataset, isa, args.definitions, args.min_iterations, max_iterations,
         adapter_cls.prompt_template, adapter_cls.template_args,
     )
-    if jobs:
-        ensure_baselines(
-            instance, dataset, [j.name for j in jobs], args.remote_root, isa=isa,
-        )
+    # Kept armed through baseline collection too: on a fresh box it can run
+    # longer than one watchdog window.
+    with WatchdogKeeper(instance, args.watchdog_minutes):
+        if jobs:
+            ensure_baselines(
+                instance, dataset, [j.name for j in jobs], args.remote_root, isa=isa,
+            )
 
     # sync_repo=False: ensure_baselines() already synced, and re-syncing here
     # would rsync --delete the baselines it just collected.
@@ -448,7 +449,8 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
 class WatchdogKeeper:
     """Re-arm the box's watchdog on entry and then every third of the window
     while a job runs: a 40-iteration job can outlast one window, and the box
-    must not shut down under it. No-op with minutes <= 0."""
+    must not shut down under it. With minutes <= 0 it cancels the pending
+    shutdown instead."""
 
     def __init__(self, instance, minutes: int) -> None:
         self.instance, self.minutes = instance, minutes
@@ -461,8 +463,8 @@ class WatchdogKeeper:
             launch_session.arm_watchdog(self.instance, self.minutes)
 
     def __enter__(self) -> "WatchdogKeeper":
+        launch_session.arm_watchdog(self.instance, self.minutes)
         if self.minutes > 0:
-            launch_session.arm_watchdog(self.instance, self.minutes)
             self.thread.start()
         return self
 
@@ -697,9 +699,9 @@ def main(argv: Optional[list[str]] = None) -> None:
                    help="Default: agent-runs-<author>/ under the repo root.")
     p.add_argument("--watchdog-minutes", type=int, default=120,
                    help="Cost guard for Linux boxes: the box shuts itself down (and terraform "
-                        "terminates it) this many minutes after the last re-arm. Re-armed before "
-                        "and during every job, so it only fires once the driver is gone. 0 "
-                        "cancels it. Default: 120"),
+                        "terminates it) this many minutes after the last re-arm. Kept armed while "
+                        "baselines are collected and during every job, so it only fires once the driver is gone. 0 "
+                        "cancels it. Default: 120")
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
                         "remote instance (not bench-trace/traces/ — that data's already in "

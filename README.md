@@ -89,7 +89,8 @@ there wins over the file it overrides.
   instance is checked (and repaired if a package is missing) before a run.
 - **Linux boxes shut themselves down when nobody is driving them.** Provisioning
   schedules a shutdown 3 hours out, and `bench_fleet.py` pushes it to
-  `--watchdog-minutes` (default 120) past now before and during every job.
+  `--watchdog-minutes` (default 120) past now while baselines are collected
+  and during every job.
   Terraform turns that shutdown into a termination, so a box left behind by a
   crashed driver or a closed laptop stops billing within about 2 hours. A box
   you keep around between runs is reprovisioned on the next run if the
