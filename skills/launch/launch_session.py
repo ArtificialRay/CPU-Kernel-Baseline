@@ -154,9 +154,9 @@ def _teardown(label: Optional[str] = None) -> None:
 
 def arm_watchdog(instance: ProvisionedInstance, minutes: int) -> None:
     """(Re)schedule the box's self-shutdown `minutes` from now, replacing any
-    pending one; minutes <= 0 cancels it. provision.py schedules the first one
-    on every Linux box, and terraform turns the shutdown into a termination, so
-    a box left behind by a dead driver costs at most `minutes` of billing.
+    pending one; minutes <= 0 cancels it. terraform turns the shutdown into a
+    termination, so a box left behind by a dead driver costs at most `minutes`
+    of billing.
 
     Linux only. A Mac's dedicated host bills whether or not an instance runs on
     it, and terminating the instance would only start the host's scrub.
