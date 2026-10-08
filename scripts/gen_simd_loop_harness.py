@@ -1009,6 +1009,18 @@ def _sme_streaming_entry(lid: str, code: str) -> str:
     return code
 
 
+def _sme2_kernel_tags(lid: str) -> list:
+    """Definition tag saying what kind of kernel the loop's baseline-sme2 is:
+    `sme2-kernel:za` for Arm's ZA-tile kernels (LOOP_ATTR SME_ZA_ATTR), else
+    `sme2-kernel:streaming-sve` (the SVE kernel run in streaming mode), so
+    results can be reported separately. No tag when the loop has no sme2
+    baseline. Derived from the upstream source, not from --emit-sme2."""
+    if lid in _SVE_TIERS["sme2"]["skip"] or not _extract_sve_kernel(lid, "sme2"):
+        return []
+    za = _sme_loop_attrs(lid)[0] == "SME_ZA_ATTR"
+    return ["sme2-kernel:za" if za else "sme2-kernel:streaming-sve"]
+
+
 def _sve_kernel_src(lid: str, tier: str = "sve") -> str:
     """kernel.cpp for the tier's baseline author, or "" if no SVE block exists."""
     extracted = _extract_sve_kernel(lid, tier)
@@ -1053,7 +1065,7 @@ def _write_definition(info: LoopInfo) -> None:
             "name": info.loop_id,
             "op_type": info.loop_id,
             "description": _description(info),
-            "tags": ["simd-loop"],
+            "tags": ["simd-loop", *_sme2_kernel_tags(info.loop_id)],
             "axes": {"N": {"type": "var", "description": "Array length"}},
             "inputs": inputs,
             "outputs": {out_name: out_spec},
@@ -1088,7 +1100,7 @@ def _write_definition(info: LoopInfo) -> None:
         "name": info.loop_id,
         "op_type": info.loop_id,
         "description": _description(info),
-        "tags": ["simd-loop"],
+        "tags": ["simd-loop", *_sme2_kernel_tags(info.loop_id)],
         "axes": {"N": {"type": "var", "description": "Array length"}},
         "inputs": inputs,
         "outputs": {out_name: out_spec},
@@ -2478,7 +2490,7 @@ def _write_multi_axis(info: MultiAxisInfo) -> None:
         "name": lid,
         "op_type": lid,
         "description": _description_ma(info),
-        "tags": ["simd-loop"],
+        "tags": ["simd-loop", *_sme2_kernel_tags(lid)],
         "axes": axes_spec,
         "inputs": inputs,
         "outputs": {out_name: {"shape": out_ax, "dtype": out_dtype,
@@ -2727,7 +2739,7 @@ def _write_sentinel(loop_id: str) -> None:
     definition = {
         "name": loop_id, "op_type": loop_id,
         "description": _description(_FakeInfo(loop_id)),
-        "tags": ["simd-loop"],
+        "tags": ["simd-loop", *_sme2_kernel_tags(loop_id)],
         "axes": {"N": {"type": "var", "description": "Buffer length (bytes)"}},
         "inputs": {b: {"shape": ["N"], "dtype": elem_dtype} for b in buffers},
         "outputs": {result: {"shape": None, "dtype": r_dtype, "description": "Scalar checksum"}},
