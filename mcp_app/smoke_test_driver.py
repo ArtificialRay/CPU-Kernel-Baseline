@@ -250,6 +250,7 @@ def run_definition(
         # Without this, run_definition (and the whole batch loop) hangs
         # forever instead of reporting a failure and moving on.
         result = {
+            "status": "TIMEOUT",
             "error": f"no response from remote session within {session_timeout_s}s "
                      "(remote mcp_app.server likely died mid-session)",
         }
