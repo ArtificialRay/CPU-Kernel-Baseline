@@ -18,6 +18,7 @@ Needs `wandb` and a logged-in W&B account.
 import argparse
 import collections
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -35,6 +36,12 @@ def cell_of(run) -> str:
             (p for p in ("codex", "nanobot", "own", "claude-code", "tcloop")
              if group.startswith(p + "-")), "unknown")
     model = str(c.get("model") or "unknown").split("/")[-1]
+    if model == "unknown":
+        # Some early runs carry no model in their config; the per-model projects
+        # (e.g. arm-bench-kernels-gpt5.6-luna) still name it, as the tables assume.
+        m = re.search(r"-(gpt[\d.]+-\w+)$", run.project or "")
+        if m:
+            model = m.group(1).replace("gpt", "gpt-", 1)
     cell = f"{harness}__{model}__{c.get('dataset')}__{c.get('isa')}"
     parts = group.split("__")
     if parts[4:] == ["sandboxed"]:
