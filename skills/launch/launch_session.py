@@ -152,6 +152,29 @@ def _teardown(label: Optional[str] = None) -> None:
     subprocess.run(cmd, check=True)
 
 
+def arm_watchdog(instance: ProvisionedInstance, minutes: int) -> None:
+    """(Re)schedule the box's self-shutdown `minutes` from now, replacing any
+    pending one; minutes <= 0 cancels it. terraform turns the shutdown into a
+    termination, so a box left behind by a dead driver costs at most `minutes`
+    of billing.
+
+    Linux only. A Mac's dedicated host bills whether or not an instance runs on
+    it, and terminating the instance would only start the host's scrub.
+    Best-effort: a failed re-arm leaves the previous deadline in place."""
+    if instance.instance_type.startswith("mac"):
+        return
+    cmd = "sudo shutdown -c >/dev/null 2>&1; "
+    if minutes > 0:
+        cmd += f"sudo shutdown -h +{int(minutes)} 'arm-bench watchdog'"
+    target = instance.target
+    try:
+        rc, _, err = target.run(cmd, timeout=30)
+        if rc != 0:
+            print(f"  WARNING: watchdog arm failed on {target.host}: {err[:200]}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — never let the guard abort a run
+        print(f"  WARNING: watchdog arm failed on {target.host}: {e}", file=sys.stderr)
+
+
 def _status() -> None:
     config = json.loads(EVAL_CONFIG_PATH.read_text()) if EVAL_CONFIG_PATH.exists() else {}
     if not config.get("instances"):
