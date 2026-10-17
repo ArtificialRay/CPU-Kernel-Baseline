@@ -56,6 +56,11 @@ def _gen_byte_buffer(shape: tuple, layout: str, rng: np.random.Generator) -> np.
     guaranteed trailing NUL, so the buffer is a run of null-terminated strings that
     always terminates at/before the sentinel `lmt`/`end` pointer.
     """
+    if layout not in ("raw", "cstrings"):
+        raise NotImplementedError(
+            f"bytes layout {layout!r} (packed ggml weight rows) cannot be generated yet; "
+            f"it belongs to the e2e definitions, see issue #94"
+        )
     n = int(np.prod(shape)) if shape else 0
     buf = rng.integers(1, 101, n, dtype=np.uint8)
     if layout == "cstrings" and n > 0:
@@ -179,6 +184,11 @@ def gen_inputs_for_workload(d: Definition, w: Workload) -> Dict[str, object]:
         if wi.type == "bytes":
             out[tname] = _gen_byte_buffer(shape, wi.layout, rng)
             continue
+        if wi.type == "tensor":
+            raise NotImplementedError(
+                f"Workload '{w.uuid}' input '{tname}' is a stored tensor ({wi.path}); "
+                f"loading those is not supported yet, see issue #94"
+            )
         # type == "random"
         if _q8 and tspec.dtype == DType.INT8:
             # signed/zero-centered int8 quants, like real q8_0

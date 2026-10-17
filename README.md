@@ -178,7 +178,8 @@ python3 test_scripts/bench_fleet.py --harness claude-code \
 Use `--definitions` to control which kernels the agent optimizes: one name, a
 space-separated list, or a JSON array (quote it, so the shell passes it through
 unchanged). Without `--definitions`, the entrypoint runs every definition in
-that dataset.
+that dataset except the end-to-end ones (tagged `e2e:<model>`), which run only
+when named.
 
 ```bash
 python3 test_scripts/bench_fleet.py --harness nanobot \
