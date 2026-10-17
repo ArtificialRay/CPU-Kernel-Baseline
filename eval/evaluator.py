@@ -142,8 +142,8 @@ def build_user_prompt(definition, ref_solution, *, closing: str | None = None) -
             )
 
     parts.append(closing if closing is not None else (
-        "\nStart with compile(). Use evaluate(measure=false) to check correctness, "
-        "then evaluate(measure=true) for speedup metrics."
+        "\nStart with compile(), then evaluate(version) to check correctness and "
+        "measure speedup in one call. Your best passing version is submitted automatically."
     ))
     return "\n".join(parts)
 

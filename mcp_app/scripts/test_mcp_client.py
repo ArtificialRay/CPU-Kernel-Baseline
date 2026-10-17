@@ -3,7 +3,7 @@
 Drives list_tools() (assert no read_code) -> call_tool("compile", {"definition":
 ..., "code": ...}) -> call_tool("evaluate", {"definition": ..., "version": ...}) ->
 call_tool("disassemble", {"definition": ..., "version": ...}) ->
-list_resources()/read_resource() -> call_tool("submit", {"definition": ..., ...})
+list_resources()/read_resource() -> call_tool("check_progress", {"definition": ...})
 for one definition. Exposes both a callable API (used by mcp_app/smoke_test_driver.py)
 and a standalone CLI for manual runs.
 
@@ -45,19 +45,19 @@ async def run_tool_sequence(
     definition: str,
     *,
     starter_code: Optional[str] = None,
-    submit_explanation: str = "smoke test",
     verbose: bool = True,
 ) -> dict[str, Any]:
-    """Drive one full compile/evaluate/disassemble/submit sequence for
+    """Drive one full compile/evaluate/disassemble/check_progress sequence for
     `definition` over an already-initialized ClientSession. Raises
-    AssertionError on any check failure. Returns submit()'s result dict.
+    AssertionError on any check failure. Returns check_progress()'s result
+    dict plus status=PASSED.
     """
     await session.initialize()
 
     tools_result = await session.list_tools()
     tool_names = {t.name for t in tools_result.tools}
     assert "read_code" not in tool_names, f"read_code should be retired, got {tool_names}"
-    assert tool_names == {"compile", "evaluate", "disassemble"}, tool_names
+    assert tool_names == {"check_progress", "compile", "evaluate", "disassemble"}, tool_names
     if verbose:
         print(f"  tools: {sorted(tool_names)}")
 
@@ -98,13 +98,14 @@ async def run_tool_sequence(
     v1_text = read_result.contents[0].text  # type: ignore[union-attr]
     assert v1_text == code, f"{v1_name} resource content doesn't match the code that was compiled"
 
-    r = await session.call_tool("submit", {"definition": definition, "explanation": submit_explanation})
-    submit_result = _tool_result_dict(r)
-    assert submit_result.get("status") == "PASSED", submit_result
+    # evaluate() auto-submits a passing version that beats the best so far.
+    r = await session.call_tool("check_progress", {"definition": definition})
+    progress = _tool_result_dict(r)
+    assert progress.get("best_version") == version, progress
     if verbose:
-        print(f"  submit: {submit_result}")
+        print(f"  check_progress: best_version={progress['best_version']}")
 
-    return submit_result
+    return {"status": "PASSED", **progress}
 
 
 async def run_stdio_sequence(
@@ -113,7 +114,6 @@ async def run_stdio_sequence(
     definition: str,
     *,
     starter_code: Optional[str] = None,
-    submit_explanation: str = "smoke test",
     verbose: bool = True,
 ) -> dict[str, Any]:
     params = StdioServerParameters(command=command, args=args)
@@ -121,7 +121,7 @@ async def run_stdio_sequence(
         async with ClientSession(read, write) as session:
             return await run_tool_sequence(
                 session, definition, starter_code=starter_code,
-                submit_explanation=submit_explanation, verbose=verbose,
+                verbose=verbose,
             )
 
 
@@ -130,7 +130,6 @@ async def run_streamable_http_sequence(
     definition: str,
     *,
     starter_code: Optional[str] = None,
-    submit_explanation: str = "smoke test",
     verbose: bool = True,
 ) -> dict[str, Any]:
     """Used whenever harness and server are on different hosts — the normal
@@ -141,7 +140,7 @@ async def run_streamable_http_sequence(
         async with ClientSession(read, write) as session:
             return await run_tool_sequence(
                 session, definition, starter_code=starter_code,
-                submit_explanation=submit_explanation, verbose=verbose,
+                verbose=verbose,
             )
 
 
@@ -152,7 +151,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--spawn-args", nargs="*", default=[], help="stdio mode: spawn command args.")
     p.add_argument("--endpoint", help="streamable-http mode: e.g. http://127.0.0.1:8888/mcp")
     p.add_argument("--definition", required=True,
-                    help="Definition name to compile/evaluate/disassemble/submit.")
+                    help="Definition name to compile/evaluate/disassemble/check.")
     p.add_argument("--code-file", help="Path to a kernel.cpp to compile; defaults to "
                                         "the session's reference-scalar-kernel.cpp resource.")
     args = p.parse_args(argv)
