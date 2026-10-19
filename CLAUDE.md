@@ -2,9 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Implementation Guide
+## Implementation guide
 
 - USE AS LESS HIDDEN FUNCTION (function with "_" beforehead) AS YOU CAN IN YOUR IMPLEMENTATION
+- Raise any concerns if you think a new change may affect previous experiment results
+
+## Experiment-monitoring guide
 - DO NOT INITIAIZE MORE THAN 5 BACKGROUND TASKS, THEY WILL CRASH THE WSL!!
 - For macm4.metal instance, OPEN AT MOST 2 DEDICATED HOST ONLY! IF YOU HAVE ALREADY OPENED A DEDICATED HOST, PLEASE REUSE IT INSTEAD OF OPENING A NEW ONE
 
