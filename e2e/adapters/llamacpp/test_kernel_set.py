@@ -103,6 +103,27 @@ class KernelSetTest(unittest.TestCase):
         # the fallback recompiled the solution as submitted, not the rewritten harness
         self.assertEqual((self.out.parent / "build" / bad / "gemm.cpp").read_text(), "// harness\n")
 
+    def test_embeddable_says_why_not(self):
+        self.assertEqual(kernel_set.embeddable("gemm_ggml_q4_K_n1024_k2560"), (True, ""))
+        for name, fragment in (("gemm_ggml_q8_0_n1024_k2560", "no kernel for"),
+                               ("gemm_q4_k_m_n1024_k2048", "flat-quant"),
+                               ("rms_norm_fp32_d2048", "not a packed-ABI gemm")):
+            ok, why = kernel_set.embeddable(name)
+            self.assertFalse(ok, name)
+            self.assertIn(fragment, why)
+
+    def test_manifest_records_framework_and_embeddability(self):
+        good = "gemm_ggml_q4_K_n1024_k2560"
+        self.put("a", good, solution(good, 1024, "// k\n"))
+        self.put("a", "gemm_q4_k_m_n1024_k2048", solution("gemm_q4_k_m_n1024_k2048", 1024, "// legacy\n"))
+        self.put("a", "gemm_ggml_q5_K_n1024_k2560", solution("gemm_ggml_q5_K_n1024_k2560", 1024, "COMPILE_FAIL\n"))
+        self.run_kernel_set("--only-types", "q4_K", "q5_K")
+        m = self.manifest()
+        self.assertEqual(m["framework"], "llamacpp")
+        self.assertEqual([(k["definition"], k["embeddable"]) for k in m["kernels"]], [(good, True)])
+        self.assertEqual({s["definition"]: s["embeddable"] for s in m["skipped"]},
+                         {"gemm_q4_k_m_n1024_k2048": False, "gemm_ggml_q5_K_n1024_k2560": False})
+
     def test_compile_failure_is_skipped_not_fatal(self):
         good, broken = "gemm_ggml_q4_K_n1024_k2560", "gemm_ggml_q5_K_n1024_k2560"
         self.put("a", good, solution(good, 1024, "// k\n"))
