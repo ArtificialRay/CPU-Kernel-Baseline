@@ -9,7 +9,7 @@ measure tokens/s and perplexity.
 
 ```
 python -m e2e prepare  --model qwen3.5-4b            # once per model: inventory -> generate -> capture -> calibrate
-python -m e2e evaluate --model qwen3.5-4b --label BOX --kernel-set-args "--runs DIR --rows-abi"
+python -m e2e evaluate --model qwen3.5-4b --author AUTHOR --label BOX --kernel-set-args "--rows-abi"
                                                      # after each agent run: kernel_set -> deploy -> measure -> report
 python -m e2e <stage> <the stage's own arguments>    # one stage, exactly the old script's command line
 ```
@@ -28,7 +28,9 @@ e2e/
 ```
 
 The old `scripts/e2e/<script>.py` names still work; they forward to the stage of the same job
-(`build_manifest.py` -> `kernel_set`, `provision_e2e.py` -> `deploy`, `measure_e2e.py` -> `measure`, ...).
+(`build_manifest.py` -> `kernel_set`, `provision_e2e.py` -> `deploy`, `measure_e2e.py` -> `measure`, ...);
+`build_reference_manifest.py` is `kernel_set --author reference-scalar --rows-abi`, and `verify_kernel_set.py`
+is gone (its checks are `kernel_set`'s `--expect-*` / `--reference-author`).
 `solutions_from_runs.py` is a standalone tool and stays in `scripts/e2e/`.
 
 Everything here works on the `llama.cpp` dataset with the packed-ggml gemm
@@ -91,13 +93,15 @@ together keep a numerically lossy kernel from passing:
 5. **Agent runs** with the usual driver. A whole-dataset sweep skips `e2e:`
    definitions, so name them:
    `test_scripts/bench_fleet.py --dataset llama.cpp --isa sve2 --definitions "<names>" ...`
-6. **Kernel set.** Compile the submitted versions exactly as the harness did and
-   write the override manifest, then check it holds the sources you expect:
-   `python3 -m e2e kernel_set --runs agent-runs-<author> --isa sve2 --out manifest.json`
-   `python3 -m e2e verify --manifest manifest.json ...`
-   (`solutions_from_runs.py` turns the same run dirs into bench-trace solutions;
-   `reference_manifest.py` builds the `reference-scalar` set, a control
-   that must reproduce stock perplexity.)
+6. **Kernel set.** Pull the submitted solutions back (`bench_fleet.py --sync-solutions`
+   puts each `<definition>.json` in `bench-trace/solutions/llama.cpp/<author>/gemm/`), compile
+   them exactly as the harness did and write the override manifest. The guards fail the
+   command when the set isn't the one you meant (a stale set is the failure mode):
+   `python3 -m e2e kernel_set --author <author> --isa sve2 --rows-abi --out manifest.json`
+   `    --reference-author <previous> --expect-changed <def>... --expect-count N`
+   (`--author reference-scalar` builds the control set that must reproduce stock perplexity;
+   `solutions_from_runs.py` turns agent run directories into bench-trace solutions when a
+   session predates `--sync-solutions`.)
 7. **Measure** on an already-provisioned box. `deploy.py` builds the
    pinned tools tree, fetches the model, and with `--agent-build` derives the
    override build (`build_agent.sh`):

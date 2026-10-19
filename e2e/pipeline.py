@@ -23,9 +23,10 @@ class Options:
     """The user-facing knobs of `prepare` / `evaluate`."""
 
     gguf_head: str | None = None          # prepare: a local GGUF header; downloaded when omitted
+    author: str | None = None             # evaluate: whose bench-trace/solutions/<dataset>/<author>/ to compile
     label: str | None = None              # evaluate: provisioning/eval_config.json instance label
     agent_build: bool = False             # evaluate: also build the override-enabled tree on the box
-    kernel_set_args: list[str] = field(default_factory=list)   # evaluate: --runs/--solutions/--rows-abi ...
+    kernel_set_args: list[str] = field(default_factory=list)   # evaluate: --rows-abi, --reference-author, ...
     baseline: str = "stock"               # evaluate: build the report is relative to
 
 
@@ -35,6 +36,10 @@ class Stage:
     argv: Callable[[E2EContext, Options], list[str]]
     outputs: Callable[[E2EContext], list] = lambda ctx: []     # artifacts that mean "already done"
     manual: bool = False                                      # print the command instead of running it
+
+
+def need(option: str, stage: str) -> str:
+    raise SystemExit(f"the {stage} stage needs {option}")
 
 
 def box_command(stage: str, argv: list[str]) -> str:
@@ -63,7 +68,8 @@ STAGES = {
     ),
     "kernel_set": Stage(
         "kernel_set",
-        argv=lambda ctx, o: ["--isa", ctx.isa, "--out", str(ctx.run.manifest), *o.kernel_set_args],
+        argv=lambda ctx, o: ["--author", o.author or need("--author", "kernel_set"),
+                             "--isa", ctx.isa, "--out", str(ctx.run.manifest), *o.kernel_set_args],
         outputs=lambda ctx: [ctx.run.manifest],
     ),
     "deploy": Stage(

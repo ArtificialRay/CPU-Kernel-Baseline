@@ -20,7 +20,7 @@ Entrypoint = Callable[[list[str]], int]
 
 STAGE_NAMES = (
     "inventory", "generate", "capture", "calibrate",                  # prepare: once per model
-    "kernel_set", "reference_manifest", "verify", "deploy", "measure", "report", "report_from_log",
+    "kernel_set", "deploy", "measure", "report", "report_from_log",
 )
 
 
