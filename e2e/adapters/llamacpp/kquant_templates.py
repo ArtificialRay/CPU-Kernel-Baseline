@@ -39,7 +39,7 @@ by `dequant_ggml_blocks(qt, B)` (the same numpy code the Definition reference
 embeds), which mirrors ggml's dequantize_row_qX_K bit for bit.
 
 The flat q4_k_m output for the shapes already in bench-trace/ is
-byte-identical to those files (scripts/e2e/test_kquant.py asserts this).
+byte-identical to those files (e2e/adapters/llamacpp/test_kquant.py asserts this).
 """
 
 from __future__ import annotations
