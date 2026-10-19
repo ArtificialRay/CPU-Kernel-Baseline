@@ -125,13 +125,3 @@ Three builds are compared: **stock** (upstream, what users run), **norepack**
 (upstream with ggml's repack and KleidiAI paths off, the dispatch path the
 agent kernels replace) and **agent** (norepack plus the override hook). The
 norepack row isolates the kernel effect from ggml's interleaved fast path.
-
-## Tests
-
-`.venv/bin/python -m unittest e2e.test_pipeline e2e.common.test_common e2e.adapters.llamacpp.test_kernel_set
-e2e.adapters.llamacpp.test_generate e2e.adapters.llamacpp.test_measure` run anywhere (fake compiler, fake
-llama-bench). The two below need an ARM machine or a llama.cpp checkout:
-
-- `adapters/llamacpp/test_kquant.py`: Q4_K/Q5_K/Q6_K repack and templates against a static ggml
-  build (`LLAMA_CPP_ROOT`, resolved as the harness resolves it).
-- `override/test_override.sh`: the override hook, against a patched ggml-cpu.
