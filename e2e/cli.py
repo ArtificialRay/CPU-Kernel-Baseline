@@ -1,7 +1,7 @@
 """python -m e2e ...
 
   python -m e2e prepare  --model qwen3.5-4b [--gguf-head FILE] [--from STAGE] [--to STAGE] [--force]
-  python -m e2e evaluate --model qwen3.5-4b --label BOX [--agent-build] [--kernel-set-args "--runs DIR --rows-abi"]
+  python -m e2e evaluate --model qwen3.5-4b --author AUTHOR --label BOX [--agent-build] [--kernel-set-args "--rows-abi"]
   python -m e2e [--framework NAME] <stage> <that stage's own arguments>      # e.g. kernel_set, measure
 
 A bare stage name runs exactly the program the old scripts/e2e/<script>.py was.
@@ -30,9 +30,10 @@ def composite_parser(group: str) -> argparse.ArgumentParser:
     if group == "prepare":
         p.add_argument("--gguf-head", default=None, help="a local GGUF header (default: download the first 64 MiB)")
     else:
+        p.add_argument("--author", default=None, help="whose bench-trace/solutions/<dataset>/<author>/ to compile")
         p.add_argument("--label", default=None, help="instance label in provisioning/eval_config.json")
         p.add_argument("--agent-build", action="store_true")
-        p.add_argument("--kernel-set-args", default="", help='extra arguments for kernel_set, e.g. "--runs DIR --rows-abi"')
+        p.add_argument("--kernel-set-args", default="", help='extra arguments for kernel_set, e.g. "--rows-abi --reference-author PREV"')
         p.add_argument("--baseline", default="stock")
     return p
 
@@ -52,7 +53,8 @@ def main(argv: list[str] | None = None) -> int:
         args = composite_parser(command).parse_args(argv[1:])
         ctx = E2EContext.create(framework, args.model, args.isa, args.run_dir, args.force)
         options = Options(
-            gguf_head=getattr(args, "gguf_head", None), label=getattr(args, "label", None),
+            gguf_head=getattr(args, "gguf_head", None), author=getattr(args, "author", None),
+            label=getattr(args, "label", None),
             agent_build=getattr(args, "agent_build", False),
             kernel_set_args=shlex.split(getattr(args, "kernel_set_args", "")),
             baseline=getattr(args, "baseline", "stock"),

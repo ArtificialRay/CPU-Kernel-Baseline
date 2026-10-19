@@ -67,27 +67,28 @@ class PipelineTest(unittest.TestCase):
             pipeline.select("evaluate", "inventory", None)
 
     def test_evaluate_runs_local_stages_and_prints_the_box_command(self):
-        options = pipeline.Options(label="box1", agent_build=True, kernel_set_args=["--solutions", "x"])
+        options = pipeline.Options(author="who", label="box1", agent_build=True, kernel_set_args=["--rows-abi"])
         self.assertEqual(self.run_group("evaluate", options), 0)
         self.assertEqual(self.stages_run(), ["kernel_set", "deploy", "report"])     # measure is manual
         kernel_set = dict(self.adapter.calls)["kernel_set"]
-        self.assertEqual(kernel_set[:4], ["--isa", "sve2", "--out", str(self.ctx.run.manifest)])
-        self.assertEqual(kernel_set[4:], ["--solutions", "x"])
+        self.assertEqual(kernel_set[:6], ["--author", "who", "--isa", "sve2", "--out", str(self.ctx.run.manifest)])
+        self.assertEqual(kernel_set[6:], ["--rows-abi"])
         self.assertEqual(dict(self.adapter.calls)["deploy"],
                          ["--label", "box1", "--model", MODEL, "--agent-build"])
         self.assertIn("python3 -m e2e measure", self.out.getvalue())
         self.assertIn("to run yourself on the box", self.out.getvalue())
 
     def test_existing_artifact_is_skipped_unless_forced(self):
-        self.run_group("evaluate", stop="kernel_set")
-        self.run_group("evaluate", stop="kernel_set")
+        options = pipeline.Options(author="who")
+        self.run_group("evaluate", options, stop="kernel_set")
+        self.run_group("evaluate", options, stop="kernel_set")
         self.assertEqual(self.stages_run(), ["kernel_set"])                          # second run skipped
         self.ctx = E2EContext.create("null", MODEL, "sve2", self.ctx.run.root, force=True)
-        self.run_group("evaluate", stop="kernel_set")
+        self.run_group("evaluate", options, stop="kernel_set")
         self.assertEqual(self.stages_run(), ["kernel_set", "kernel_set"])
 
     def test_a_failing_stage_stops_the_pipeline(self):
-        options = pipeline.Options(kernel_set_args=["--fail"])
+        options = pipeline.Options(author="who", kernel_set_args=["--fail"])
         self.assertEqual(self.run_group("evaluate", options), 1)
         self.assertEqual(self.stages_run(), ["kernel_set"])
 
@@ -112,11 +113,16 @@ class PipelineTest(unittest.TestCase):
     def test_cli_composite_builds_the_context(self):
         run_dir = str(Path(tempfile.mkdtemp()) / "run")
         with contextlib.redirect_stdout(self.out):
-            rc = cli.main(["--framework", "null", "evaluate", "--model", MODEL, "--label", "b",
-                           "--run-dir", run_dir, "--to", "kernel_set", "--kernel-set-args", "--solutions a"])
+            rc = cli.main(["--framework", "null", "evaluate", "--model", MODEL, "--label", "b", "--author", "who",
+                           "--run-dir", run_dir, "--to", "kernel_set", "--kernel-set-args", "--reference-author a"])
         self.assertEqual(rc, 0)
         self.assertEqual(self.stages_run(), ["kernel_set"])
-        self.assertEqual(self.adapter.calls[0][1][-2:], ["--solutions", "a"])
+        self.assertEqual(self.adapter.calls[0][1][:2], ["--author", "who"])
+        self.assertEqual(self.adapter.calls[0][1][-2:], ["--reference-author", "a"])
+
+    def test_kernel_set_without_an_author_is_an_error(self):
+        with self.assertRaises(SystemExit):
+            self.run_group("evaluate", stop="kernel_set")
 
     def test_unknown_command_and_unknown_adapter(self):
         with contextlib.redirect_stderr(io.StringIO()):

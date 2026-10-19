@@ -4,7 +4,7 @@
 The run dir is the authoritative record of what an agent produced: trajectory.jsonl
 names the submitted version and v<N>.cpp holds its source. Assembling the solution
 folder by hand from some other checkout is how ten of eleven gate-v2 "solutions"
-ended up being the previous round's kernels -- see e2e/adapters/llamacpp/verify.py.
+ended up being the previous round's kernels -- see e2e/adapters/llamacpp/kernel_set.py (--reference-author / --expect-*).
 
   python3 scripts/e2e/solutions_from_runs.py --runs <root>... --author <name> \
       --description "..." --template-author claude-code-claude-fable-5-1-sve2
@@ -24,7 +24,29 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
-from e2e.adapters.llamacpp.kernel_set import pick_version  # noqa: E402
+
+
+def pick_version(traj: Path, best: bool):
+    recs = [json.loads(l) for l in traj.read_text().splitlines() if l.strip()]
+    by_version = {}
+    for r in recs:
+        if r.get("tool") == "compile" and r.get("source_file"):
+            by_version[int(r["metrics"].get("version", 0))] = r["source_file"]
+    if best:
+        cands = [(r["metrics"].get("time_speedup_geomean") or 0, r["turn"]) for r in recs
+                 if r.get("tool") == "evaluate" and r["metrics"].get("status") == "PASSED"]
+        if not cands:
+            return None, None
+        # evaluate follows the compile of the same version: last compile before that turn
+        _, turn = max(cands)
+        prev = [r for r in recs if r.get("tool") == "compile" and r["turn"] < turn and r.get("source_file")]
+        r = prev[-1]
+        return r["source_file"], max(cands)[0]
+    sub = [r for r in recs if "submit" in (r.get("tool") or "")]
+    if not sub:
+        return None, None
+    r = sub[-1]
+    return r.get("source_file") or r["metrics"].get("source_file"), r["metrics"].get("time_speedup_geomean") or r["metrics"].get("time_speedup")
 
 
 def run_stats(traj: Path) -> dict:
