@@ -18,7 +18,7 @@ Target: llama.cpp **v0.4.1** (commit `b29c606`).
 ## Usage
 
 ```sh
-scripts/e2e/override/apply.sh /path/to/llama.cpp          # once per checkout
+e2e/adapters/llamacpp/override/apply.sh /path/to/llama.cpp          # once per checkout
 cmake -B build -DGGML_CPU_REPACK=OFF -DGGML_CPU_KLEIDIAI=OFF ...   # see "repack / KleidiAI"
 cmake --build build -j
 ARMBENCH_OVERRIDES=/abs/manifest.json ARMBENCH_OVERRIDE_LOG=1 build/bin/llama-bench -m model.gguf ...
@@ -33,7 +33,7 @@ ARMBENCH_OVERRIDES=/abs/manifest.json ARMBENCH_OVERRIDE_LOG=1 build/bin/llama-be
   stderr and **disable all overrides** (a partially-overridden run would be a misleading number).
 * `ARMBENCH_OVERRIDE_STRICT=1` — any load failure, including a skipped manifest entry, aborts the
   process instead. A disabled override measures exactly like a no-repack build, so every
-  measurement run should set this (`measure_e2e.py` does).
+  measurement run should set this (`measure.py` does).
 * A kernel returning non-zero aborts the process (other threads have already passed the op;
   there is no fallback at that point).
 
@@ -156,7 +156,7 @@ Also note `GGML_USE_LLAMAFILE` (default ON): `llamafile_sgemm` is called *inside
 ## Self-test
 
 ```sh
-scripts/e2e/override/test_override.sh /path/to/llama.cpp [build dir]
+e2e/adapters/llamacpp/override/test_override.sh /path/to/llama.cpp [build dir]
 ```
 Requires the patch applied and `cmake --build build --target ggml ggml-base ggml-cpu` done
 (static libs). It builds `test_kernel.c` twice (dylib on macOS, so on Linux; dequantize

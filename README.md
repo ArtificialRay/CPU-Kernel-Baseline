@@ -136,7 +136,7 @@ explicit `--file-sandbox bwrap` is rejected for them.
   starts the MCP server on an instance and prints its endpoint. Tools:
   [`mcp_app/README.md`](mcp_app/README.md); commands: [`skills/README.md`](skills/README.md).
 - **Inside llama.cpp:** splice agent GEMM kernels into llama.cpp and measure tokens/s and
-  perplexity: [`scripts/e2e/README.md`](scripts/e2e/README.md).
+  perplexity: [`e2e/README.md`](e2e/README.md).
 - **Add a kernel:** the `gen-definition`, `gen-workload`, `gen-candidate-solution` and
   `gen-baseline-solution` skills in [`.claude/skills/`](.claude/skills/) walk an agent
   through it.

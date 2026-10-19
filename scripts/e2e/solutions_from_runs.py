@@ -4,7 +4,7 @@
 The run dir is the authoritative record of what an agent produced: trajectory.jsonl
 names the submitted version and v<N>.cpp holds its source. Assembling the solution
 folder by hand from some other checkout is how ten of eleven gate-v2 "solutions"
-ended up being the previous round's kernels -- see scripts/e2e/verify_kernel_set.py.
+ended up being the previous round's kernels -- see e2e/adapters/llamacpp/verify.py.
 
   python3 scripts/e2e/solutions_from_runs.py --runs <root>... --author <name> \
       --description "..." --template-author claude-code-claude-fable-5-1-sve2
@@ -24,7 +24,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
-from scripts.e2e.build_manifest import pick_version  # noqa: E402
+from e2e.adapters.llamacpp.kernel_set import pick_version  # noqa: E402
 
 
 def run_stats(traj: Path) -> dict:
