@@ -13,7 +13,7 @@ def register_adapter(name: str, factory: Callable[[], FrameworkAdapter]) -> None
 
 
 def resolve_adapter(name: str) -> FrameworkAdapter:
-    # Imported on demand: an adapter pulls in its framework's heavy dependencies.
+    # Imported on demand: an adapter module pulls in its framework's dependencies.
     if name == "llamacpp" and name not in FACTORIES:
         from .llamacpp.adapter import LlamaCppAdapter
         register_adapter(name, LlamaCppAdapter)

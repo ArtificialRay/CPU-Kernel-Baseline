@@ -21,28 +21,30 @@ extra fields here (framework, embeddable, ...) are for the people and tools read
 Only definitions named gemm_ggml_<type>_n<N>_k<K> are spliceable (packed ABI); others are
 listed under "skipped" with a reason, as is a kernel that calls ggml's own routines.
 
-  python3 -m e2e kernel_set --author claude-code-claude-fable-5-1-sve2 --isa sve2 --out ~/e2e/manifest.json
-  python3 -m e2e kernel_set --author reference-scalar --rows-abi --out ~/e2e/refscalar/manifest.json
-  --only-types q4_K   (attribution runs: restrict to one quant type)
-  --only-roles ffn    (substring match on definition name)
-  --only NAME ...     (exact definition names)
+  build_kernel_set("claude-code-claude-fable-5-1-sve2", "~/e2e/manifest.json", isa="sve2")
+  build_kernel_set("reference-scalar", "~/e2e/refscalar/manifest.json", rows_abi=True)
+  # or: python -m e2e evaluate --steps kernel_set --author A --rows-abi ...
+  only_types=["q4_K"]   (attribution runs: restrict to one quant type)
+  only_roles=["ffn"]    (substring match on definition name)
+  only=[NAME, ...]      (exact definition names)
 
-Guards, checked after the manifest is built (exit 1 when one fails):
-  --expect-count N              the manifest holds exactly N kernels
-  --reference-author A2         compare against author A2's solutions for the same definitions
-    --expect-changed NAME ...   each of these MUST differ from A2's (a stale set is the failure mode)
-    --expect-same NAME ...      each of these MUST be byte-identical (deliberately reused)
-  --forbid REGEX ...            no kernel's source may match
-Sources are compared as the compiler sees them under the rows ABI, so --rows-abi doesn't matter.
+Guards, checked after the manifest is built (KernelSet.guard_failures lists what did not hold;
+the evaluate command fails on them):
+  expect_count=N                the manifest holds exactly N kernels
+  reference_author=A2           compare against author A2's solutions for the same definitions
+    expect_changed=[NAME, ...]  each of these MUST differ from A2's (a stale set is the failure mode)
+    expect_same=[NAME, ...]     each of these MUST be byte-identical (deliberately reused)
+  forbid=[REGEX, ...]           no kernel's source may match
+Sources are compared as the compiler sees them under the rows ABI, so rows_abi doesn't matter.
 """
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
@@ -171,18 +173,19 @@ def compile_so(cxx: str, march: str, build: Path, so: Path):
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
-def build_kernels(solutions: dict, args, out_dir: Path, march: str):
+def build_kernels(solutions: dict, author: str, out_dir: Path, march: str, *, only=None, only_types=None,
+                  only_roles=None, rows_abi: bool = False, cxx: str = "clang++-18"):
     kernels, skipped = [], []
     for name, sol in sorted(solutions.items()):
         ok, why = embeddable(name)
         if not ok:
             skipped.append({"definition": name, "embeddable": False, "reason": why}); continue
         qtype, N, K = (lambda m: (m.group(1), int(m.group(2)), int(m.group(3))))(NAME_RX.match(name))
-        if args.only and name not in args.only:
+        if only and name not in only:
             skipped.append({"definition": name, "reason": "filtered by --only"}); continue
-        if args.only_types and qtype not in args.only_types:
+        if only_types and qtype not in only_types:
             skipped.append({"definition": name, "reason": "filtered by --only-types"}); continue
-        if args.only_roles and not any(r in name for r in args.only_roles):
+        if only_roles and not any(r in name for r in only_roles):
             skipped.append({"definition": name, "reason": "filtered by --only-roles"}); continue
         build = out_dir / "build" / name
         build.mkdir(parents=True, exist_ok=True)
@@ -193,9 +196,9 @@ def build_kernels(solutions: dict, args, out_dir: Path, march: str):
         materialize()
         so = out_dir / f"{name}.so"
         abi = "entry"
-        if args.rows_abi:
+        if rows_abi:
             rows_abi_sources(build, N)
-            p = compile_so(args.cxx, march, build, so)
+            p = compile_so(cxx, march, build, so)
             if p.returncode == 0:
                 abi = "entry_rows"
             else:
@@ -203,7 +206,7 @@ def build_kernels(solutions: dict, args, out_dir: Path, march: str):
                       f"{p.stderr.strip().splitlines()[-1][:160] if p.stderr.strip() else '?'}")
                 materialize()
         if abi == "entry":
-            p = compile_so(args.cxx, march, build, so)
+            p = compile_so(cxx, march, build, so)
             if p.returncode != 0:
                 skipped.append({"definition": name, "embeddable": False, "reason": "compile failed: " + p.stderr[-400:]}); continue
         bad = undefined_ggml_symbols(so)
@@ -218,32 +221,33 @@ def build_kernels(solutions: dict, args, out_dir: Path, march: str):
             continue
         kernels.append({"op": "mul_mat", "type": qtype, "K": K, "N": N, "so": str(so),
                         "symbol": "armbench_entry_gemm", "abi": abi,
-                        "embeddable": True, "definition": name, "version": f"solutions/{args.author}"})
+                        "embeddable": True, "definition": name, "version": f"solutions/{author}"})
         print(f"built {name} abi={abi}")
     return kernels, skipped
 
 
-def check_guards(args, solutions: dict, kernels: list, reference: dict) -> list:
-    """The failures (empty list = all guards hold) for --expect-count / --expect-changed /
-    --expect-same / --forbid, judged on the sources that went into the manifest."""
+def check_guards(solutions: dict, kernels: list, reference: dict, *, expect_count=None,
+                 expect_changed=(), expect_same=(), forbid=()) -> list:
+    """The failures (empty list = all guards hold) for expect_count / expect_changed /
+    expect_same / forbid, judged on the sources that went into the manifest."""
     got = {k["definition"]: kernel_text(solutions[k["definition"]]) for k in kernels}
     fail = []
-    if args.expect_count is not None and len(got) != args.expect_count:
-        fail.append(f"manifest has {len(got)} kernels, expected {args.expect_count}")
+    if expect_count is not None and len(got) != expect_count:
+        fail.append(f"manifest has {len(got)} kernels, expected {expect_count}")
     ref = {name: kernel_text(sol) for name, sol in reference.items()}
-    for name in args.expect_changed:
+    for name in expect_changed:
         if name not in got:
             fail.append(f"{name}: expected in the manifest, absent")
         elif name not in ref:
             fail.append(f"{name}: no reference to compare against")
         elif digest(got[name]) == digest(ref[name]):
             fail.append(f"{name}: BYTE-IDENTICAL to the reference -- this is the old kernel, not the new one")
-    for name in args.expect_same:
+    for name in expect_same:
         if name not in got:
             fail.append(f"{name}: expected in the manifest, absent")
         elif name in ref and digest(got[name]) != digest(ref[name]):
             fail.append(f"{name}: expected to be reused unchanged but differs from the reference")
-    for pat in args.forbid:
+    for pat in forbid:
         rx = re.compile(pat)
         for name, text in sorted(got.items()):
             if rx.search(text):
@@ -251,53 +255,47 @@ def check_guards(args, solutions: dict, kernels: list, reference: dict) -> list:
     return fail
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--author", required=True, help="solutions/<dataset>/<AUTHOR>/gemm/*.json to compile")
-    ap.add_argument("--dataset", default="llama.cpp")
-    ap.add_argument("--solutions-root", type=Path, default=SOLUTIONS)
-    ap.add_argument("--isa", default="sve2")
-    ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--only", nargs="*", default=None)
-    ap.add_argument("--only-types", nargs="*", default=None)
-    ap.add_argument("--only-roles", nargs="*", default=None)
-    ap.add_argument("--cxx", default="clang++-18")
-    ap.add_argument("--march", default=None,
-                    help="override the ISA's -march (e.g. -march=armv8.6-a+i8mm+bf16 to reproduce a "
-                         "Graviton run locally on an Apple-silicon Mac)")
-    ap.add_argument("--rows-abi", action="store_true",
-                    help="recompile each kernel with N as a runtime thread_local and export "
-                         "armbench_entry_gemm_rows(A,out,B,M,n_rows) too (manifest abi 'entry_rows'), so the "
-                         "override can split rows across ggml's threads; kernels that fail to compile that way "
-                         "fall back to the single-thread 'entry' ABI")
-    ap.add_argument("--expect-count", type=int, default=None)
-    ap.add_argument("--reference-author", default=None)
-    ap.add_argument("--expect-changed", nargs="*", default=[])
-    ap.add_argument("--expect-same", nargs="*", default=[])
-    ap.add_argument("--forbid", nargs="*", default=[])
-    args = ap.parse_args()
-    out_dir = args.out.parent.resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    march = args.march or _isa_table()[args.isa].march
+@dataclass
+class KernelSet:
+    manifest: dict
+    guard_failures: list
 
-    solutions = load_author(args.dataset, args.author, args.solutions_root)
-    kernels, skipped = build_kernels(solutions, args, out_dir, march)
-    args.out.write_text(json.dumps(
-        {"framework": FRAMEWORK, "isa": args.isa, "march": march, "author": args.author,
-         "kernels": kernels, "skipped": skipped}, indent=1))
-    print(f"{len(kernels)} kernels, {len(skipped)} skipped -> {args.out}")
+
+def build_kernel_set(
+    author: str, out: Path, *, isa: str = "sve2", dataset: str = "llama.cpp",
+    solutions_root: Path = SOLUTIONS, only=None, only_types=None, only_roles=None,
+    cxx: str = "clang++-18", march: str | None = None, rows_abi: bool = False,
+    expect_count: int | None = None, reference_author: str | None = None,
+    expect_changed=(), expect_same=(), forbid=(),
+) -> KernelSet:
+    """Compile `author`'s solutions into shared objects and write the override manifest to `out`.
+
+    only / only_types / only_roles   restrict to exact definition names / ggml types / name substrings
+    march            override the ISA's -march (e.g. -march=armv8.6-a+i8mm+bf16 to reproduce a
+                     Graviton run locally on an Apple-silicon Mac)
+    rows_abi         recompile each kernel with N as a runtime thread_local and export
+                     armbench_entry_gemm_rows(A,out,B,M,n_rows) too (manifest abi 'entry_rows'), so the
+                     override can split rows across ggml's threads; kernels that fail to compile that way
+                     fall back to the single-thread 'entry' ABI
+    The remaining keyword arguments are the guards (see the module docstring); the manifest is
+    written either way and KernelSet.guard_failures lists what did not hold.
+    """
+    out = Path(out)
+    out_dir = out.parent.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    march = march or _isa_table()[isa].march
+
+    solutions = load_author(dataset, author, solutions_root)
+    kernels, skipped = build_kernels(solutions, author, out_dir, march, only=only, only_types=only_types,
+                                     only_roles=only_roles, rows_abi=rows_abi, cxx=cxx)
+    manifest = {"framework": FRAMEWORK, "isa": isa, "march": march, "author": author,
+                "kernels": kernels, "skipped": skipped}
+    out.write_text(json.dumps(manifest, indent=1))
+    print(f"{len(kernels)} kernels, {len(skipped)} skipped -> {out}")
     for reason in sorted({s["reason"].split(":")[0] for s in skipped}):
         print(f"  skipped: {reason} ({sum(1 for s in skipped if s['reason'].split(':')[0] == reason)})")
 
-    reference = load_author(args.dataset, args.reference_author, args.solutions_root) if args.reference_author else {}
-    fail = check_guards(args, solutions, kernels, reference)
-    if fail:
-        print("\nFAILED:")
-        for f in fail:
-            print("  " + f)
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    reference = load_author(dataset, reference_author, solutions_root) if reference_author else {}
+    failures = check_guards(solutions, kernels, reference, expect_count=expect_count,
+                            expect_changed=expect_changed, expect_same=expect_same, forbid=forbid)
+    return KernelSet(manifest, failures)

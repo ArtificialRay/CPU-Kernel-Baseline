@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""The e2e stage list, the CLI dispatch and the skip/--force rules, against a fake
-framework adapter (no model, no network, no box).
+"""The two commands, the step loop and the CLI, against a fake framework (no model, no network, no box).
 
 Run:  .venv/bin/python -m unittest e2e.test_pipeline   (from the repo root)
 """
@@ -10,40 +9,51 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from e2e import cli, pipeline
-from e2e.adapters.base import STAGE_NAMES, Entrypoint, FrameworkAdapter
+from e2e import cli
+from e2e.adapters.base import FrameworkAdapter, Step
 from e2e.adapters.registry import register_adapter, resolve_adapter
-from e2e.context import E2EContext
+from e2e.context import E2EContext, Options
+from e2e.errors import StepFailed
 
 MODEL = "qwen3.5-4b"      # any key of config/e2e_models.json
 
 
 class NullAdapter(FrameworkAdapter):
-    """Records every stage call; stages that have an artifact write it, like the real ones."""
+    """Records every step; steps that have an artifact write it, like the real ones."""
 
     name = "null"
+    prepare_steps = (
+        Step("inventory", outputs=lambda ctx: [ctx.run.inventory]),
+        Step("generate"),
+        Step("capture", box=True),
+    )
+    evaluate_steps = (
+        Step("kernel_set", outputs=lambda ctx: [ctx.run.manifest]),
+        Step("deploy"),
+        Step("measure", box=True),
+        Step("report"),
+    )
 
     def __init__(self):
-        self.calls: list[tuple[str, list[str]]] = []
+        self.calls: list[tuple[str, Options]] = []
         self.headers: list[Path] = []
+        self.fail_on: str | None = None
 
-    def entrypoints(self) -> dict[str, Entrypoint]:
-        return {stage: self.make(stage) for stage in STAGE_NAMES}
+    def run_step(self, step, ctx, opts):
+        self.calls.append((step, opts))
+        if step == self.fail_on:
+            raise StepFailed("boom")
+        if step == "inventory":
+            ctx.run.inventory.write_text("{}")
+        if step == "kernel_set":
+            ctx.run.manifest.write_text("{}")
 
-    def make(self, stage: str) -> Entrypoint:
-        def run(argv: list[str]) -> int:
-            self.calls.append((stage, argv))
-            if stage == "inventory":
-                Path(argv[argv.index("--json") + 1]).write_text("{}")
-            if stage == "kernel_set":
-                Path(argv[argv.index("--out") + 1]).write_text("{}")
-            return 1 if "--fail" in argv else 0
-        return run
-
-    def fetch_header(self, model_config: dict, dest: Path) -> Path:
+    def fetch_header(self, model_config, dest):
         self.headers.append(dest)
-        dest.write_bytes(b"GGUF")
         return dest
+
+    def stages_run(self):
+        return [name for name, _ in self.calls]
 
 
 class PipelineTest(unittest.TestCase):
@@ -53,86 +63,62 @@ class PipelineTest(unittest.TestCase):
         self.ctx = E2EContext.create("null", MODEL, "sve2", Path(tempfile.mkdtemp()))
         self.out = io.StringIO()
 
-    def run_group(self, group, options=None, **kw):
+    def run_cmd(self, command, options=None, ctx=None):
         with contextlib.redirect_stdout(self.out):
-            return pipeline.run_group(group, self.ctx, self.adapter, options or pipeline.Options(), **kw)
+            return getattr(self.adapter, command)(ctx or self.ctx, options or Options())
 
-    def stages_run(self):
-        return [name for name, _ in self.adapter.calls]
+    def test_evaluate_runs_the_local_steps_and_prints_the_box_ones(self):
+        self.assertEqual(self.run_cmd("evaluate"), 0)
+        self.assertEqual(self.adapter.stages_run(), ["kernel_set", "deploy", "report"])    # measure needs the box
+        text = self.out.getvalue()
+        self.assertIn("python3 -m e2e evaluate --model qwen3.5-4b --isa sve2 --steps measure", text)
+        self.assertIn("to run yourself on the box", text)
 
-    def test_select_ranges(self):
-        self.assertEqual(pipeline.select("evaluate", None, None), ["kernel_set", "deploy", "measure", "report"])
-        self.assertEqual(pipeline.select("evaluate", "deploy", "measure"), ["deploy", "measure"])
-        with self.assertRaises(SystemExit):
-            pipeline.select("evaluate", "inventory", None)
+    def test_a_named_step_runs_even_when_it_needs_the_box(self):
+        self.assertEqual(self.run_cmd("evaluate", Options(steps=["measure"])), 0)
+        self.assertEqual(self.adapter.stages_run(), ["measure"])
+        self.assertNotIn("to run yourself", self.out.getvalue())
 
-    def test_evaluate_runs_local_stages_and_prints_the_box_command(self):
-        options = pipeline.Options(author="who", label="box1", agent_build=True, kernel_set_args=["--rows-abi"])
-        self.assertEqual(self.run_group("evaluate", options), 0)
-        self.assertEqual(self.stages_run(), ["kernel_set", "deploy", "report"])     # measure is manual
-        kernel_set = dict(self.adapter.calls)["kernel_set"]
-        self.assertEqual(kernel_set[:6], ["--author", "who", "--isa", "sve2", "--out", str(self.ctx.run.manifest)])
-        self.assertEqual(kernel_set[6:], ["--rows-abi"])
-        self.assertEqual(dict(self.adapter.calls)["deploy"],
-                         ["--label", "box1", "--model", MODEL, "--agent-build"])
-        self.assertIn("python3 -m e2e measure", self.out.getvalue())
-        self.assertIn("to run yourself on the box", self.out.getvalue())
+    def test_unknown_step_is_an_error(self):
+        with contextlib.redirect_stdout(self.out), self.assertRaises(SystemExit):
+            self.adapter.evaluate(self.ctx, Options(steps=["nope"]))
 
     def test_existing_artifact_is_skipped_unless_forced(self):
-        options = pipeline.Options(author="who")
-        self.run_group("evaluate", options, stop="kernel_set")
-        self.run_group("evaluate", options, stop="kernel_set")
-        self.assertEqual(self.stages_run(), ["kernel_set"])                          # second run skipped
-        self.ctx = E2EContext.create("null", MODEL, "sve2", self.ctx.run.root, force=True)
-        self.run_group("evaluate", options, stop="kernel_set")
-        self.assertEqual(self.stages_run(), ["kernel_set", "kernel_set"])
+        options = Options(steps=["kernel_set"])
+        self.run_cmd("evaluate", options)
+        self.run_cmd("evaluate", options)
+        self.assertEqual(self.adapter.stages_run(), ["kernel_set"])                         # second run skipped
+        forced = E2EContext.create("null", MODEL, "sve2", self.ctx.run.root, force=True)
+        self.run_cmd("evaluate", options, forced)
+        self.assertEqual(self.adapter.stages_run(), ["kernel_set", "kernel_set"])
 
-    def test_a_failing_stage_stops_the_pipeline(self):
-        options = pipeline.Options(author="who", kernel_set_args=["--fail"])
-        self.assertEqual(self.run_group("evaluate", options), 1)
-        self.assertEqual(self.stages_run(), ["kernel_set"])
+    def test_a_failing_step_stops_the_command(self):
+        self.adapter.fail_on = "kernel_set"
+        self.assertEqual(self.run_cmd("evaluate"), 1)
+        self.assertEqual(self.adapter.stages_run(), ["kernel_set"])
+        self.assertIn("kernel_set failed: boom", self.out.getvalue())
 
-    def test_prepare_fetches_the_header_unless_one_is_given(self):
-        self.run_group("prepare", stop="inventory")
-        self.assertEqual(self.adapter.headers, [self.ctx.run.gguf_head])
-        inventory = dict(self.adapter.calls)["inventory"]
-        self.assertEqual(inventory, [str(self.ctx.run.gguf_head), "--json", str(self.ctx.run.inventory)])
+    def test_prepare_runs_inventory_then_generate(self):
+        self.assertEqual(self.run_cmd("prepare"), 0)
+        self.assertEqual(self.adapter.stages_run(), ["inventory", "generate"])               # capture needs the box
 
-        other = E2EContext.create("null", MODEL, "sve2", Path(tempfile.mkdtemp()))
-        self.ctx, self.adapter.calls, self.adapter.headers = other, [], []
-        self.run_group("prepare", pipeline.Options(gguf_head="/data/head.bin"), stop="inventory")
-        self.assertEqual(self.adapter.headers, [])
-        self.assertEqual(dict(self.adapter.calls)["inventory"][0], "/data/head.bin")
-
-    def test_cli_bare_stage_passes_its_arguments_through(self):
-        with contextlib.redirect_stdout(self.out):
-            rc = cli.main(["--framework", "null", "kernel-set", "--runs", "r", "--out", "m.json"])
-        self.assertEqual(rc, 0)
-        self.assertEqual(self.adapter.calls, [("kernel_set", ["--runs", "r", "--out", "m.json"])])
-
-    def test_cli_composite_builds_the_context(self):
+    def test_cli_builds_the_options_from_the_flags(self):
         run_dir = str(Path(tempfile.mkdtemp()) / "run")
         with contextlib.redirect_stdout(self.out):
-            rc = cli.main(["--framework", "null", "evaluate", "--model", MODEL, "--label", "b", "--author", "who",
-                           "--run-dir", run_dir, "--to", "kernel_set", "--kernel-set-args", "--reference-author a"])
+            rc = cli.main(["--framework", "null", "evaluate", "--model", MODEL, "--author", "who",
+                           "--label", "box", "--rows-abi", "--steps", "kernel_set,report", "--run-dir", run_dir,
+                           "--expect-count", "3", "--threads", "4", "8", "--perplexity", "wiki.raw"])
         self.assertEqual(rc, 0)
-        self.assertEqual(self.stages_run(), ["kernel_set"])
-        self.assertEqual(self.adapter.calls[0][1][:2], ["--author", "who"])
-        self.assertEqual(self.adapter.calls[0][1][-2:], ["--reference-author", "a"])
+        (_, opts), _ = self.adapter.calls
+        self.assertEqual((opts.author, opts.label, opts.rows_abi, opts.expect_count, opts.threads, opts.perplexity),
+                         ("who", "box", True, 3, [4, 8], "wiki.raw"))
+        self.assertEqual(opts.steps, ["kernel_set", "report"])
 
-    def test_kernel_set_without_an_author_is_an_error(self):
-        with self.assertRaises(SystemExit):
-            self.run_group("evaluate", stop="kernel_set")
-
-    def test_unknown_command_and_unknown_adapter(self):
+    def test_only_prepare_and_evaluate_exist(self):
         with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["--framework", "null", "nope"]), 2)
+            self.assertEqual(cli.main(["kernel_set", "--out", "x"]), 2)
         with self.assertRaises(SystemExit):
             resolve_adapter("no-such-framework")
-
-    def test_llamacpp_adapter_lists_every_stage_without_importing_them(self):
-        stages = resolve_adapter("llamacpp").entrypoints()
-        self.assertEqual(sorted(stages), sorted(STAGE_NAMES))
 
 
 if __name__ == "__main__":

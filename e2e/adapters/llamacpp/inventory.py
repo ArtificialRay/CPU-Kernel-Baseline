@@ -7,14 +7,13 @@ memory-bound, so byte share ~= time share for the mul_mat kernels).
 Only the header is needed, so a partial download works:
     curl -L -r 0-67108863 -o q4km_head.bin \
       https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
-    python3 -m e2e inventory q4km_head.bin --json inventory.json
+    build_inventory("q4km_head.bin", "inventory.json")      # or: python -m e2e prepare --steps inventory
 
 The JSON lists the unique mul_mat shapes (type, N, K) with their per-token
-byte share; e2e/adapters/llamacpp/generate.py consumes it.
+byte share; generate.write_definitions() consumes it.
 """
 from __future__ import annotations
 
-import argparse
 import collections
 import json
 import re
@@ -59,12 +58,12 @@ def read_header(path: str):
     return version, kv, tensors
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("gguf", help="GGUF file (a partial download containing the header is enough)")
-    ap.add_argument("--json", help="write the inventory JSON here")
-    args = ap.parse_args()
-    version, kv, tensors = read_header(args.gguf)
+def build_inventory(gguf, json_out=None) -> dict:
+    """Read the GGUF header of `gguf` (a partial download containing it is enough), print the
+    per-tensor traffic table, and return the inventory; also written to `json_out` when given.
+    """
+    gguf = str(gguf)
+    version, kv, tensors = read_header(gguf)
     arch = kv.get("general.architecture", "?")
     print(f"gguf v{version}  arch={arch}  tensors={len(tensors)}")
     for k in sorted(kv):
@@ -121,11 +120,10 @@ def main() -> None:
     for (_, tname, _), r in rows.items(): by_type[tname] += r["bytes"]
     print("\nper-token weight bytes by type: " + ", ".join(f"{t} {b/total:.1%}" for t, b in by_type.most_common()))
     print(f"total {total/1e6:.0f} MB/token")
-    if args.json:
-        json.dump({"arch": arch, "name": kv.get("general.name"), "file": args.gguf, "tied_lm_head": tied,
-                   "total_bytes_per_token": total, "mul_mat": inv, "mul_mat_id": moe}, open(args.json, "w"), indent=1)
-        print(f"wrote {args.json} ({len(inv)} mul_mat shapes" + (f", {len(moe)} mul_mat_id expert shapes NOT covered)" if moe else ")"))
-
-
-if __name__ == "__main__":
-    main()
+    inventory = {"arch": arch, "name": kv.get("general.name"), "file": gguf, "tied_lm_head": tied,
+                 "total_bytes_per_token": total, "mul_mat": inv, "mul_mat_id": moe}
+    if json_out:
+        with open(json_out, "w") as f:
+            json.dump(inventory, f, indent=1)
+        print(f"wrote {json_out} ({len(inv)} mul_mat shapes" + (f", {len(moe)} mul_mat_id expert shapes NOT covered)" if moe else ")"))
+    return inventory

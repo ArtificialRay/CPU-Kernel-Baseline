@@ -14,7 +14,6 @@ import unittest
 from pathlib import Path
 
 from e2e.adapters.llamacpp import kernel_set
-from e2e.adapters.llamacpp.adapter import module_entrypoint
 
 DATASET = "llama.cpp"
 GEMM_H = "namespace gemm_def {{ constexpr int N = {N}; }}\n"
@@ -54,13 +53,16 @@ class KernelSetTest(unittest.TestCase):
         d.mkdir(parents=True, exist_ok=True)
         (d / f"{name}.json").write_text(json.dumps(sol))
 
-    def run_kernel_set(self, *extra: str) -> tuple[int, str]:
-        argv = ["--author", "a", "--solutions-root", str(self.root), "--out", str(self.out),
-                "--cxx", str(self.cxx), "--march=-march=armv8-a", *extra]
+    def run_kernel_set(self, author: str = "a", **kw) -> tuple[int, str]:
+        """(1 when a guard failed else 0, everything it printed)."""
+        kw.setdefault("march", "-march=armv8-a")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rc = module_entrypoint("kernel_set")(argv)
-        return rc, buf.getvalue()
+            result = kernel_set.build_kernel_set(
+                author, self.out, solutions_root=self.root, cxx=str(self.cxx), **kw)
+        if result.guard_failures:
+            buf.write("FAILED:\n" + "\n".join("  " + f for f in result.guard_failures))
+        return (1 if result.guard_failures else 0), buf.getvalue()
 
     def manifest(self) -> dict:
         return json.loads(self.out.read_text())
@@ -94,7 +96,7 @@ class KernelSetTest(unittest.TestCase):
         ok, bad = "gemm_ggml_q4_K_n1024_k2560", "gemm_ggml_q5_K_n1024_k2560"
         self.put("a", ok, solution(ok, 1024, "static float scratch[16];\n"))
         self.put("a", bad, solution(bad, 1024, "ROWS_FAIL\n"))
-        self.run_kernel_set("--rows-abi")
+        self.run_kernel_set(rows_abi=True)
         abis = {k["definition"]: k["abi"] for k in self.manifest()["kernels"]}
         self.assertEqual(abis, {ok: "entry_rows", bad: "entry"})
         built = self.out.parent / "build" / ok
@@ -117,7 +119,7 @@ class KernelSetTest(unittest.TestCase):
         self.put("a", good, solution(good, 1024, "// k\n"))
         self.put("a", "gemm_q4_k_m_n1024_k2048", solution("gemm_q4_k_m_n1024_k2048", 1024, "// legacy\n"))
         self.put("a", "gemm_ggml_q5_K_n1024_k2560", solution("gemm_ggml_q5_K_n1024_k2560", 1024, "COMPILE_FAIL\n"))
-        self.run_kernel_set("--only-types", "q4_K", "q5_K")
+        self.run_kernel_set(only_types=["q4_K", "q5_K"])
         m = self.manifest()
         self.assertEqual(m["framework"], "llamacpp")
         self.assertEqual([(k["definition"], k["embeddable"]) for k in m["kernels"]], [(good, True)])
@@ -161,19 +163,18 @@ class KernelSetTest(unittest.TestCase):
         self.put("a", b, solution(b, 1024, "// same\n"))
         self.put("old", a, solution(a, 1024, "// new\n"))        # the "new" kernel is the old one
         self.put("old", b, solution(b, 1024, "// same\n"))
-        rc, text = self.run_kernel_set("--reference-author", "old", "--expect-changed", a, "--expect-same", b)
+        rc, text = self.run_kernel_set(reference_author="old", expect_changed=[a], expect_same=[b])
         self.assertEqual(rc, 1)
         self.assertIn(f"{a}: BYTE-IDENTICAL to the reference", text)
         self.assertNotIn(f"{b}:", text)
 
         self.put("a", a, solution(a, 1024, "// really new\n"))
-        rc, _ = self.run_kernel_set("--reference-author", "old", "--expect-changed", a, "--expect-same", b,
-                                    "--expect-count", "2")
+        rc, _ = self.run_kernel_set(reference_author="old", expect_changed=[a], expect_same=[b], expect_count=2)
         self.assertEqual(rc, 0)
-        rc, text = self.run_kernel_set("--expect-count", "3")
+        rc, text = self.run_kernel_set(expect_count=3)
         self.assertEqual(rc, 1)
         self.assertIn("expected 3", text)
-        rc, text = self.run_kernel_set("--forbid", "really")
+        rc, text = self.run_kernel_set(forbid=["really"])
         self.assertEqual(rc, 1)
         self.assertIn("forbidden pattern", text)
 
@@ -181,12 +182,12 @@ class KernelSetTest(unittest.TestCase):
         name = "gemm_ggml_q4_K_n1024_k2560"
         self.put("a", name, solution(name, 1024, "static float scratch[16];\n"))
         self.put("old", name, solution(name, 1024, "static thread_local float scratch[16];\n"))
-        rc, _ = self.run_kernel_set("--reference-author", "old", "--expect-same", name)
+        rc, _ = self.run_kernel_set(reference_author="old", expect_same=[name])
         self.assertEqual(rc, 0)
 
     def test_missing_author_dir_is_an_error(self):
         with self.assertRaises(SystemExit):
-            self.run_kernel_set("--author", "nobody")
+            self.run_kernel_set("nobody")
 
 
 if __name__ == "__main__":
