@@ -13,7 +13,6 @@ Target: llama.cpp **v0.4.1** (commit `b29c606`).
 | `ggml-cpu-override.patch` | `git diff` vs v0.4.1: adds the module to the ggml-cpu CMake sources (+ `${CMAKE_DL_LIBS}`), and the dispatch call |
 | `apply.sh <llama.cpp dir>` | copies the .c/.h into `ggml/src/ggml-cpu/` and applies the patch (idempotent) |
 | `manifest.example.json` | manifest format |
-| `test_kernel.c`, `test_override.cpp`, `test_override.sh` | self-test (see below) |
 
 ## Usage
 
@@ -152,32 +151,6 @@ mismatched.
 
 Also note `GGML_USE_LLAMAFILE` (default ON): `llamafile_sgemm` is called *inside*
 `ggml_compute_forward_mul_mat`, i.e. after our hook, so it cannot steal an overridden op.
-
-## Self-test
-
-```sh
-e2e/adapters/llamacpp/override/test_override.sh /path/to/llama.cpp [build dir]
-```
-Requires the patch applied and `cmake --build build --target ggml ggml-base ggml-cpu` done
-(static libs). It builds `test_kernel.c` twice (dylib on macOS, so on Linux; dequantize
-`block_q4_K` via ggml's `dequantize_row_q4_K` + plain fp32 dot from the bf16 A, per-call malloc
-scratch so it is thread-safe, atomic call counters + distinct-thread counter):
-`libtest_kernel` (N=32,K=256 baked) and `libtest_kernel_rows` (N=512,K=256 baked, also exports
-`armbench_entry_gemm_rows`). The harness runs one graph on 4 threads:
-
-| op | shape | manifest abi | expected dispatch |
-|---|---|---|---|
-| C1 | q4_K [K=512,N=64] x f32 [512,M=3] | `llamacpp` | thread 0 |
-| C2 | q4_K [K=256,N=32] x f32 [256,M=3] | `entry` | thread 0 |
-| C3 | q4_K [K=256,N=512] x f32 [256,M=1] | `entry_rows` | N-split: 4 x 128 rows -> 4 `entry_gemm_rows` calls |
-| C4 | q4_K [K=256,N=512] x f32 [256,M=6] | `entry_rows` | M-split: 2 rows/thread -> 3 `entry_gemm` calls |
-
-Run 1 (no env) dumps the stock outputs; run 2 (`ARMBENCH_OVERRIDES`, nth=4) and run 3
-(`ARMBENCH_OVERRIDE_THREADS=1`) compare against them (abs 1e-2 + rel 1e-2; the stock path
-quantizes activations to Q8_K, the override rounds them to bf16) and assert 3 kernels loaded,
-4 hits, the exact call counts above, >= 2 distinct threads in the rows kernel for run 2
-(observed 4) and exactly 1 for run 3, plus the `hit`/`dispatch=N-split` log lines.
-Result on this Mac (M2 Pro, v0.4.1): PASS, max abs diff 3.9e-3.
 
 ## Known limitations / TODO
 

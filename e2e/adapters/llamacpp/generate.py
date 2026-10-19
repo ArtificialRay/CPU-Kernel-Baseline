@@ -7,7 +7,7 @@ mul_mat shape above --min-share it writes, under bench-trace/:
   workloads/gemm/gemm_<tag>_n<N>_k<K>.jsonl         (M = --m-values, B = bytes/ggml_<type>)
   solutions/llama.cpp/reference-scalar/gemm/...     (scalar port of ggml's vec_dot, the agent's start)
   solutions/llama.cpp/baseline-llamacpp-arm/gemm/...(ggml_mul_mat on the same blocks, the speedup baseline)
-The templates live in e2e/adapters/llamacpp/kquant_templates.py (tested by test_kquant.py).
+The templates live in e2e/adapters/llamacpp/kquant_templates.py.
 Existing files are left alone unless --force. bench-trace is gitignored; push
 the new files to HF additively (never a full-folder sync).
 
