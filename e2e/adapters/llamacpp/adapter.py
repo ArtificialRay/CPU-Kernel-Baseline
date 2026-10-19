@@ -32,8 +32,8 @@ class LlamaCppAdapter(FrameworkAdapter):
 
     def entrypoints(self) -> dict[str, Entrypoint]:
         return {stage: module_entrypoint(stage) for stage in (
-            "inventory", "generate", "capture", "calibrate", "kernel_set", "reference_manifest",
-            "verify", "deploy", "measure", "report", "report_from_log",
+            "inventory", "generate", "capture", "calibrate", "kernel_set",
+            "deploy", "measure", "report", "report_from_log",
         )}
 
     def fetch_header(self, model_config: dict, dest: Path) -> Path:
