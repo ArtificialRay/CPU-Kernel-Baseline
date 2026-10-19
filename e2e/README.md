@@ -37,12 +37,20 @@ adapter.kernel_set(E2EContext.create("llamacpp", "qwen3.5-4b", "sve2"), Options(
 ```
 e2e/
   cli.py  context.py  errors.py          # the two commands, the run context + options, StepFailed
-  adapters/base.py  registry.py          # FrameworkAdapter (the step loop: skip / box / fail) and resolve_adapter(name)
+  adapters/base.py  registry.py          # FrameworkAdapter: the step loop (skip / box / fail) and the steps every
+                                         #   framework shares (calibrate); resolve_adapter(name)
+  common/                                # framework-neutral functions the adapters call:
+                                         #   solutions (read an author's solutions back), guards (is this the kernel
+                                         #   set you meant), build (compile a .so, undefined-symbol check),
+                                         #   calibration (the SQNR gate), box (find the registered Graviton box)
   adapters/llamacpp/adapter.py           # LlamaCppAdapter: one method per step, over the modules below
-  adapters/llamacpp/                     # inventory, generate (+ kquant_templates), capture, calibrate, kernel_set,
-                                         #   deploy, measure, report (+ report_from_log): plain functions;
-                                         #   override/ is the ggml-cpu hook, build_agent.sh builds with it
+  adapters/llamacpp/                     # what is ggml-specific: inventory, generate (+ kquant_templates), capture,
+                                         #   kernel_set (names, rows ABI, manifest), deploy, measure, report
+                                         #   (+ report_from_log); override/ is the ggml-cpu hook, build_agent.sh builds with it
 ```
+
+A new framework is a new adapter: set `reference_author` / `baseline_author`, name its steps, write the
+ones that are about its own model format and runtime, and call `e2e.common` for the rest.
 
 `scripts/e2e/solutions_from_runs.py` is a standalone tool and stays there; it turns agent run
 directories into bench-trace solutions when a session predates `--sync-solutions`.
@@ -120,7 +128,7 @@ norepack row isolates the kernel effect from ggml's interleaved fast path.
 
 ## Tests
 
-`.venv/bin/python -m unittest e2e.test_pipeline e2e.adapters.llamacpp.test_kernel_set
+`.venv/bin/python -m unittest e2e.test_pipeline e2e.common.test_common e2e.adapters.llamacpp.test_kernel_set
 e2e.adapters.llamacpp.test_generate e2e.adapters.llamacpp.test_measure` run anywhere (fake compiler, fake
 llama-bench). The two below need an ARM machine or a llama.cpp checkout:
 
