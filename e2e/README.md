@@ -5,6 +5,32 @@ the follow-up question: take a real model, let the agent optimize the matmuls
 that dominate its CPU inference, splice those kernels back into llama.cpp, and
 measure tokens/s and perplexity.
 
+## Entry point and layout
+
+```
+python -m e2e prepare  --model qwen3.5-4b            # once per model: inventory -> generate -> capture -> calibrate
+python -m e2e evaluate --model qwen3.5-4b --label BOX --kernel-set-args "--runs DIR --rows-abi"
+                                                     # after each agent run: kernel_set -> deploy -> measure -> report
+python -m e2e <stage> <the stage's own arguments>    # one stage, exactly the old script's command line
+```
+
+`prepare` / `evaluate` skip a stage whose artifact is already in `e2e-runs/<framework>-<model>-<isa>/`
+(`--force` redoes it; `--from` / `--to` pick a range). Stages that run on the Graviton box and are not
+driven from here yet (`capture`, `calibrate`, `measure`) print the command to run instead. The agent
+runs themselves stay with `test_scripts/bench_fleet.py`.
+
+```
+e2e/
+  cli.py  pipeline.py  context.py        # the entry point, the stage lists, what one run is about
+  adapters/base.py  registry.py          # FrameworkAdapter: stage name -> entrypoint; resolve_adapter(name)
+  adapters/llamacpp/                     # everything ggml/llama.cpp-specific: one module per stage,
+                                         #   kquant_templates.py, override/ (the ggml-cpu hook), build_agent.sh
+```
+
+The old `scripts/e2e/<script>.py` names still work; they forward to the stage of the same job
+(`build_manifest.py` -> `kernel_set`, `provision_e2e.py` -> `deploy`, `measure_e2e.py` -> `measure`, ...).
+`solutions_from_runs.py` is a standalone tool and stays in `scripts/e2e/`.
+
 Everything here works on the `llama.cpp` dataset with the packed-ggml gemm
 definitions (`gemm_ggml_<type>_n<N>_k<K>`, tagged `e2e:<model>`). Models are
 listed in `config/e2e_models.json`; the runtime is pinned in
@@ -43,7 +69,7 @@ together keep a numerically lossy kernel from passing:
    Gaussian weights and quantizing them the way ggml does
    (`bench/runtime/inputs.py`), so the Q4_K/Q5_K min term carries the share
    of the value it does in a real GGUF.
-3. **A floor relative to the reference.** `calibrate_sqnr_floor.py` writes each
+3. **A floor relative to the reference.** `calibrate.py` writes each
    workload's `baseline_sqnr_db` tag; the evaluator then fails a candidate more
    than `EvalConfig.sqnr_margin_db` (default 1 dB) below it. Uncalibrated
    workloads keep the absolute `min_sqnr_db` floor.
@@ -52,33 +78,33 @@ together keep a numerically lossy kernel from passing:
 
 1. **Inventory** the model's matmuls from the GGUF header (a partial download
    is enough):
-   `python3 scripts/e2e/qwen35_inventory.py q4km_head.bin --json inventory.json`
+   `python3 -m e2e inventory q4km_head.bin --json inventory.json`
 2. **Definitions and solutions** for every shape above `--min-share`, written
    into `bench-trace/` (definitions, workloads, `reference-scalar` and
    `baseline-llamacpp-arm` solutions; templates in `kquant_templates.py`):
-   `python3 scripts/e2e/gen_qwen35_definitions.py inventory.json --model-tag qwen3.5-4b`
+   `python3 -m e2e generate inventory.json --model-tag qwen3.5-4b`
 3. **Real activations.** Run the override build with `ARMBENCH_DUMP_DIR` set
    (see `override/README.md`), then
-   `python3 scripts/e2e/dump_to_workloads.py --dump <dir> --root bench-trace`
+   `python3 -m e2e capture --dump <dir> --root bench-trace`
 4. **Calibrate** the SQNR floors on the eval box:
-   `python3 scripts/e2e/calibrate_sqnr_floor.py --tag e2e:qwen3.5-4b`
+   `python3 -m e2e calibrate --tag e2e:qwen3.5-4b`
 5. **Agent runs** with the usual driver. A whole-dataset sweep skips `e2e:`
    definitions, so name them:
    `test_scripts/bench_fleet.py --dataset llama.cpp --isa sve2 --definitions "<names>" ...`
 6. **Kernel set.** Compile the submitted versions exactly as the harness did and
    write the override manifest, then check it holds the sources you expect:
-   `python3 scripts/e2e/build_manifest.py --runs agent-runs-<author> --isa sve2 --out manifest.json`
-   `python3 scripts/e2e/verify_kernel_set.py --manifest manifest.json ...`
+   `python3 -m e2e kernel_set --runs agent-runs-<author> --isa sve2 --out manifest.json`
+   `python3 -m e2e verify --manifest manifest.json ...`
    (`solutions_from_runs.py` turns the same run dirs into bench-trace solutions;
-   `build_reference_manifest.py` builds the `reference-scalar` set, a control
+   `reference_manifest.py` builds the `reference-scalar` set, a control
    that must reproduce stock perplexity.)
-7. **Measure** on an already-provisioned box. `provision_e2e.py` builds the
+7. **Measure** on an already-provisioned box. `deploy.py` builds the
    pinned tools tree, fetches the model, and with `--agent-build` derives the
-   override build (`build_agent_llamacpp.sh`):
-   `python3 scripts/e2e/provision_e2e.py --label <label> --model qwen3.5-4b --agent-build`
-   `measure_e2e.py` runs llama-bench for each build, interleaved and repeated,
+   override build (`build_agent.sh`):
+   `python3 -m e2e deploy --label <label> --model qwen3.5-4b --agent-build`
+   `measure.py` runs llama-bench for each build, interleaved and repeated,
    and optionally llama-perplexity as the quality check;
-   `results_table.py` renders the JSON (`results_from_log.py` rebuilds it from
+   `report.py` renders the JSON (`report_from_log.py` rebuilds it from
    the streamed log if it was lost).
 
 Three builds are compared: **stock** (upstream, what users run), **norepack**
