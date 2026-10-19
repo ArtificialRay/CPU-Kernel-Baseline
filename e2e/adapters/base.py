@@ -1,13 +1,18 @@
 """The framework-specific half of the e2e pipeline, and the loop that drives it.
 
 A framework is one class. Its `prepare_steps` / `evaluate_steps` name the steps of the two
-commands, and `run_step(name, ctx, opts)` does one of them. The loop here is the same for
-every framework:
+commands; each step is the method of that name (`run_step` looks it up), so a framework
+implements the steps it has and inherits the ones every framework shares (see `calibrate`,
+which is written once from e2e.common). The loop here is the same for every framework:
 
   * a step whose artifact already exists is skipped (ctx.force redoes it);
   * a step that has to run on the Graviton box is only printed as a command unless it was
     asked for explicitly with `opts.steps` -- run on the box, that is how it gets run;
   * the first failing step stops the command.
+
+The logic that does not depend on the framework -- reading solutions back, the guards on a
+built kernel set, compiling a shared object, calibrating the SQNR gate, finding the box --
+lives in e2e.common as plain functions, so an adapter calls them rather than inherits them.
 
 The interface is deliberately this coarse: llama.cpp is the only framework so far, and a
 finer split drawn from one implementation would be a guess. Split it when a second
@@ -37,13 +42,31 @@ class FrameworkAdapter(ABC):
     prepare_steps: tuple[Step, ...]
     evaluate_steps: tuple[Step, ...]
 
-    @abstractmethod
+    # Which solutions the SQNR gate is calibrated against (used by the default `calibrate` step):
+    # the reference implementation whose own score sets the floor, and the baseline the
+    # evaluator scores speedup against.
+    reference_author: str = "reference-scalar"
+    baseline_author: str
+
     def run_step(self, step: str, ctx: E2EContext, opts: Options) -> None:
-        """Do one step; raise StepFailed when it cannot continue."""
+        """Do one step (the method of that name); raise StepFailed when it cannot continue."""
+        getattr(self, step)(ctx, opts)
 
     @abstractmethod
     def fetch_header(self, model_config: dict, dest: Path) -> Path:
         """Download just enough of the model file for the inventory step."""
+
+    # -- steps every framework shares: written once here, from the functions in e2e.common ----
+
+    def calibrate(self, ctx: E2EContext, opts: Options) -> None:
+        """What the reference implementation scores on each workload of the model's `e2e:<model>`
+        definitions, so the SQNR gate is relative to it. Runs kernels, so on the box."""
+        from ..common.calibration import calibrate_sqnr_floors
+        _, problems = calibrate_sqnr_floors(
+            opts.root, author=self.reference_author, baseline_author=self.baseline_author,
+            tag=f"e2e:{ctx.model}")
+        if problems:
+            raise StepFailed(f"{problems} workload(s) could not be calibrated")
 
     def prepare(self, ctx: E2EContext, opts: Options) -> int:
         """Once per model: define its kernel set and calibrate the correctness gate."""

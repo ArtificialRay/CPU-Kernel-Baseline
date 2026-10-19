@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 from e2e.adapters.llamacpp import kernel_set
+from e2e.errors import StepFailed
 
 DATASET = "llama.cpp"
 GEMM_H = "namespace gemm_def {{ constexpr int N = {N}; }}\n"
@@ -186,7 +187,7 @@ class KernelSetTest(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     def test_missing_author_dir_is_an_error(self):
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(StepFailed):
             self.run_kernel_set("nobody")
 
 
