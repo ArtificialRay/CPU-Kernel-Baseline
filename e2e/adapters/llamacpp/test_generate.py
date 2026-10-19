@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from e2e.adapters.llamacpp.adapter import module_entrypoint
+from e2e.adapters.llamacpp.generate import write_definitions
 
 REPO = Path(__file__).resolve().parents[3]
 INVENTORY = Path(__file__).resolve().parent / "testdata" / "qwen3.5-4b.inventory.json"
@@ -27,8 +27,8 @@ class GenerateGoldenTest(unittest.TestCase):
             self.skipTest("bench-trace/ doesn't hold the published qwen3.5-4b definitions")
         root = Path(tempfile.mkdtemp())
         with contextlib.redirect_stdout(io.StringIO()):
-            rc = module_entrypoint("generate")([str(INVENTORY), "--model-tag", "qwen3.5-4b", "--root", str(root)])
-        self.assertEqual(rc, 0)
+            written = write_definitions(INVENTORY, "qwen3.5-4b", root)
+        self.assertGreater(written, 0)
         compared = 0
         for new in sorted(root.rglob("*.json")):
             old = PUBLISHED / new.relative_to(root)
