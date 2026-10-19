@@ -8,10 +8,15 @@ submitted, or a hand-written / reference-scalar set. Each solution carries its o
 (gemm.h, gemm.cpp) and kernel.cpp, so it is compiled exactly as the harness compiled it:
 -O3 + the ISA's -march. The emitted manifest is
 
-  {"isa":..., "march":..., "author":..., "kernels":[{"op":"mul_mat","type":"q4_K","K":2560,"N":9216,
-                               "so":".../gemm_ggml_q4_K_n9216_k2560.so",
-                               "symbol":"armbench_entry_gemm","abi":"entry",
-                               "definition":..., "version":...}], "skipped":[...]}
+  {"framework":"llamacpp", "isa":..., "march":..., "author":...,
+   "kernels":[{"op":"mul_mat","type":"q4_K","K":2560,"N":9216,
+               "so":".../gemm_ggml_q4_K_n9216_k2560.so",
+               "symbol":"armbench_entry_gemm","abi":"entry",
+               "embeddable":true, "definition":..., "version":...}],
+   "skipped":[{"definition":..., "embeddable":false, "reason":...}, ...]}
+
+The hook reads op/type/K/N/so/symbol/abi/symbol_rows/threads and skips every other key, so the
+extra fields here (framework, embeddable, ...) are for the people and tools reading the manifest.
 
 Only definitions named gemm_ggml_<type>_n<N>_k<K> are spliceable (packed ABI); others are
 listed under "skipped" with a reason, as is a kernel that calls ggml's own routines.
@@ -45,6 +50,7 @@ sys.path.insert(0, str(REPO))
 from contracts import _isa_table  # noqa: E402  (config/kernel_contracts.yaml isa table)
 
 NAME_RX = re.compile(r"^gemm_ggml_(q[456]_K)_n(\d+)_k(\d+)$")
+FRAMEWORK = "llamacpp"
 SOLUTIONS = REPO / "bench-trace" / "solutions"
 # What the MCP server keeps next to <definition>.json while a session runs
 # (agent_tools/base.py); a leftover one is the last compile, not the submitted best.
@@ -120,6 +126,22 @@ def undefined_ggml_symbols(so: Path) -> list:
     return sorted(syms)
 
 
+FLAT_QUANT_RX = re.compile(r"^gemm_(q4_k_m|q5_k|q6_k|q8_0)_n\d+_k\d+$")
+
+
+def embeddable(name: str) -> tuple[bool, str]:
+    """Can the override hook splice a kernel for this definition into llama.cpp, and if
+    not, why. Only the packed ggml block-row gemms can be: the hook matches a mul_mat by
+    (ggml type, K, N) and hands the kernel the raw block rows."""
+    if NAME_RX.match(name):
+        return True, ""
+    if name.startswith("gemm_ggml_"):
+        return False, "packed ggml gemm of a type the hook has no kernel for (q4_K/q5_K/q6_K only)"
+    if FLAT_QUANT_RX.match(name):
+        return False, "flat-quant ABI (separate quant / scales / mins tensors), not ggml block rows"
+    return False, "not a packed-ABI gemm definition"
+
+
 def load_author(dataset: str, author: str, root: Path = SOLUTIONS) -> dict:
     """definition name -> solution JSON for every `<definition>.json` of one author."""
     sol_dir = root / dataset / author / "gemm"
@@ -152,10 +174,10 @@ def compile_so(cxx: str, march: str, build: Path, so: Path):
 def build_kernels(solutions: dict, args, out_dir: Path, march: str):
     kernels, skipped = [], []
     for name, sol in sorted(solutions.items()):
-        m = NAME_RX.match(name)
-        if not m:
-            skipped.append({"definition": name, "reason": "not a packed-ABI gemm definition"}); continue
-        qtype, N, K = m.group(1), int(m.group(2)), int(m.group(3))
+        ok, why = embeddable(name)
+        if not ok:
+            skipped.append({"definition": name, "embeddable": False, "reason": why}); continue
+        qtype, N, K = (lambda m: (m.group(1), int(m.group(2)), int(m.group(3))))(NAME_RX.match(name))
         if args.only and name not in args.only:
             skipped.append({"definition": name, "reason": "filtered by --only"}); continue
         if args.only_types and qtype not in args.only_types:
@@ -183,11 +205,11 @@ def build_kernels(solutions: dict, args, out_dir: Path, march: str):
         if abi == "entry":
             p = compile_so(args.cxx, march, build, so)
             if p.returncode != 0:
-                skipped.append({"definition": name, "reason": "compile failed: " + p.stderr[-400:]}); continue
+                skipped.append({"definition": name, "embeddable": False, "reason": "compile failed: " + p.stderr[-400:]}); continue
         bad = undefined_ggml_symbols(so)
         if bad:
             skipped.append({
-                "definition": name,
+                "definition": name, "embeddable": False,
                 "reason": ("references ggml internals (" + ", ".join(bad) + "): the kernel "
                            "delegates to ggml's own routine, so it cannot be dlopened outside "
                            "the harness and would disable every override in this manifest"),
@@ -196,7 +218,7 @@ def build_kernels(solutions: dict, args, out_dir: Path, march: str):
             continue
         kernels.append({"op": "mul_mat", "type": qtype, "K": K, "N": N, "so": str(so),
                         "symbol": "armbench_entry_gemm", "abi": abi,
-                        "definition": name, "version": f"solutions/{args.author}"})
+                        "embeddable": True, "definition": name, "version": f"solutions/{args.author}"})
         print(f"built {name} abi={abi}")
     return kernels, skipped
 
@@ -261,8 +283,11 @@ def main() -> int:
     solutions = load_author(args.dataset, args.author, args.solutions_root)
     kernels, skipped = build_kernels(solutions, args, out_dir, march)
     args.out.write_text(json.dumps(
-        {"isa": args.isa, "march": march, "author": args.author, "kernels": kernels, "skipped": skipped}, indent=1))
+        {"framework": FRAMEWORK, "isa": args.isa, "march": march, "author": args.author,
+         "kernels": kernels, "skipped": skipped}, indent=1))
     print(f"{len(kernels)} kernels, {len(skipped)} skipped -> {args.out}")
+    for reason in sorted({s["reason"].split(":")[0] for s in skipped}):
+        print(f"  skipped: {reason} ({sum(1 for s in skipped if s['reason'].split(':')[0] == reason)})")
 
     reference = load_author(args.dataset, args.reference_author, args.solutions_root) if args.reference_author else {}
     fail = check_guards(args, solutions, kernels, reference)
