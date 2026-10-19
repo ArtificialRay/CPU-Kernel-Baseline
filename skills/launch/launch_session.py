@@ -57,6 +57,12 @@ RSYNC_ALLOWLIST = (
     or json.loads((REPO_ROOT / "config" / "rsync_allowlist.json").read_text())["paths"]
 )
 
+# Files mcp_app's KernelSession keeps next to the real `<definition>.json` while a
+# session runs (agent_tools/base.py: `_current` after every compile, `_best` between
+# the write and the rename in submit()). Never pull these back: a stray
+# `<definition>_current.json` is the last compile, not the submitted best.
+SOLUTION_INTERMEDIATE_GLOBS = ["*_current.json", "*_best.json"]
+
 # Shared with provisioning/provision.py and mcp_app/smoke_test_driver.py — lives at
 # the repo root (like contracts.py/config/kernel_contracts.yaml) so none of
 # the three packages "owns" a separately-duplicated copy that can drift.
@@ -440,7 +446,10 @@ def sync_results(
     if sync_bench_trace:
         bt_dir = Path(local_bench_trace_dir) if local_bench_trace_dir else REPO_ROOT / "bench-trace"
         # sync back new solutions and traces for kernel stability test
-        target.rsync_from(f"{remote_root}/bench-trace/solutions/", bt_dir / "solutions")
+        target.rsync_from(
+            f"{remote_root}/bench-trace/solutions/", bt_dir / "solutions",
+            excludes=SOLUTION_INTERMEDIATE_GLOBS,
+        )
         target.rsync_from(f"{remote_root}/bench-trace/traces/", bt_dir / "traces")
         result["local_bench_trace_dir"] = str(bt_dir)
     return result

@@ -166,7 +166,10 @@ python provisioning/provision.py --isa sve2 --on-demand            # on-demand, 
   `trajectory.jsonl`, every compiled version (`v<N>.cpp`), disassembly, and
   the reference scalar kernel.
 - `bench-trace/solutions/` on the instance holds the persisted kernels; pass
-  `--sync-solutions` to pull them back as well.
+  `--sync-solutions` to pull each job's submitted `<definition>.json` back as
+  well (only the submitted file — the `_current`/`_best` intermediates stay on
+  the instance). Anything submitted but not pulled is listed in
+  `agent-runs-<author>/solutions-sync-failed.txt`.
 
 ## File map
 
