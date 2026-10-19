@@ -1,0 +1,47 @@
+diff --git a/ggml/src/ggml-cpu/CMakeLists.txt b/ggml/src/ggml-cpu/CMakeLists.txt
+index 1c7338e..ab14739 100644
+--- a/ggml/src/ggml-cpu/CMakeLists.txt
++++ b/ggml/src/ggml-cpu/CMakeLists.txt
+@@ -39,6 +39,8 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
+         ggml-cpu/quants.h
+         ggml-cpu/traits.cpp
+         ggml-cpu/traits.h
++        ggml-cpu/armbench_override.c
++        ggml-cpu/armbench_override.h
+         ggml-cpu/amx/amx.cpp
+         ggml-cpu/amx/amx.h
+         ggml-cpu/amx/mmq.cpp
+@@ -58,6 +60,8 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
+ 
+     target_compile_features(${GGML_CPU_NAME} PRIVATE c_std_11 cxx_std_17)
+     target_include_directories(${GGML_CPU_NAME} PRIVATE . ggml-cpu)
++    # armbench: kernel override hook uses dlopen/dlsym
++    target_link_libraries(${GGML_CPU_NAME} PRIVATE ${CMAKE_DL_LIBS})
+ 
+     if (APPLE AND GGML_ACCELERATE)
+         find_library(ACCELERATE_FRAMEWORK Accelerate)
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 87a329f..d6b47b3 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -15,6 +15,7 @@
+ #include "ops.h"
+ #include "ggml.h"
+ #include "common.h"
++#include "armbench_override.h"
+ 
+ #if defined(_MSC_VER) || defined(__MINGW32__)
+ #include <malloc.h> // using malloc.h with MSC/MINGW
+@@ -1860,7 +1861,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+             } break;
+         case GGML_OP_MUL_MAT:
+             {
+-                ggml_compute_forward_mul_mat(params, tensor);
++                // armbench: agent kernel override (ARMBENCH_OVERRIDES manifest); falls
++                // through to the stock path when no kernel matches.
++                if (!armbench_override_mul_mat(params, tensor)) {
++                    ggml_compute_forward_mul_mat(params, tensor);
++                }
+             } break;
+         case GGML_OP_MUL_MAT_ID:
+             {
