@@ -52,9 +52,6 @@ e2e/
 A new framework is a new adapter: set `reference_author` / `baseline_author`, name its steps, write the
 ones that are about its own model format and runtime, and call `e2e.common` for the rest.
 
-`scripts/e2e/solutions_from_runs.py` is a standalone tool and stays there; it turns agent run
-directories into bench-trace solutions when a session predates `--sync-solutions`.
-
 Everything here works on the `llama.cpp` dataset with the packed-ggml gemm
 definitions (`gemm_ggml_<type>_n<N>_k<K>`, tagged `e2e:<model>`). Models are
 listed in `config/e2e_models.json`; the runtime is pinned in
