@@ -313,9 +313,11 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     so each round/chunk gets its own process (see _run_chunk_subprocess's
     docstring for why). 
     
-    Returns the instance label this call provisioned/
+    Returns (label, unsynced): the instance label this call provisioned/
     reused, so main() can scope its final teardown to just this instance
-    instead of tearing down every instance provisioning/provision.py knows about."""
+    instead of tearing down every instance provisioning/provision.py knows about,
+    and the definitions whose submitted solution could not be pulled back with
+    --sync-solutions."""
     adapter: HarnessAdapter
     model = args.model
     local_port = _free_local_port()
@@ -383,6 +385,8 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             samples=args.samples, temperature=args.temperature,
         )
     ran_jobs: list[Job] = []
+    unsynced: list[str] = []
+    local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
     try:
         if not jobs:
             print(
@@ -394,7 +398,6 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
 
         log_dir = REPO_ROOT / "harness_trajs" / args.harness / author
         log_dir.mkdir(parents=True, exist_ok=True)
-        local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
         local_results_dir.mkdir(parents=True, exist_ok=True)
 
         print(
@@ -424,6 +427,10 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
                 attempt += 1
             print(f"=== [{time.strftime('%H:%M:%S')}] job {job.name} finished -> {log_path} ===")
             sync_job_results(label, author, job.name, local_results_dir)
+            if args.sync_solutions and not sync_job_solution(
+                instance.target, dataset, author, job.name, args.remote_root,
+            ):
+                unsynced.append(job.name)
             wandb_log_job(job.name, dataset, isa, args, author, local_results_dir)
 
         print(f"All jobs done. Logs in {log_dir}")
@@ -431,13 +438,16 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             adapter.cleanup()
 
         if args.sync_solutions:
-            print(f"Syncing bench-trace/solutions/ back from {instance.target.host}...")
-            try:
-                instance.target.rsync_from(
-                    f"{args.remote_root}/bench-trace/solutions/", REPO_ROOT / "bench-trace" / "solutions",
-                )
-            except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
-                print(f"  WARNING: sync-solutions failed: {e}", file=sys.stderr)
+            if unsynced:
+                print(f"Retrying sync-solutions for {len(unsynced)} definition(s)...")
+                unsynced = [
+                    n for n in unsynced
+                    if not sync_job_solution(instance.target, dataset, author, n, args.remote_root)
+                ]
+                # A job that never submitted has no solution to pull; that is the
+                # incomplete-trajectory warning below, not a sync failure.
+                unsynced = find_unsynced_solutions(dataset, author, unsynced, local_results_dir)
+            report_unsynced_solutions(local_results_dir, {dataset: unsynced})
 
         incomplete = [
             j.name for j in jobs
@@ -455,7 +465,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
         for job in ran_jobs:
             adapter.cleanup_workspace(job)
         stop_tunnel(prepared)
-    return label
+    return label, unsynced
 
 
 class WatchdogKeeper:
@@ -545,9 +555,12 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
     one instance is reachable, if not, start a fresh box
     Generalized to any --harness/model.
     
-    Returns the instance label for every --dataset, so main() can scope its
-    final teardown to just these instances instead of tearing down every
-    instance provisioning/provision.py knows about."""
+    Returns (labels, unsynced): the instance label for every --dataset, so main()
+    can scope its final teardown to just these instances instead of tearing down
+    every instance provisioning/provision.py knows about, and, per dataset, the
+    submitted solutions that never reached bench-trace/solutions/ (see
+    unsynced_solutions()). A chunk's exit code is ignored here, so this check is the
+    only place a failed --sync-solutions can show up."""
     datasets = args.dataset
     # Resolve --model up front
     model = args.model or ADAPTER_CLASSES[args.harness].default_model()
@@ -573,7 +586,7 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
         } # filter all definition that has completed before by searching on local trajcetory directory
         if not any(per_ds_incomplete.values()):
             print(f"=== [{time.strftime('%H:%M:%S')}] ALL COMPLETE at round {round_num} ===")
-            return labels
+            return labels, unsynced_solutions(args, author, local_results_dir)
 
         print(
             f"=== [{time.strftime('%H:%M:%S')}] round {round_num}/{args.max_rounds}: "
@@ -622,7 +635,29 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
         f"=== [{time.strftime('%H:%M:%S')}] giving up after {args.max_rounds} round(s) "
         f"— still incomplete: {still_incomplete} ===", file=sys.stderr,
     )
-    return labels
+    return labels, unsynced_solutions(args, author, local_results_dir)
+
+
+def unsynced_solutions(args: argparse.Namespace, author: str, local_results_dir: Path) -> dict[str, list[str]]:
+    """Per --dataset, the definitions with a submitted solution that is not on disk
+    locally (empty unless --sync-solutions was asked for). Also reports them, via
+    report_unsynced_solutions(), so the list is written next to the trajectories."""
+    if not args.sync_solutions:
+        return {}
+    adapter_cls = ADAPTER_CLASSES[args.harness]
+    missing: dict[str, list[str]] = {}
+    for ds in args.dataset:
+        names = [
+            j.name for j in build_jobs(
+                ds, args.isa, args.definitions, args.min_iterations, args.max_iterations,
+                adapter_cls.prompt_template, adapter_cls.template_args,
+            )
+        ]
+        found = find_unsynced_solutions(ds, author, names, local_results_dir)
+        if found:
+            missing[ds] = found
+    report_unsynced_solutions(local_results_dir, missing)
+    return missing
 
 
 def wandb_log_job(name, dataset, isa, args, author, local_results_dir) -> None:
@@ -664,6 +699,102 @@ def sync_job_results(label: str, author: str, definition: str, local_results_dir
         )
     except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
         print(f"  WARNING: sync-results failed for {definition}: {e}", file=sys.stderr)
+
+
+LOCAL_SOLUTIONS_DIR = REPO_ROOT / "bench-trace" / "solutions"
+UNSYNCED_FILENAME = "solutions-sync-failed.txt"
+
+
+def definition_op_type(name: str) -> Optional[str]:
+    """The op_type of definition `name`. The MCP server files a solution under
+    solutions/<dataset>/<author>/<op_type>/, and that is not always the name of the
+    definitions/ subdirectory the JSON sits in (simd-loop's loop_027 sits under
+    definitions/simd-loop/ but its op_type is loop_027)."""
+    for path in DEFINITIONS_DIR.glob(f"*/{name}.json"):
+        return json.loads(path.read_text())["op_type"]
+    return None
+
+
+def local_solution_path(dataset: str, author: str, name: str) -> Optional[Path]:
+    op_type = definition_op_type(name)
+    if op_type is None:
+        return None
+    return LOCAL_SOLUTIONS_DIR / dataset / author / op_type / f"{name}.json"
+
+
+def sync_job_solution(
+    target: RemoteTarget, dataset: str, author: str, definition: str, remote_root: str,
+) -> bool:
+    """Pull the one submitted `<definition>.json` of this run, nothing else.
+
+    Not the whole solutions/ tree: that dragged other authors' files (and the
+    `_current`/`_best` intermediates) along, and with --until-complete every round runs
+    on a fresh box that only holds its own chunk, so mirroring a directory would delete
+    earlier rounds' results. Best-effort like sync_job_results: returns whether the file
+    landed, never raises, so one failure cannot stop the jobs still waiting."""
+    op_type = definition_op_type(definition)
+    if op_type is None:
+        print(f"  WARNING: no definition JSON for {definition} under {DEFINITIONS_DIR} — "
+              f"cannot locate its solution", file=sys.stderr)
+        return False
+    remote = f"{remote_root}/bench-trace/solutions/{dataset}/{author}/{op_type}/{definition}.json"
+    try:
+        target.rsync_from(
+            remote, LOCAL_SOLUTIONS_DIR / dataset / author / op_type,
+            excludes=launch_session.SOLUTION_INTERMEDIATE_GLOBS,
+        )
+    except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
+        print(f"  WARNING: sync-solutions failed for {definition}: {e}", file=sys.stderr)
+        return False
+    return True
+
+
+def submitted_ok(local_results_dir: Path, job_name: str) -> bool:
+    """The job's trajectory has a PASSED "submit" turn, i.e. submit() persisted a
+    solution. A "submit" with nothing evaluated is also recorded, as COMPILE_ERROR, and
+    writes no solution file — so _trajectory_complete() alone does not imply one exists."""
+    traj_path = local_results_dir / job_name / "trajectory.jsonl"
+    try:
+        records = [json.loads(line) for line in traj_path.read_text().splitlines() if line.strip()]
+    except (OSError, json.JSONDecodeError):
+        return False
+    return any(
+        r.get("tool") == "submit" and (r.get("metrics") or {}).get("status") == "PASSED"
+        for r in records
+    )
+
+
+def find_unsynced_solutions(
+    dataset: str, author: str, job_names: list[str], local_results_dir: Path,
+) -> list[str]:
+    """Jobs whose trajectory says a solution was submitted but whose `<def>.json` is not
+    on disk locally. --until-complete ignores its chunk subprocesses' exit codes and
+    judges completeness from trajectories alone, so a failed solution sync would
+    otherwise go unnoticed."""
+    missing = []
+    for name in job_names:
+        if not submitted_ok(local_results_dir, name):
+            continue
+        path = local_solution_path(dataset, author, name)
+        if path is None or not path.exists():
+            missing.append(name)
+    return missing
+
+
+def report_unsynced_solutions(local_results_dir: Path, unsynced: dict[str, list[str]]) -> None:
+    """Print which solutions never reached bench-trace/solutions/ and record them in
+    <local_results_dir>/solutions-sync-failed.txt (removed again when nothing is missing,
+    so a stale list never outlives the problem)."""
+    marker = local_results_dir / UNSYNCED_FILENAME
+    lines = [f"{ds}\t{name}" for ds, names in unsynced.items() for name in names]
+    if not lines:
+        marker.unlink(missing_ok=True)
+        return
+    local_results_dir.mkdir(parents=True, exist_ok=True)
+    marker.write_text("\n".join(lines) + "\n")
+    print(f"ERROR: {len(lines)} submitted solution(s) are NOT in {LOCAL_SOLUTIONS_DIR} "
+          f"(listed in {marker}): " + ", ".join(f"{ds}/{n}" for ds, names in unsynced.items()
+                                                for n in names), file=sys.stderr)
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -716,10 +847,15 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "baselines are collected and during every job, so it only fires once the driver is gone. 0 "
                         "cancels it. Default: 120")
     p.add_argument("--sync-solutions", action="store_true",
-                   help="After all jobs finish, also pull bench-trace/solutions/ back from the "
-                        "remote instance (not bench-trace/traces/ — that data's already in "
-                        "agent-runs-<author>/). Off by default; every harness writes solutions "
-                        "to the remote bench-trace regardless of this flag.")
+                   help="After each job, also pull its submitted solution "
+                        "(bench-trace/solutions/<dataset>/<author>/<op_type>/<definition>.json) "
+                        "back from the remote instance — only that file, never the "
+                        "_current/_best intermediates or other authors' solutions, and "
+                        "bench-trace/traces/ is not pulled (already in agent-runs-<author>/). "
+                        "A submitted solution that still isn't local at the end is listed in "
+                        "<local results dir>/solutions-sync-failed.txt and makes the run exit 3 "
+                        "after teardown. Off by default; every harness writes solutions to the "
+                        "remote bench-trace regardless of this flag.")
     p.add_argument("--until-complete", action="store_true",
                    help="Keep resuming — across every --dataset, interleaved round-robin, "
                         "cost-sorted cheapest-first within each — until every matching "
@@ -747,20 +883,24 @@ def main(argv: Optional[list[str]] = None) -> None:
     if not args.until_complete:
         if len(args.dataset) != 1:
             p.error("multiple --dataset values require --until-complete")
-        label = run_fleet(args, args.dataset[0])
+        label, unsynced = run_fleet(args, args.dataset[0])
         if not args.skip_final_teardown:
             print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
             launch_session._teardown(label)
+        if unsynced:
+            sys.exit(3)
         return
     if args.label and len(args.dataset) > 1:
         p.error("--label can't be fixed across multiple --dataset values under --until-complete "
                  "— each dataset needs its own instance label; omit --label and let it be "
                  "computed per dataset.")
-    labels = run_until_complete(args)
+    labels, unsynced = run_until_complete(args)
     if not args.skip_final_teardown:
         for label in labels:
             print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
             launch_session._teardown(label)
+    if unsynced:
+        sys.exit(3)
 
 
 if __name__ == "__main__":
