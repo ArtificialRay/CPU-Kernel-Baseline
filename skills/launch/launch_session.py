@@ -57,10 +57,7 @@ RSYNC_ALLOWLIST = (
     or json.loads((REPO_ROOT / "config" / "rsync_allowlist.json").read_text())["paths"]
 )
 
-# Files mcp_app's KernelSession keeps next to the real `<definition>.json` while a
-# session runs (agent_tools/base.py: `_current` after every compile, `_best` between
-# the write and the rename in submit()). Never pull these back: a stray
-# `<definition>_current.json` is the last compile, not the submitted best.
+# sync-solution should not pull intermediate solution (<def>_current.json and <def>_best.json) back
 SOLUTION_INTERMEDIATE_GLOBS = ["*_current.json", "*_best.json"]
 
 # Shared with provisioning/provision.py and mcp_app/smoke_test_driver.py — lives at
