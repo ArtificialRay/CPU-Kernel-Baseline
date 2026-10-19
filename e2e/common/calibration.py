@@ -6,7 +6,7 @@ gemm that floor is far below what the reference implementation itself achieves -
 own q4_K arithmetic sits near 40-45 dB -- so a candidate could discard 20+ dB of signal
 the baseline keeps and still pass. It did: see e2e/README.md.
 
-This runs a reference solution (default `reference-scalar`, a scalar port of ggml's own
+This runs a reference solution (for llama.cpp `reference-scalar`, a scalar port of ggml's own
 vec_dot, so the number is "what the real kernel's quantization costs") over every workload
 of a definition and writes `baseline_sqnr_db` into that workload's tags. The evaluator then
 gates at `baseline_sqnr_db - EvalConfig.sqnr_margin_db`.
@@ -14,33 +14,36 @@ gates at `baseline_sqnr_db - EvalConfig.sqnr_margin_db`.
 Re-run this whenever the workload inputs change -- the floor is only valid for the exact
 inputs it was measured on.
 
-    calibrate_sqnr_floors(definitions=["gemm_ggml_q4_K_n9216_k2560"])
-    calibrate_sqnr_floors(tag="e2e:qwen3.5-4b")             # or: python -m e2e prepare --steps calibrate
+    calibrate_sqnr_floors(author="reference-scalar", baseline_author="baseline-llamacpp-arm",
+                          tag="e2e:qwen3.5-4b")             # or: python -m e2e prepare --steps calibrate
+
+Nothing here is specific to one framework: which author is the reference and which is the
+baseline comes from the adapter (FrameworkAdapter.reference_author / baseline_author).
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from bench.config import EvalConfig
 from bench.data import TraceSet
 from bench.runner import run_solution_on_workloads
 from e2e.errors import StepFailed
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[2]
 
 
-def calibrate_sqnr_floors(root: Path = REPO / "bench-trace", *, definitions=None, tag=None,
-                          author: str = "reference-scalar", baseline_author: str = "baseline-llamacpp-arm",
-                          dry_run: bool = False) -> tuple[int, int]:
+def calibrate_sqnr_floors(root: Path = REPO / "bench-trace", *, author: str, baseline_author: str,
+                          definitions=None, tag=None, dry_run: bool = False) -> tuple[int, int]:
     """Write `baseline_sqnr_db` / `baseline_sqnr_author` into the tags of every workload of
     the selected definitions. Returns (workloads calibrated, problems).
 
     definitions     definition names to calibrate
     tag             also calibrate every definition carrying this tag (e.g. e2e:qwen3.5-4b)
-    author          whose solution to measure
+    author          whose solution to measure (the reference implementation)
+    baseline_author the solution the evaluator scores speedup against (EvalConfig.baseline_author)
     dry_run         measure and print, but don't rewrite the workload files
     """
     root = Path(root)

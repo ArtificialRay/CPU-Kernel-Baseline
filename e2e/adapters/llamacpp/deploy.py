@@ -26,7 +26,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "launch"))
 sys.path.insert(0, str(REPO_ROOT))
 
-from launch_session import _read_config_instance, ensure_dataset_ready  # noqa: E402
+from launch_session import ensure_dataset_ready  # noqa: E402
+from e2e.common.box import instance_for  # noqa: E402
 from e2e.errors import StepFailed  # noqa: E402
 
 
@@ -37,10 +38,7 @@ def deploy(label: str, model: str | None = None, agent_build: bool = False) -> N
     model        config/e2e_models.json key whose GGUF to fetch into ~/models on the box
     agent_build  also build the override-enabled "agent" tree (and the no-repack control)
     """
-    inst = _read_config_instance(label)
-    if inst is None:
-        raise StepFailed(f"no instance under label {label!r} in provisioning/eval_config.json")
-    target = inst.target
+    target = instance_for(label).target
     print(f"[e2e] {label}: {target.user}@{target.host}")
 
     ensure_dataset_ready(target, "llama.cpp-e2e")

@@ -20,6 +20,8 @@ def require(value, option: str, step: str):
 
 class LlamaCppAdapter(FrameworkAdapter):
     name = "llamacpp"
+    reference_author = "reference-scalar"          # a scalar port of ggml's own vec_dot
+    baseline_author = "baseline-llamacpp-arm"      # calls ggml_mul_mat on the same blocks
 
     prepare_steps = (
         Step("inventory", outputs=lambda ctx: [ctx.run.inventory]),
@@ -33,9 +35,6 @@ class LlamaCppAdapter(FrameworkAdapter):
         Step("measure", box=True, outputs=lambda ctx: [ctx.run.results]),
         Step("report"),
     )
-
-    def run_step(self, step: str, ctx: E2EContext, opts: Options) -> None:
-        getattr(self, step)(ctx, opts)
 
     # -- prepare: once per model ---------------------------------------------------------
 
@@ -60,13 +59,6 @@ class LlamaCppAdapter(FrameworkAdapter):
         from .capture import capture_activations
         return capture_activations(Path(require(opts.dump, "--dump", "capture")),
                                    require(opts.source, "--source", "capture"), opts.root)
-
-    def calibrate(self, ctx: E2EContext, opts: Options) -> None:
-        """What reference-scalar scores on each workload, so the SQNR gate is relative to it. Runs kernels."""
-        from .calibrate import calibrate_sqnr_floors
-        _, problems = calibrate_sqnr_floors(opts.root, tag=f"e2e:{ctx.model}")
-        if problems:
-            raise StepFailed(f"{problems} workload(s) could not be calibrated")
 
     # -- evaluate: after each agent run ---------------------------------------------------
 
