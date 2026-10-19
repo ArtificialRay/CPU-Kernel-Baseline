@@ -25,17 +25,20 @@ that reason.
 ARMBENCH_DUMP_STRIDE spreads the captures over the layer stack (the same (type,K,N) shape
 recurs once per layer and early/late layers differ a lot). Then:
 
-    python -m e2e capture --dump <dir> --root bench-trace
+    capture_activations(dump_dir, "Qwen3.5-4B-Q4_K_M / wikitext-2 test chunk 0")      # or: python -m e2e prepare --steps capture --dump ... --source ...
 """
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import uuid as _uuid
 from pathlib import Path
 
 import numpy as np
+
+from e2e.errors import StepFailed
+
+REPO = Path(__file__).resolve().parents[3]
 
 DUMP_RX = re.compile(r"^(?P<type>q\d_[K0]|q8_0)_K(?P<K>\d+)_N(?P<N>\d+)\.call(?P<call>\d+)\.a\.bin$")
 DEF_RX = re.compile(r"^gemm_ggml_(?P<type>q\d_[K0]|q8_0)_n(?P<N>\d+)_k(?P<K>\d+)$")
@@ -57,31 +60,28 @@ def find_dumps(dump_dir: Path):
     return out
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dump", type=Path, required=True, help="ARMBENCH_DUMP_DIR contents")
-    ap.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3] / "bench-trace")
-    ap.add_argument("--source", required=True,
-                    help="provenance string recorded on every generated workload input, "
-                         "e.g. 'Qwen3.5-4B-Q4_K_M / wikitext-2 test chunk 0'")
-    ap.add_argument("--min-rows", type=int, default=8,
-                    help="ignore captured calls with fewer rows (llama-perplexity warmup)")
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
+def capture_activations(dump: Path, source: str, root: Path = REPO / "bench-trace", *,
+                        min_rows: int = 8, dry_run: bool = False) -> int:
+    """Rewrite the A inputs of the published gemm_ggml_* workloads to real activations.
 
-    dumps = find_dumps(args.dump)
+    dump      ARMBENCH_DUMP_DIR contents (from a llama.cpp built with the override hook)
+    source    provenance string recorded on every generated workload input, e.g.
+              'Qwen3.5-4B-Q4_K_M / wikitext-2 test chunk 0'
+    min_rows  ignore captured calls with fewer rows (llama-perplexity warmup)
+    Returns how many workload inputs were rewritten.
+    """
+    dumps = find_dumps(dump)
     if not dumps:
-        print(f"no *.call*.a.bin under {args.dump}")
-        return 1
+        raise StepFailed(f"no *.call*.a.bin under {dump}")
     for key, calls in list(dumps.items()):
-        small = [c for c in calls if c[2] is not None and c[2] < args.min_rows]
+        small = [c for c in calls if c[2] is not None and c[2] < min_rows]
         if small:
-            print(f"  {key}: dropping {len(small)} call(s) with M < {args.min_rows} "
+            print(f"  {key}: dropping {len(small)} call(s) with M < {min_rows} "
                   f"(warmup? re-dump with --no-warmup)")
             dumps[key] = [c for c in calls if c not in small]
             if not dumps[key]:
                 del dumps[key]
-    wl_dir = args.root / "workloads" / "gemm"
+    wl_dir = root / "workloads" / "gemm"
     written = skipped = 0
 
     for wl_path in sorted(wl_dir.glob("gemm_ggml_*.jsonl")):
@@ -96,8 +96,8 @@ def main() -> int:
             continue
         K = int(dm["K"])
         rows = [json.loads(l) for l in wl_path.read_text().splitlines() if l.strip()]
-        tdir = args.root / "tensors" / "gemm" / name
-        if not args.dry_run:
+        tdir = root / "tensors" / "gemm" / name
+        if not dry_run:
             tdir.mkdir(parents=True, exist_ok=True)
 
         for i, w in enumerate(rows):
@@ -114,23 +114,19 @@ def main() -> int:
                 print(f"  {name} M={M}: dump only has {total} rows, skipping")
                 continue
             rel = f"tensors/gemm/{name}/act_M{M}_call{call}_r{start}.npy"
-            if not args.dry_run:
-                np.save(args.root / rel, sl)
+            if not dry_run:
+                np.save(root / rel, sl)
             w["inputs"]["A"] = {
                 "type": "tensor",
                 "path": rel,
-                "source": f"{args.source}; {dm['type']} K={K} N={dm['N']} call {call}, rows {start}:{start+M}",
+                "source": f"{source}; {dm['type']} K={K} N={dm['N']} call {call}, rows {start}:{start+M}",
             }
             w["uuid"] = _uuid.uuid5(_uuid.NAMESPACE_URL, f"armbench/{name}/realact/M{M}/{rel}").hex
             w.setdefault("tags", {})["inputs"] = "real-activations"
             written += 1
-        if not args.dry_run:
+        if not dry_run:
             wl_path.write_text("".join(json.dumps(w) + "\n" for w in rows))
         print(f"{name}: {len(rows)} workloads -> real activations from {len(avail)} captured call(s)")
 
     print(f"\n{written} workload inputs rewritten; {skipped} definitions had no dump")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    return written
