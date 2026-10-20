@@ -50,9 +50,10 @@ class LlamaCppAdapter(FrameworkAdapter):
         return build_inventory(head, ctx.run.inventory)
 
     def generate(self, ctx: E2EContext, opts: Options) -> int:
-        """Definitions, workloads and the reference-scalar / baseline solutions for the model's shapes."""
-        from .generate import write_definitions
-        return write_definitions(ctx.run.inventory, ctx.model, opts.root, min_share=opts.min_share)
+        """Definitions, workloads and the reference-scalar / baseline solutions for the model's shapes (kgen)."""
+        from kgen.cli import main as kgen
+        return kgen(["run", "llamacpp-gemm", "--root", str(opts.root), "--inventory", str(ctx.run.inventory),
+                     "--model-tag", ctx.model, "--min-share", str(opts.min_share)])
 
     def capture(self, ctx: E2EContext, opts: Options) -> int:
         """Real activations dumped by the override build, written into the workloads."""
