@@ -7,7 +7,7 @@ Run from cpu-kernel-baseline/:
 Writes to bench-trace/definitions/<op_type>/<name>.json.
 No workload generation — add workloads separately via /gen-workload.
 
-Op types covered (not in gen_definitions.py):
+Op types covered:
   gemm             fp32 / q8_0 (llama.cpp Q8_0) / w8a8ch (ncnn per-channel)
   rms_norm         fp32
   mha              fp32
@@ -21,22 +21,20 @@ Op types covered (not in gen_definitions.py):
 from __future__ import annotations
 
 import json
+import sys
 import textwrap
 from pathlib import Path
 from typing import Any, Callable
 
 REPO     = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO))
+from kgen.io import write_json  # noqa: E402
 DEFS_DIR = REPO / "bench-trace" / "definitions"
 
 _Record = dict[str, Any]
 
 
 # ── I/O ───────────────────────────────────────────────────────────────────────
-
-def _write_json(path: Path, obj: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
-
 
 # ── Reference functions ────────────────────────────────────────────────────────
 
@@ -770,7 +768,7 @@ def main() -> None:
                 print(f"  [keep]  {name}  (tags differ, first model wins)")
                 continue
 
-        _write_json(out_path, defn)
+        write_json(out_path, defn)
         print(f"  [write] {name}")
         written += 1
 

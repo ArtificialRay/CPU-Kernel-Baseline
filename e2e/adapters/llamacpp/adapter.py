@@ -52,7 +52,7 @@ class LlamaCppAdapter(FrameworkAdapter):
     def generate(self, ctx: E2EContext, opts: Options) -> int:
         """Definitions, workloads and the reference-scalar / baseline solutions for the model's shapes."""
         from .generate import write_definitions
-        return write_definitions(ctx.run.inventory, ctx.model, opts.root, min_share=opts.min_share, force=ctx.force)
+        return write_definitions(ctx.run.inventory, ctx.model, opts.root, min_share=opts.min_share)
 
     def capture(self, ctx: E2EContext, opts: Options) -> int:
         """Real activations dumped by the override build, written into the workloads."""

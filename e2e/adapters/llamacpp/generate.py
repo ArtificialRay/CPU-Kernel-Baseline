@@ -8,7 +8,7 @@ mul_mat shape above --min-share it writes, under bench-trace/:
   solutions/llama.cpp/reference-scalar/gemm/...     (scalar port of ggml's vec_dot, the agent's start)
   solutions/llama.cpp/baseline-llamacpp-arm/gemm/...(ggml_mul_mat on the same blocks, the speedup baseline)
 The templates live in e2e/adapters/llamacpp/kquant_templates.py.
-Existing files are left alone unless --force. bench-trace is gitignored; push
+Existing files are overwritten. bench-trace is gitignored; push
 the new files to HF additively (never a full-folder sync).
 
   write_definitions("inventory.json", "llama-3.1-8b", min_share=0.001)      # or: python -m e2e prepare --steps generate
@@ -18,7 +18,6 @@ Despite the file name this works for any model the inventory script supports;
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -26,6 +25,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 from e2e.adapters.llamacpp import kquant_templates as kt  # noqa: E402
+from kgen.ids import uuid_md5_def_axes  # noqa: E402
+from kgen.io import write_json, write_jsonl  # noqa: E402
 if not hasattr(kt, "PACKED_QUANTS"):
     kt.PACKED_QUANTS = ("q4_k_m", "q5_k", "q6_k")
 
@@ -37,32 +38,9 @@ M_VALUES = [1, 2, 4, 8, 16, 32]
 LM_HEAD_M_VALUES = [1, 2, 4, 8]   # llama.cpp computes logits for the last token only (tg and pp)
 
 
-def wl_uuid(def_name: str, axes: dict) -> str:
-    return hashlib.md5(f"{def_name}:{json.dumps(axes, sort_keys=True)}".encode()).hexdigest()
-
-
-def shown(path: Path) -> Path:
-    """`path` relative to the repo when it is inside it (the default --root), else as given."""
-    try:
-        return path.relative_to(REPO)
-    except ValueError:
-        return path
-
-
-def write(path: Path, text: str, force: bool, dry: bool) -> bool:
-    if path.exists() and not force:
-        print(f"  keep  {shown(path)}")
-        return False
-    print(f"  {'would write' if dry else 'write'} {shown(path)}")
-    if not dry:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-    return True
-
-
 def write_definitions(
     inventory, model_tag: str, root: Path = BT, *, min_share: float = 0.001,
-    m_values=M_VALUES, lm_head_m_values=LM_HEAD_M_VALUES, force: bool = False, dry_run: bool = False,
+    m_values=M_VALUES, lm_head_m_values=LM_HEAD_M_VALUES,
 ) -> int:
     """Write the e2e kernel set of one model under `root` (definitions, workloads and the
     reference-scalar / baseline solutions); returns how many files were written.
@@ -71,7 +49,6 @@ def write_definitions(
     model_tag         e2e model key, e.g. qwen3.5-4b or llama-3.1-8b (sets the model: / e2e: tags)
     min_share         skip shapes below this per-token byte share
     lm_head_m_values  M values for the tied lm_head (token_embd) shape
-    force             overwrite files that already exist (otherwise they are kept)
     """
     bt = Path(root)
     inv = inventory if isinstance(inventory, dict) else json.load(open(inventory))
@@ -107,21 +84,24 @@ def write_definitions(
             tags=["status:active", f"model:{model_tag}", *kt.REQUIRED_TAGS, f"e2e:{model_tag}", f"e2e-share:{share:.4f}"],
         )
         assert definition["name"] == name, (definition["name"], name)
-        n_written += write(bt / "definitions" / "gemm" / f"{name}.json", json.dumps(definition, indent=2) + "\n", force, dry_run)
+        write_json(bt / "definitions" / "gemm" / f"{name}.json", definition)
+        n_written += 1
 
         b_layout = f"ggml_{roles[0]['ggml_type'].replace('Q', 'q', 1)}"   # Q4_K -> ggml_q4_K
         is_lm_head = any("token_embd" in r["role"] or r["role"].startswith("output") for r in roles)
         wls = [{"axes": {"M": m},
                 "inputs": {"A": {"type": "random"}, "B": {"type": "bytes", "layout": b_layout}},
-                "uuid": wl_uuid(name, {"M": m}), "tags": {"from": "gen_qwen35_definitions"}}
+                "uuid": uuid_md5_def_axes(name, {"M": m}), "tags": {"from": "gen_qwen35_definitions"}}
                for m in (lm_head_m_values if is_lm_head else m_values)]
-        n_written += write(bt / "workloads" / "gemm" / f"{name}.jsonl", "".join(json.dumps(w) + "\n" for w in wls), force, dry_run)
+        write_jsonl(bt / "workloads" / "gemm" / f"{name}.jsonl", wls)
+        n_written += 1
 
         for author, sources in (("reference-scalar", kt.reference_scalar_sources(quant, N, K, layout="ggml")),
                                 ("baseline-llamacpp-arm", kt.baseline_sources(quant, N, K, layout="ggml"))):
             sol = {"name": f"{author}_{name}", "definition": name, "dataset": "llama.cpp", "author": author,
                    "description": kt.description(quant, author, N, K, layout="ggml"),
                    "spec": kt.spec(quant, author), "sources": sources}
-            n_written += write(bt / "solutions" / "llama.cpp" / author / "gemm" / f"{name}.json", json.dumps(sol, indent=2) + "\n", force, dry_run)
-    print(f"{n_written} files {'would be ' if dry_run else ''}written")
+            write_json(bt / "solutions" / "llama.cpp" / author / "gemm" / f"{name}.json", sol)
+            n_written += 1
+    print(f"{n_written} files written")
     return n_written
