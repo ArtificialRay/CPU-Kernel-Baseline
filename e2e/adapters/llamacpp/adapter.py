@@ -25,8 +25,6 @@ class LlamaCppAdapter(FrameworkAdapter):
 
     prepare_steps = (
         Step("inventory", outputs=lambda ctx: [ctx.run.inventory]),
-        Step("generate"),
-        Step("capture", box=True),
         Step("calibrate", box=True),
     )
     evaluate_steps = (
@@ -40,7 +38,7 @@ class LlamaCppAdapter(FrameworkAdapter):
 
     def inventory(self, ctx: E2EContext, opts: Options) -> dict:
         """Per-tensor weight traffic of the model, from its GGUF header."""
-        from .inventory import build_inventory
+        from kgen.discover.llamacpp import build_inventory
         head = opts.gguf_head
         if head is None:
             head = ctx.run.gguf_head
@@ -48,18 +46,6 @@ class LlamaCppAdapter(FrameworkAdapter):
                 print(f"  fetching the GGUF header of {ctx.model} -> {head}")
                 self.fetch_header(ctx.model_config, Path(head))
         return build_inventory(head, ctx.run.inventory)
-
-    def generate(self, ctx: E2EContext, opts: Options) -> int:
-        """Definitions, workloads and the reference-scalar / baseline solutions for the model's shapes (kgen)."""
-        from kgen.cli import main as kgen
-        return kgen(["run", "llamacpp-gemm", "--root", str(opts.root), "--inventory", str(ctx.run.inventory),
-                     "--model-tag", ctx.model, "--min-share", str(opts.min_share)])
-
-    def capture(self, ctx: E2EContext, opts: Options) -> int:
-        """Real activations dumped by the override build, written into the workloads."""
-        from .capture import capture_activations
-        return capture_activations(Path(require(opts.dump, "--dump", "capture")),
-                                   require(opts.source, "--source", "capture"), opts.root)
 
     # -- evaluate: after each agent run ---------------------------------------------------
 

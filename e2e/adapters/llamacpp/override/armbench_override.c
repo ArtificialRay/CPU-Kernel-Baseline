@@ -487,7 +487,8 @@ static void kernel_failed(const struct armbench_kernel * k, int rc, const struct
 // Writes raw little-endian tensors next to a one-line .meta descriptor:
 //   <type>_K<K>_N<N>.call<i>.a.bin   bf16 activations, row-major [M, K]
 //   <type>_K<K>_N<N>.b.bin           the tensor's own ggml block rows [N, K_bytes]
-// e2e/adapters/llamacpp/capture.py turns these into bench-trace workloads.
+// Nothing in the repo reads these dumps any more: `python -m kgen capture pytorch` takes the activations
+// from a PyTorch run of the model instead.
 static void armbench_dump(struct armbench_kernel * k, const struct ggml_tensor * src0,
                           const uint16_t * A, int64_t M, int64_t N, int64_t K) {
     char path[2048], meta[2048];

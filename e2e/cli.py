@@ -3,10 +3,10 @@
   python -m e2e prepare  --model qwen3.5-4b [--gguf-head FILE] [--force]
   python -m e2e evaluate --model qwen3.5-4b --author AUTHOR --label BOX [--agent-build] [--rows-abi]
 
-prepare (once per model)       inventory -> generate -> capture -> calibrate
+prepare (once per model)       inventory -> calibrate
 evaluate (after each agent run) kernel_set -> deploy -> measure -> report
 
-Steps that need the Graviton box (capture, calibrate, measure) are printed, not run, unless
+Steps that need the Graviton box (calibrate, measure) are printed, not run, unless
 named with --steps: on the box, `python -m e2e evaluate --model M --steps measure ...` runs
 just that one. Everything else runs where the command runs.
 """
@@ -36,9 +36,6 @@ def build_parser(command: str, framework: str = DEFAULT_FRAMEWORK) -> argparse.A
     p.add_argument("--root", type=Path, default=Options().root, help="warehouse root (default: bench-trace/)")
     if command == "prepare":
         p.add_argument("--gguf-head", default=None, help="a local GGUF header (default: download the first 64 MiB)")
-        p.add_argument("--min-share", type=float, default=0.001, help="generate: skip shapes below this byte share")
-        p.add_argument("--dump", default=None, help="capture: ARMBENCH_DUMP_DIR contents")
-        p.add_argument("--source", default=None, help="capture: provenance text for the real-activation inputs")
     else:
         k = p.add_argument_group("kernel_set")
         k.add_argument("--author", default=None, help="whose bench-trace/solutions/<dataset>/<author>/ to compile")

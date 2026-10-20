@@ -33,6 +33,7 @@ from bench.data.workload import Workload
 from bench.runner import run_solution_on_workloads
 from bench.runtime.inputs import gen_inputs_for_workload, set_trace_root
 
+from .axes import resolve_axes
 from .layout import definition_dir
 from .lint import lint_definition, lint_solution, lint_workloads
 
@@ -62,7 +63,7 @@ def load_workloads(root: Path, definition: Definition) -> tuple[list, list]:
     path = root / "workloads" / definition_dir(definition) / f"{definition.name}.jsonl"
     if not path.exists():
         return [], [f"{path} does not exist"]
-    rows, problems = lint_workloads(path.read_text().splitlines(), definition, placed=True)
+    rows, problems = lint_workloads(path.read_text().splitlines(), definition, require_uuid=True, root=root)
     return [Workload.model_validate(r) for r in rows] if not problems else [], [f"{path}: {p}" for p in problems]
 
 
@@ -84,19 +85,6 @@ def static_leg(root: Path, name: str) -> tuple[Leg, Definition | None, list, lis
     return Leg("static", status, problems or summary), definition, workloads, solutions
 
 
-def resolve_axes(definition: Definition, workload: Workload, inputs: dict) -> dict:
-    """Const axes, the workload's axes, scalar inputs, then the axes the definition's `constraints` derive
-    (`H_out == H - Kh + 1` and the like), as the harness derives them."""
-    axes = {**definition.const_axes, **workload.axes}
-    for name, spec in definition.inputs.items():
-        if spec.shape is None:
-            axes[name] = int(inputs[name])
-    for constraint in definition.constraints:
-        lhs, _, rhs = constraint.partition("==")
-        axes[lhs.strip()] = int(eval(rhs.strip(), {"__builtins__": {}}, axes))     # constraints are dataset content
-    return axes
-
-
 def reference_leg(definition: Definition, workloads: list, root: Path) -> Leg:
     set_trace_root(root)
     ns: dict = {}
@@ -107,7 +95,7 @@ def reference_leg(definition: Definition, workloads: list, root: Path) -> Leg:
     for w in workloads:
         try:
             inputs = gen_inputs_for_workload(definition, w)
-            axes = resolve_axes(definition, w, inputs)
+            axes = resolve_axes(definition, w.axes, {n: inputs[n] for n, s in definition.inputs.items() if s.shape is None})
             out = run(**inputs)
             outs = out if isinstance(out, (tuple, list)) and len(expected_names) > 1 else [out]
             if len(outs) != len(expected_names):
