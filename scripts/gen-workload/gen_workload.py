@@ -21,23 +21,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import uuid as _uuid
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # ── Repo layout ───────────────────────────────────────────────────────────────
 
 REPO     = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO))
+from kgen.ids import uuid_def_axes  # noqa: E402
+from kgen.io import write_jsonl  # noqa: E402
 DEFS_DIR = REPO / "bench-trace" / "definitions"
 WLS_DIR  = REPO / "bench-trace" / "workloads"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _stable_uuid(def_name: str, axes: Dict[str, int]) -> str:
-    """Deterministic UUID from definition name + axes (reproducible across runs)."""
-    key = json.dumps({"def": def_name, "axes": axes}, sort_keys=True)
-    return _uuid.uuid5(_uuid.NAMESPACE_DNS, key).hex
 
 
 def _find_definition(name: str) -> Optional[Path]:
@@ -116,21 +115,13 @@ def _migrate_workload(wl: Dict, defn_inputs: Dict, scalar_vals: Dict[str, Any],
     return {
         "axes": axes,
         "inputs": _make_inputs(defn_inputs, scalar_vals),
-        "uuid": _stable_uuid(def_name, axes),
+        "uuid": uuid_def_axes(def_name, axes),
         "tags": wl.get("tags", {}),
     }
 
 
 def _axes_key(axes: Dict[str, int]) -> tuple:
     return tuple(sorted(axes.items()))
-
-
-def _write_jsonl(path: Path, workloads: List[Dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "\n".join(json.dumps(w) for w in workloads) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _parse_axes(axes_str: str) -> Dict[str, int]:
@@ -260,7 +251,7 @@ def process_definition(
         new_wls.append({
             "axes": axes,
             "inputs": _make_inputs(defn_inputs, scalar_vals),
-            "uuid": _stable_uuid(def_name, axes),
+            "uuid": uuid_def_axes(def_name, axes),
             "tags": {"from": "gen_workload"},
         })
 
@@ -272,7 +263,7 @@ def process_definition(
         new_wls.append({
             "axes": axes,
             "inputs": _make_inputs(defn_inputs, scalar_vals),
-            "uuid": _stable_uuid(def_name, axes),
+            "uuid": uuid_def_axes(def_name, axes),
             "tags": {"from": "gen_workload"},
         })
 
@@ -287,7 +278,7 @@ def process_definition(
     print(f"  {def_name}  ({label})")
 
     if not dry_run:
-        _write_jsonl(wl_path, final)
+        write_jsonl(wl_path, final)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

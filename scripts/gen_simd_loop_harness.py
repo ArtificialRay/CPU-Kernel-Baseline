@@ -37,12 +37,13 @@ from __future__ import annotations
 import json
 import sys
 import re
-import uuid as _uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
 REPO          = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+from kgen.ids import uuid_def_axes, uuid_simd_loop  # noqa: E402
 PROBLEMS_DIR  = REPO / "dataset" / "problems"
 BENCH_TRACE   = REPO / "bench-trace"
 LOOPS_DIR     = REPO / "loops"
@@ -1033,10 +1034,6 @@ def _sve_kernel_src(lid: str, tier: str = "sve") -> str:
 
 # ── Writers ───────────────────────────────────────────────────────────────────
 
-def _stable_uuid(loop_id: str, n: int, source: str) -> str:
-    return _uuid.uuid5(_uuid.NAMESPACE_DNS, f"{loop_id}_N{n}_{source}").hex
-
-
 def _write_definition(info: LoopInfo) -> None:
     out_dir = BENCH_TRACE / "definitions" / "simd-loop"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1134,11 +1131,11 @@ def _write_workloads(info: LoopInfo) -> None:
     wl_inputs = {f.name: {"type": "random"} for f in info.input_ptr_fields}
     lines = []
     for n in info.edge_sizes:
-        uid = _stable_uuid(info.loop_id, n, "edge")
+        uid = uuid_simd_loop(info.loop_id, n, "edge")
         lines.append(json.dumps({"axes": {"N": n}, "inputs": wl_inputs,
                                   "uuid": uid, "tags": {"source": "edge"}}))
     for n in info.perf_sizes:
-        uid = _stable_uuid(info.loop_id, n, "perf")
+        uid = uuid_simd_loop(info.loop_id, n, "perf")
         lines.append(json.dumps({"axes": {"N": n}, "inputs": wl_inputs,
                                   "uuid": uid, "tags": {"source": "perf"}}))
 
@@ -2520,8 +2517,7 @@ def _write_multi_axis(info: MultiAxisInfo) -> None:
             axvals = dict(base)
             for dax, formula in info.derived.items():
                 axvals[dax] = int(eval(formula, {"__builtins__": {}}, base))
-            key = "_".join(f"{a}{axvals[a]}" for a in info.axes)
-            uid = _uuid.uuid5(_uuid.NAMESPACE_DNS, f"{lid}_{key}_{source}").hex
+            uid = uuid_def_axes(lid, {**axvals, "source": source})
             lines.append(json.dumps({"axes": axvals, "inputs": wl_inputs,
                                      "uuid": uid, "tags": {"source": source}}))
     wl_dir = BENCH_TRACE / "workloads" / "simd-loop"
@@ -2757,7 +2753,7 @@ def _write_sentinel(loop_id: str) -> None:
     lines = []
     for source in ("edge", "perf"):
         for nval in cfg["sizes"].get(source, []):
-            uid = _stable_uuid(loop_id, nval, source)
+            uid = uuid_simd_loop(loop_id, nval, source)
             lines.append(json.dumps({"axes": {"N": nval}, "inputs": wl_inputs,
                                      "uuid": uid, "tags": {"source": source}}))
     wl_dir = BENCH_TRACE / "workloads" / "simd-loop"; wl_dir.mkdir(parents=True, exist_ok=True)

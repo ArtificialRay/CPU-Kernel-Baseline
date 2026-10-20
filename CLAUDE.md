@@ -274,7 +274,6 @@ test_scripts/                   # Batch-fleet entry point, shared across all thr
                                  #   each is invoked, how it connects to the MCP endpoint
 
 scripts/
-  gen_definitions.py            # Regenerate ncnn definitions+workloads from test files
   gen_simd_loop_harness.py      # Code-gen all simd-loop harnesses + bench-trace artifacts
   bench_loop_agent.py           # Local iterative LLM agent (Path 2)
   test_reference_scalars.py     # Correctness smoke-test for all reference-scalar solutions
@@ -345,7 +344,6 @@ python3 launch_session.py launch --isa sve --dataset ncnn
 ### Regenerate definitions/workloads
 ```bash
 python scripts/gen_simd_loop_harness.py       # simd-loop (idempotent)
-python scripts/gen_definitions.py             # ncnn definitions + workloads
 ```
 
 ### Sync local code to remote instance
