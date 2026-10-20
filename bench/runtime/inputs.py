@@ -276,6 +276,11 @@ def _load_tensor_input(name: str, rel: str, shape, np_dtype) -> np.ndarray:
         raise ValueError(
             f"tensor input '{name}' has shape {tuple(arr.shape)}, workload axes need {tuple(shape)}"
         )
+    if np_dtype in (ml_dtypes.bfloat16, np.float16) and arr.dtype.itemsize == 2 and arr.dtype.kind in "uV":
+        # .npy has no bfloat16: a half-precision tensor is stored as its raw 16-bit pattern, so it needs extra 
+        # conversion to convert the input tensor to the required input type (bf16/fp16)
+        # so that the input tensor will not misinterpret to large integer
+        arr = arr.view(np_dtype)
     if arr.dtype != np_dtype:
         arr = arr.astype(np_dtype)
     return arr
