@@ -10,13 +10,13 @@ measure tokens/s and perplexity.
 Two commands:
 
 ```
-python -m e2e prepare  --model qwen3.5-4b                    # once per model:  inventory -> generate -> capture -> calibrate
+python -m e2e prepare  --model qwen3.5-4b                    # once per model:  inventory -> calibrate
 python -m e2e evaluate --model qwen3.5-4b --author AUTHOR --label BOX --rows-abi
                                                              # after each agent run:  kernel_set -> deploy -> measure -> report
 ```
 
 A step whose artifact is already in `e2e-runs/<framework>-<model>-<isa>/` is skipped (`--force`
-redoes it). The steps that have to run on the Graviton box (`capture`, `calibrate`, `measure`) are
+redoes it). The steps that have to run on the Graviton box (`calibrate`, `measure`) are
 only printed by default; on the box, name them: `python -m e2e evaluate --model qwen3.5-4b
 --steps measure --perplexity wiki.test.raw`. `--steps a,b` works for every step, so any single step
 can be run on its own. The agent runs themselves stay with `test_scripts/bench_fleet.py`.
@@ -42,9 +42,9 @@ e2e/
   common/                                # framework-neutral functions the adapters call:
                                          #   solutions (read an author's solutions back), guards (is this the kernel
                                          #   set you meant), build (compile a .so, undefined-symbol check),
-                                         #   calibration (the SQNR gate), box (find the registered Graviton box)
+                                         #   box (find the registered Graviton box)
   adapters/llamacpp/adapter.py           # LlamaCppAdapter: one method per step, over the modules below
-  adapters/llamacpp/                     # what is ggml-specific: inventory, capture,
+  adapters/llamacpp/                     # what is ggml-specific:
                                          #   kernel_set (names, rows ABI, manifest), deploy, measure, report
                                          #   (+ report_from_log); override/ is the ggml-cpu hook, build_agent.sh builds with it
 ```
@@ -82,7 +82,7 @@ Quantized kernels are checked by SQNR (`correctness:sqnr`), and three things
 together keep a numerically lossy kernel from passing:
 
 1. **Real activations.** `{"type": "tensor", "path": ...}` workload inputs load
-   activations captured from llama.cpp (`bench-trace/tensors/`). A real hidden
+   activations captured from the model (`bench-trace/tensors/`, `kgen capture`). A real hidden
    state has a few channels one to two orders of magnitude larger than the
    rest; random inputs hide any kernel that quantizes activations per row
    instead of per block.
@@ -97,13 +97,16 @@ together keep a numerically lossy kernel from passing:
 
 ## Pipeline
 
-1. **Inventory** (`prepare`, step `inventory`) the model's matmuls from the GGUF header; only the first
+1. **Inventory** (`prepare`, step `inventory`, which is `python -m kgen discover llamacpp`) the model's matmuls from the GGUF header; only the first
    64 MiB is downloaded (`--gguf-head FILE` uses a local one).
-2. **Definitions and solutions** (`generate`, which runs `python -m kgen run llamacpp-gemm`) for every shape
-   above `--min-share`, written into `bench-trace/` (definitions, workloads, `reference-scalar` and
-   `baseline-llamacpp-arm` solutions; templates in `kgen/recipes/llamacpp/kquant_templates.py`).
-3. **Real activations** (`capture`). Run the override build with `ARMBENCH_DUMP_DIR` set (see
-   `override/README.md`), then `python -m e2e prepare --model M --steps capture --dump <dir> --source "<provenance>"`.
+2. **Definitions and solutions**, not an e2e step: `python scripts/gen_llamacpp_gemm.py --inventory <run dir>/inventory.json
+   --model-tag M` writes every shape above `--min-share` into `bench-trace/` (definitions, workloads,
+   `reference-scalar` and `baseline-llamacpp-arm` solutions; kernel text from `scripts/llamacpp_kquant_templates.py`).
+   Check them with `python -m kgen check <definition> --static-only`.
+3. **Real activations**, not an e2e step: `python -m kgen capture pytorch --loader load.py --source "<provenance>" --tag e2e:M`
+   runs the model in PyTorch (`load.py` defines `load() -> (model, batches)`) and gives the workloads of the
+   tagged definitions the inputs of their Linear layers. Do it before step 4: a calibrated floor is only valid for
+   the inputs it was measured on.
 4. **Calibrate** (`calibrate`, on the eval box) the SQNR floors of the model's `e2e:<model>` definitions.
 5. **Agent runs** with the usual driver. A whole-dataset sweep skips `e2e:` definitions, so name them:
    `test_scripts/bench_fleet.py --dataset llama.cpp --isa sve2 --definitions "<names>" --sync-solutions ...`

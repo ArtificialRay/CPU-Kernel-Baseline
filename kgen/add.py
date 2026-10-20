@@ -42,6 +42,18 @@ def require_free(target: Path, replace: bool) -> None:
         raise AddError([f"{target} already exists; pass --replace to overwrite it"])
 
 
+def axes_key(row: dict) -> str:
+    return json.dumps(row["axes"], sort_keys=True)
+
+
+def existing_uuids(path: Path) -> dict:
+    """axes -> uuid of the workloads already in `path`: a workload keeps its uuid for as long as it lives."""
+    if not path.exists():
+        return {}
+    rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    return {axes_key(r): r["uuid"] for r in rows if r.get("uuid")}
+
+
 def add_definition(file: Path, root: Path, replace: bool = False) -> Path:
     raw = load_json(file)
     definition, problems = lint_definition(raw)
@@ -61,12 +73,14 @@ def add_workload(file: Path, definition_name: str, root: Path, replace: bool = F
         lines = Path(file).read_text().splitlines()
     except OSError as e:
         raise AddError([f"{file}: cannot read ({e.strerror})"])
-    rows, problems = lint_workloads(lines, definition)
+    rows, problems = lint_workloads(lines, definition, root=root)
     if problems:
         raise AddError([f"{file}: {p}" for p in problems])
+    kept = existing_uuids(workload_path(root, definition)) if replace else {}
     target = workload_path(root, definition)
     require_free(target, replace)
-    write_jsonl(target, [{**row, "uuid": uuid_def_axes(definition.name, row["axes"])} for row in rows])
+    write_jsonl(target, [{**row, "uuid": row.get("uuid") or kept.get(axes_key(row)) or uuid_def_axes(definition.name, row["axes"])}
+                         for row in rows])
     return target
 
 

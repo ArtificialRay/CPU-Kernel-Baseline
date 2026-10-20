@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kernel inventory for the end-to-end experiment: read a GGUF *header* and
+"""Kernel inventory of a llama.cpp model: read a GGUF *header* and
 report, per (tensor role, quant type, shape), how many layers use it and what
 share of the per-token weight-byte traffic it carries (decode on a 4B model is
 memory-bound, so byte share ~= time share for the mul_mat kernels).
@@ -7,10 +7,10 @@ memory-bound, so byte share ~= time share for the mul_mat kernels).
 Only the header is needed, so a partial download works:
     curl -L -r 0-67108863 -o q4km_head.bin \
       https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
-    build_inventory("q4km_head.bin", "inventory.json")      # or: python -m e2e prepare --steps inventory
+    python -m kgen discover llamacpp q4km_head.bin --out inventory.json        # or: python -m e2e prepare --steps inventory
 
 The JSON lists the unique mul_mat shapes (type, N, K) with their per-token
-byte share; `python -m kgen run llamacpp-gemm` consumes it.
+byte share; `scripts/gen_llamacpp_gemm.py` consumes it.
 """
 from __future__ import annotations
 

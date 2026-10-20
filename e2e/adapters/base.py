@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..context import E2EContext, Options
+from kgen.errors import KgenError
 from ..errors import StepFailed
 
 
@@ -61,7 +62,7 @@ class FrameworkAdapter(ABC):
     def calibrate(self, ctx: E2EContext, opts: Options) -> None:
         """What the reference implementation scores on each workload of the model's `e2e:<model>`
         definitions, so the SQNR gate is relative to it. Runs kernels, so on the box."""
-        from ..common.calibration import calibrate_sqnr_floors
+        from kgen.calibrate import calibrate_sqnr_floors
         _, problems = calibrate_sqnr_floors(
             opts.root, author=self.reference_author, baseline_author=self.baseline_author,
             tag=f"e2e:{ctx.model}")
@@ -99,7 +100,7 @@ class FrameworkAdapter(ABC):
             print(f"[e2e] {step.name}")
             try:
                 self.run_step(step.name, ctx, opts)
-            except StepFailed as e:
+            except (StepFailed, KgenError) as e:
                 print(f"[e2e] {step.name} failed: {e}", flush=True)
                 return 1
         if to_run_on_the_box:

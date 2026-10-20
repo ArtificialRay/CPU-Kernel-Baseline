@@ -71,9 +71,6 @@ class Options:
 
     # prepare
     gguf_head: str | None = None          # a local GGUF header; downloaded when omitted
-    min_share: float = 0.001              # generate: skip shapes below this per-token byte share
-    dump: str | None = None               # capture: ARMBENCH_DUMP_DIR contents
-    source: str | None = None             # capture: provenance recorded on each real-activation input
 
     # evaluate: kernel_set
     author: str | None = None             # whose bench-trace/solutions/<dataset>/<author>/ to compile
