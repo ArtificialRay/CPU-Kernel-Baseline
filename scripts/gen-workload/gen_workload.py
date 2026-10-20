@@ -156,6 +156,9 @@ def _filter_workloads(
     Layer 1: same axes combo kept at most max_dups times.
     Layer 2: normalized Euclidean greedy farthest-point selection.
       Phase 1 — one seed per distinct batch_key value (ensures coverage across batch sizes).
+                With more distinct values than max_count the seeds are spread evenly over the
+                sorted values, smallest and largest included (taking the first max_count would
+                keep only the smallest batches and never reach Phase 2).
       Phase 2 — greedy fill to reach max_count.
     """
     from collections import defaultdict
@@ -186,8 +189,14 @@ def _filter_workloads(
     for ax in pool:
         by_batch[ax[batch_key]].append(ax)
 
+    batch_values = sorted(by_batch)
+    if len(batch_values) > max_count:
+        last = len(batch_values) - 1
+        picks = {round(i * last / max(max_count - 1, 1)) for i in range(max_count)}
+        batch_values = [batch_values[i] for i in sorted(picks)]
+
     selected: List[Dict[str, int]] = []
-    for bs in sorted(by_batch):
+    for bs in batch_values:
         grp = by_batch[bs]
         pick = grp[0] if not selected else max(grp, key=lambda e: _min_dist(e, selected))
         selected.append(pick)

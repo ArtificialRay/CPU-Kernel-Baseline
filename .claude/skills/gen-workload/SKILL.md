@@ -118,8 +118,10 @@ shapes that appear across many resolutions.
 
 **Layer 2 — greedy farthest-point diversity** (`--max-count`):
 Phase 1: seed one representative per distinct `batch-key` value (ensures every channel
-width or M range is covered). Phase 2: greedy fill remaining slots by maximising
-normalised Euclidean distance to already-selected points.
+width or M range is covered); when there are more distinct values than `--max-count`, the
+seeds are spread evenly over the sorted values, smallest and largest included, so a
+single-axis definition is not reduced to its smallest batches. Phase 2: greedy fill
+remaining slots by maximising normalised Euclidean distance to already-selected points.
 
 When doing manual `--add` calls for small targeted additions (Step 4), **omit
 `--max-count`** so all specified axes are written as-is. Use `--max-count` only when
