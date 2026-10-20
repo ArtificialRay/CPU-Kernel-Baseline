@@ -10,7 +10,7 @@ Only the header is needed, so a partial download works:
     build_inventory("q4km_head.bin", "inventory.json")      # or: python -m e2e prepare --steps inventory
 
 The JSON lists the unique mul_mat shapes (type, N, K) with their per-token
-byte share; generate.write_definitions() consumes it.
+byte share; `python -m kgen run llamacpp-gemm` consumes it.
 """
 from __future__ import annotations
 

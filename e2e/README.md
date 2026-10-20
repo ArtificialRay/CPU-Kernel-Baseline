@@ -44,7 +44,7 @@ e2e/
                                          #   set you meant), build (compile a .so, undefined-symbol check),
                                          #   calibration (the SQNR gate), box (find the registered Graviton box)
   adapters/llamacpp/adapter.py           # LlamaCppAdapter: one method per step, over the modules below
-  adapters/llamacpp/                     # what is ggml-specific: inventory, generate (+ kquant_templates), capture,
+  adapters/llamacpp/                     # what is ggml-specific: inventory, capture,
                                          #   kernel_set (names, rows ABI, manifest), deploy, measure, report
                                          #   (+ report_from_log); override/ is the ggml-cpu hook, build_agent.sh builds with it
 ```
@@ -99,9 +99,9 @@ together keep a numerically lossy kernel from passing:
 
 1. **Inventory** (`prepare`, step `inventory`) the model's matmuls from the GGUF header; only the first
    64 MiB is downloaded (`--gguf-head FILE` uses a local one).
-2. **Definitions and solutions** (`generate`) for every shape above `--min-share`, written into
-   `bench-trace/` (definitions, workloads, `reference-scalar` and `baseline-llamacpp-arm` solutions;
-   templates in `kquant_templates.py`).
+2. **Definitions and solutions** (`generate`, which runs `python -m kgen run llamacpp-gemm`) for every shape
+   above `--min-share`, written into `bench-trace/` (definitions, workloads, `reference-scalar` and
+   `baseline-llamacpp-arm` solutions; templates in `kgen/recipes/llamacpp/kquant_templates.py`).
 3. **Real activations** (`capture`). Run the override build with `ARMBENCH_DUMP_DIR` set (see
    `override/README.md`), then `python -m e2e prepare --model M --steps capture --dump <dir> --source "<provenance>"`.
 4. **Calibrate** (`calibrate`, on the eval box) the SQNR floors of the model's `e2e:<model>` definitions.
