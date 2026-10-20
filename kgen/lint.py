@@ -42,10 +42,12 @@ def lint_definition(raw: Any) -> tuple[Optional[Definition], list[str]]:
     return d, problems
 
 
-def lint_workloads(lines: list[str], definition: Definition) -> tuple[list[dict], list[str]]:
-    """Parse JSONL text lines into workload dicts (without uuid). The file must not carry uuids: kgen assigns them."""
+def lint_workloads(lines: list[str], definition: Definition, placed: bool = False) -> tuple[list[dict], list[str]]:
+    """Parse JSONL text lines into workload dicts. A file handed to `add` must not carry uuids (kgen assigns
+    them); a `placed` one, already in the warehouse, must carry a unique uuid on every line."""
     var_axes = {a for a, s in definition.axes.items() if s.type == "var"}
-    problems, rows, seen = [], [], {}
+    used_in_inputs = {a for t in definition.inputs.values() for a in (t.shape or []) if a in var_axes}
+    problems, rows, seen, uuids = [], [], {}, {}
     for n, line in enumerate(lines, 1):
         if not line.strip():
             continue
@@ -55,16 +57,25 @@ def lint_workloads(lines: list[str], definition: Definition) -> tuple[list[dict]
         except json.JSONDecodeError as e:
             problems.append(f"{where}: not valid JSON ({e})")
             continue
-        if "uuid" in raw:
+        if not isinstance(raw, dict):
+            problems.append(f"{where}: expected a JSON object, got {type(raw).__name__}")
+            continue
+        if placed and not raw.get("uuid"):
+            problems.append(f"{where}: no uuid")
+        elif placed and raw["uuid"] in uuids:
+            problems.append(f"{where}: uuid {raw['uuid']} is also on line {uuids[raw['uuid']]}")
+        elif placed:
+            uuids[raw["uuid"]] = n
+        elif "uuid" in raw:
             problems.append(f"{where}: remove 'uuid'; kgen assigns it from the definition name and the axes")
         try:
-            w = Workload.model_validate({**raw, "uuid": "x"})
+            w = Workload.model_validate({"uuid": "x", **raw})
         except ValidationError as err:
             problems += schema_problems(err, where)
             continue
-        missing, extra = var_axes - set(w.axes), set(w.axes) - var_axes
+        missing, extra = used_in_inputs - set(w.axes), set(w.axes) - var_axes
         if missing:
-            problems.append(f"{where}: axes missing the var axes {sorted(missing)} of {definition.name}")
+            problems.append(f"{where}: axes missing {sorted(missing)}, var axes that appear in the input shapes of {definition.name}")
         for axis in sorted(extra):
             why = "is const in the definition, leave it out" if axis in definition.axes else "is not an axis of the definition"
             problems.append(f"{where}: axes.{axis} {why}")
