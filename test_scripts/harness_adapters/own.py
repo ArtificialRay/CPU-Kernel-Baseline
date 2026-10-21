@@ -8,7 +8,7 @@ from typing import Optional
 
 from bench.config import BenchmarkConfig
 from bench.data.trace_set import TraceSet
-from contracts import BASELINE_AUTHORS
+from contracts import BASELINE_AUTHORS, MCP_CLIENT_DEFAULTS, check_client_tool_timeout
 from eval.evaluator import run_agentic_eval
 from eval.mcp_client import attach
 from skills.launch.launch_session import RemoteTarget
@@ -37,6 +37,7 @@ class OwnHarnessAdapter(HarnessAdapter):
     ):
         if not model:
             raise RuntimeError("--model is required for --harness own (a litellm model string).")
+        check_client_tool_timeout("own", MCP_CLIENT_DEFAULTS["tool_call_timeout_s"])
         self.model = model
         self.max_turns = max_turns
         self.dataset = dataset

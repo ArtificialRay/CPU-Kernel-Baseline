@@ -10,8 +10,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
+from contracts import CLIENT_TOOL_TIMEOUT_S, check_client_tool_timeout
+
 from .base import REPO_ROOT, HarnessAdapter, Job, run_and_tee
 
+# Claude Code's --mcp-config takes the per-server tool timeout in milliseconds.
+CLAUDE_MCP_TOOL_TIMEOUT_MS = int(CLIENT_TOOL_TIMEOUT_S * 1000)
 CLAUDE_SKILL_FILE = REPO_ROOT / "skills" / "claude-code" / "claude-code-kernel-session" / "SKILL.md"
 # mcpServers key in the --mcp-config ClaudeCodeAdapter writes, and the server
 # part of the `mcp__<name>` allow rule below — the two must stay in sync.
@@ -54,6 +58,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
             raise RuntimeError(f"SKILL_FILE not found: {CLAUDE_SKILL_FILE}")
         if subprocess.run(["which", "claude"], capture_output=True).returncode != 0:
             raise RuntimeError("claude CLI not found on PATH — install Claude Code first.")
+        check_client_tool_timeout("claude-code", CLAUDE_MCP_TOOL_TIMEOUT_MS / 1000)
         self.system_prompt = CLAUDE_SKILL_FILE.read_text()
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
@@ -61,9 +66,10 @@ class ClaudeCodeAdapter(HarnessAdapter):
             "w", prefix="claude-fleet-mcp-", suffix=".json", delete=False
         ) as mcp_config_fh:
             json.dump(
-                # timeout: extend tool timeout for claude code to 15 min
+                # timeout: must outwait the server's evaluate() budget
+                # (contracts.CLIENT_TOOL_TIMEOUT_S), in milliseconds
                 {"mcpServers": {CLAUDE_MCP_SERVER_NAME: {
-                    "type": "http", "url": endpoint, "timeout": 900000}}},
+                    "type": "http", "url": endpoint, "timeout": CLAUDE_MCP_TOOL_TIMEOUT_MS}}},
                 mcp_config_fh,
             )
             mcp_config_path = Path(mcp_config_fh.name)

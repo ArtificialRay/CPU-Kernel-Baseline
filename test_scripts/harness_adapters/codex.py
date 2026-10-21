@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
+from contracts import CLIENT_TOOL_TIMEOUT_S, check_client_tool_timeout
+
 from .base import REPO_ROOT, HarnessAdapter, Job, run_and_tee
 from .claude_code import ClaudeCodeAdapter
 
@@ -23,6 +25,8 @@ CODEX_WORKSPACE_DIR = Path.home() / ".codex-fleet" / "workspace"
 # Arbitrary id for the optional custom `model_providers.<id>` entry
 # CodexAdapter builds from OPENAI_API_BASE/OPENAI_API_KEY (see its run_job()).
 CODEX_DOTENV_PROVIDER_NAME = "dotenv-openai-compatible"
+# mcp_servers.<name>.tool_timeout_sec passed to codex (seconds).
+CODEX_MCP_TOOL_TIMEOUT_S = int(CLIENT_TOOL_TIMEOUT_S)
 
 class CodexAdapter(HarnessAdapter):
     """Local Codex CLI (`codex exec`), non-interactive, talking to the same
@@ -45,6 +49,7 @@ class CodexAdapter(HarnessAdapter):
             raise RuntimeError(f"SKILL_FILE not found: {CODEX_SKILL_FILE}")
         if subprocess.run(["which", "codex"], capture_output=True).returncode != 0:
             raise RuntimeError("codex CLI not found on PATH — install Codex CLI first.")
+        check_client_tool_timeout("codex", CODEX_MCP_TOOL_TIMEOUT_S)
         self.skill_text = CODEX_SKILL_FILE.read_text()
         # Optional: point codex at a custom OpenAI-compatible endpoint instead of
         # whatever account `codex login` already persisted to ~/.codex/auth.json.
@@ -70,8 +75,9 @@ class CodexAdapter(HarnessAdapter):
                 "--approve-for-me",
                 "-c", f'mcp_servers.{CODEX_MCP_SERVER_NAME}.url="{endpoint}"',
                 # Codex's default MCP tool_timeout_sec (300s) is shorter than
-                # evaluate_kernel()'s own budget, override to 1200s timeout
-                "-c", f"mcp_servers.{CODEX_MCP_SERVER_NAME}.tool_timeout_sec=1200",
+                # evaluate_kernel()'s own budget; wait longer than that budget
+                # (contracts.CLIENT_TOOL_TIMEOUT_S, seconds)
+                "-c", f"mcp_servers.{CODEX_MCP_SERVER_NAME}.tool_timeout_sec={CODEX_MCP_TOOL_TIMEOUT_S}",
                 "--json",
             ]
             child_env = None
