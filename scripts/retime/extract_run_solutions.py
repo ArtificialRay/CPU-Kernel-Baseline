@@ -105,6 +105,8 @@ def main() -> int:
     (Path(args.runs) / "extracted.json").write_text(json.dumps(index, indent=1))
     print(f"{written} solutions written under {args.root}/solutions/{args.dataset}/, {skipped} skipped; "
           f"index: {Path(args.runs) / 'extracted.json'}")
+    print(f"note: {args.root}/solutions/{args.dataset}/{args.author_prefix}* are agent kernels; "
+          "remove them before uploading this root to the dataset")
     return 0
 
 

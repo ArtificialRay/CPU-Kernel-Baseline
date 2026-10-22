@@ -9,7 +9,7 @@ collects the tier's baseline for the selected definitions, then runs every
 selected solution on all of its definition's workloads and records
 geomean(time_speedup) -- the same number evaluate() reports -- plus each
 workload's min_ns. Results are appended to --out (JSON lines) as they come,
-and a rerun skips what --out already has.
+and a rerun of the same --pass-id skips what --out already has.
 
     python3 scripts/retime/retime_solutions.py --root bench-trace --dataset simd-loop --isa sve \\
         --index runs-sve/extracted.json --extra-authors reference autovec \\
@@ -64,7 +64,7 @@ def main() -> int:
     if out.exists():
         for line in out.read_text().splitlines():
             r = json.loads(line)
-            done.add((r["author"], r["definition"]))
+            done.add((r["pass_id"], r["author"], r["definition"]))
 
     root = isolated_root(Path(args.root))
     ts = TraceSet.from_path(root)
@@ -82,7 +82,7 @@ def main() -> int:
 
         with out.open("a") as f:
             for i, (author, defn, cell, reported) in enumerate(jobs, 1):
-                if (author, defn) in done:
+                if (args.pass_id, author, defn) in done:
                     continue
                 sol = ts.get_baseline_solution(defn, author)
                 if sol is None:
