@@ -98,6 +98,28 @@ DISALLOWED_SOURCE_PATTERNS_BY_DATASET: dict[str, list[str]] = {
 AGENT_LOOP_DEFAULTS: dict = dict(_load()["tool_call_loop"])
 MCP_CLIENT_DEFAULTS: dict = dict(_load()["tool_call_loop"]["mcp_client"])
 
+# The MCP server's evaluate() budget, and the shortest wait any harness's MCP
+# client may use for a tool call (see mcp_tool_timeouts in kernel_contracts.yaml).
+EVALUATE_TIMEOUT_S: float = float(_load()["mcp_tool_timeouts"]["evaluate_s"])
+CLIENT_TOOL_TIMEOUT_S: float = EVALUATE_TIMEOUT_S + float(_load()["mcp_tool_timeouts"]["client_margin_s"])
+if not CLIENT_TOOL_TIMEOUT_S > EVALUATE_TIMEOUT_S:
+    raise ValueError("mcp_tool_timeouts.client_margin_s in config/kernel_contracts.yaml must be positive")
+
+
+def check_client_tool_timeout(harness: str, timeout_s: float) -> None:
+    """Raise unless `harness`'s MCP client waits at least CLIENT_TOOL_TIMEOUT_S
+    for a tool call. A shorter wait lets the client give up on an evaluate()
+    the server is still running, and the agent's next evaluate() is then timed
+    on a busy core. `timeout_s` is in seconds, whatever unit the harness's own
+    config uses."""
+    if not timeout_s >= CLIENT_TOOL_TIMEOUT_S:
+        raise RuntimeError(
+            f"{harness}: MCP tool-call timeout {timeout_s:g}s is shorter than the server's evaluate() "
+            f"budget {EVALUATE_TIMEOUT_S:g}s plus margin ({CLIENT_TOOL_TIMEOUT_S:g}s); see "
+            f"mcp_tool_timeouts in config/kernel_contracts.yaml."
+        )
+
+
 __all__ = [
     "IsaSpec",
     "AGENT_KERNEL_FILENAME",
@@ -117,4 +139,7 @@ __all__ = [
     "DISALLOWED_SOURCE_PATTERNS_BY_DATASET",
     "AGENT_LOOP_DEFAULTS",
     "MCP_CLIENT_DEFAULTS",
+    "EVALUATE_TIMEOUT_S",
+    "CLIENT_TOOL_TIMEOUT_S",
+    "check_client_tool_timeout",
 ]

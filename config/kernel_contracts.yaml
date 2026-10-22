@@ -232,6 +232,18 @@ disallowed_source_patterns:
       - '\bggml_[A-Za-z0-9_]*\s*\('
       - '\b(de)?quantize_row_(q[0-9]_[0-9K]|iq[0-9]_[a-z]+|tq[0-9]_0|mxfp4|nvfp4)(_ref|_generic)?\s*\('
 
+# How long the MCP server lets one evaluate() run before it kills the isolated
+# subprocess (bench/runtime/isolation.py), and how much longer every harness's
+# MCP client must wait for a tool call than that. A client that gives up first
+# leaves the server's evaluate running while the agent starts its next one, so
+# two measurements share the pinned core and the later speedup comes out about
+# 2x low. test_scripts/harness_adapters/ write evaluate_s + client_margin_s into
+# each harness's MCP config and refuse to start a run with a shorter wait
+# (contracts.check_client_tool_timeout).
+mcp_tool_timeouts:
+  evaluate_s: 1200
+  client_margin_s: 300
+
 # eval/evaluator.py::run_agentic_eval's litellm turn loop — consumed via
 # contracts.AGENT_LOOP_DEFAULTS.
 tool_call_loop:
@@ -265,7 +277,8 @@ tool_call_loop:
   # Generous timeouts: evaluate()/compile() run a full build+timed-repeat pass
   # and can legitimately take minutes; mcp_app/server.py pings the MCP session
   # every 120s while a call is in flight specifically so a slow call doesn't
-  # look dead (server.py's TOOL_CALL_PING_INTERVAL_S).
+  # look dead (server.py's TOOL_CALL_PING_INTERVAL_S). tool_call_timeout_s
+  # must be at least mcp_tool_timeouts.evaluate_s + client_margin_s.
   mcp_client:
     connect_timeout_s: 60
     tool_call_timeout_s: 1500

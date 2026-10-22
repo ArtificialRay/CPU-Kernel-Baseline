@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
+from contracts import CLIENT_TOOL_TIMEOUT_S, check_client_tool_timeout
+
 from .base import REPO_ROOT, HarnessAdapter, Job, run_and_tee
 
 # Overridable so a run can supply its own base config. `--model` alone is not
@@ -103,6 +105,11 @@ class NanobotAdapter(HarnessAdapter):
         else:
             self.model = cfg["agents"]["defaults"]["model"]
         cfg["tools"]["mcpServers"][server_name]["url"] = f"http://127.0.0.1:{local_port}/mcp"
+        # Set here rather than trusted from the base config, which may be an
+        # older one with a shorter toolTimeout (seconds).
+        for server in cfg["tools"]["mcpServers"].values():
+            server["toolTimeout"] = int(CLIENT_TOOL_TIMEOUT_S)
+        check_client_tool_timeout("nanobot", cfg["tools"]["mcpServers"][server_name]["toolTimeout"])
         fh = tempfile.NamedTemporaryFile(
             "w", prefix="nanobot-fleet-config-", suffix=".json", delete=False
         )
