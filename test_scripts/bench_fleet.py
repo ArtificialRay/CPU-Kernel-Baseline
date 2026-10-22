@@ -435,6 +435,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             try:
                 instance.target.rsync_from(
                     f"{args.remote_root}/bench-trace/solutions/", REPO_ROOT / "bench-trace" / "solutions",
+                    excludes=launch_session.SOLUTION_INTERMEDIATE_GLOBS,
                 )
             except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
                 print(f"  WARNING: sync-solutions failed: {e}", file=sys.stderr)
@@ -718,7 +719,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--sync-solutions", action="store_true",
                    help="After all jobs finish, also pull bench-trace/solutions/ back from the "
                         "remote instance (not bench-trace/traces/ — that data's already in "
-                        "agent-runs-<author>/). Off by default; every harness writes solutions "
+                        "agent-runs-<author>/ — and not the _current/_best intermediates). Off by default; every harness writes solutions "
                         "to the remote bench-trace regardless of this flag.")
     p.add_argument("--until-complete", action="store_true",
                    help="Keep resuming — across every --dataset, interleaved round-robin, "

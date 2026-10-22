@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Render a measure_e2e.py results JSON as the table that goes in the paper.
+"""Render a measure.py results JSON as the table that goes in the paper.
 
 Speed and perplexity come from the same binaries in one run, so they belong in one table:
 a speedup is only meaningful next to what it cost in model quality.
 
-    python scripts/e2e/results_table.py e2e_results2.json --baseline stock
+    render_report("e2e_results.json", baseline="stock")      # or: python -m e2e evaluate --steps report
 """
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import statistics
@@ -22,43 +21,44 @@ def medians(samples):
     return {k: statistics.median(v) for k, v in out.items()}, {k: len(v) for k, v in out.items()}
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("results", type=Path)
-    ap.add_argument("--baseline", default="stock")
-    args = ap.parse_args()
-    d = json.loads(args.results.read_text())
+def render_report(results, baseline: str = "stock") -> str:
+    """The table of a measure() results file (a path, or the dict measure() returned):
+    throughput, speedup vs `baseline`, and perplexity, in one place because a speedup only
+    means something next to what it cost in model quality."""
+    lines: list[str] = []
+    say = lines.append
+    d = results if isinstance(results, dict) else json.loads(Path(results).read_text())
     med, n = medians(d.get("samples", []))
     builds = list(dict.fromkeys(s["build"] for s in d.get("samples", [])))
     threads = sorted({s["threads"] for s in d.get("samples", [])})
     ppl = d.get("perplexity", {}) or {}
 
-    print(f"host: {d.get('host','?')}")
-    print(f"model: {Path(d.get('model','?')).name}   pp={d.get('pp')} tg={d.get('tg')} reps={d.get('reps')}\n")
+    say(f"host: {d.get('host','?')}")
+    say(f"model: {Path(d.get('model','?')).name}   pp={d.get('pp')} tg={d.get('tg')} reps={d.get('reps')}\n")
 
-    print("absolute throughput (tok/s, median of reps)")
+    say("absolute throughput (tok/s, median of reps)")
     hdr = "build".ljust(18) + "".join(f"  t={t:<3} pp      tg" for t in threads)
-    print(hdr); print("-" * len(hdr))
+    say(hdr); say("-" * len(hdr))
     for b in builds:
         row = b.ljust(18)
         for t in threads:
             pp = med.get((b, t, "pp")); tg = med.get((b, t, "tg"))
             row += f"  {pp:7.1f} {tg:7.2f}" if pp and tg else "        -       -"
-        print(row)
+        say(row)
 
-    if args.baseline in builds:
-        print(f"\nspeedup vs {args.baseline}")
-        print(hdr); print("-" * len(hdr))
+    if baseline in builds:
+        say(f"\nspeedup vs {baseline}")
+        say(hdr); say("-" * len(hdr))
         for b in builds:
-            if b == args.baseline:
+            if b == baseline:
                 continue
             row = b.ljust(18)
             for t in threads:
-                num_pp, den_pp = med.get((b, t, "pp")), med.get((args.baseline, t, "pp"))
-                num_tg, den_tg = med.get((b, t, "tg")), med.get((args.baseline, t, "tg"))
+                num_pp, den_pp = med.get((b, t, "pp")), med.get((baseline, t, "pp"))
+                num_tg, den_tg = med.get((b, t, "tg")), med.get((baseline, t, "tg"))
                 row += (f"  {num_pp/den_pp:6.2f}x {num_tg/den_tg:6.2f}x"
                         if num_pp and den_pp and num_tg and den_tg else "        -       -")
-            print(row)
+            say(row)
 
     def ppl_of(name):
         """measure_e2e stores llama-perplexity's raw tail, so pull the number out of it."""
@@ -76,20 +76,16 @@ def main() -> int:
             return None
 
     if ppl:
-        print("\nperplexity (wikitext-2)")
-        base_v = ppl_of(args.baseline)
+        say("\nperplexity (wikitext-2)")
+        base_v = ppl_of(baseline)
         for b in builds:
             v = ppl_of(b)
             if v is None:
                 continue
-            delta = f"  ({(v / base_v - 1) * 100:+.1f}% vs {args.baseline})" if base_v else ""
-            print(f"  {b.ljust(18)} {v:8.3f}{delta}")
+            delta = f"  ({(v / base_v - 1) * 100:+.1f}% vs {baseline})" if base_v else ""
+            say(f"  {b.ljust(18)} {v:8.3f}{delta}")
 
     short = [k for k, c in n.items() if c < (d.get("reps") or 0)]
     if short:
-        print(f"\nwarning: {len(short)} (build, threads, kind) cells have fewer than {d.get('reps')} samples")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        say(f"\nwarning: {len(short)} (build, threads, kind) cells have fewer than {d.get('reps')} samples")
+    return "\n".join(lines)

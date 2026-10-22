@@ -83,7 +83,7 @@ class BenchmarkConfig:
     when the workload carries no `baseline_sqnr_db` tag -- see sqnr_margin_db."""
     sqnr_margin_db: float = 1.0
     """How far below the *baseline's own* SQNR a candidate may fall, when the workload
-    carries a `baseline_sqnr_db` tag (written by scripts/e2e/calibrate_sqnr_floor.py).
+    carries a `baseline_sqnr_db` tag (written by e2e/common/calibration.py).
     A fixed absolute floor is the wrong gate for a quantized kernel: ggml's own q4_K
     arithmetic sits near 44 dB on real activations, so a 20 dB floor accepts a kernel
     that throws away 24 dB of signal the reference keeps. The 2026-09-21 Fable kernels
