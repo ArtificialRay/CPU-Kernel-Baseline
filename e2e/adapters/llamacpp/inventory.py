@@ -7,7 +7,7 @@ memory-bound, so byte share ~= time share for the mul_mat kernels).
 Only the header is needed, so a partial download works:
     curl -L -r 0-67108863 -o q4km_head.bin \
       https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
-    python -m kgen discover llamacpp q4km_head.bin --out inventory.json        # or: python -m e2e prepare --steps inventory
+    python -m e2e prepare --model qwen3.5-4b --gguf-head q4km_head.bin --steps inventory
 
 The JSON lists the unique mul_mat shapes (type, N, K) with their per-token
 byte share; `scripts/gen_llamacpp_gemm.py` consumes it.
