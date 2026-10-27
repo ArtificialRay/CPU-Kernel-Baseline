@@ -38,6 +38,8 @@ from .layout import workload_path
 
 REPO = Path(__file__).resolve().parents[1]
 SQNR_TAG = "correctness:sqnr"
+CALIBRATION_WATCHDOG_S = 600.0
+WORKLOADS_PER_CALL = 8
 
 
 def calibrate_sqnr_floors(root: Path = REPO / "bench-trace", *, author: str, baseline_author: str,
@@ -62,7 +64,9 @@ def calibrate_sqnr_floors(root: Path = REPO / "bench-trace", *, author: str, bas
     if not names:
         raise KgenError("nothing selected (pass definitions or tag, or tag a definition correctness:sqnr)")
 
-    cfg = EvalConfig(baseline_author=baseline_author)
+    # Only the SQNR is wanted, not a measurement: one timed call after the correctness call, and a
+    # watchdog long enough for the scalar reference at prefill-sized M (slow by design).
+    cfg = EvalConfig(baseline_author=baseline_author, warmup=0, repeat=1, watchdog_s=CALIBRATION_WATCHDOG_S)
     updated = failed = 0
     for name in sorted(names):
         d = ts.definitions.get(name)
@@ -75,7 +79,9 @@ def calibrate_sqnr_floors(root: Path = REPO / "bench-trace", *, author: str, bas
         if not wls:
             print(f"{name}: no workloads"); failed += 1; continue
 
-        traces = run_solution_on_workloads(d, sol, wls, cfg=cfg, trace_set=ts)
+        traces = []
+        for i in range(0, len(wls), WORKLOADS_PER_CALL):     # each call has its own isolation timeout
+            traces += run_solution_on_workloads(d, sol, wls[i:i + WORKLOADS_PER_CALL], cfg=cfg, trace_set=ts)
         by_uuid = {}
         for t in traces:
             ev = t.evaluation

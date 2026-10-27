@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the packed-ggml gemm kernel set of one model into bench-trace.
 
-Input is the inventory JSON of a GGUF (python -m kgen discover). For every (quant, N, K) matmul shape above
+Input is the inventory JSON of a GGUF (python -m e2e prepare --steps inventory, or any file in that format). For every (quant, N, K) matmul shape above
 --min-share it writes, under --root:
   definitions/gemm/gemm_<tag>_n<N>_k<K>.json         (packed ggml block ABI)
   workloads/gemm/gemm_<tag>_n<N>_k<K>.jsonl          (M = --m-values, B = bytes of the ggml type)

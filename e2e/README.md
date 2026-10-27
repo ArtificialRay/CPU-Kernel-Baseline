@@ -97,14 +97,14 @@ together keep a numerically lossy kernel from passing:
 
 ## Pipeline
 
-1. **Inventory** (`prepare`, step `inventory`, which is `python -m kgen discover llamacpp`) the model's matmuls from the GGUF header; only the first
+1. **Inventory** (`prepare`, step `inventory`, which reads the GGUF header with `e2e/adapters/llamacpp/inventory.py`) the model's matmuls from the GGUF header; only the first
    64 MiB is downloaded (`--gguf-head FILE` uses a local one).
 2. **Definitions and solutions**, not an e2e step: `python scripts/gen_llamacpp_gemm.py --inventory <run dir>/inventory.json
    --model-tag M` writes every shape above `--min-share` into `bench-trace/` (definitions, workloads,
    `reference-scalar` and `baseline-llamacpp-arm` solutions; kernel text from `scripts/llamacpp_kquant_templates.py`).
    Check them with `python -m kgen check <definition> --static-only`.
 3. **Real activations**, not an e2e step: `python -m kgen capture pytorch --loader load.py --source "<provenance>" --tag e2e:M`
-   runs the model in PyTorch (`load.py` defines `load() -> (model, batches)`) and gives the workloads of the
+   runs the model in PyTorch (`load.py` defines `load() -> (model, batches)` and `adapters()`, which says how a model's layers become a definition's inputs) and gives the workloads of the
    tagged definitions the inputs of their Linear layers. Do it before step 4: a calibrated floor is only valid for
    the inputs it was measured on.
 4. **Calibrate** (`calibrate`, on the eval box) the SQNR floors of the model's `e2e:<model>` definitions.

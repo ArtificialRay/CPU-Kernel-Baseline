@@ -38,7 +38,7 @@ class LlamaCppAdapter(FrameworkAdapter):
 
     def inventory(self, ctx: E2EContext, opts: Options) -> dict:
         """Per-tensor weight traffic of the model, from its GGUF header."""
-        from kgen.discover.llamacpp import build_inventory
+        from .inventory import build_inventory
         head = opts.gguf_head
         if head is None:
             head = ctx.run.gguf_head
