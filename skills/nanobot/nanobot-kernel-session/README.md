@@ -44,15 +44,19 @@ SSH-tunneled `http://127.0.0.1:<port>/mcp` URL — the tunnel is managed by
       "cpu-kernel-baseline": {
         "type": "streamableHttp",
         "url": "http://127.0.0.1:<port>/mcp",
-        "toolTimeout": 600
+        "toolTimeout": 1500
       }
     }
   }
 }
 ```
 
-- `toolTimeout`: 300–600s, not the 30s default — first `compile()` per
-  definition may trigger a slow baseline collection.
+- `toolTimeout` (seconds): longer than the server's `evaluate()` budget plus
+  a margin, i.e. at least `mcp_tool_timeouts.evaluate_s + client_margin_s` in
+  `config/kernel_contracts.yaml` (1500s), not the 30s default. A client that
+  gives up first leaves the evaluate running on the server, and the next one
+  is timed on a busy core. `bench_fleet.py` sets this value itself and
+  refuses to run with a shorter one.
 - **Don't set `enabledTools`.** It defaults to `["*"]` (tools + resources +
   prompts); any explicit subset disables resources entirely. This skill
   needs `list_resources()`/`read_resource()` (reading reference kernels and

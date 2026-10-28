@@ -26,10 +26,13 @@ import resource
 import signal
 from typing import Any, Callable, Optional, Tuple
 
-DEFAULT_ISOLATION_TIMEOUT_S = 1200.0
-"""Comfortably under the MCP client's 1500s toolTimeout
-(skills/nanobot/nanobot-kernel-session/config.json) so an agent gets a clean
-structured result before the client's own wait expires."""
+from contracts import EVALUATE_TIMEOUT_S
+
+DEFAULT_ISOLATION_TIMEOUT_S = EVALUATE_TIMEOUT_S
+"""mcp_tool_timeouts.evaluate_s in config/kernel_contracts.yaml. Every harness's
+MCP client waits longer than this (contracts.CLIENT_TOOL_TIMEOUT_S, enforced in
+test_scripts/harness_adapters/), so an agent gets a clean structured result
+before the client's own wait expires."""
 
 _CHILD_STACK_LIMIT_BYTES = 128 * 1024 * 1024
 """Best-effort RLIMIT_STACK bump for the child's main thread before running
