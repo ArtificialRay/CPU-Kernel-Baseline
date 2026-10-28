@@ -5,9 +5,7 @@ description: Add or refresh the workloads of a definition with kgen (pick shapes
 
 ## gen_workload
 
-Give a definition its workloads (concrete var-axis values plus how each input is produced) with
-`python -m kgen`. kgen holds only what is the same for every framework; anything specific to one
-model, framework or operator class (which prompts to feed, which layer is "the operator") is a
+Give a definition its workloads (concrete var-axis values plus how each input is produced) with `python -m kgen`. kgen holds only what is the same for every framework; anything specific to one model, framework or operator class (which prompts to feed, which layer is "the operator") is a
 small file **you write at run time** and pass in. There are no generator scripts to run.
 
 | Command | What it does |
@@ -102,31 +100,42 @@ definition name, not a shared magic constant), `tensor` (a `.npy` under the ware
 capture), `bytes` (with a `layout`, generated at run time). Then `kgen add workload FILE
 --definition D`.
 
-### 4. Real activations (quantized operators)
+### 4. SQNR definitions: capture, then calibrate
 
-Random activations hide numerical shortcuts that real post-norm hidden states expose, so a
-quantized definition's A input should come from the model:
+Applies to every definition judged by the SQNR evaluator (tagged `correctness:sqnr`) and to no other
+definition. Skip this step for the rest.
+
+- **Order is fixed: capture, then calibrate.** Calibration floors are valid only for the exact inputs
+  they were measured on.
+- **Capture** needs a model to run. Random activations hide numerical shortcuts that real post-norm
+  hidden states expose, so give the A input real activations when the model is available.
+- **No model** (library kernels): skip capture, calibrate on the random inputs.
+- **Do not capture half a definition**: if few rows can be captured, keep the whole definition random
+  (mixed real/random inputs make the floors differ by about 10 dB).
+- Any later change to the inputs (re-capture, `--replace`, a regenerated pool) means calibrating again.
+
+#### Capture
 
 ```bash
 python -m kgen capture pytorch --loader load.py --source "<model / data / chunk>" --definitions D1 D2
 ```
 
-The same loader and adapters as collect. Each workload with a fitting sample becomes a `tensor`
-input (uuid unchanged, tagged `inputs: real-activations`); the others stay as they were and are
-counted in the output. Pass `--definitions` or a narrow `--tag`: a broad tag also selects
-definitions you did not mean. Rows with large M may not be capturable (an MoE expert sees about
-T/8 rows per call); they stay random, and `kgen show` tells which workloads are real.
+- Same loader and adapters as collect.
+- Each workload with a fitting sample becomes a `tensor` input (uuid unchanged, tagged
+  `inputs: real-activations`); the others stay as they were and are counted in the output.
+- Pass `--definitions` or a narrow `--tag`: a broad tag also selects definitions you did not mean.
+- Rows with large M may not be capturable (an MoE expert sees about T/8 rows per call); they stay
+  random. `kgen show` tells which workloads are real.
 
-### 5. Calibrate (definitions tagged `correctness:sqnr`, aarch64)
+#### Calibrate (aarch64)
 
 ```bash
 python -m kgen calibrate --author reference-scalar --baseline-author <baseline author> --definitions D1 D2
 ```
 
-It records `baseline_sqnr_db` on each workload: what the baseline scores on exactly those inputs.
-Any change to a workload's inputs (capture, `--replace`, a regenerated pool) makes the recorded
-floors stale; recalibrate before trusting `check`. Authors per dataset are in
-`config/kernel_contracts.yaml`.
+- Records `baseline_sqnr_db` on each workload: what the baseline scores on exactly those inputs.
+- Recalibrate before trusting `check` whenever the floors may be stale.
+- Authors per dataset are in `config/kernel_contracts.yaml`.
 
 ### 6. Verify
 
