@@ -122,15 +122,12 @@ eval_definition_overrides:
   gemm_qs4c32_n256_k512:
     min_sqnr_db: 30.0
   # FP32 GEMV reduction over n (up to 521K). FP32 accumulation deviates from FP64 ref by ~1.4e-3 rel, 
-  # and there are 2/10 workloads fail default 1e-3 tolerance on M4 SME2/scalar due to float precision limits (matching gemm tolerance)
   loop_216:
     abs_tol: 2.0e-3
     rel_tol: 1.0e-2
-    required_matched_ratio: 0.98
   loop_220:
     abs_tol: 2.0e-3
     rel_tol: 1.0e-2
-    required_matched_ratio: 0.98
 
 # isa -> compile flags + the EC2 instance type that satisfies it.
 # "portable"/"neon" both compile to plain armv8-a; portable's "no hand-written
