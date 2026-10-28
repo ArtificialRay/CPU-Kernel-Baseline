@@ -29,8 +29,7 @@ small loader file, written when it is needed:
 
     python -m kgen capture pytorch --loader load.py --source "Qwen3-4B / wikitext-2 chunk 0" --tag e2e:qwen3.5-4b
 
-kgen knows no layer type: Linear, Conv2d, a norm, an MoE block, an attention module are all adapters the loader
-defines (the same ones feed kgen.collect). A layer matches a definition when the definition's const axes agree
+kgen knows no layer type. A layer matches a definition when the definition's const axes agree
 with the adapter's `params` (two of them, or all when the definition has fewer) and the definition's input has
 exactly the adapter's `axes`. The input is put into the axis order and dtype the definition declares, saved by
 kgen.tensors, and the workload's input becomes a `tensor` input (the workload keeps its uuid). Workloads with no
