@@ -60,7 +60,7 @@ class RefBaseline:
     case the absolute EvalConfig.min_sqnr_db applies."""
     sqnr_floor_author: Optional[str] = None
     """Which solution author the floor was measured from (workload tag
-    `baseline_sqnr_author`, written by scripts/e2e/calibrate_sqnr_floor.py)."""
+    `baseline_sqnr_author`, written by kgen/calibrate.py)."""
 
 
 @dataclass

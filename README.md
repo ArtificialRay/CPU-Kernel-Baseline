@@ -71,7 +71,7 @@ there wins over the file it overrides.
 |---|---|
 | `config/kernel_contracts.yaml` | Kernel evaluation parameters: op-type correctness/timing overrides, disallowed source patterns, ISA→march mapping, baseline authors |
 | `config/dataset_builds.json` | Step-by-step clone/build of each dataset's native lib (ncnn, ggml) on a remote instance, plus the pinned llama.cpp tools tree for the end-to-end runs |
-| `config/e2e_models.json` | Models for the end-to-end tokens/s runs (`scripts/e2e/`) |
+| `config/e2e_models.json` | Models for the end-to-end tokens/s runs (`e2e/`) |
 | `config/rsync_allowlist.json` | Repo paths synced to instances before a session (override once with `RSYNC_ALLOWLIST` in `.env`) |
 
 ### 3. Written by the tools (do not edit by hand)
@@ -112,7 +112,7 @@ Only needed in specific cases, set in `.env` or the shell.
 | `NCNN_ROOT`, `LLAMA_CPP_ROOT` | Point the local `bench/` harness at an existing ncnn / llama.cpp checkout |
 | `ARMBENCH_NOTEPAD=1` | Give the `own` harness's agent a persistent scratchpad tool |
 | `ARMBENCH_CC_JOB_ROOT` | Parent of the per-job working directories `--harness claude-code` creates (default: the system temp dir); must be outside this repo |
-| `OPENROUTER_API_KEY` | Used by `scripts/bench_loop_agent.py` |
+| `OPENROUTER_API_KEY` | Used for `openrouter/...` models |
 | `WANDB_INSTANCE_TYPE` | Label recorded on runs logged with `--wandb` |
 
 ### Timing protocol
@@ -189,7 +189,7 @@ space-separated list, or a JSON array (quote it, so the shell passes it through
 unchanged). Without `--definitions`, the entrypoint runs every definition in
 that dataset except the end-to-end ones (tagged `e2e:<model>`), which run only
 when named. Measuring those kernels inside llama.cpp (tokens/s and perplexity)
-is described in [scripts/e2e/README.md](scripts/e2e/README.md).
+is described in [e2e/README.md](e2e/README.md).
 
 ```bash
 python3 test_scripts/bench_fleet.py --harness nanobot \

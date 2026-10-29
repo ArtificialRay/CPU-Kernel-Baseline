@@ -5,10 +5,13 @@ No AWS instance type has SME, and the sme2 tier targets Apple M4. This runs the
 solutions on an emulated SME2 CPU instead: inside Linux aarch64 with clang and
 QEMU user-mode (>= 10.1 for the SME2 ZA instructions), started as
 
-    qemu-aarch64 -cpu max,sme-default-vector-length=64 \\
+    qemu-aarch64 -cpu max,sme-default-vector-length=64,sme_fa64=off \\
         $(which python3) analysis/sme_qemu_check.py [--max-elems N] [loop_216 ...]
 
-where 64 bytes is M4's streaming vector length. Each solution is compiled the
+where 64 bytes is M4's streaming vector length, and sme_fa64=off makes NEON and
+other non-streaming instructions trap in streaming mode, as they do on M4. The
+emulated CPU still has non-streaming SVE, which M4 does not, so a solution that
+leaves streaming mode for SVE code passes here and would still fail on M4. Each solution is compiled the
 way the harness compiles it and checked with the harness's own evaluator on the
 definition's workloads small enough to emulate. Evaluation runs in-process: the
 harness's isolation subprocess would be a new exec and run outside the emulator.

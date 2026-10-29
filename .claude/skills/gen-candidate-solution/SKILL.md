@@ -1,83 +1,44 @@
 ---
 name: gen-candidate-solution
-description: Add a new candidate solution with its harness baked into sources; use when adding a new op type or regenerating reference-scalar solutions
+description: Write a reference-scalar candidate solution (harness baked into its sources) and add it with kgen; use when adding a new op type or regenerating reference-scalar solutions
 ---
 
 ## gen_candidate_solution
 
-Generate `reference-scalar` candidate solution JSONs for a given op type.
-Each solution embeds all three source files directly; `CandidateBuilder` compiles
-them without any separate harness directory.
+A `reference-scalar` solution is the scalar, obviously-correct implementation of a definition:
+the ground truth the evaluator and `kgen check` compare other kernels against, and the starting
+file an LLM kernel replaces. Each solution JSON embeds its three sources; `CandidateBuilder`
+compiles them with no separate harness directory.
 
-Script: `scripts/gen_candidate_solution.py`
+There is no generator script and no template directory. You write the solution JSON (usually by
+copying the closest existing one and changing what the definition changes), then:
 
-No config file drives this — everything is derived straight from the Definition JSON
-(mirrors `scripts/gen_baseline_solution.py`'s design). There is no
-`op_config.json` anymore; don't recreate one.
+| Command | Purpose |
+|---|---|
+| `kgen show <def>` | const/var axes, input dtypes, workloads, and which solutions exist |
+| `kgen add solution FILE [--replace]` | lint FILE and write `bench-trace/solutions/<dataset>/<author>/<op_type>/<def>.json` |
+| `kgen check <def>` | static lint always; on aarch64 also builds and runs reference-scalar against the reference |
 
 ---
 
 ## What to extract from the user's message
 
-Skills have no formal parameters — extract context from the user's natural language request:
-
-- **Op type** — which operator to generate solutions for (e.g. `conv2d`, `conv2d_depthwise`, `gemm`,
-  `pooling`, `lstm`). If not mentioned, ask before proceeding.
-- **Scope** — a specific definition name to target, or all definitions in the op type (default).
-- **Variant** — plain float32, or a quantized variant (e.g. `w8a8ch`). Check the definition's
-  `inputs[*].dtype` — see Step 0 below.
-- **Mode** — generating from scratch (new op type / new variant) or regenerating existing solutions.
-
-Valid invocations look like:
-```
-Generate reference-scalar solutions for conv2d
-Regenerate all conv2d_depthwise candidate solutions
-Add a candidate solution for conv2d_kh3_kw3_sh1_sw1_dh1_dw1_c64_c64
-Add w8a8ch candidate solutions for conv2d
-```
-
----
-
-## Step 0: Check the definition's tag — which backend does it belong to?
-
-`bench-trace/definitions/<op_type>/*.json` can mix definitions meant for **different backends**,
-distinguished by a `baseline-solution:<backend>` tag, e.g.:
-```json
-"tags": ["status:active", "model:olmoe-1b-7b", "baseline-solution:llama.cpp"]
-```
-vs.
-```json
-"tags": ["status:active", "model:mobilenetv3-large", "baseline-solution:ncnn"]
-```
-`gen_candidate_solution.py` only ever writes to `bench-trace/solutions/ncnn/reference-scalar/` — so
-it defaults to processing **only `baseline-solution:ncnn`-tagged** definitions (`--tag`, default
-`baseline-solution:ncnn`) when generating a whole op type. A `baseline-solution:llama.cpp`-tagged
-definition under the same op_type directory must NOT get an ncnn-routed reference-scalar candidate
-here — that belongs to a different, not-yet-built candidate track. `--tag` filtering is skipped when
-`--definition` is given explicitly (an explicit ask always goes through), so double-check the tag
-yourself before generating a single definition by name.
-
-`conv2d`/`conv2d_depthwise` are a real example of this split: most definitions are
-`baseline-solution:ncnn`, while a few (e.g. the SME2/f16 ones) are `baseline-solution:kleidiai`.
-(`gemm` no longer mixes backends this way — its ncnn-tagged definitions/workloads/solutions were
-removed; what remains there is split between `baseline-solution:kleidiai` and
-`baseline-solution:llama.cpp`, neither of which `gen_candidate_solution.py` targets.)
+- **Op type / definition(s)** - ask if not stated. One definition, or every definition of the op type.
+- **Dataset** - from the definition's `baseline-solution:<backend>` tag (`ncnn`, `llama.cpp`, `kleidiai`):
+  the reference-scalar lives in the same dataset as its baseline, author from
+  `config/kernel_contracts.yaml` (`reference_scalar_authors`: `reference-scalar`; simd-loop uses
+  `reference`). **Check the tag; do not put an ncnn candidate under a llama.cpp-tagged definition.**
+- **Variant** - plain float32 or quantized; look at `inputs[*].dtype`.
 
 ---
 
 ## What a solution JSON looks like
 
-Every candidate solution is a single JSON file at:
-```
-bench-trace/solutions/ncnn/reference-scalar/<op_type>/<def_name>.json
-```
-
-Example for `conv2d`:
 ```json
 {
   "name":        "reference-scalar_<def_name>",
   "definition":  "<def_name>",
-  "dataset":     "ncnn",
+  "dataset":     "<ncnn|llama.cpp|kleidiai>",
   "author":      "reference-scalar",
   "description": "Scalar raw-pointer <op_type> for <def_name>. Constexpr-baked dims; armbench_entry_<op_type> calls inner_<op_type>. Ground-truth correctness baseline.",
   "spec": {
@@ -90,211 +51,88 @@ Example for `conv2d`:
     "link_flags":      []
   },
   "sources": [
-    { "path": "<op_type>.h",   "content": "// constexpr params + inner_<op_type> declaration..." },
-    { "path": "<op_type>.cpp", "content": "// binding harness: armbench_entry_<op_type> → inner_<op_type>..." },
-    { "path": "kernel.cpp",    "content": "// reference-scalar inner_<op_type> implementation..." }
+    { "path": "<op_type>.h",   "content": "// constexpr params + inner_<op_type> declaration" },
+    { "path": "<op_type>.cpp", "content": "// armbench_entry_<op_type> -> inner_<op_type>" },
+    { "path": "kernel.cpp",    "content": "// scalar inner_<op_type>" }
   ]
 }
 ```
 
-Key constraints:
-- `dataset` must be `"ncnn"` — `CandidateBuilder` handles all non-baseline non-simd-loop solutions
-- Output source filenames (`<op_type>.h`/`<op_type>.cpp`) are always named after the definition's
-  own `op_type`, **never** the template prefix — a quantized variant like `conv2d_w8a8ch` still
-  produces `conv2d.h`/`conv2d.cpp`, because `entry_point` and the `armbench_entry_<op_type>` symbol
-  raw.py's runner looks up are keyed by `op_type`, not by which variant produced the source
-- `entry_point` must be `"<op_type>.cpp::armbench_entry_<op_type>"`, not `"kernel.cpp::inner_<op_type>"` —
-  pointing at `kernel.cpp` causes a duplicate symbol link error
-- The three source files must be present; `CandidateBuilder` adds the solution's own dir to `-I`
+Constraints that lint or the build enforce:
+- `name` must be `<author>_<definition>`; `definition` must already be in the warehouse.
+- The source file names are always `<op_type>.h`, `<op_type>.cpp`, `kernel.cpp`, named after the
+  definition's own `op_type` (a quantized variant still produces `conv2d.h`, not `conv2d_w8a8ch.h`).
+- `entry_point` is `"<op_type>.cpp::armbench_entry_<op_type>"`, other format will cause a duplicate-symbol link error
+- Entry points are `extern "C"`, not `static`. No OpenMP, threads, `fork`, they will be rejected by source pattern scanning at evaluation time.
+
+Start from the closest existing file: `kgen show` lists solutions; open one under
+`bench-trace/solutions/<dataset>/reference-scalar/<op_type>/` and copy its structure.
 
 ---
 
-## Workflow: regenerate existing op type
+## Writing the sources
 
-If templates already exist for this op type/variant:
+### 1. Classify axes and inputs
 
-```bash
-# All ncnn-tagged definitions for this op type, fp32 templates only
-python -m scripts.gen_candidate_solution --op-type <op_type>
+- **const axes** are baked into `<op_type>.h` as `constexpr int <name> = <value>;` inside
+  `namespace <op_type>_def`, using the axis's own name.
+- **var axes** vary per workload and are entry-function parameters only.
+- **scalar inputs** (`"shape": null`) are baked as `constexpr` too, but only if every workload of the definition carries the same value (check the workload file); a scalar that varies per workload cannot be baked. A per-channel scale such as `weight_scales [C_out]` is a regular tensor passed as a pointer.
+- **dtype**: every input's dtype decides its pointer type. Raw-ABI runners support the dtypes`bench/datasets/raw.py` maps (float32, int8, and whatever it lists now; an unsupported dtype raises at run time, never silently wrong data).
 
-# All ncnn-tagged definitions, including a quantized variant
-python -m scripts.gen_candidate_solution --op-type <op_type> --variant-quant-suffix w8a8ch
+### 2. Entry signature = what the runner builds
 
-# Single definition (bypasses --tag filtering — you're asking for it by name)
-python -m scripts.gen_candidate_solution --op-type <op_type> --definition <def_name> \
-    [--variant-quant-suffix w8a8ch]
+`RawDataset.wrap_inputs` builds the call from the definition, dtype-aware:
+1. **tensor pointers**: non-scalar inputs in `definition.inputs` order - primary input first,
+   the output injected second, then the remaining tensors;
+2. **var dims**: every var axis found in **any** tensor's shape (not just the primary one),
+   deduplicated in first-seen order.
 
-# A definition whose axes don't match its op_type's usual shape at all (e.g. pooling's
-# global-average-pooling definition — no Kh/Kw/stride/pad axes):
-python -m scripts.gen_candidate_solution --op-type pooling --definition pooling_fp32_global_avg \
-    --template-prefix pooling_global_avg
+Get this order exactly right; a mismatch is a SIGSEGV with no useful message. Examples:
 
-# Sync to Graviton (bench-trace/ is gitignored — must rsync manually)
-rsync -az --delete \
-    bench-trace/solutions/ncnn/reference-scalar/<op_type>/ \
-    ubuntu@<host>:arm-bench/bench-trace/solutions/ncnn/reference-scalar/<op_type>/
-
-# Validate on remote
-ssh ubuntu@<host> "cd arm-bench && python3 -m scripts.eval_candidates --op <op_type> 2>&1"
-```
-
----
-
-## Workflow: add a new op type (or a new quantized variant of an existing one)
-
-### Step 1: Classify the definition's axes and inputs
-
-Open a sample definition JSON from `bench-trace/definitions/<op_type>/`.
-
-- **const axes** (`"type": "const"`): fixed across all workloads → baked into `<op_type>.h` as
-  `constexpr <name> = {{name}};` — the placeholder token is always the axis's **own name**, there's
-  no renaming/aliasing step anymore
-- **var axes** (`"type": "var"`): vary per workload → entry parameter list only
-- **scalar inputs** (an entry in `definition.inputs` with `"shape": null`, not an axis): baked as a
-  `constexpr` the same way, by its own name, **if and only if** it's the same value across every
-  workload for that definition (checked automatically against
-  `bench-trace/workloads/<op_type>/<def_name>.jsonl` — a scalar that genuinely varies per workload
-  can't be represented this way and the definition is skipped with a clear message). A
-  per-output-channel scale (`"shape": ["C_out"]`, dtype float32) is NOT a scalar input — it's a
-  regular tensor, passed as a runtime float pointer, no baking needed.
-- **dtype**: check every `inputs[*].dtype`. All-`float32` → fp32 template variant. Any non-float32
-  (e.g. `int8` for `w8a8ch`) → quantized template variant, needs `--variant-quant-suffix`.
-
-Example: for `conv2d_w8a8ch`, const axes are `Kh, Kw, Sh, Sw, Dh, Dw, pad_top, pad_left`; var axes
-are `N, C_in, H, W, C_out`; `input_scale` is a scalar (constant across workloads, bake it);
-`weight_scales` (shape `[C_out]`) is a real tensor, not baked.
-
----
-
-### Step 2: Design the ABI
-
-`bench/datasets/raw.py`'s `RawDataset.wrap_inputs` builds the entry args automatically from the
-definition — **dtype-aware** (each tensor is cast/pointer-typed per its own declared `dtype`;
-currently `float32` and `int8` are supported, anything else raises `NotImplementedError` at run
-time, not silently wrong data):
-1. **Tensor pointers**: non-scalar inputs (`shape != null`) in `definition.inputs` order — primary
-   input first, output injected second (always `float32`, since every current Definition's output
-   is), then remaining tensors, each using its own dtype's pointer type
-2. **Var dims**: scans **every** tensor's shape template (not just the primary one), dedup'd by
-   axis name in first-seen order — an axis that only appears in a non-primary tensor (like
-   `conv2d`'s `C_out`, which lives in `weight`'s shape, not `input`'s) is still picked up
-
-Verify your C entry signature matches this order exactly. Mismatches produce SIGSEGV with no
-useful error.
-
-Example for plain `conv2d` (`input` is primary, shape `[N, C_in, H, W]`; `weight` shape
-`[C_out, C_in, Kh, Kw]` contributes the new var axis `C_out`):
 ```c
-extern "C" int armbench_entry_conv2d(
-    const float* input, float* output, const float* weight, const float* bias,
-    int N, int C_in, int H, int W, int C_out)
+// conv2d: weight's shape contributes the extra var axis C_out
+extern "C" int armbench_entry_conv2d(const float* input, float* output, const float* weight,
+                                     const float* bias, int N, int C_in, int H, int W, int C_out);
+// packed ggml gemm: A bf16, B as uint8 blocks [N, K_bytes], output float
+extern "C" int armbench_entry_gemm(const uint16_t* A, float* out, const uint8_t* B, int M);
 ```
-Example for `conv2d_w8a8ch` (same var-dim order; `input`/`weight` are now `int8_t*`, plus a new
-`weight_scales` tensor pointer per `definition.inputs` order):
-```c
-extern "C" int armbench_entry_conv2d(
-    const int8_t* input, float* output,
-    const int8_t* weight, const float* bias, const float* weight_scales,
-    int N, int C_in, int H, int W, int C_out)
-```
+
+### 3. The three files
+
+- `<op_type>.h`: `#pragma once`, the `<op_type>_def` namespace with the constexpr values, and the `extern "C"` declaration of `inner_<op_type>`.
+- `<op_type>.cpp`: `armbench_entry_<op_type>` computes derived dims from the constexprs and calls `inner_<op_type>`; returns 0.
+- `kernel.cpp`: the scalar `inner_<op_type>` using the `_def` constants. This is the file an LLM replaces, so keep it plain loops.
+
+For a quantized kernel follow the definition's own `reference` Python: typically `real = int8_value * scale` with `scale = input_scale * weight_scales[c]` (a dequantization multiplier, the opposite of ncnn's own int8 *quantization* scale fields). Accumulate in `int64_t`, apply
+scale and bias in `double`, cast to `float` at the very end, to match the reference's float64 intermediates. For ggml block formats, decode the blocks exactly as ggml does.
 
 ---
 
-### Step 3: Write the three template files
+## Workflow
 
-Location: `scripts/candidate_binding_templates/`. Name them `<prefix>.h.tmpl`, `<prefix>.cpp.tmpl`,
-and either `<prefix>.kernel.cpp.tmpl` or `kernel.cpp.tmpl` (shared fallback).
-
-`<prefix>` is `<op_type>` for the plain/fp32 variant, or `<op_type>_<quant-suffix>` for a quantized
-variant (e.g. `conv2d_w8a8ch`) — **the prefix only selects which template file gets read off disk.**
-The rendered output is always written as `<op_type>.h` / `<op_type>.cpp` / `kernel.cpp` regardless
-of prefix, so the symbol names inside the template content must use the **base op_type**
-(`armbench_entry_conv2d`, `inner_conv2d`, namespace `conv2d_def`), even inside a `conv2d_w8a8ch.*.tmpl`
-file — never the prefix.
-
-**`<prefix>.h.tmpl`** — constexpr namespace + `inner_<op_type>` declaration. `{{Kh}}`, `{{input_scale}}`,
-etc. are substitution tokens, one per const axis / scalar input, named exactly like the axis/input
-itself (no config-driven renaming):
-```cpp
-#pragma once
-namespace <op_type>_def {
-constexpr int Kh  = {{Kh}};   // → e.g. 3
-constexpr float input_scale = {{input_scale}};  // only for a variant that has a scalar input
-} // namespace <op_type>_def
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-void inner_<op_type>(...);
-#ifdef __cplusplus
-}
-#endif
-```
-
-**`<prefix>.cpp.tmpl`** — binding harness; usually no `{{}}` placeholders:
-```cpp
-#include "<op_type>.h"
-using namespace <op_type>_def;
-
-extern "C" int armbench_entry_<op_type>(...var dims only...)
-{
-    // compute derived output dims from constexpr params
-    inner_<op_type>(...);
-    return 0;
-}
-```
-
-**`<prefix>.kernel.cpp.tmpl`** — reference-scalar; LLM replacement target:
-```cpp
-#include "<op_type>.h"
-using namespace <op_type>_def;
-
-extern "C" void inner_<op_type>(...)
-{
-    // scalar loops using <op_type>_def:: constexpr constants
-}
-```
-
-For a quantized kernel, match the dequant formula used by the corresponding baseline template
-(`scripts/baseline_binding_templates/<prefix>.ncnn_kernel.cpp.tmpl`, if one exists) and the
-Definition's own `"reference"` Python — typically `real = int8_value * scale` where
-`scale = input_scale * weight_scales[c]` (a **dequantization** multiplier, the opposite convention
-from ncnn's own int8 *quantization* scale fields — don't just copy ncnn's scale handling
-uninverted). Accumulate in `int64_t`, do the scale multiply + bias add in `double`, cast to `float`
-only at the very end, matching the Python reference's `float64` intermediate precision.
+1. `kgen show <def>`; check the dataset tag and which solutions exist.
+2. Write `<def>.json` in the scratchpad (a throwaway snippet that renders it from the definition is fine for a whole op type; render, then add each file).
+3. `python -m kgen add solution <file>` - problems come back as sentences naming the field;
+   fix and rerun. `--replace` to overwrite.
+4. `python -m kgen check <def> --static-only` anywhere.
+5. On an aarch64 machine: `python -m kgen check <def> --num-selected-workloads 5`. The
+   reference-scalar leg must pass; if the baseline leg also exists, the diagnosis line tells
+   which of reference / reference-scalar / baseline is the likeliest culprit when they disagree
+   (with stale calibration floors on a `correctness:sqnr` definition, recalibrate first).
+6. `bench-trace/` is gitignored: sync it to the Graviton box yourself (`rsync -az --delete`
+   of the solutions directory) before running the execution legs there.
 
 ---
 
-### Step 4: Generate and verify
+## Common problems
 
-```bash
-python -m scripts.gen_candidate_solution --op-type <op_type> [--variant-quant-suffix <suffix>] \
-    [--definition <def_name>] --dry-run   # check it resolves the prefix + renders cleanly first
-
-python -m scripts.gen_candidate_solution --op-type <op_type> [--variant-quant-suffix <suffix>]
-
-rsync -az --delete \
-    bench-trace/solutions/ncnn/reference-scalar/<op_type>/ \
-    ubuntu@<host>:arm-bench/bench-trace/solutions/ncnn/reference-scalar/<op_type>/
-
-ssh ubuntu@<host> "cd arm-bench && python3 -m scripts.eval_candidates --op <op_type> 2>&1"
-```
-
-Note `scripts/eval_candidates.py`'s final `"N/M solutions fully passed"` summary line is unreliable
-when using `--op`/`--definition` — it counts filtered-out solutions as passed. Trust the per-line
-`[OK]`/`[FAIL]` output instead.
-
----
-
-## Common bugs
-
-| Symptom | Root cause | Fix |
-|---------|-----------|-----|
-| SIGSEGV / exit 139 | C entry arg order doesn't match what `raw.py` `wrap_inputs` builds | Trace through `wrap_inputs`: tensor order + var dim order must match C entry exactly |
-| SIGSEGV / garbage output on a quantized definition | Tensor dtype not in `raw.py`'s `_DTYPE_TO_NP_AND_PTR` map, or candidate signature uses `float*` for what's actually `int8_t*` data | Check `definition.inputs[*].dtype`; add the dtype to the map if genuinely new (currently only `float32`/`int8` supported) |
-| `axis ... is not const` | A dimension put in constexpr block is actually var for this definition | Move it to the entry signature instead |
-| `has non-float32 input(s) and no --variant-quant-suffix given` (SKIP, not error) | Definition needs a quantized template set you haven't written/passed yet | Write `<op_type>_<suffix>.*.tmpl` and pass `--variant-quant-suffix <suffix>` |
-| `... has unresolved placeholder(s) [...]` (SKIP, not error) | Definition's axes/inputs don't match the chosen template (e.g. pooling's global-avg definition has no Kh/Kw at all) | Use `--template-prefix` to force a different, purpose-built template set for that definition |
-| `FileNotFoundError: Template not found` | Missing one of the three `.tmpl` files for the resolved prefix | Add it to `scripts/candidate_binding_templates/` |
-| Duplicate symbol link error | `entry_point` set to `kernel.cpp::inner_<op_type>` | Change to `<op_type>.cpp::armbench_entry_<op_type>` |
-| Wrong backend gets a candidate (e.g. an ncnn reference-scalar generated for a llama.cpp-tagged definition) | Ran with `--definition` (bypasses `--tag` filtering) without checking the definition's `baseline-solution:<backend>` tag first | Check the tag before using `--definition`; the no-`--definition` path already filters by `--tag` (default `baseline-solution:ncnn`) |
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| SIGSEGV / exit 139 | Entry arg order differs from `wrap_inputs` | Re-derive tensor order + var-dim order from the definition |
+| Garbage on a quantized definition | Pointer type does not match the input dtype | Use the dtype's pointer type; check `raw.py`'s dtype map |
+| `name: expected <author>_<definition>` | Wrong `name` | Make it `reference-scalar_<def>` |
+| `definition ... is not in the warehouse` | Definition not added yet | `kgen add definition` first |
+| `axis ... is not const` while baking | A var axis put in the constexpr block | Move it to the entry signature |
+| Duplicate symbol at link | `entry_point` points at `kernel.cpp` | `<op_type>.cpp::armbench_entry_<op_type>` |
+| Wrong backend gets a candidate | Ignored the `baseline-solution:` tag | Use the dataset that matches the tag |

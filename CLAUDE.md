@@ -2,9 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Implementation Guide
+## Implementation guide
 
 - USE AS LESS HIDDEN FUNCTION (function with "_" beforehead) AS YOU CAN IN YOUR IMPLEMENTATION
+- Raise any concerns if you think a new change may affect previous experiment results
+
+## Experiment-monitoring guide
 - DO NOT INITIAIZE MORE THAN 5 BACKGROUND TASKS, THEY WILL CRASH THE WSL!!
 - For macm4.metal instance, OPEN AT MOST 2 DEDICATED HOST ONLY! IF YOU HAVE ALREADY OPENED A DEDICATED HOST, PLEASE REUSE IT INSTEAD OF OPENING A NEW ONE
 
@@ -229,8 +232,7 @@ eval/                           # In-repo litellm agent loop (Path 1)
                                  #   for any provider/field left out or if this file is absent
 
 provisioning/                   # Terraform/EC2 lifecycle shared by all three paths (Path 1's
-                                 #   eval/evaluator.py, Path 3's skills/launch/launch_session.py,
-                                 #   and scripts/gen-workload/collect_workloads_llm.py) — invoked
+                                 #   eval/evaluator.py and Path 3's skills/launch/launch_session.py) — invoked
                                  #   only via subprocess by skills/launch/ (zero imports from
                                  #   eval/ or provisioning/), imported directly elsewhere
   provision.py                  # Terraform lifecycle for Graviton EC2 instances
@@ -271,11 +273,8 @@ test_scripts/                   # Batch-fleet entry point, shared across all thr
                                  #   each is invoked, how it connects to the MCP endpoint
 
 scripts/
-  gen_definitions.py            # Regenerate ncnn definitions+workloads from test files
   gen_simd_loop_harness.py      # Code-gen all simd-loop harnesses + bench-trace artifacts
-  bench_loop_agent.py           # Local iterative LLM agent (Path 2)
   test_reference_scalars.py     # Correctness smoke-test for all reference-scalar solutions
-  check_baseline_vs_autovec.py  # Inclusion check: flags baselines >2x slower than the autovec starting point
 
 case-study/                     # Per-definition optimization write-ups
 terraform/                      # Graviton EC2 Terraform config
@@ -304,11 +303,6 @@ python3 test_scripts/bench_fleet.py --harness own \
     --dataset ncnn --isa sve2 --model anthropic/claude-opus-4-6 --definitions loop_001
 ```
 
-### Local iterative LLM agent (Path 2 — run on target machine for real timing)
-```bash
-python scripts/bench_loop_agent.py --loop loop_001 --max-turns 6 --model openrouter/anthropic/claude-opus-4-6
-```
-
 ### Validate via CLI (bench/cli.py)
 ```bash
 python -m bench.cli list-definitions          # list all definitions
@@ -325,7 +319,7 @@ python scripts/test_reference_scalars.py      # should print all workloads PASSE
 ### Baseline inclusion check (on the tier's machine)
 ```bash
 # flags every baseline more than 2x slower than the scalar starting point auto-vectorized for --isa
-python3 scripts/check_baseline_vs_autovec.py --dataset simd-loop --isa sve
+python3 -m kgen autovec --isa sve --tag simd-loop
 ```
 
 ### MCP session (Path 3)
@@ -342,7 +336,6 @@ python3 launch_session.py launch --isa sve --dataset ncnn
 ### Regenerate definitions/workloads
 ```bash
 python scripts/gen_simd_loop_harness.py       # simd-loop (idempotent)
-python scripts/gen_definitions.py             # ncnn definitions + workloads
 ```
 
 ### Sync local code to remote instance

@@ -782,6 +782,9 @@ _SVE_TIERS = {
             # no SME branch upstream
             "loop_008", "loop_103", "loop_120", "loop_121", "loop_122", "loop_123", "loop_124",
             "loop_102", "loop_104",
+            # no SME branch upstream either: under -mcpu=apple-m4 it falls to NEON
+            # asm, which streaming mode rejects on M4 (no FEAT_SME_FA64)
+            "loop_032",
             # svbgrp in streaming mode needs FEAT_SSVE_BitPerm (Armv9.6), which
             # M4 does not have; Arm's branch is gated on it accordingly
             "loop_106",
