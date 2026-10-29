@@ -48,7 +48,7 @@ class NanobotAdapter(HarnessAdapter):
     name = "nanobot"
     prompt_template = (
         'Optimize the "%s" kernel definition (dataset: %s, baseline solution source: %s) '
-        'in new ISA %s. You must spend at least %s compile+evaluate iterations exploring '
+        'in ISA %s. You must spend at least %s compile+evaluate iterations exploring '
         'genuinely different optimization attempts before you are allowed to submit — do not '
         'submit early just because an attempt already looks good, keep iterating until you '
         'hit the floor. You may keep going past it if you are still finding improvements, but '

@@ -149,7 +149,7 @@ class KernelSession(ABC):
                 f"Definition {definition_name!r}'s baseline ({baseline.author!r}) "
                 f"requires isa_features={baseline.spec.isa_features!r}, but this "
                 f"session was started with --isa {self._isa!r}, which doesn't "
-                "provide them, so a speedup could never be computed for this definition." 
+                "provide them, so a speedup could never be computed for this definition. "
                 "Skip it, or rerun this session with an isa that provides those features."
             )
 

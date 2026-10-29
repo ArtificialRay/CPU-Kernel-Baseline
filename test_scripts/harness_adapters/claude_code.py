@@ -46,7 +46,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
         'Optimize the "%s" kernel definition (dataset: %s, baseline solution source: %s) '
         'in ISA %s. You must spend at least %s tool calls but not exceed %s tool calls to '
         'explore genuinely different optimization attempts before you are allowed to submit. '
-        'once you hit that ceiling, stop iterating and submit your best version immediately, '
+        'Once you hit that ceiling, stop iterating and submit your best version immediately, '
         'since every iteration spends real model API budget. Follow the ground rules and '
         'workflow in your system prompt.'
     )

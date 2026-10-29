@@ -95,7 +95,7 @@ next tool call:
 Key rules:
   - The harness files (.h and the entry .cpp) are provided automatically — write only kernel.cpp.
   - Use {isa_name} intrinsics freely; the build system passes the correct -march flag.
-  - Can write asm directly to your implementation if you think it may bring performance gain
+  - Can write asm directly to your implementation if you think it may bring performance gain.
 """
 
 # isa string -> (isa_desc, isa_name) shown to the agent in the system prompt.
