@@ -109,8 +109,10 @@ eval_definition_overrides:
     # throughout) showed matched_ratio 0.9672-0.9821 across all 14
     # workloads on real hardware.
     required_matched_ratio: 0.95
-  # Tighter-than-global-default min_sqnr_db for correctness:sqnr definitions
-  # whose real KleidiAI baseline measures well above the 20.0 global default.
+  # Requantized int8 output permits one level of rounding difference.
+  gemm_qai8_qsi8cx_sme2_n256_k512:
+    abs_tol: 1.0
+  # KleidiAI baselines exceed the global 20 dB SQNR minimum.
   gemm_bf16_n512_k512:
     min_sqnr_db: 45.0
   gemm_qs4cx_sme2_n256_k512:

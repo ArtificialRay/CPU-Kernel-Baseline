@@ -20,6 +20,7 @@ closest existing baseline of the same dataset as the pattern, then place it with
 | `kgen show <def>` | const/var axes, input dtypes, tags, existing solutions |
 | `kgen add solution FILE [--replace]` | lint FILE and write `bench-trace/solutions/<dataset>/<author>/<op_type>/<def>.json` |
 | `kgen check <def> [--isa ...]` | static lint; on aarch64 builds and runs the baseline against the reference |
+| `kgen autovec --isa <tier> --definitions D... [--baseline-author A]` | (aarch64, the tier's own machine) times the baseline against the compiler's auto-vectorized build of the reference-scalar; flags a baseline more than 2x slower |
 
 ---
 
@@ -111,6 +112,12 @@ gitignored, so it is local knowledge that accumulates; it may be missing or empt
    has one baseline author per ISA). A baseline that disagrees with the reference while
    reference-scalar agrees points at the binding or the library call; both disagreeing points at
    the reference.
+6. On the tier's own machine: `python -m kgen autovec --isa <tier> --definitions <def>`. A baseline more
+   than 2x slower than the auto-vectorized reference-scalar is not an expert baseline: look at the
+   binding and the library call (option flags, wrong layer, packing, per-call setup) and fix them, or
+   leave the definition out. With several candidate library kernels for one operator, run it with
+   `--baseline-author` for each candidate and prefer the one that holds up best against autovec.
+   The ratio is a geomean over workloads; the output also names the worst single workload.
 
 ---
 
