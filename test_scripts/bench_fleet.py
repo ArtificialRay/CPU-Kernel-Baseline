@@ -431,10 +431,11 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             adapter.cleanup()
 
         if args.sync_solutions:
-            print(f"Syncing bench-trace/solutions/ back from {instance.target.host}...")
+            print(f"Syncing bench-trace/solutions/{dataset}/{author}/ back from {instance.target.host}...")
             try:
-                instance.target.rsync_from(
-                    f"{args.remote_root}/bench-trace/solutions/", REPO_ROOT / "bench-trace" / "solutions",
+                instance.target.rsync_from(  # this author only: another author's remote copy may be stale
+                    f"{args.remote_root}/bench-trace/solutions/{dataset}/{author}/",
+                    REPO_ROOT / "bench-trace" / "solutions" / dataset / author,
                     excludes=launch_session.SOLUTION_INTERMEDIATE_GLOBS,
                 )
             except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
@@ -717,7 +718,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "baselines are collected and during every job, so it only fires once the driver is gone. 0 "
                         "cancels it. Default: 120")
     p.add_argument("--sync-solutions", action="store_true",
-                   help="After all jobs finish, also pull bench-trace/solutions/ back from the "
+                   help="After all jobs finish, also pull bench-trace/solutions/<dataset>/<author>/ back from the "
                         "remote instance (not bench-trace/traces/ — that data's already in "
                         "agent-runs-<author>/ — and not the _current/_best intermediates). Off by default; every harness writes solutions "
                         "to the remote bench-trace regardless of this flag.")

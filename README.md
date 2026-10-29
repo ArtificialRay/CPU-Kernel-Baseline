@@ -112,7 +112,7 @@ Only needed in specific cases, set in `.env` or the shell.
 | `NCNN_ROOT`, `LLAMA_CPP_ROOT` | Point the local `bench/` harness at an existing ncnn / llama.cpp checkout |
 | `ARMBENCH_NOTEPAD=1` | Give the `own` harness's agent a persistent scratchpad tool |
 | `ARMBENCH_CC_JOB_ROOT` | Parent of the per-job working directories `--harness claude-code` creates (default: the system temp dir); must be outside this repo |
-| `OPENROUTER_API_KEY` | Used by `scripts/bench_loop_agent.py` |
+| `OPENROUTER_API_KEY` | Used for `openrouter/...` models |
 | `WANDB_INSTANCE_TYPE` | Label recorded on runs logged with `--wandb` |
 
 ### Timing protocol

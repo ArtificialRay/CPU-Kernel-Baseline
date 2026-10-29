@@ -41,7 +41,7 @@ class NCNNKernelSession(KernelSession):
             raise ValueError(
                 f"No reference-scalar solution for definition {self._definition.name!r} "
                 "in TraceSet — cannot build NCNN candidate harness. "
-                "Run scripts/gen_definitions.py to generate reference solutions."
+                "Add one with `python -m kgen add solution`, or re-pull bench-trace."
             )
 
         harness = [s for s in ref.sources if s.path != AGENT_KERNEL_FILENAME]

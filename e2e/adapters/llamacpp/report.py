@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a measure.py results JSON as the table that goes in the paper.
+"""Render a measure.py results JSON as one results table.
 
 Speed and perplexity come from the same binaries in one run, so they belong in one table:
 a speedup is only meaningful next to what it cost in model quality.

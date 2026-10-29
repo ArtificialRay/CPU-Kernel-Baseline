@@ -117,7 +117,7 @@ def solution_leg(name: str, definition: Definition, solution: Solution | None, w
                  root: Path) -> Leg:
     if solution is None:
         return Leg(name, SKIP, [f"no solution for {definition.name}"])
-    if platform.machine() != "aarch64":
+    if platform.machine() not in ("aarch64", "arm64"):  # macOS on Apple silicon reports arm64
         return Leg(name, SKIP, [f"{solution.name} needs an aarch64 machine to run; this one is {platform.machine()}"])
     set_trace_root(root)
     cfg = dataclasses.replace(BenchmarkConfig().resolve_eval_config(definition), warmup=0, repeat=1)

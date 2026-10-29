@@ -115,11 +115,6 @@ eval_definition_overrides:
     required_matched_ratio: 0.95
   # Tighter-than-global-default min_sqnr_db for correctness:sqnr definitions
   # whose real KleidiAI baseline measures well above the 20.0 global default
-  # Integer-in/integer-out requantized GEMM (no dequantization noise): output
-  # values are int8 levels carried as float32, so the only legitimate
-  # reference/baseline difference is one level of rounding in the requantize.
-  gemm_qai8_qsi8cx_sme2_n256_k512:
-    abs_tol: 1.0
   gemm_bf16_n512_k512:
     min_sqnr_db: 45.0
   gemm_qs4cx_sme2_n256_k512:

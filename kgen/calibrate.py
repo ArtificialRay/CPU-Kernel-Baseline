@@ -37,7 +37,6 @@ from .io import write_jsonl
 from .layout import workload_path
 
 REPO = Path(__file__).resolve().parents[1]
-SQNR_TAG = "correctness:sqnr"
 CALIBRATION_WATCHDOG_S = 600.0
 WORKLOADS_PER_CALL = 8
 
@@ -59,10 +58,8 @@ def calibrate_sqnr_floors(root: Path = REPO / "bench-trace", *, author: str, bas
     names = list(definitions or [])
     if tag:
         names += [n for n, d in ts.definitions.items() if tag in d.tags and n not in names]
-    if not definitions and not tag:      # every definition gated on SQNR
-        names = [n for n, d in ts.definitions.items() if SQNR_TAG in d.tags]
-    if not names:
-        raise KgenError("nothing selected (pass definitions or tag, or tag a definition correctness:sqnr)")
+    if not names:  # no default: a floor written outside the intended set changes its correctness gate
+        raise KgenError("nothing selected (pass definitions or tag)")
 
     # Only the SQNR is wanted, not a measurement: one timed call after the correctness call, and a
     # watchdog long enough for the scalar reference at prefill-sized M (slow by design).

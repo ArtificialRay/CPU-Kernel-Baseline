@@ -79,7 +79,7 @@ def autovec_check(root: Path, isa: str, definitions=None, tag=None, max_slowdown
                   seed: int = 0) -> int:
     """Compare the baseline of each selected definition with its autovectorized starting point. Returns the exit
     status: 0 all fine, 1 a baseline flagged or an error, 2 no failure but a definition skipped."""
-    if platform.machine() != "aarch64":
+    if platform.machine() not in ("aarch64", "arm64"):  # macOS on Apple silicon reports arm64
         raise KgenError(f"autovec times kernels and needs the tier's own aarch64 machine; this one is {platform.machine()}")
     root = Path(root)
     march = contracts.ISA_TABLE[isa].march if isa in contracts.ISA_TABLE else None

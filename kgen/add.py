@@ -5,6 +5,7 @@ Nothing is written when there is a problem or when the target already exists (un
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from bench.data import Definition
@@ -131,8 +132,22 @@ def add_workload(file: Path, definition_name: str, root: Path, replace: bool = F
     if problems:
         raise AddError([f"{file}: {p}" for p in problems])
     kept = existing_uuids(target) if replace else {}
-    write_jsonl(target, [{**row, "uuid": row.get("uuid") or kept.get(axes_key(row)) or uuid_def_axes(definition.name, row["axes"])}
-                         for row in rows])
+    out = [{**row, "uuid": row.get("uuid") or kept.get(axes_key(row)) or uuid_def_axes(definition.name, row["axes"])}
+           for row in rows]
+    held = {u: k for k, u in kept.items()}
+    seen: dict = {}
+    for r in out:
+        if held.get(r["uuid"], axes_key(r)) != axes_key(r):  # a uuid names one workload: it never moves to other axes
+            problems.append(f"uuid {r['uuid']} belongs to the existing workload with axes {held[r['uuid']]}")
+        elif r["uuid"] in seen:
+            problems.append(f"uuid {r['uuid']} is on two rows (axes {seen[r['uuid']]} and {axes_key(r)})")
+        seen[r["uuid"]] = axes_key(r)
+    if problems:
+        raise AddError([f"{file}: {p}" for p in problems])
+    dropped = sorted({axes_key(r) for r in existing} - {axes_key(r) for r in out})
+    if dropped:
+        print(f"warning: --replace drops {len(dropped)} existing workload(s): {', '.join(dropped)}", file=sys.stderr)
+    write_jsonl(target, out)
     return target
 
 

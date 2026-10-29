@@ -51,7 +51,7 @@ sys.path.insert(0, str(REPO))
 from contracts import _isa_table  # noqa: E402  (config/kernel_contracts.yaml isa table)
 from e2e.common.build import compile_shared, undefined_symbols  # noqa: E402
 from e2e.common.guards import check_guards  # noqa: E402
-from e2e.common.solutions import SOLUTIONS, load_author, source_text  # noqa: E402
+from e2e.common.solutions import SOLUTIONS, load_author, source_text, unsubmitted  # noqa: E402
 
 NAME_RX = re.compile(r"^gemm_ggml_(q[456]_K)_n(\d+)_k(\d+)$")
 FRAMEWORK = "llamacpp"
@@ -231,4 +231,5 @@ def build_kernel_set(
     failures = check_guards(solutions, [k["definition"] for k in kernels], reference, digest=digest,
                             expect_count=expect_count, expect_changed=expect_changed,
                             expect_same=expect_same, forbid=forbid)
+    failures += unsubmitted(dataset, author, solutions_root)
     return KernelSet(manifest, failures)

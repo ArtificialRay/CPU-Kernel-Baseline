@@ -27,6 +27,21 @@ def load_author(dataset: str, author: str, root: Path = SOLUTIONS, op_type: str 
     return out
 
 
+def unsubmitted(dataset: str, author: str, root: Path = SOLUTIONS, op_type: str = "gemm") -> list[str]:
+    """Definitions whose `<definition>.json` is missing or older than the session's `_best`: the set would
+    silently leave them out, or compile a previous run's kernel."""
+    sol_dir = Path(root) / dataset / author / op_type
+    out = []
+    for best in sorted(sol_dir.glob("*_best.json")):
+        name = best.stem[: -len("_best")]
+        sub = sol_dir / f"{name}.json"
+        if not sub.exists():
+            out.append(f"{name}: no submitted {sub.name}, only {best.name}")
+        elif sub.stat().st_mtime < best.stat().st_mtime:
+            out.append(f"{name}: {sub.name} is older than {best.name} (a previous run's submit?)")
+    return out
+
+
 def source_text(solution: dict, path: str = "kernel.cpp") -> str:
     """The content of one source file of a solution JSON (the agent's kernel by default)."""
     return next(s["content"] for s in solution["sources"] if s["path"] == path)
