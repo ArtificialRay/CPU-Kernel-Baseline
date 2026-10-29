@@ -274,9 +274,6 @@ test_scripts/                   # Batch-fleet entry point, shared across all thr
 
 scripts/
   gen_simd_loop_harness.py      # Code-gen all simd-loop harnesses + bench-trace artifacts
-  gen_llamacpp_gemm.py          # llama.cpp gemm_ggml_* definitions/solutions from an e2e inventory
-  llamacpp_kquant_templates.py  # K-quant kernel and reference text used by gen_llamacpp_gemm.py
-  test_kquant.py                # K-quant repack/reference/baseline checks against ggml
   test_reference_scalars.py     # Correctness smoke-test for all reference-scalar solutions
 
 case-study/                     # Per-definition optimization write-ups
