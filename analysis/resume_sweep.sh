@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Idempotent resume for the ncnn+llama.cpp sonnet/sve2 sweep.
-# Safe to run ANYTIME (after a crash, sleep, tunnel death, or partial run):
+# Safe to run anytime (after a crash, sleep, tunnel death, or partial run):
 # it recomputes which defs are still incomplete (no 'submit' turn in their
 # trajectory.jsonl — the durable completion marker) and re-runs ONLY those,
 # looping until everything's done or MAX_ROUNDS. If a dataset makes zero
 # progress in a round (box/MCP server wedged), it tears that box down so the
 # next round re-provisions a fresh one. Tears down both boxes at the very end.
 set -uo pipefail
-REPO=/Users/allen/CMU/cpu-kernel-baseline
+REPO=$(cd "$(dirname "$0")/.." && pwd)
 PY=$(conda run -n armbench-run which python)
 AUTHOR=claude-code-sonnet-sve2-40i          # fresh author -> clean results dir + boxes
 RESULTS="$REPO/agent-runs-$AUTHOR"
@@ -130,7 +130,7 @@ for round in $(seq 1 "$MAX_ROUNDS"); do
   done
   echo "@@@ [$(date +%H:%M:%S)] ROUND $round plan ($(echo "$PLAN" | wc -l | tr -d ' ') chunks):"
   echo "$PLAN" | sed 's/^/@@@   chunk: /'
-  # Read the plan on FD 3, NOT stdin: bench_fleet -> ssh reads stdin and would
+  # Read the plan on FD 3, not stdin: bench_fleet -> ssh reads stdin and would
   # otherwise swallow the rest of the here-string, so only the first chunk ever
   # ran (llama chunks + heavy ncnn chunks silently skipped). Also give
   # bench_fleet its own </dev/null stdin as belt-and-suspenders.

@@ -1,16 +1,12 @@
-"""InstanceHandle — self-contained SSH/rsync helper for eval/'s own scripts.
+"""InstanceHandle — self-contained SSH/rsync helper.
 
 Pure SSH client: given host/user/key_file for an instance that's already
-up, run commands and move files on it. No provisioning/Terraform logic and
-no config-file I/O lives here — that's provisioning/provision.py's job.
-Consumers that just need to talk to an already-provisioned instance
-(eval/evaluator.py, mcp_app/agent_tools/base.py) import from here, never
-from provisioning/provision.py.
+up, run commands and move files on it. No Terraform logic or config-file
+I/O (that's provisioning/provision.py's job), so scripts that only talk to
+an existing instance can import this without provision.py.
 
-Style reference: skills/launch/remote.py's RemoteTarget has the same shape
-of ssh_cmd/rsync_to/rsync_from methods (separately duplicated there, not
-imported, per that skill's own zero-imports-from-eval/-or-provisioning/
-boundary).
+skills/launch/remote.py's RemoteTarget is a deliberate duplicate: that skill
+imports nothing from eval/ or provisioning/.
 """
 
 from __future__ import annotations
@@ -75,10 +71,8 @@ class InstanceHandle:
     def rsync_to(self, local_dir: str, remote_dir: str, paths: list[str]):
         """Sync only `paths` (repo-root-relative files/dirs) from local_dir into
         remote_dir, one rsync per path with --delete. Allow-list, not a deny-list:
-        anything not in `paths` (e.g. results/, agent-runs/, notebooks/ — generated
-        directly on the remote by eval runs) is never touched by this call, so it
-        can't accumulate stale synced copies that a deny-list would leave behind
-        forever once excluded (rsync --exclude never deletes what's already there).
+        anything else on the remote (results/, agent-runs/, ...) is never touched,
+        and nothing stale lingers the way it would behind an rsync --exclude.
         """
         # Create each path's parent too: entries may be nested (e.g.
         # "bench-trace/definitions") and rsync does not create missing

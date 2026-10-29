@@ -11,7 +11,7 @@ Three arms of the claude-code fleet, identical except for documentation:
 `control` vs `docs` measures whether having the docs matters at all;
 `docs` vs `nudge` measures whether the mild mention in SKILL.md is enough
 or the agent needs to be pushed. Compare `best_speedup` (and
-`iters_to_parity`, `cost_usd`) per arm on W&B.
+`iters_to_parity`) per arm on W&B.
 
 ## Run
 
@@ -23,7 +23,7 @@ python ablation/docs_ablation/run.py --arm nudge   --dataset ncnn --isa sve2 --m
 ```
 
 Everything after `--arm` is passed to `test_scripts/bench_fleet.py`
-unchanged (`--definitions`, `--max-budget-usd`, `WANDB=1`, ... all work).
+unchanged (`--definitions`, `--wandb`, ... all work).
 `--harness` defaults to `claude-code` and is the only harness supported —
 the SKILL.md strip and the prompt nudge are claude-code specific. The author
 becomes `<computed author>-<arm>` (e.g. `claude-code-sonnet-sve2-control`)

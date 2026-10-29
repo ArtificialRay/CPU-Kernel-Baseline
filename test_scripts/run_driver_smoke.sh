@@ -13,7 +13,7 @@
 # python provisioning/provision.py --isa sve2
 #
 # Usage:
-#   ./scripts/run_driver_smoke.sh
+#   ./test_scripts/run_driver_smoke.sh
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

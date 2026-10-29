@@ -17,7 +17,7 @@ METADATA = {
     "tags": ['sve2'],
 }
 
-# Data struct definition — shown to the LLM for context
+# Data struct definition — parsed by scripts/gen_simd_loop_harness.py
 STRUCT_DEF = r"""
 struct loop_034_data {
   uint8_t *a;
@@ -27,7 +27,7 @@ struct loop_034_data {
 };
 """
 
-# Scalar reference implementation — the LLM's task is to optimize this
+# Scalar reference implementation
 SCALAR_CODE = r"""
 static void inner_loop_034(struct loop_034_data *restrict input) {
   uint8_t *p1 = input->a;
@@ -52,7 +52,7 @@ static void inner_loop_034(struct loop_034_data *restrict input) {
 }
 """
 
-# Prompt template (used by generate_samples.py and run_benchmark.py)
+# Prompt template
 SYSTEM_PROMPT = """You are an expert AArch64 SIMD programmer. Your task is to write an optimized
 implementation of a given loop kernel for {isa_desc}.
 Preserve the exact function signature. The `res` checksum field must match
@@ -76,11 +76,11 @@ Scalar implementation to optimize:
 Write an optimized {isa_upper} implementation. Output only the C function.
 """
 
-# Input sizes for edge-case correctness testing at submit time.
+# Input sizes for edge-case correctness testing.
 # Empty list = skip (loop uses non-SIZE parameters or fixed dimensions).
 EDGE_SIZES = [1, 5, 10, 5999, 6001]
 
-# Input sizes for performance measurement at submit time and via perf() tool.
+# Input sizes for performance measurement.
 # Scored against the largest size. Empty list = skip.
 # Capped at ~18000 (sample_json_size is ~20KB; SIZE >= sample_json_size aborts).
 PERF_SIZES = [10000, 18000]

@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Fully daemonize the sweep so it survives this shell/session entirely.
+"""Daemonize analysis/resume_sweep.sh so it survives the launching shell.
 
-nohup+disown wasn't enough — the process tree kept getting reaped a couple
-minutes in. Double-fork + setsid reparents the driver to launchd (PID 1) in a
+nohup+disown isn't enough: the process tree gets reaped a few minutes in.
+Double-fork + setsid reparents the driver to launchd (PID 1) in a
 brand-new session with no controlling terminal, so nothing tracking the
-launching Bash tool's descendants can signal it. Prints the daemon PID and
+launching Bash tool's descendants can signal it. Logs the daemon PID and
 exits immediately."""
 import os
 import sys
+from pathlib import Path
 
-REPO = "/Users/allen/CMU/cpu-kernel-baseline"
+REPO = str(Path(__file__).resolve().parent.parent)
 DRIVER = f"{REPO}/analysis/resume_sweep.sh"
 LOG = sys.argv[1] if len(sys.argv) > 1 else f"{REPO}/sweep.log"
 
-# first fork
 if os.fork() > 0:
     os._exit(0)
 os.setsid()               # new session, drop controlling terminal

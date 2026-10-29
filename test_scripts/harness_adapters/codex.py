@@ -19,8 +19,8 @@ CODEX_SKILL_FILE = REPO_ROOT / "skills" / "codex" / "codex-kernel-session" / "SK
 # TOML table key for mcp_servers.<name> in codex's `-c` override — matches the
 # mcpServers key ClaudeCodeAdapter uses, just for readability across harness logs.
 CODEX_MCP_SERVER_NAME = "cpu-kernel-baseline"
-# One single, permanent `--cd` root shared by every codex job, wiped and
-# rewritten fresh by CodexAdapter.prepare_workspace() before each run 
+# One permanent `--cd` root shared by every codex job, wiped and rewritten
+# by CodexAdapter.prepare_workspace() before each run.
 CODEX_WORKSPACE_DIR = Path.home() / ".codex-fleet" / "workspace"
 # Arbitrary id for the optional custom `model_providers.<id>` entry
 # CodexAdapter builds from OPENAI_API_BASE/OPENAI_API_KEY (see its run_job()).
@@ -29,15 +29,10 @@ CODEX_DOTENV_PROVIDER_NAME = "dotenv-openai-compatible"
 CODEX_MCP_TOOL_TIMEOUT_S = int(CLIENT_TOOL_TIMEOUT_S)
 
 class CodexAdapter(HarnessAdapter):
-    """Local Codex CLI (`codex exec`), non-interactive, talking to the same
-    MCP server over streamable-http as ClaudeCodeAdapter. Codex has no
-    
-    `--append-system-prompt` equivalent, but it auto-loads an AGENTS.md from
-    its working root (`--cd`) the same way Claude Code auto-loads CLAUDE.md,
-    `prepare_workspace()` wiped-and-rewritten-per-run directory rather than 
-    a fresh tempdir or a per-job one
-
-    --approve-for-me is just for agent to execute MCP tool without interruption"""
+    """Local Codex CLI (`codex exec`), non-interactive, over streamable-http.
+    Codex has no `--append-system-prompt`; it auto-loads AGENTS.md from its
+    `--cd` root, so prepare_workspace() writes the skill there.
+    --approve-for-me lets the agent call MCP tools without prompting."""
 
     name = "codex"
     prompt_template = ClaudeCodeAdapter.prompt_template
@@ -54,7 +49,8 @@ class CodexAdapter(HarnessAdapter):
         # Optional: point codex at a custom OpenAI-compatible endpoint instead of
         # whatever account `codex login` already persisted to ~/.codex/auth.json.
         # Per field, first hit wins: OPENAI_API_BASE / OPENAI_BASE_URL /
-        # OPENAI_API_KEY in the environment  > `codex login`.
+        # OPENAI_API_KEY in the environment > the "model_provider" table of the
+        # git-ignored config.json next to SKILL.md > `codex login`.
         codex_config = CODEX_SKILL_FILE.parent / "config.json"
         provider = (
             json.loads(codex_config.read_text()).get("model_provider", {})
@@ -75,8 +71,7 @@ class CodexAdapter(HarnessAdapter):
                 "--approve-for-me",
                 "-c", f'mcp_servers.{CODEX_MCP_SERVER_NAME}.url="{endpoint}"',
                 # Codex's default MCP tool_timeout_sec (300s) is shorter than
-                # evaluate_kernel()'s own budget; wait longer than that budget
-                # (contracts.CLIENT_TOOL_TIMEOUT_S, seconds)
+                # the server's evaluate() budget (contracts.CLIENT_TOOL_TIMEOUT_S, seconds).
                 "-c", f"mcp_servers.{CODEX_MCP_SERVER_NAME}.tool_timeout_sec={CODEX_MCP_TOOL_TIMEOUT_S}",
                 "--json",
             ]

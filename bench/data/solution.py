@@ -5,9 +5,8 @@ Differs from flashinfer-bench's Solution by adding CPU/AOT specifics:
 - spec.isa_features (host-skip check)
 - spec.compile_flags / spec.link_flags (clang++ AOT specifics)
 
-Solution does NOT carry per-binding shim code. The shared C harness lives on
-disk under `solutions/<dataset>/_harness/<op_type>.{cpp,h}` and is concatenated
-with `sources` at compile time.
+Every Solution is self-contained: its `sources` include the
+`armbench_entry_<op_type>` binding, and the builders inject no shared harness.
 """
 
 from __future__ import annotations
@@ -25,7 +24,6 @@ from .utils import BaseModelWithDocstrings, NonEmptyString
 class SupportedLanguages(str, Enum):
     CPP = "cpp"
     """Pure C++ source compiled to a shared library via clang++."""
-    # Future: ASM, RUST, etc.
 
 
 class SupportedDatasets(str, Enum):
@@ -39,14 +37,13 @@ class SupportedDatasets(str, Enum):
     """Calls the kernel via ggml tensors/graphs linked against llama.cpp's static
     libs. Uses LlamaCppBuilder + LlamaCppDataset."""
     KLEIDIAI = "kleidiai"
-    """embeds real Arm KleidiAI micro-kernel sources (.c/.h/.S)
-    directly in the solution,  Builds via CandidateBuilder."""
-    # Future: XNNPACK, EIGEN, ...
+    """Embeds real Arm KleidiAI micro-kernel sources (.c/.h/.S) directly in the
+    solution. Builds via CandidateBuilder."""
 
 
 class SourceFile(BaseModelWithDocstrings):
-    """A single source file in a Solution. The benchmarker materializes these to a
-    temp dir and runs clang++ on them together with the dataset's shared harness.
+    """A single source file in a Solution. The builder materializes these to a
+    temp dir and runs clang++ on them.
     """
 
     path: NonEmptyString
@@ -68,17 +65,14 @@ class SolutionSpec(BaseModelWithDocstrings):
 
     language: SupportedLanguages = SupportedLanguages.CPP
     target_hardware: List[NonEmptyString] = Field(min_length=1)
-    """E.g. ['graviton3', 'aarch64-sve']. Informational; benchmarker may use for skip checks."""
+    """E.g. ['graviton3', 'aarch64-sve']. Informational."""
     entry_point: NonEmptyString
-    """`<source_file>::<C_symbol>`. The symbol the builder's harness shim
-    `armbench_entry_<op_type>` calls into. Must follow the per-(dataset, op_type)
-    contract declared in the builder's harness header (e.g.
-    `bench/compile/builders/ncnn_harness/<op_type>.h` for ncnn baselines,
-    `candidate_harness/<op_type>.h` for candidates)."""
+    """`<source_file>::<C_symbol>`: the kernel symbol the solution's
+    `armbench_entry_<op_type>` binding calls into."""
     dependencies: List[NonEmptyString] = Field(default_factory=list)
-    """E.g. ['ncnn', 'openmp']. Mapped to -l flags by the compile builders."""
+    """E.g. ['ncnn', 'openmp']. Informational (part of the hash); builders do not read it."""
     isa_features: List[NonEmptyString] = Field(default_factory=list)
-    """E.g. ['sve', 'neon']. Benchmarker skips solutions whose features the host lacks."""
+    """E.g. ['sve', 'neon']. mcp_app checks a baseline's features against the host."""
     compile_flags: List[NonEmptyString] = Field(default_factory=list)
     """Passed verbatim to clang++ (e.g. '-O3', '-march=armv8.2-a+sve', '-fopenmp')."""
     link_flags: List[NonEmptyString] = Field(default_factory=list)

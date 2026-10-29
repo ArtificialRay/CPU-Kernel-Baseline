@@ -11,7 +11,6 @@ from .workload import Workload
 
 
 class EvaluationStatus(str, Enum):
-    #TODO: can change to fit current/future dataset in the future
     PASSED = "PASSED"
     INCORRECT_SHAPE = "INCORRECT_SHAPE"
     INCORRECT_NUMERICAL = "INCORRECT_NUMERICAL"
@@ -62,7 +61,7 @@ class Performance(BaseModelWithDocstrings):
     p5_ns: int = Field(ge=0)
     """5th-percentile ns/iter — stability/jitter proxy."""
     reference_min_ns: Optional[int] = Field(default=None, ge=0)
-    """Reference (e.g. baseline ncnn) min_ns, if benchmarker computed it."""
+    """Baseline min_ns (the time_speedup numerator), when a baseline trace exists."""
     cycle_speedup: Optional[float] = Field(default=None, ge=0.0)
     """reference_cycles / cycles — only present when perf counters are available."""
     time_speedup: Optional[float] = Field(default=None, ge=0.0)
@@ -78,7 +77,7 @@ class Performance(BaseModelWithDocstrings):
     repeat: int = Field(ge=1)
     warmup: int = Field(ge=0)
 
-    # ── Hardware perf counters (perf_event_open; per single kernel invocation) ──
+    # Hardware perf counters (perf_event_open; per single kernel invocation)
     cycles: Optional[int] = Field(default=None, ge=0)
     """CPU core cycles per invocation — the canonical performance metric."""
     instructions: Optional[int] = Field(default=None, ge=0)
@@ -95,11 +94,11 @@ class Environment(BaseModelWithDocstrings):
     """Host details captured at run time, for reproducibility."""
 
     hardware: NonEmptyString
-    """E.g. 'graviton3-c7g.large' or `uname -m` + lscpu summary."""
+    """`<platform.machine()>-<platform.node()>`."""
     cpu_pinned: Optional[int] = None
     """CPU core the timing loop was pinned to."""
     libs: Dict[str, str] = Field(default_factory=dict)
-    """Library/toolchain versions (e.g. {'clang++': '17.0.6', 'ncnn': '20240820'})."""
+    """Library versions (e.g. {'python': '3.11.9', 'numpy': '1.26.4'})."""
 
 
 class Evaluation(BaseModelWithDocstrings):

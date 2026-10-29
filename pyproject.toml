@@ -1,7 +1,7 @@
 [project]
 name = "cpu-kernel-baseline"
 version = "0.1.0"
-description = "Add your description here"
+description = "Benchmark for LLM-generated AArch64 SIMD (NEON/SVE/SVE2/SME2) kernels on Arm CPUs"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

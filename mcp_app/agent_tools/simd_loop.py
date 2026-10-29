@@ -2,14 +2,14 @@
 
 Agent writes `kernel.cpp` containing `inner_<op_type>(...)` (op_type is
 `loop_NNN`). The fused harness files (`loop_NNN.h` + `loop_NNN.cpp`) are
-lifted from the baseline reference solution for the definition, so the agent
-only needs to write the inner loop kernel — not the harness boilerplate.
+lifted from the session's baseline solution for the definition
+(`bench_cfg.baseline_author`), so the agent only needs to write the inner
+loop kernel — not the harness boilerplate.
 
 Same contract shape as the ncnn dataset (`inner_<op_type>` behind a fused
-harness); the differences are the dataset enum, the baseline author to lift
-the harness from (typically "reference", the scalar baseline), and dropping
-the reference's `-fno-vectorize` flags so the candidate is actually allowed
-to vectorize.
+harness); the differences are the dataset enum, the author the harness is
+lifted from, and dropping any `-fno-vectorize` flags so the candidate is
+allowed to vectorize.
 """
 
 from __future__ import annotations
@@ -33,12 +33,12 @@ class SIMDLoopKernelSession(KernelSession):
         """Wrap agent-written kernel.cpp into a Solution alongside the fused harness.
 
         Harness files (loop_NNN.h + loop_NNN.cpp) are lifted from the baseline
-        reference solution. compile_flags/isa_features/target_hardware are
-        derived from the session's explicit isa; the reference's scalar-only
-        flags (-fno-vectorize/-fno-slp-vectorize/-O*) are dropped so the
-        candidate can vectorize with -O3 + the requested isa's march.
+        solution. compile_flags/isa_features/target_hardware are derived from
+        the session's explicit isa; its -O*/-march=/-fno-vectorize/
+        -fno-slp-vectorize flags are dropped so the candidate can vectorize
+        with -O3 + the requested isa's march.
         """
-        ref_author = self._bench_cfg.baseline_author  # "reference" for simd-loop
+        ref_author = self._bench_cfg.baseline_author
         ref = self._trace_set.get_baseline_solution(self._definition.name, ref_author)
         if ref is None:
             raise ValueError(

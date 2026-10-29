@@ -78,9 +78,7 @@ def _write_reference_scalar_kernels(ts: TraceSet, dataset: str, run_dir: Path) -
         for def_name, sols in ts.solutions.items()
         if any(s.dataset.value == dataset for s in sols)
     }
-    # Dataset-dependent (simd-loop's solution author is "reference", not
-    # "reference-scalar" — see contracts.py). A single flat literal here
-    # silently dropped every simd-loop definition's starter kernel.
+    # Dataset-dependent: simd-loop's author is "reference", not "reference-scalar".
     ref_author = REFERENCE_SCALAR_AUTHORS[dataset]
     for def_name in def_names:
         ref = ts.get_baseline_solution(def_name, ref_author)

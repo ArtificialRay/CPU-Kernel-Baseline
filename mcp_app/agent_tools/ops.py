@@ -1,4 +1,4 @@
-"""compile/evaluate/disassemble — mcp_app's compile/evaluate/disassemble implementations.
+"""mcp_app's compile/evaluate/disassemble implementations.
 
 mcp_app's server is a long-lived process for the life of one session, so
 these take an already-loaded TraceSet/Definition rather than reloading them
@@ -54,9 +54,7 @@ def evaluate_kernel(
     """Dlopen so_path and run the evaluator across all workloads for this
     definition, isolated in a subprocess (bench/runtime/isolation.py) so a
     candidate kernel that hangs or crashes can't take this MCP server process
-    down with it — see the incident this was added for:
-    harness_trajs/nanobot/ncnn_sve_conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0.log.
-    `_evaluate_kernel_direct` (below) does the actual work; this just wraps it.
+    down with it. `_evaluate_kernel_direct` (below) does the actual work; this just wraps it.
     """
     from bench.runtime.isolation import SubprocessCrashed, SubprocessTimeout, run_in_subprocess
 
@@ -212,11 +210,9 @@ def disassemble_so(so_path: str, symbol: str) -> dict:
     objdump = _find_llvm_objdump()
     if not objdump:
         return {"error": "llvm-objdump not found on PATH"}
-    # Mach-O (macOS) object files prefix every C symbol with an extra "_"
-    # that ELF (Linux) doesn't add, so the same entry-symbol string that
-    # matches on Graviton silently matches nothing here — objdump still
-    # exits 0, just with an empty disassembly, so if the first try can't 
-    # find "disassembly of section" will try the symble with "_" at the beginning
+    # Mach-O (macOS) prefixes every C symbol with an extra "_" that ELF
+    # doesn't, and objdump exits 0 with an empty disassembly on a miss — so
+    # retry with the "_" prefix when no "Disassembly of section" comes back.
     candidates = [symbol] if symbol.startswith("_") else [symbol, f"_{symbol}"]
     try:
         last_stdout = ""

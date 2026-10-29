@@ -1,8 +1,6 @@
-"""DefaultEvaluator — correctness + timing, the conv2d protocol ported from the
-old runner._run_one. This is the fallback evaluator (registry returns it when no
-specialized evaluator matches). Behavior is a faithful port: same input gen,
-same `compare()`, same status mapping, same speedup logic — plus the new
-cycle-based hardware counters threaded through `time_callable`.
+"""DefaultEvaluator — elementwise-tolerance correctness + timing (incl. hardware
+counters via `time_callable`). The fallback evaluator: the registry returns it
+when no specialized evaluator matches.
 """
 
 from __future__ import annotations
@@ -34,7 +32,7 @@ from .evaluator import BoundKernel, Evaluator, RefBaseline, _error
 
 
 class DefaultEvaluator(Evaluator):
-    """General correctness+timing evaluator for conv2d (and the Phase-1 default)."""
+    """General correctness+timing evaluator; the default for every definition."""
 
     @classmethod
     def can_evaluate(cls, definition: Definition) -> bool:
@@ -43,20 +41,18 @@ class DefaultEvaluator(Evaluator):
         # it usable directly in tests.
         return True
 
-    # ── Phase 0: reference-side golden data ───────────────────────────────────
+    # Phase 0: reference-side golden data
 
     @classmethod
     def build_baseline(
         cls, definition: Definition, workload: Workload, ref_run: Any, cfg: EvalConfig
     ) -> RefBaseline:
-        """The baseline implementation build here is pytorch/numpy ground truth"""
-        # 1. Generate inputs (numpy)
+        """Generate inputs and run the reference (the numpy/PyTorch ground truth)."""
         try:
             np_inputs = gen_inputs_for_workload(definition, workload)
         except Exception as e:
             raise RuntimeError(f"gen_inputs failed: {e}\n{traceback.format_exc()}") from e
 
-        # 2. Reference (PyTorch ground truth)
         try:
             ref_kwargs = {k: v for k, v in np_inputs.items()}
             ref_out = ref_run(**ref_kwargs)
@@ -79,7 +75,7 @@ class DefaultEvaluator(Evaluator):
             sqnr_floor_author=tags.get("baseline_sqnr_author"),
         )
 
-    # ── Phase 1: correctness ──────────────────────────────────────────────────
+    # Phase 1: correctness
 
     @classmethod
     def check_correctness(
@@ -112,9 +108,8 @@ class DefaultEvaluator(Evaluator):
             required_matched_ratio=cfg.required_matched_ratio,
         )
         if not c.passed:
-            # compare() returns the long form ("shape: got X, ref Y" / "dtype: ...")
-            # so match on prefix — an exact `== "shape"` never fires and every
-            # shape/dtype mismatch would be mislabeled INCORRECT_NUMERICAL.
+            # compare() returns the long form ("shape: got X, ref Y" / "dtype: ..."),
+            # so match on prefix.
             reason = c.fail_reason or ""
             status = (
                 EvaluationStatus.INCORRECT_SHAPE if reason.startswith("shape")
@@ -149,7 +144,7 @@ class DefaultEvaluator(Evaluator):
             None,
         )
 
-    # ── Phase 2: performance ──────────────────────────────────────────────────
+    # Phase 2: performance
 
     @classmethod
     def eval_performance(

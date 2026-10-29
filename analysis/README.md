@@ -3,8 +3,8 @@
 Operational tooling for driving and instrumenting large batch sweeps on top
 of `test_scripts/bench_fleet.py`. This README documents what
 `wandb_log_run.py` actually writes to Weights & Biases and where to find it
-on the run page; the other two files are one-off sweep-orchestration scripts
-(see their own docstrings).
+on the run page; the other files are one-off scripts (see their own
+docstrings).
 
 - `wandb_log_run.py` — per-definition W&B logging, imported directly by
   `bench_fleet.py` (`log_run_to_wandb()`). Not a CLI/subprocess in the
@@ -66,9 +66,9 @@ trajectory (not just perf-mode ones), so it's accurate regardless of harness.
 
 | field | meaning |
 |---|---|
-| `definition` / `dataset` / `op_type` / `isa` / `model` / `author` | run identity |
+| `definition` / `dataset` / `op_type` / `isa` / `model` / `author` / `harness` | run identity |
 | `instance_type` | `WANDB_INSTANCE_TYPE` env var, if set |
-| `baseline_kernel_sha` | sha256(first 12 hex chars) of the baseline `kernel.cpp` this run was scored against — lets you tell runs apart across baseline changes |
+| `baseline_kernel_sha` | first 12 hex chars of the sha256 of the baseline `kernel.cpp` this run was scored against — lets you tell runs apart across baseline changes |
 
 ### Table / Artifact (from trajectory + kernel sources, all harnesses)
 

@@ -58,9 +58,8 @@ def _llama_cpp_root(repo_root: Path) -> Path:
     """llama.cpp checkout root.
 
     Overridable via LLAMA_CPP_ROOT (points at the llama.cpp checkout, e.g.
-    /home/ubuntu/llama.cpp). Defaults to <repo_root>/llama.cpp, falling back to
-    a sibling of the repo (matching where the ncnn checkout convention allows
-    either layout).
+    ~/llama.cpp). Defaults to <repo_root>/llama.cpp, falling back to a sibling
+    of the repo.
     """
     env = os.environ.get("LLAMA_CPP_ROOT")
     if env:

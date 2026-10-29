@@ -1,7 +1,7 @@
 """Numerical comparison: candidate vs reference output.
 
 Uses the AND condition: an element fails only if BOTH absolute and relative errors
-exceed their respective thresholds. This is more lenient than the old hybrid formula
+exceed their respective thresholds. This is more lenient than the hybrid formula
 (`diff > abs_tol + rel_tol * |ref|`) for near-zero reference values.
 
 `required_matched_ratio` (default 1.0) allows a configurable fraction of elements to
@@ -27,7 +27,7 @@ class CorrectnessResult:
     first_mismatch_index: Optional[Tuple[int, ...]] = None
     first_mismatch_got: float = 0.0
     first_mismatch_ref: float = 0.0
-    fail_reason: Optional[str] = None  # "shape" | "dtype" | "numerical" | "sqnr"
+    fail_reason: Optional[str] = None  # "shape..." | "dtype..." | "numerical" | "sqnr" | invalid-reference message
     sqnr_db: float = float("inf")
     """Signal-to-quantization-noise ratio (dB); set by compare_sqnr, else inf."""
 
@@ -72,8 +72,8 @@ def compare(
     ref = reference.astype(np.float64)
     eps = min(abs_tol, 1e-12)
 
-    # NaN/Inf in `ref` means the golden reference itself is undefined there
-    # will be directly reported to agent and agent may end the optimization
+    # An all-NaN/Inf reference means the golden output itself is undefined;
+    # the fail_reason tells the agent it may stop optimizing.
     ref_finite = np.isfinite(ref)
     if not ref_finite.any():
         return CorrectnessResult(

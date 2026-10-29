@@ -70,6 +70,7 @@ class Workload(BaseModelWithDocstrings):
     Every entry in `definition.inputs` must appear in `self.inputs`:
     - `{"type": "random"}` — tensor generated deterministically from uuid seed
     - `{"type": "scalar", "value": v}` — scalar constant (matches definition's shape=null)
+    - `{"type": "bytes", "layout": l}` — structured uint8 buffer (see BytesInput)
     - `{"type": "tensor", "path": p}` — real tensor loaded from the trace warehouse
 
     Raises at input-generation time if any definition input is missing.
@@ -78,7 +79,7 @@ class Workload(BaseModelWithDocstrings):
     axes: Dict[NonEmptyString, PositiveInt]
     """Concrete values for the Definition's var axes (e.g. {'N': 1, 'H': 56, 'W': 56})."""
     inputs: Dict[NonEmptyString, WorkloadInput] = Field(default_factory=dict)
-    """Per-input specs: random tensor or scalar constant."""
+    """Per-input specs (see WorkloadInput)."""
     uuid: NonEmptyString = Field(default_factory=lambda: _uuid.uuid4().hex)
     """Stable identifier so traces can be joined to workloads across runs."""
     tags: Dict[str, str] = Field(default_factory=dict)
