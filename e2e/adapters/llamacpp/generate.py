@@ -1,32 +1,31 @@
 #!/usr/bin/env python3
 """Emit the end-to-end kernel set for one GGUF into bench-trace.
 
-Input: the inventory JSON from scripts/e2e/qwen35_inventory.py. For every
+Input: the inventory JSON from inventory.build_inventory(). For every
 mul_mat shape above --min-share it writes, under bench-trace/:
   definitions/gemm/gemm_<tag>_n<N>_k<K>.json        (packed ggml block ABI)
   workloads/gemm/gemm_<tag>_n<N>_k<K>.jsonl         (M = --m-values, B = bytes/ggml_<type>)
   solutions/llama.cpp/reference-scalar/gemm/...     (scalar port of ggml's vec_dot, the agent's start)
   solutions/llama.cpp/baseline-llamacpp-arm/gemm/...(ggml_mul_mat on the same blocks, the speedup baseline)
-The templates live in scripts/e2e/kquant_templates.py (tested by test_kquant.py).
+The templates live in e2e/adapters/llamacpp/kquant_templates.py.
 Existing files are left alone unless --force. bench-trace is gitignored; push
 the new files to HF additively (never a full-folder sync).
 
-  python3 scripts/e2e/gen_qwen35_definitions.py inventory.json --model-tag llama-3.1-8b [--min-share 0.001] [--dry-run]
+  write_definitions("inventory.json", "llama-3.1-8b", min_share=0.001)      # or: python -m e2e prepare --steps generate
 
 Despite the file name this works for any model the inventory script supports;
 --model-tag (the key in config/e2e_models.json) sets both the model: and e2e: tags.
 """
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "scripts" / "e2e"))
-import kquant_templates as kt  # noqa: E402
+REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO))
+from e2e.adapters.llamacpp import kquant_templates as kt  # noqa: E402
 if not hasattr(kt, "PACKED_QUANTS"):
     kt.PACKED_QUANTS = ("q4_k_m", "q5_k", "q6_k")
 
@@ -42,36 +41,46 @@ def wl_uuid(def_name: str, axes: dict) -> str:
     return hashlib.md5(f"{def_name}:{json.dumps(axes, sort_keys=True)}".encode()).hexdigest()
 
 
+def shown(path: Path) -> Path:
+    """`path` relative to the repo when it is inside it (the default --root), else as given."""
+    try:
+        return path.relative_to(REPO)
+    except ValueError:
+        return path
+
+
 def write(path: Path, text: str, force: bool, dry: bool) -> bool:
     if path.exists() and not force:
-        print(f"  keep  {path.relative_to(REPO)}")
+        print(f"  keep  {shown(path)}")
         return False
-    print(f"  {'would write' if dry else 'write'} {path.relative_to(REPO)}")
+    print(f"  {'would write' if dry else 'write'} {shown(path)}")
     if not dry:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
     return True
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("inventory")
-    ap.add_argument("--min-share", type=float, default=0.001, help="skip shapes below this per-token byte share")
-    ap.add_argument("--m-values", default=",".join(map(str, M_VALUES)))
-    ap.add_argument("--lm-head-m-values", default=",".join(map(str, LM_HEAD_M_VALUES)),
-                    help="M values for the tied lm_head (token_embd) shape")
-    ap.add_argument("--model-tag", required=True, help="e2e model key, e.g. qwen3.5-4b or llama-3.1-8b")
-    ap.add_argument("--force", action="store_true")
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
-    inv = json.load(open(args.inventory))
-    m_values = [int(x) for x in args.m_values.split(",")]
-    lm_head_m_values = [int(x) for x in args.lm_head_m_values.split(",")]
+def write_definitions(
+    inventory, model_tag: str, root: Path = BT, *, min_share: float = 0.001,
+    m_values=M_VALUES, lm_head_m_values=LM_HEAD_M_VALUES, force: bool = False, dry_run: bool = False,
+) -> int:
+    """Write the e2e kernel set of one model under `root` (definitions, workloads and the
+    reference-scalar / baseline solutions); returns how many files were written.
+
+    inventory         path of the inventory JSON, or the dict build_inventory() returned
+    model_tag         e2e model key, e.g. qwen3.5-4b or llama-3.1-8b (sets the model: / e2e: tags)
+    min_share         skip shapes below this per-token byte share
+    lm_head_m_values  M values for the tied lm_head (token_embd) shape
+    force             overwrite files that already exist (otherwise they are kept)
+    """
+    bt = Path(root)
+    inv = inventory if isinstance(inventory, dict) else json.load(open(inventory))
+    m_values, lm_head_m_values = list(m_values), list(lm_head_m_values)
 
     seen = {}
     uncovered = 0.0
     for e in inv["mul_mat"]:
-        if e["share_per_token"] < args.min_share:
+        if e["share_per_token"] < min_share:
             continue
         if e["quant"] not in kt.PACKED_QUANTS:
             print(f"- SKIP {e['role']} ({e['ggml_type']}, {e['share_per_token']:.1%}): no packed-ABI template for this type yet")
@@ -84,7 +93,7 @@ def main() -> None:
     if uncovered:
         print(f"uncovered decode-byte share: {uncovered:.1%}")
 
-    print(f"{len(seen)} unique (quant, N, K) shapes from {args.inventory}")
+    print(f"{len(seen)} unique (quant, N, K) shapes from {inventory if not isinstance(inventory, dict) else inv.get('name')}")
     n_written = 0
     for (quant, N, K), roles in sorted(seen.items(), key=lambda kv: -sum(r["share_per_token"] for r in kv[1])):
         tag = kt.quant_tag(quant, "ggml")
@@ -95,10 +104,10 @@ def main() -> None:
         definition = kt.definition_json(
             quant, N, K, layout="ggml",
             description=f"{inv['arch']} {desc}: N={N} K={K}, ggml {roles[0]['ggml_type']} block rows (e2e, {share:.1%} of decode bytes)",
-            tags=["status:active", f"model:{args.model_tag}", *kt.REQUIRED_TAGS, f"e2e:{args.model_tag}", f"e2e-share:{share:.4f}"],
+            tags=["status:active", f"model:{model_tag}", *kt.REQUIRED_TAGS, f"e2e:{model_tag}", f"e2e-share:{share:.4f}"],
         )
         assert definition["name"] == name, (definition["name"], name)
-        n_written += write(BT / "definitions" / "gemm" / f"{name}.json", json.dumps(definition, indent=2) + "\n", args.force, args.dry_run)
+        n_written += write(bt / "definitions" / "gemm" / f"{name}.json", json.dumps(definition, indent=2) + "\n", force, dry_run)
 
         b_layout = f"ggml_{roles[0]['ggml_type'].replace('Q', 'q', 1)}"   # Q4_K -> ggml_q4_K
         is_lm_head = any("token_embd" in r["role"] or r["role"].startswith("output") for r in roles)
@@ -106,16 +115,13 @@ def main() -> None:
                 "inputs": {"A": {"type": "random"}, "B": {"type": "bytes", "layout": b_layout}},
                 "uuid": wl_uuid(name, {"M": m}), "tags": {"from": "gen_qwen35_definitions"}}
                for m in (lm_head_m_values if is_lm_head else m_values)]
-        n_written += write(BT / "workloads" / "gemm" / f"{name}.jsonl", "".join(json.dumps(w) + "\n" for w in wls), args.force, args.dry_run)
+        n_written += write(bt / "workloads" / "gemm" / f"{name}.jsonl", "".join(json.dumps(w) + "\n" for w in wls), force, dry_run)
 
         for author, sources in (("reference-scalar", kt.reference_scalar_sources(quant, N, K, layout="ggml")),
                                 ("baseline-llamacpp-arm", kt.baseline_sources(quant, N, K, layout="ggml"))):
             sol = {"name": f"{author}_{name}", "definition": name, "dataset": "llama.cpp", "author": author,
                    "description": kt.description(quant, author, N, K, layout="ggml"),
                    "spec": kt.spec(quant, author), "sources": sources}
-            n_written += write(BT / "solutions" / "llama.cpp" / author / "gemm" / f"{name}.json", json.dumps(sol, indent=2) + "\n", args.force, args.dry_run)
-    print(f"{n_written} files {'would be ' if args.dry_run else ''}written")
-
-
-if __name__ == "__main__":
-    main()
+            n_written += write(bt / "solutions" / "llama.cpp" / author / "gemm" / f"{name}.json", json.dumps(sol, indent=2) + "\n", force, dry_run)
+    print(f"{n_written} files {'would be ' if dry_run else ''}written")
+    return n_written
