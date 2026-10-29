@@ -114,12 +114,11 @@ _ISA_PROMPT_INFO: dict[str, tuple[str, str]] = {
 }
 
 
-def build_user_prompt(definition, ref_solution, *, closing: str | None = None) -> str:
+def build_user_prompt(definition, ref_solution) -> str:
     """Task description: the entry signature and the scalar kernel to replace.
 
-    `closing` is the trailing instruction; the default points at the tool loop.
-    eval/single_shot.py passes its own, so the two paths hand the model
-    identical task information and differ only in what it may do with it.
+    eval/single_shot.py keeps a hand-synced copy with its own closing line, so
+    both paths hand the model identical task information.
     """
     parts = [f"Definition: {definition.name}  (op_type: {definition.op_type})"]
 
@@ -141,10 +140,10 @@ def build_user_prompt(definition, ref_solution, *, closing: str | None = None) -
                 f"```cpp\n{kernel.content}\n```"
             )
 
-    parts.append(closing if closing is not None else (
+    parts.append(
         "\nStart with compile(), then evaluate(version) to check correctness and "
         "measure speedup in one call. Your best passing version is submitted automatically."
-    ))
+    )
     return "\n".join(parts)
 
 
@@ -153,7 +152,9 @@ def _compress_history(
     keep_full_turns: int = 2,
     version_history: list[dict] | None = None,
 ) -> list[dict]:
-    """Compress old turns for the AgentTools loop (compile/evaluate/disassemble)."""
+    """Keep the last `keep_full_turns` turns verbatim; replace older compile
+    code and disassembly with stubs, with a recap of passing versions before
+    the kept turns."""
     assistant_indices = [i for i, m in enumerate(messages) if m["role"] == "assistant"]
     if len(assistant_indices) <= keep_full_turns:
         return messages
@@ -170,13 +171,6 @@ def _compress_history(
 
     keep_from = assistant_indices[-keep_full_turns]
     recap_parts = ["[History compressed — earlier turns summarized below.]"]
-    # version_history: info for kernels at each turn, it would be like:
-    #     [History compressed — earlier turns summarized below.]
-    # Versions that passed correctness checks:
-    #   v1 [turn 2]: time_speedup=1.234, cycle_speedup=1.189
-    #   v3 [turn 5]: time_speedup=1.891, cycle_speedup=1.763  ← BEST
-    # Best so far: v3 (time_speedup=1.891). Submit if you can't improve further.
-    # The most recently compiled binary is still active on the remote — ...
     if version_history:
         passed = [v for v in version_history if v.get("passed")]
         if passed:
@@ -209,7 +203,6 @@ def _compress_history(
         )
     recap_msg = {"role": "user", "content": "\n".join(recap_parts)}
 
-    # messages: complete chat history at each runs
     result = []
     recap_inserted = False
     for i, msg in enumerate(messages):
@@ -222,7 +215,7 @@ def _compress_history(
                 for tc in msg["tool_calls"]:
                     if tc["function"]["name"] == "compile":
                         if compile_success.get(tc["id"], True):
-                            try:  # role=="assistant" + tool_call=="compile" + compile success
+                            try:
                                 args = json.loads(tc["function"]["arguments"])
                                 code = args.get("code", "")
                                 if len(code) > 100:
@@ -267,15 +260,11 @@ def run_agentic_eval(
         trace_set: TraceSet used for solution persistence and baseline lookup.
         author: Solution author label (e.g. "claude-opus-4-8").
         model: LiteLLM model string (e.g. "anthropic/claude-opus-4-8").
-        mcp_client: Shared MCP session (eval/mcp_client.py::attach()) —
-            one MCPKernelClient is meant to be shared across every
-            definition in a run (see its own docstring), so it's passed in
-            already connected, not built here.
-        isa: The SAME isa string the mcp_app.server session was started
-            with (e.g. "sve2", "portable") — drives the system prompt's
-            isa_desc/isa_name via `_ISA_PROMPT_INFO` so the agent is never
-            told a different ISA than what the server actually compiles
-            with. Not derived from instance type.
+        mcp_client: Connected session from eval/mcp_client.py::attach(),
+            shared across every definition in the run.
+        isa: The isa the mcp_app.server session was started with (e.g.
+            "sve2", "portable"); selects the prompt's ISA text via
+            `_ISA_PROMPT_INFO` so the agent is told what the server compiles for.
         dataset: Dataset key, used for REFERENCE_SCALAR_AUTHORS lookup below
             (the MCP server itself already knows its own dataset).
         bench_cfg: Optional BenchmarkConfig override (baselines, perf counter settings).
@@ -361,8 +350,7 @@ def run_agentic_eval(
                 "model": model,
                 "messages": compressed,
                 "tools": schemas,
-                # some model may not calling tool only in one turn, see config/kernel_contracts.yaml 
-                # tool_call_loop default
+                # See models_without_forced_tool_use in config/kernel_contracts.yaml.
                 "tool_choice": (
                     "auto"
                     if any(m in model for m in AGENT_LOOP_DEFAULTS["models_without_forced_tool_use"])
@@ -419,15 +407,9 @@ def run_agentic_eval(
             messages.append(dumped)
 
             if not msg.tool_calls:
-                # `dumped` is already appended above, so returning to the top of
-                # the loop here would leave the conversation ending on an
-                # assistant turn — which Anthropic rejects with "This model does
-                # not support assistant message prefill. The conversation must
-                # end with a user message." Unreachable while tool_choice was
-                # always "required" (a tool call was guaranteed); with "auto" the
-                # model does sometimes answer in prose, and without this nudge
-                # the next request 400s and the definition is lost (hit 4 of 26
-                # definitions on the 2026-09-10 llama.cpp sweep).
+                # With tool_choice="auto" the model sometimes answers in prose.
+                # The history would then end on an assistant turn, which
+                # Anthropic rejects ("must end with a user message"), so nudge.
                 if verbose:
                     print(f"  Agent (no tool call): {msg.content}")
                     print("  [warning] expected a tool call — nudging and continuing")
@@ -469,8 +451,7 @@ def run_agentic_eval(
                     result_dict = tools.dispatch_tool_call(fn_name, fn_args)
 
                 if result_dict.get("status") == "MAX_ITERATIONS_EXCEEDED":
-                    # This definition's server-side call budget is already
-                    # exhausted, should exit tool call loop immediately
+                    # Server-side call budget exhausted; stop the loop.
                     hit_iteration_cap = True
 
                 if verbose:
@@ -511,7 +492,6 @@ def run_agentic_eval(
                     "content": json.dumps(result_dict),
                 })
 
-                # ── Version tracking ──────────────────────────────────────────
                 if fn_name == "compile" and result_dict.get("status") == "OK":
                     version_history.append({
                         "version": result_dict.get("version", len(version_history) + 1),
@@ -549,7 +529,6 @@ def run_agentic_eval(
             if hit_iteration_cap:
                 break
 
-        # ── Report the best version seen this session ────────────────────────────
         if best_version and best_version.get("code"):
             if verbose:
                 ts = best_version.get("time_speedup", "?")

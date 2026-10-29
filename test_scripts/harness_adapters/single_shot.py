@@ -18,23 +18,18 @@ from .base import REPO_ROOT, HarnessAdapter, Job
 class SingleShotAdapter(HarnessAdapter):
     """One completion per sample, no tools (eval/single_shot.py::run_single_shot).
 
-    Same shape as OwnHarnessAdapter — in-process, sharing one MCPKernelClient
-    across every definition in the batch — but the model never sees a tool
-    schema. The MCP session is used only by this adapter, to compile and
-    measure what came back, so the number is produced by the same evaluator
-    against the same baseline as a multi-turn run and the two are comparable.
+    Same shape as OwnHarnessAdapter (in-process, one shared MCPKernelClient),
+    but the model never sees a tool schema; the MCP session only compiles and
+    measures what came back, so results are comparable with a multi-turn run.
 
-    Not compatible with --until-complete: its round planner calls
-    _trajectory_complete(), which requires a "submit" turn plus
-    --min-iterations exploration calls. Single-shot emits neither (it makes
-    2 tool calls per sample and never submits), so every definition would
-    look permanently incomplete and the planner would loop forever. Use a
-    single pass.
+    Not compatible with --until-complete: _trajectory_complete() requires a
+    "submit" turn plus --min-iterations exploration calls, and single-shot
+    makes 2 tool calls per sample and never submits, so the planner would
+    loop forever.
     """
 
     name = "single-shot"
-    # run_single_shot() builds its prompts from the Definition object and never
-    # reads job.prompt — placeholder, same as OwnHarnessAdapter.
+    # Placeholder: run_single_shot() never reads job.prompt.
     prompt_template = "%s"
     template_args = 1
 
@@ -82,11 +77,9 @@ class SingleShotAdapter(HarnessAdapter):
                 "results": [],
             }
         log_path.write_text(json.dumps(result, indent=2))
-        # rc drives bench_fleet's retry loop, so it must mean "infra broke",
-        # never "the model wrote a kernel that did not compile". A definition
-        # where every sample fails IS the measurement here; retrying it would
-        # quietly redraw --samples more times and report a pass rate that no
-        # longer describes one-shot behaviour. Only the exception path retries.
+        # rc drives bench_fleet's retry loop, so it means "infra broke" only:
+        # failed samples ARE the measurement, and retrying would redraw them
+        # and skew the pass rate.
         return 1 if result.get("status") == "ERROR" else 0
 
     def cleanup(self) -> None:

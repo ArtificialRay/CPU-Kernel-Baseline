@@ -30,7 +30,8 @@ NANOBOT_CONFIG_BASE = Path(
 
 NANOBOT_WORKSPACE = Path.home() / ".nanobot" / "workspace"
 NANOBOT_JOB_WORKSPACES_DIR = Path.home() / ".nanobot" / "job_workspaces"
-# nanobot prefers <workspace>/skills/<name>/ over its own stale builtin copy; SKILL.md only 
+# nanobot prefers <workspace>/skills/<name>/ over its own stale builtin copy;
+# only SKILL.md is copied there.
 NANOBOT_SKILL_FILE = REPO_ROOT / "skills" / "nanobot" / "nanobot-kernel-session" / "SKILL.md"
 NANOBOT_SKILL_NAME = "nanobot-kernel-session"
 # dataset -> the mcpServers key nanobot's config.json wires to a fixed
@@ -132,12 +133,10 @@ class NanobotAdapter(HarnessAdapter):
     def _job_ws(self, job: Job) -> Path:
         """Workspace path for `job`, keyed by both author and definition.
 
-        Keying by definition alone caused race conditions when concurrent queues shared
-        a definition, leading to `prepare_workspace` (`rsync --delete`) or `cleanup_workspace`
-        wiping active session files. Keying by author ensures queue isolation.
-
-        Falls back to the bare definition name if `_author` is unset, ensuring
-        `cleanup_workspace()` can safely run on aborted jobs.
+        Author is part of the key so concurrent queues sharing a definition
+        can't wipe each other's session files (`rsync --delete`, cleanup).
+        Falls back to the bare definition name if `_author` is unset, so
+        `cleanup_workspace()` still works on aborted jobs.
         """
         stem = f"{self._author}_{job.name}" if self._author else job.name
         return NANOBOT_JOB_WORKSPACES_DIR / stem

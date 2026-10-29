@@ -16,8 +16,7 @@ if TYPE_CHECKING:
     from bench.config import BenchmarkConfig
     from bench.data.trace_set import TraceSet
 
-# From contracts.py — shared with eval/run_benchmark.py::_DATASET_BASELINE_AUTHOR
-# and mcp_app/smoke_test_driver.py::DATASET_REFERENCE.
+# From contracts.py — shared with bench/config.py and mcp_app/smoke_test_driver.py::DATASET_REFERENCE.
 DEFAULT_BASELINE_AUTHOR: dict[str, str] = BASELINE_AUTHORS
 
 
@@ -41,6 +40,7 @@ def ensure_baseline_collected(
     `evaluate()`/`submit()` for the agent's own kernel still work fine
     without a baseline; they just return `time_speedup`/`cycle_speedup` as
     `None`.
+
     Deliberately does not call `Benchmark.close()` — that would clear the
     process-wide `BuilderRegistry` build cache mid-session, which could
     delete build directories other already-compiled definitions still

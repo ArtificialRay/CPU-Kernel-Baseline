@@ -18,13 +18,12 @@ _MIME_TYPES = {
     ".cpp": "text/x-c++src",
     ".s": "text/x-asm",
     ".jsonl": "application/x-ndjson",
-    ".md": "text/markdown",
 }
 
 # The unsolved starting point for a definition — written for every definition
 # at server startup (see session.py::_write_reference_scalar_kernels), never
 # authored by an agent. Visible to every MCP session regardless of
-# `visible_definitions`
+# `visible_definitions`.
 _REFERENCE_PATTERN = REFERENCE_SCALAR_FILENAME
 
 # Glob patterns for files exposed as resources, in listing order.
@@ -50,9 +49,8 @@ def list_run_dir_resources(
     note_session_definition). This keeps one job's already-optimized
     kernels from leaking into another job's session purely because they
     share this process and run_dir. A session that hasn't compile()'d
-    anything yet (fresh connection, or after a reset) sees none of these —
-    see SKILL.md's "Recovering from an MCP session reset" for what that
-    means in practice.
+    anything yet (fresh connection, or after a reset) sees none of these;
+    check_progress() is how an agent recovers prior work after a reset.
 
     Dedupe/name resources by their path relative to run_dir (not the bare
     filename) since e.g. `v1.cpp` exists once per definition and bare-name
@@ -91,8 +89,7 @@ def read_run_dir_resource(
     """Resolve a file:// URI back to a path, enforce containment in run_dir
     AND the same session scope as list_run_dir_resources — a session can't
     bypass the listing scope by guessing/reusing another definition's URI
-    (e.g. from its own earlier turns, before this scoping existed, or by
-    pattern-guessing a filename) — then read it.
+    — then read it.
     """
     prefix = "file://"
     if not uri.startswith(prefix):

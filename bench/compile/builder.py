@@ -3,13 +3,11 @@
 A Builder turns a Solution into a `.so` for dlopen. The concrete subclasses
 live in `bench/compile/builders/`:
 
-  - CandidateBuilder : shared raw-`float*` path for ALL candidate (non-baseline)
-                       solutions, regardless of dataset. No ncnn dependency.
-  - NcnnBuilder      : per-dataset baseline path (dataset=ncnn). Ports the old
-                       compile_solution: ncnn framework sources + _mat_factory +
-                       stubs, retargeted to the real `ncnn/src` + `ncnn/src/layer/arm`
-                       checkout layout.
-  - SimdLoopBuilder  : per-dataset baseline stub (dataset=simd-loop).
+  - CandidateBuilder : shared raw-`float*` fallback for every candidate
+                       (non-baseline) solution and no-framework baselines.
+  - NcnnBuilder      : ncnn baselines, linked against a real ncnn checkout.
+  - LlamaCppBuilder  : llama.cpp solutions, linked against ggml static libs.
+  - SimdLoopBuilder  : simd-loop solutions.
 
 The candidate-vs-baseline decision is made by the orchestration layer
 (`bench/benchmark.py`) by comparing `solution.author == baseline_author` and
@@ -44,8 +42,6 @@ def _resolve_cxx() -> Optional[str]:
     return None
 
 
-# ── Build error ──────────────────────────────────────────────────────────────
-
 class CompileError(RuntimeError):
     """clang++ returned non-zero. The message includes the full stderr."""
 
@@ -56,13 +52,9 @@ class CompileError(RuntimeError):
         self.command = command
 
 
-# A stub used by the registry fo "no builder can build this" / "build failed" conditions.
-# Alias matching flashinfer-bench's naming, 
 class BuildError(RuntimeError):
     """No registered builder can build a solution, or a build failed structurally."""
 
-
-# ── Compile result ───────────────────────────────────────────────────────────
 
 @dataclass
 class CompileResult:
@@ -70,12 +62,10 @@ class CompileResult:
     """Absolute path to the produced .so."""
     build_dir: Path
     """Temp dir holding the build artifacts. Lifecycle owned by the registry /
-    Benchmark.close(); the runner no longer cleans up per call."""
+    Benchmark.close()."""
     command: List[str]
     """The clang++ command that was run."""
 
-
-# ── Builder ABC ──────────────────────────────────────────────────────────────
 
 class Builder(ABC):
     """Base class for all builders.
@@ -107,8 +97,6 @@ class Builder(ABC):
     def build(self, definition: Definition, solution: Solution) -> CompileResult:
         """Compile `solution` into a `.so` and return its CompileResult."""
 
-    # ── shared helpers ────────────────────────────────────────────────────────
-
     def _make_build_dir(
         self, solution: Solution, build_dir: Optional[Path] = None
     ) -> Tuple[Path, Path]:
@@ -130,8 +118,7 @@ class Builder(ABC):
         successfully even with unresolved symbols (they're only required at
         dlopen time), so silently dropping a real source file here doesn't
         surface as a CompileError — it surfaces later as a confusing
-        "undefined symbol" at dlopen (see kleidiai's vendored KleidiAI .c/.S
-        sources, the first solution in this repo to need them).
+        "undefined symbol" at dlopen (e.g. kleidiai's vendored .c/.S sources).
         """
         src_paths: List[Path] = []
         for src in solution.sources:
@@ -150,16 +137,11 @@ class Builder(ABC):
     }
 
     def _source_compile_args(self, paths: List[Path]) -> List[str]:
-        """Emit `-x <lang> <path>` pairs so each source is compiled by its
-        true language explicitly, instead of relying on the cxx driver
-        (clang++/g++) to infer it from the extension. Needed once a solution
-        mixes C++ with real C/assembly (e.g. kleidiai's vendored KleidiAI
-        kernels): empirically, invoking a `.c` file through the `clang++`
-        driver here compiled it as C++ (its internal, non-`extern "C"`
-        helper declarations got C++-mangled, while their `.S` definitions
-        emit plain C symbol names) — an undefined-symbol failure only at
-        dlopen time, not at compile time, since a `-shared` link doesn't
-        require every symbol to resolve.
+        """Emit `-x <lang> <path>` pairs so each source is compiled as its true
+        language. The `clang++` driver compiles a `.c` file as C++, mangling
+        helper declarations whose `.S` definitions use plain C names (e.g.
+        kleidiai) — an undefined-symbol failure that only shows at dlopen,
+        since a `-shared` link doesn't require every symbol to resolve.
         """
         args: List[str] = []
         for p in paths:

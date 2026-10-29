@@ -2,16 +2,13 @@
 
 The C-side implementation of these factory functions lives in
 `bench/datasets/_ncnn_lib/_mat_factory.cpp`, which the NcnnBuilder
-(`bench/compile/builders/ncnn.py`) compiles into every solution.so build. After
-dlopening the solution.so, the runner resolves both:
-  - armbench_entry_<op_type>  (from the solution's own binding.cpp)
-  - armbench_ncnn_mat_*       (from _mat_factory.cpp)
-…and ctypes-binds them. Every ncnn baseline ships a self-contained
-armbench_entry_<op_type> that bakes its scalar params as constexpr, so the entry
-takes only Mat/Option pointers — the runner declares that signature inline. The
-pointer count is N-ary, driven entirely by however many non-scalar tensors
-`definition.inputs` declares (plus the output and Option pointer) — there is no
-fixed slot count assumed anywhere in this module.
+(`bench/compile/builders/ncnn.py`) compiles into every solution.so build. The
+dlopened .so therefore exports both:
+  - armbench_entry_<op_type>  (from the solution's own sources)
+  - armbench_ncnn_mat_*       (from _mat_factory.cpp, bound here per .so)
+Every ncnn baseline ships a self-contained armbench_entry_<op_type> that bakes
+its scalar params as constexpr, so the entry takes only Mat/Option pointers:
+one per non-scalar tensor in `definition.inputs`, plus the output and Option.
 """
 
 from __future__ import annotations
@@ -24,8 +21,6 @@ from bench.data.definition import Definition
 
 import numpy as np
 
-
-# ── ncnn::Mat factory binding (per loaded .so) ───────────────────────────────
 
 @dataclass
 class _MatFactoryFns:
@@ -54,8 +49,6 @@ class _MatFactoryFns:
 
     @classmethod
     def from_lib(cls, lib: ctypes.CDLL) -> "_MatFactoryFns":
-        # Bind argtypes/restype for each function. Doing it once per .so keeps
-        # the per-call paths clean.
         def _bind(name: str, restype, argtypes):
             f = getattr(lib, name)
             f.restype = restype
@@ -100,8 +93,6 @@ class _MatFactoryFns:
         )
 
 
-# ── Per-tensor packing logic ─────────────────────────────────────────────────
-
 def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray, *, is_primary: bool) -> ctypes.c_void_p:
     """Construct an ncnn::Mat from a numpy array.
 
@@ -116,15 +107,14 @@ def _np_to_mat(fns: _MatFactoryFns, name: str, arr: np.ndarray, *, is_primary: b
 
     Dtype dispatch is independent of rank dispatch: an int8 tensor (w8a8ch
     quantized `input`/`weight`) gets the int8 Mat factories at elemsize=1u;
-    everything else (float32) gets the original float32 factories. Only int8
-    and float32 exist today — no other dtype is expected to reach this bridge.
+    everything else is cast to float32.
     """
     is_int8 = arr.dtype == np.int8
     arr = np.ascontiguousarray(arr, dtype=(np.int8 if is_int8 else np.float32))
 
     if is_primary:
         if arr.ndim == 4:
-            # (N, C, H, W) → require N=1 for now; multi-batch needs Phase 3
+            # (N, C, H, W): only N=1 is supported
             n, c, h, w = arr.shape
             if n != 1:
                 raise NotImplementedError(
@@ -201,8 +191,6 @@ def _mat_to_np(fns: _MatFactoryFns, mat_ptr: ctypes.c_void_p) -> np.ndarray:
     return out
 
 
-# ── Dataset adapter ──────────────────────────────────────────────────────────
-
 @dataclass
 class NcnnContext:
     """Resources held between input wrap and output unwrap. Mat pointers must
@@ -210,10 +198,9 @@ class NcnnContext:
     """
 
     fns: _MatFactoryFns
-    mat_ptrs: List[ctypes.c_void_p]  # all created Mats (inputs + outputs + opt)
+    mat_ptrs: List[ctypes.c_void_p]  # all created Mats (inputs + output)
     output_mat_ptr: ctypes.c_void_p  # the empty Mat that the harness will .create() into
     opt_ptr: ctypes.c_void_p
-    # Bound positional args ready to splat into the entry_point
     entry_args: Tuple[Any, ...]
 
 
@@ -222,16 +209,13 @@ class NcnnDataset:
 
     Usage:
         ds = NcnnDataset()
-        ctx = ds.wrap_inputs(definition, workload, np_inputs, op_type, lib)
+        ctx = ds.wrap_inputs(np_inputs, op_type, lib, definition=definition)
         ret = entry(*ctx.entry_args)
         out = ds.unwrap_output(ctx)
         ds.release(ctx)
     """
 
     name = "ncnn"
-
-    def __init__(self) -> None:
-        pass
 
     def bind_lib(self, lib: ctypes.CDLL) -> _MatFactoryFns:
         """Bind the armbench_ncnn_* symbols in a freshly-dlopened solution.so."""
@@ -248,12 +232,8 @@ class NcnnDataset:
     ) -> NcnnContext:
         """Build the ctypes argument list for `armbench_entry_<op_type>`.
 
-        Every ncnn baseline ships a self-contained entry that bakes its scalar
-        params as constexpr, so the call passes only Mat/Option pointers.
         Tensor order is exactly `definition.inputs` (non-scalars only, in
-        declaration order) — no padding, no fixed slot count; however many
-        real tensors a definition declares is exactly how many get passed.
-        out_shape is unused (ncnn allocates internally).
+        declaration order). out_shape is unused (ncnn allocates internally).
         """
         fns = self.bind_lib(lib)
 
@@ -281,7 +261,6 @@ class NcnnDataset:
         output_ptr = ctypes.c_void_p(fns.create_empty())
         created.append(output_ptr)
 
-        # Default Option
         opt_ptr = ctypes.c_void_p(fns.option_default())
 
         # Assemble entry args to match armbench_entry_<op_type>'s C signature:

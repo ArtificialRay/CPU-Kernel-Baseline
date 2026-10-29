@@ -41,11 +41,9 @@ from ..builder import (
 
 
 def _ncnn_base_root(base_root: Path) -> Path:
-    """ncnn checkout root. Lives inside the repo at <repo_root>/ncnn/.
-
-    By default ncnn/ is a direct child of the repo root (arm_bench_root).
-    Overridable via NCNN_ROOT (points at the ncnn checkout, e.g.
-    /home/ubuntu/ncnn).
+    """ncnn checkout root: <base_root>/ncnn (base_root is the repo's parent
+    dir, so a sibling of the repo). Overridable via NCNN_ROOT (points at the
+    ncnn checkout, e.g. ~/ncnn).
     """
     env = os.environ.get("NCNN_ROOT")
     if env:
@@ -77,7 +75,7 @@ class NcnnBuilder(Builder):
     def __init__(self) -> None:
         super().__init__(build_dir_name="armbench-ncnn")
         self._arm_bench_root = Path(__file__).resolve().parents[3] # repo dir
-        self._base_root = self._arm_bench_root.parent # home dir
+        self._base_root = self._arm_bench_root.parent # repo's parent dir
     def can_build(self, solution: Solution, is_baseline: bool) -> bool:
         return is_baseline and solution.dataset == SupportedDatasets.NCNN
 
@@ -101,17 +99,12 @@ class NcnnBuilder(Builder):
     ) -> CompileResult:
         solution_src_paths = self._materialize_sources(solution, sources_dir)
 
-        # Every baseline Solution include a kernel source (kernel.cpp), 
-        # binding.cpp defining armbench_entry_<op> (the ncnn::Mat shim, with
-        # per-Definition params baked as constexpr) plus the kernel it calls.
-        # The builder just compiles those sources.
         mat_factory_cpp = (
             arm_bench_root / "bench" / "datasets" / "_ncnn_lib" / "_mat_factory.cpp"
         )
         if not mat_factory_cpp.exists():
             raise FileNotFoundError(f"ncnn helper source not found: {mat_factory_cpp}")
 
-        # Include dirs — retargeted to ncnn/src and ncnn/src/layer/arm.
         include_dirs = [
             sources_dir,
             base_root / "src",

@@ -101,8 +101,8 @@ class ClaudeCodeAdapter(HarnessAdapter):
     @contextmanager
     def prepare_workspace(self, job: Job):
         """Fresh, empty working directory for one run_job() call, outside
-        this repo, removed again afterwards. So non of benchmarking scaffold or
-        dataset would be seen."""
+        this repo (so the agent sees none of the scaffold or dataset), removed
+        afterwards."""
         root = os.environ.get(CLAUDE_JOB_ROOT_ENV) or None
         if root is not None:
             root_path = Path(root).expanduser().resolve()

@@ -43,19 +43,16 @@ def run_and_tee(
 
 
 class HarnessAdapter:
-    """Base adapter — ClaudeCodeAdapter/NanobotAdapter override what's
-    genuinely harness-specific. own-harness (Step 3) adds a third."""
+    """Base adapter; subclasses override what's harness-specific."""
 
     name: str
     prompt_template: str
-    template_args: int  # 5 or 6 — see bench_fleet.py::build_jobs' docstring
+    template_args: int  # leading build_jobs() prompt args the template consumes
     model:str
 
     @classmethod
     def default_model(cls) -> Optional[str]:
-        """The model this harness resolves to when no --model override is
-        given
-        """
+        """The model this harness resolves to when no --model is given."""
         return None
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:

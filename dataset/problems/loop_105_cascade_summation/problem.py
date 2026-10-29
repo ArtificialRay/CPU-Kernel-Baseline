@@ -17,7 +17,7 @@ METADATA = {
     "tags": ['sve2'],
 }
 
-# Data struct definition — shown to the LLM for context
+# Data struct definition — parsed by scripts/gen_simd_loop_harness.py
 STRUCT_DEF = r"""
 struct loop_105_data {
   float *restrict a;
@@ -27,7 +27,7 @@ struct loop_105_data {
 };
 """
 
-# Scalar reference implementation — the LLM's task is to optimize this
+# Scalar reference implementation
 SCALAR_CODE = r"""
 || defined(HAVE_SVE_INTRINSICS) || defined(HAVE_SME_INTRINSICS) ||\
           defined(__ARM_FEATURE_SVE2) || defined(__ARM_FEATURE_SME) || defined(__ARM_FEATURE_SVE) || defined(__ARM_NEON)
@@ -52,7 +52,7 @@ LOOP_ATTR
 }
 """
 
-# Prompt template (used by generate_samples.py and run_benchmark.py)
+# Prompt template
 SYSTEM_PROMPT = """You are an expert AArch64 SIMD programmer. Your task is to write an optimized
 implementation of a given loop kernel for {isa_desc}.
 Preserve the exact function signature. The `res` checksum field must match
@@ -76,11 +76,11 @@ Scalar implementation to optimize:
 Write an optimized {isa_upper} implementation. Output only the C function.
 """
 
-# Input sizes for edge-case correctness testing at submit time.
+# Input sizes for edge-case correctness testing.
 # Empty list = skip (loop uses non-SIZE parameters or fixed dimensions).
 # SIZE must be a power of 2 >= 16 (cascade_summation base case is n==16).
 EDGE_SIZES = [16, 32, 64, 4096, 8192]
 
-# Input sizes for performance measurement at submit time and via perf() tool.
+# Input sizes for performance measurement.
 # Scored against the largest size. Empty list = skip.
 PERF_SIZES = [1048576, 16777216]

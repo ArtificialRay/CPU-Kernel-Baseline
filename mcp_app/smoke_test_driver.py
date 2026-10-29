@@ -244,11 +244,8 @@ def run_definition(
             timeout=session_timeout_s,
         ))
     except asyncio.TimeoutError:
-        # The remote mcp_app.server process can die mid-session
-        # without the local ssh child ever seeing a clean disconnect, in
-        # which case run_stdio_sequence awaits a response that never comes.
-        # Without this, run_definition (and the whole batch loop) hangs
-        # forever instead of reporting a failure and moving on.
+        # The remote mcp_app.server can die without the local ssh child seeing
+        # a clean disconnect, leaving run_stdio_sequence waiting forever.
         result = {
             "status": "TIMEOUT",
             "error": f"no response from remote session within {session_timeout_s}s "
@@ -258,13 +255,9 @@ def run_definition(
         # Covers both explicit correctness-check AssertionErrors from
         # run_tool_sequence and connection-death errors — e.g.
         # mcp.shared.exceptions.McpError (wrapped in an anyio
-        # ExceptionGroup) when the ssh session dies mid-call, observed in
-        # practice when an unattended-upgrades-triggered sshd restart (or
-        # the remote mcp_app.server process exiting unexpectedly) drops the
-        # connection. Previously only `except AssertionError` was caught
-        # here, so McpError crashed the whole batch loop with an unhandled
-        # traceback instead of recording this one definition as failed and
-        # continuing to the next.
+        # ExceptionGroup) when the ssh session dies mid-call (e.g. an sshd
+        # restart, or the remote mcp_app.server exiting). Record this one
+        # definition as failed and continue the batch.
         result = {"status": "FAILED", "error": str(e)}
     _local_ssh.rsync_from(
         host, user, key_file,

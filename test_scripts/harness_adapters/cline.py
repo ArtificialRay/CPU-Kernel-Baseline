@@ -36,8 +36,7 @@ class ClineAdapter(HarnessAdapter):
             raise RuntimeError("cline CLI not found on PATH — install Cline CLI first.")
         self.skill_text = CLINE_SKILL_FILE.read_text()
         # Per field, first hit wins: OPENAI_API_BASE / OPENAI_BASE_URL /
-        # OPENAI_API_KEY in the environment 
-        # > the "model_provider" table of the git-ignored config.json next to
+        # OPENAI_API_KEY in the environment > the "model_provider" table of the git-ignored config.json next to
         # SKILL.md (copy config.json.example).
         cline_config = CLINE_SKILL_FILE.parent / "config.json"
         provider = (

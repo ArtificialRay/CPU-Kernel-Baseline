@@ -12,8 +12,8 @@ ChatCompletionMessage out — so evaluator.py's turn loop (history
 compression, notepad, tool-call sanitization, version tracking) only ever
 deals with one shape, regardless of which wire API served a given turn.
 
-Known limitation: So far, reasoning content from a Responses API turn isn't
-round-tripped into the next turn's request 
+Known limitation: reasoning content from a Responses API turn isn't
+round-tripped into the next turn's request.
 """
 
 from types import SimpleNamespace

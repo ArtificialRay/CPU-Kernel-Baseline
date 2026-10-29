@@ -8,8 +8,7 @@ filelock-serialized builds), adapted for arm-bench:
     artifacts;
   - the cached value is a `CompileResult` (a `.so` on disk), not a Runnable;
   - `cleanup()` rmtree's every cached build_dir. Lifecycle is owned by
-    `Benchmark` (builds during run_all, frees in `Benchmark.close()`), so the
-    runner no longer cleans up per call.
+    `Benchmark` (builds during runs, frees in `Benchmark.close()`).
 """
 
 from __future__ import annotations

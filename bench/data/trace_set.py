@@ -1,9 +1,6 @@
 """TraceSet — the in-memory warehouse over an arm-bench dataset root.
 
-Mirrors flashinfer-bench's TraceSet structure, trimmed for Phase 1: no
-safetensors blob handling, no ranking algorithms yet — those grow later.
-
-A pure warehouse: it loads, indexes, queries (get_baseline_solution /
+Mirrors flashinfer-bench's TraceSet structure. A pure warehouse: it loads, indexes, queries (get_baseline_solution /
 get_baseline_min_ns), and persists (add_traces). The benchmark run loops live
 in bench/benchmark.py (Benchmark); bench/cli.py dispatches into that.
 """
@@ -31,12 +28,10 @@ class TraceSet:
         root/
           definitions/<op_type>/<def_name>.json
           solutions/<dataset>/<author>/<op_type>/<sol_name>.json
-            (the per-op harness shim that wraps these lives with the builders, in
-             bench/compile/builders/<…>_harness/, not in the warehouse)
           workloads/<op_type>/<def_name>.jsonl
           traces/<op_type>/<def_name>.jsonl
 
-    Indexes are built in `__post_init__` and maintained by `add_traces`.
+    The solution-name index is built in `__post_init__` / `from_path`.
     """
 
     root: Optional[Path] = None
@@ -50,9 +45,6 @@ class TraceSet:
     """def_name -> all run Traces for that Definition."""
 
     _solution_by_name: Dict[str, Solution] = field(default_factory=dict, init=False, repr=False)
-    _traces_by_solution: Dict[str, List[Trace]] = field(
-        default_factory=dict, init=False, repr=False
-    )
 
     def __post_init__(self) -> None:
         for sols in self.solutions.values():
@@ -60,12 +52,6 @@ class TraceSet:
                 if s.name in self._solution_by_name:
                     raise ValueError(f"Duplicate solution name: {s.name}")
                 self._solution_by_name[s.name] = s
-        for traces in self.traces.values():
-            for t in traces:
-                if t.solution:
-                    self._traces_by_solution.setdefault(t.solution, []).append(t)
-
-    # ── Path properties ───────────────────────────────────────────────────────
 
     def _require_root(self) -> Path:
         if self.root is None:
@@ -88,15 +74,12 @@ class TraceSet:
     def traces_path(self) -> Path:
         return self._require_root() / "traces"
 
-    # ── Loading ───────────────────────────────────────────────────────────────
-
     @classmethod
     def from_path(cls, root: Path | str) -> "TraceSet":
         """Load a full TraceSet from a root directory.
 
         Validates that each Solution's `dataset/author/op_type` matches its file path
-        (`solutions/<dataset>/<author>/<op_type>/...`) — drift here would let the
-        compile step pick the wrong shared harness.
+        (`solutions/<dataset>/<author>/<op_type>/...`).
         """
         root = Path(root)
         root.mkdir(parents=True, exist_ok=True)
@@ -180,12 +163,8 @@ class TraceSet:
             for p in sorted(ts.traces_path.rglob("*.jsonl")):
                 for t in load_jsonl_file(Trace, p):
                     ts.traces.setdefault(t.definition, []).append(t)
-                    if t.solution:
-                        ts._traces_by_solution.setdefault(t.solution, []).append(t)
 
         return ts
-
-    # ── Lookups ───────────────────────────────────────────────────────────────
 
     def get_definition(self, name: str) -> Optional[Definition]:
         return self.definitions.get(name)
@@ -198,9 +177,6 @@ class TraceSet:
 
     def get_solutions_for(self, def_name: str) -> List[Solution]:
         return list(self.solutions.get(def_name, []))
-
-    def get_traces_by_solution(self, sol_name: str) -> List[Trace]:
-        return list(self._traces_by_solution.get(sol_name, []))
 
     def get_baseline_solution(
         self, def_name: str, baseline_author: str
@@ -289,11 +265,10 @@ class TraceSet:
     ) -> Optional[int]:
         """Return the cached baseline `cycles` for (def_name, workload_uuid).
 
-        Cycles analog of `get_baseline_min_ns` — the speedup denominator now that
-        cycles is the canonical metric. Returns None if no usable PASSED baseline
-        trace with a non-null `cycles` exists for that workload (older traces predating
-        the perf-counter rollout have `cycles=None`); caller then leaves
-        `reference_cycles` / `speedup` as None (or falls back to the ns ratio).
+        Cycles analog of `get_baseline_min_ns`. Returns None if no usable PASSED
+        baseline trace with a non-null `cycles` exists for that workload (traces
+        without perf counters have `cycles=None`); caller then leaves
+        `reference_cycles` / `cycle_speedup` as None.
         """
         return min(
             (p.cycles for p in self._baseline_performances(
@@ -321,21 +296,17 @@ class TraceSet:
         )
         return best.inner_iters if best is not None else None
 
-    # ── Persistence ───────────────────────────────────────────────────────────
-
     def add_traces(self, traces: List[Trace]) -> None:
         """Add traces to memory and persist to disk (per definition's op_type).
 
-        For some cases that user want to add solution traces(mostly baseline solution traces) more than one, will replace 
-        old traces with the latest baseline solution traces
+        On disk, an incoming trace replaces any stored trace with the same
+        (solution, workload uuid), e.g. when re-collecting baselines.
         """
         buckets: Dict[Path, List[Trace]] = defaultdict(list)
         for t in traces:
             if t.definition not in self.definitions:
                 raise ValueError(f"Trace references unknown definition: {t.definition}")
             self.traces.setdefault(t.definition, []).append(t)
-            if t.solution:
-                self._traces_by_solution.setdefault(t.solution, []).append(t)
             if t.solution is None:
                 raise ValueError("Use add_workload_traces for workload-only traces")
             d = self.definitions[t.definition]
@@ -365,22 +336,12 @@ class TraceSet:
             path = self.workloads_path / d.op_type / f"{d.name}.jsonl"
             append_jsonl_file(workloads, path)
 
-    # The benchmark run loops live in bench/benchmark.py (Benchmark.bench /
-    # collect_baselines / run_all). TraceSet stays a pure warehouse: load,
-    # query (get_baseline_solution / get_baseline_min_ns), and persist
-    # (add_traces). bench/cli.py constructs a Benchmark and dispatches into it.
-
-    # ── Isolated-evaluation snapshot ────────────────────────────────────────────
-
     def freeze_for(
         self, def_name: str, baseline_author: str, timing_protocol: Optional[str] = None
     ) -> "TraceSetSnapshot":
         """A read-only, picklable slice of this definition's workloads + baseline
-        lookups — everything bench/runtime/isolation.py's isolated evaluate
-        subprocess needs from a TraceSet, and nothing else (no other
-        definitions' data, no add_traces/root — the subprocess has no way to
-        touch the warehouse even in principle). Computed here, in the parent,
-        from already-loaded in-memory data — no disk I/O.
+        lookups: all the isolated evaluate subprocess needs, computed in the
+        parent from in-memory data.
 
         `timing_protocol` restricts the baseline lookups exactly as it does on
         the live TraceSet; the snapshot answers for that protocol only.
@@ -402,10 +363,8 @@ class TraceSet:
             _baseline=baseline,
         )
 
-    # ── Summary ───────────────────────────────────────────────────────────────
-
     def summary(self) -> Dict[str, Any]:
-        """Counts only (passed/failed). Ranking comes later."""
+        """Counts only (passed/failed)."""
         all_traces = [t for ts in self.traces.values() for t in ts]
         passed = sum(1 for t in all_traces if t.is_successful())
         return {
@@ -423,13 +382,10 @@ class TraceSetSnapshot:
     """Read-only, picklable slice of one TraceSet definition's data.
 
     Produced by TraceSet.freeze_for() and handed to an isolated evaluate
-    subprocess (bench/runtime/isolation.py) in place of a live TraceSet: it
-    exposes the same read-only lookup methods evaluate paths actually call
-    (get_workloads / get_baseline_min_ns / get_baseline_min_cycles /
-    get_baseline_inner_iters), backed by a small pre-computed slice instead of
-    the whole warehouse — cheap to pickle across the process boundary, and
-    structurally incapable of writing to the warehouse (no add_traces, no
-    root) even if something inside the subprocess tried.
+    subprocess (bench/runtime/isolation.py) in place of a live TraceSet. It
+    exposes the read-only lookups evaluate paths call (get_workloads /
+    get_baseline_min_ns / get_baseline_min_cycles / get_baseline_inner_iters):
+    cheap to pickle, and unable to write to the warehouse (no add_traces, no root).
     """
 
     definition_name: str
