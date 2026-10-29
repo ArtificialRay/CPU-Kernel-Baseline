@@ -102,7 +102,7 @@ The plugin defines `discover(argv) -> dict` (read a GGUF header, trace a torchvi
 - **Deduplicated**: one candidate per (role, type, shape), with the number of layers using it.
 - **Ranked by cost share**: by estimated time share, not by count (weight bytes per token for memory-bound decode); MoE experts count only the fraction used per token.
 - **Big enough to measure**: skip operators too small to time reliably or too small to matter.
-- **Coverage cut**: keep the top operators up to about 90% of the total share, drop the tail.
+- **Coverage cut**: group operators by (quantization type); within each group rank by share, accumulate the share divided by the group's total, and keep operators until the running total first reaches 90% (the one that crosses is kept). Drop the rest, then list what was dropped.
 - **Representable**: it must fit a definition (a dtype/layout bench supports); list what does not as "not covered" instead of silently dropping it.
 - **Not already defined**: mark candidates whose definition is already in `bench-trace`.
 - **Has a baseline**: without the library's own kernel there is no speedup and no check of the reference; keep such operators listed but mark them as not evaluable.

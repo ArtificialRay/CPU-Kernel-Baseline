@@ -7,13 +7,15 @@
   python -m kgen collect pytorch --loader load_shapes.py (--definitions N... | --tag T) --out-dir DIR
   python -m kgen capture pytorch --loader load.py --source <text> (--definitions N... | --tag T)
   python -m kgen calibrate --author A --baseline-author B (--definitions N... | --tag T)
+  python -m kgen autovec --isa sve2 (--definitions N... | --tag T) [--max-slowdown 2]
 
-`add` lints a file the agent wrote and places it under --root (default bench-trace) at the conventional path;
-it refuses when the target exists unless --replace, and writes nothing when the file has problems.
-`check` and `show` read the warehouse; `discover` finds a framework's operators from its model, `collect` writes
-the shapes a model run produces as candidate workloads (`add workload --max-count` picks from them), `capture` gives
-workloads real inputs from a model run and `calibrate` records what the reference scores on them. Bulk generators
-for one family of kernels live in scripts/, not here.
+`add` lints a file the agent wrote and places it under --root (default bench-trace) at the conventional path
+`check` and `show` read the warehouse; 
+`discover` finds a framework's operators from its model, accept plugins only;
+`collect` writes the shapes a model run produces as candidate workloads (`add workload --max-count` picks from them);
+`capture` gives workloads real inputs from a model run;
+`calibrate` records what the reference scores on the captured workloads;
+`autovec` times a baseline against the compiler's own vectorization of the scalar starting point.
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ import sys
 from pathlib import Path
 
 from .add import AddError, add_definition, add_solution, add_workload
+from .autovec import autovec_check
 from .calibrate import calibrate_sqnr_floors
 from .capture import capture_pytorch
 from .check import check
@@ -92,6 +95,15 @@ def build_parser() -> argparse.ArgumentParser:
                                    "(with neither --definitions nor --tag: every correctness:sqnr definition)")
     cal.add_argument("--root", type=Path, default=REPO / "bench-trace")
     cal.add_argument("--dry-run", action="store_true")
+    auto = commands.add_parser("autovec", help="time the baseline against the autovectorized scalar starting point (aarch64)")
+    auto.add_argument("--isa", required=True, help="the tier this machine stands for (picks the march flag and the baseline author)")
+    auto.add_argument("--definitions", nargs="*", default=[])
+    auto.add_argument("--tag", help="also every definition carrying this tag")
+    auto.add_argument("--max-slowdown", type=float, default=2.0, help="flag a baseline slower than this multiple of the autovec build")
+    auto.add_argument("--baseline-author", help="judge this author's solutions instead of the dataset's registered baseline")
+    auto.add_argument("--num-selected-workloads", type=int, metavar="N", help="time N randomly chosen workloads (default: all)")
+    auto.add_argument("--seed", type=int, default=0, help="seed of that choice")
+    auto.add_argument("--root", type=Path, default=REPO / "bench-trace")
     chk = commands.add_parser("check", help="check a definition, its workloads and solutions")
     chk.add_argument("definition")
     chk.add_argument("--root", type=Path, default=REPO / "bench-trace", help="the warehouse to read")
@@ -130,6 +142,13 @@ def main(argv=None) -> int:
         else:
             print(json.dumps(inventory, indent=2))
         return 0
+    if args.command == "autovec":
+        try:
+            return autovec_check(args.root, args.isa, args.definitions, args.tag, args.max_slowdown,
+                                 args.baseline_author, args.num_selected_workloads, args.seed)
+        except KgenError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
     if args.command in ("capture", "calibrate", "collect"):
         try:
             if args.command == "collect":
