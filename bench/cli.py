@@ -1,12 +1,14 @@
 """armbench CLI. Thin argparse layer over Benchmark / TraceSet.
 
 Usage:
-    armbench --root <path> bench --definition <name> --solution <name>
-                                 [--workload-axes axis=value,...]
-    armbench --root <path> collect-baselines [--definition <name>]
-    armbench --root <path> summary
-    armbench --root <path> list-definitions
-    armbench --root <path> list-solutions [--definition <name>]
+    armbench bench    --root <path> --definition <name> --solution <name>
+                      [--workload-axes axis=value,...] [--isa <isa>] [--baseline-author <author>]
+    armbench collect-baselines --root <path> (--dataset <name> | --definition <name> | --baseline-author <author>)
+                      [--isa <isa>]
+    armbench summary  --root <path>
+    armbench list-definitions --root <path>
+    armbench list-solutions   --root <path> [--definition <name>]
+
 """
 
 from __future__ import annotations
@@ -19,8 +21,8 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from bench.benchmark import Benchmark, BenchmarkConfig
-from bench.config import DEFAULT_BASELINE_AUTHOR
 from bench.data import TraceSet
+from contracts import BASELINE_AUTHORS, ISA_TABLE, baseline_author_for
 
 
 def _default_root() -> Path:
@@ -48,9 +50,43 @@ def _parse_axes_filter(s: Optional[str]) -> Optional[Dict[str, int]]:
     return out
 
 
+def baseline_author_of(
+    ts: TraceSet, explicit: Optional[str], isa: Optional[str], *,
+    dataset: Optional[str] = None, definition: Optional[str] = None, solution: Optional[str] = None,
+) -> str:
+    """Automatically deduce the author whose solutions are the speedup baseline of a run if `--baseline-author`
+    is not explicitly declared
+    """
+    if explicit:
+        return explicit
+    candidates = ts.solutions.get(definition, []) if definition else []
+    if dataset is None and solution is not None:
+        match = [s for s in candidates if s.name == solution]
+        if not match:
+            raise SystemExit(f"no solution {solution!r} for definition {definition!r}")
+        dataset = match[0].dataset.value
+    if dataset is None and candidates:
+        datasets = sorted({s.dataset.value for s in candidates})
+        if len(datasets) == 1:
+            dataset = datasets[0]
+    if dataset is None:
+        raise SystemExit("cannot tell the dataset of this run: pass --baseline-author, or --dataset "
+                         "(or --definition for collect-baselines)")
+    if dataset not in BASELINE_AUTHORS:
+        raise SystemExit(f"dataset {dataset!r} has no baseline author in config/kernel_contracts.yaml; "
+                         f"pass --baseline-author (datasets with one: {sorted(BASELINE_AUTHORS)})")
+    author = baseline_author_for(dataset, isa)
+    print(f"baseline author: {author}  (dataset {dataset}" + (f", isa {isa}" if isa else "") + ")")
+    return author
+
+
+# ── Subcommand dispatchers ───────────────────────────────────────────────────
+
 def cmd_bench(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
-    bench = Benchmark(ts, BenchmarkConfig(baseline_author=args.baseline_author))
+    baseline_author = baseline_author_of(ts, args.baseline_author, args.isa,
+                                         definition=args.definition, solution=args.solution)
+    bench = Benchmark(ts, BenchmarkConfig(baseline_author=baseline_author))
     try:
         traces = bench.bench(
             definition=args.definition,
@@ -80,8 +116,10 @@ def cmd_bench(args: argparse.Namespace) -> int:
 
 def cmd_collect_baselines(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
+    baseline_author = baseline_author_of(ts, args.baseline_author, args.isa,
+                                         dataset=args.dataset, definition=args.definition)
     cfg = BenchmarkConfig(
-        baseline_author=args.baseline_author,
+        baseline_author=baseline_author,
         definitions=[args.definition] if args.definition else None,
     )
     bench = Benchmark(ts, cfg)
@@ -90,8 +128,8 @@ def cmd_collect_baselines(args: argparse.Namespace) -> int:
     finally:
         bench.close()
     if not traces:
-        print(f"No baseline traces produced. Check that solutions/ncnn/{args.baseline_author}/"
-              f" contains conv2d Solutions and definitions/ + workloads/ are populated.")
+        print(f"No baseline traces produced. Check that solutions/<dataset>/{baseline_author}/"
+              f" contains Solutions for the selected definitions and definitions/ + workloads/ are populated.")
         return 1
     n_pass = sum(1 for t in traces if t.is_successful())
     print(f"\n{len(traces)} traces produced ({n_pass} PASSED, {len(traces) - n_pass} other).")
@@ -150,9 +188,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter workloads, e.g. 'N=1,H=56,W=56'. Only matching workloads are run.",
     )
     b.add_argument(
-        "--baseline-author", default=DEFAULT_BASELINE_AUTHOR,
-        help="Author folder under solutions/<dataset>/ to use as the speedup baseline "
-             f"(default: {DEFAULT_BASELINE_AUTHOR!r}; e.g. 'baseline-llamacpp-arm' for llama.cpp).",
+        "--baseline-author", default=None,
+        help="Author folder under solutions/<dataset>/ to use as the speedup baseline. Default: the "
+             "baseline of the solution's dataset on --isa (contracts.baseline_author_for).",
+    )
+    b.add_argument(
+        "--isa", default=None, choices=sorted(ISA_TABLE),
+        help="Tier the run stands for; only matters for datasets whose baseline differs per isa (simd-loop).",
     )
     b.set_defaults(func=cmd_bench)
 
@@ -161,8 +203,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run every baseline-author Solution against its Definition's workloads, "
              "caching the timings for later speedup lookup.",
     )
-    cb.add_argument("--baseline-author", default="baseline-ncnn-arm",
-                    help="Author folder under solutions/<dataset>/ to treat as baseline.")
+    cb.add_argument("--baseline-author", default=None,
+                    help="Author folder under solutions/<dataset>/ to treat as baseline. Default: the "
+                         "baseline of --dataset (or of --definition's dataset) on --isa.")
+    cb.add_argument("--dataset", default=None, choices=sorted(BASELINE_AUTHORS),
+                    help="Dataset whose baseline to collect; not needed with --definition.")
+    cb.add_argument("--isa", default=None, choices=sorted(ISA_TABLE),
+                    help="Tier the baselines are collected on; only matters for datasets with a per-isa baseline.")
     cb.add_argument("--definition", default=None,
                     help="If set, only collect baselines for this Definition.")
     cb.set_defaults(func=cmd_collect_baselines)
