@@ -11,6 +11,7 @@ pure warehouse (load/query/persist).
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional
 
 from bench.compile import BuilderRegistry
@@ -21,6 +22,19 @@ from bench.data.trace import Trace
 from bench.data.trace_set import TraceSet
 from bench.data.workload import Workload
 from bench.runner import run_solution_on_workloads
+from contracts import BASELINE_AUTHORS, baseline_author_for
+
+
+@dataclass
+class AuthorResult:
+    """What `Benchmark.run_author` did with one Solution."""
+
+    solution: Solution
+    traces: List[Trace]
+    skipped: str = ""
+    """Why nothing ran (no such definition, no workloads); empty when it ran."""
+    error: str = ""
+    """The run raised (for example no builder can build it); empty otherwise."""
 
 
 class Benchmark:
@@ -39,12 +53,14 @@ class Benchmark:
         workloads: List[Workload],
         *,
         dump_traces: bool = True,
+        baseline_author: Optional[str] = None,
     ) -> List[Trace]:
         """Run one Solution against a list of Workloads; persist + return Traces."""
-        eval_cfg = self._config.resolve_eval_config(definition)
+        config = self._config if baseline_author is None else replace(self._config, baseline_author=baseline_author)
+        eval_cfg = config.resolve_eval_config(definition)
         traces = run_solution_on_workloads(
             definition, solution, workloads,
-            is_baseline=self._is_baseline(solution),
+            is_baseline=solution.author == config.baseline_author,
             cfg=eval_cfg,
             trace_set=self._ts,
         )

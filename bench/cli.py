@@ -22,7 +22,7 @@ from typing import Dict, Optional
 
 from bench.benchmark import Benchmark, BenchmarkConfig
 from bench.data import TraceSet
-from contracts import BASELINE_AUTHORS, ISA_TABLE, baseline_author_for
+from contracts import BASELINE_AUTHORS, ISA_TABLE, REFERENCE_SCALAR_AUTHORS, baseline_author_for
 
 
 def _default_root() -> Path:
@@ -114,6 +114,50 @@ def cmd_bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bench_author(args: argparse.Namespace) -> int:
+    """Run every solution of one author and report which pass: the smoke test for a reference set,
+    or for any author whose solutions span datasets."""
+    author = args.author or (REFERENCE_SCALAR_AUTHORS.get(args.dataset) if args.dataset else None)
+    if not author:
+        raise SystemExit("pass --author, or --dataset to take that dataset's reference-scalar author")
+    ts = TraceSet.from_path(args.root)
+    bench = Benchmark(ts)       # every solution gets its own dataset's baseline author, see run_author
+    try:
+        results = bench.run_author(
+            author, dataset=args.dataset, op_type=args.op_type, definition=args.definition,
+            workload_filter=_parse_axes_filter(args.workload_axes), isa=args.isa, dump_traces=args.dump_traces,
+        )
+    finally:
+        bench.close()
+    if not results:
+        print(f"No solutions of author {author!r} under {args.root}"
+              + (f" for dataset {args.dataset!r}" if args.dataset else "") + ".")
+        return 1
+    failed, fully_passed, total_wl, passed_wl = [], 0, 0, 0
+    for r in results:
+        name = f"{r.solution.dataset.value:<10} {r.solution.name:<60}"
+        if r.skipped or r.error:
+            print(f"  [{'SKIP' if r.skipped else 'FAIL'}] {name} {r.skipped or r.error}")
+            if r.error:
+                failed.append(r.solution.name)
+            continue
+        n, p = len(r.traces), sum(1 for t in r.traces if t.is_successful())
+        total_wl, passed_wl = total_wl + n, passed_wl + p
+        print(f"  [{'OK  ' if p == n else 'FAIL'}] {name} {p}/{n}")
+        if p == n:
+            fully_passed += 1
+        else:
+            failed.append(r.solution.name)
+            first = next((t for t in r.traces if not t.is_successful() and t.evaluation is not None), None)
+            if first is not None:
+                print(f"         -> {first.workload.uuid[:8]} {first.evaluation.status.value}: {first.evaluation.log[:160]}")
+    ran = sum(1 for r in results if not r.skipped)
+    print(f"\n{fully_passed}/{ran} solutions fully passed; {passed_wl}/{total_wl} workloads PASSED.")
+    if failed:
+        print("FAILED:", " ".join(failed))
+    return 1 if failed else 0
+
+
 def cmd_collect_baselines(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
     baseline_author = baseline_author_of(ts, args.baseline_author, args.isa,
@@ -197,6 +241,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Tier the run stands for; only matters for datasets whose baseline differs per isa (simd-loop).",
     )
     b.set_defaults(func=cmd_bench)
+
+    ba = sub.add_parser(
+        "bench-author",
+        help="Run every solution of one author on its definition's workloads and report pass/fail "
+             "(reference smoke test; an author may span datasets).",
+    )
+    ba.add_argument("--author", default=None,
+                    help="Solution author. Default with --dataset: that dataset's reference-scalar author.")
+    ba.add_argument("--dataset", default=None, choices=sorted(BASELINE_AUTHORS), help="Only this dataset's solutions.")
+    ba.add_argument("--op-type", default=None, help="Only definitions of this op_type.")
+    ba.add_argument("--definition", default=None, help="Only this definition.")
+    ba.add_argument("--workload-axes", default=None, help="Filter workloads, e.g. 'M=1'.")
+    ba.add_argument("--isa", default=None, choices=sorted(ISA_TABLE),
+                    help="Tier the run stands for; picks the per-isa baseline where a dataset has one.")
+    ba.add_argument("--dump-traces", action="store_true", help="Also persist the traces (default: report only).")
+    ba.set_defaults(func=cmd_bench_author)
 
     cb = sub.add_parser(
         "collect-baselines",
