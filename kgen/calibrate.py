@@ -78,7 +78,8 @@ def calibrate_sqnr_floors(root: Path = REPO / "bench-trace", *, author: str, bas
 
         traces = []
         for i in range(0, len(wls), WORKLOADS_PER_CALL):     # each call has its own isolation timeout
-            traces += run_solution_on_workloads(d, sol, wls[i:i + WORKLOADS_PER_CALL], cfg=cfg, trace_set=ts)
+            # a baseline author's solution is called through the framework adapter, any other through the raw ABI
+            traces += run_solution_on_workloads(d, sol, wls[i:i + WORKLOADS_PER_CALL], is_baseline=(author == baseline_author), cfg=cfg, trace_set=ts)
         by_uuid = {}
         for t in traces:
             ev = t.evaluation

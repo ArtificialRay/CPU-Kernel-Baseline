@@ -118,8 +118,9 @@ def autovec_check(root: Path, isa: str, definitions=None, tag=None, max_slowdown
             cfg = BenchmarkConfig(baseline_author=base_author).resolve_eval_config(definition)
             base_ns, base_err = min_ns_by_workload(run_solution_on_workloads(
                 definition, baseline, workloads, is_baseline=True, cfg=cfg))
+            # the scalar starting point has the raw-pointer ABI of a candidate, not the framework baseline adapter's
             auto_ns, auto_err = min_ns_by_workload(run_solution_on_workloads(
-                definition, autovec_build(start, march), workloads, is_baseline=True, cfg=cfg))
+                definition, autovec_build(start, march), workloads, is_baseline=False, cfg=cfg))
             if base_ns is None or auto_ns is None:
                 why = "; ".join(x for x in (base_err and f"baseline {base_err}", auto_err and f"autovec {auto_err}") if x)
                 print(f"  [ERROR] {definition.name}: {why}"); errors += 1

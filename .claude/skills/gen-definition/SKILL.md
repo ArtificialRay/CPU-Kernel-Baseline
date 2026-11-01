@@ -98,17 +98,26 @@ The plugin defines `discover(argv) -> dict` (read a GGUF header, trace a torchvi
 
 **Framework (operators come from a model)**; record the model as a `model:` tag:
 
-- **Actually executed**: only what the real graph runs (skip unused layers such as MTP heads, and tensors that are only looked up, e.g. embeddings when the lm_head is not tied).
-- **Deduplicated**: one candidate per (role, type, shape), with the number of layers using it.
-- **Ranked by cost share**: by estimated time share, not by count (weight bytes per token for memory-bound decode); MoE experts count only the fraction used per token.
-- **Big enough to measure**: skip operators too small to time reliably or too small to matter.
-- **Coverage cut**: group operators by (quantization type); within each group rank by share, accumulate the share divided by the group's total, and keep operators until the running total first reaches 90% (the one that crosses is kept). Drop the rest, then list what was dropped.
-- **Representable**: it must fit a definition (a dtype/layout bench supports); list what does not as "not covered" instead of silently dropping it.
-- **Not already defined**: mark candidates whose definition is already in `bench-trace`.
-- **Has a baseline**: without the library's own kernel there is no speedup and no check of the reference; keep such operators listed but mark them as not evaluable.
-- State the assumed regime (decode is memory-bound; prefill is compute-bound and ranks differently) and whether the share is an estimate or measured.
+- **Which operators are candidates**: 
+  Graph Execution Only: Covers only the real executed graph (excluding unused layers like MTP heads, or lookup-only tensors like untied embeddings).
+  bench-trace Compatibility: Expressed as a definition supported by bench-trace (supported dtypes/layouts, explicitly listing unsupported elements under "not covered").
+  No Redundancy: Excludes anything already defined in bench-trace.
 
-**Library (operators come from a kernel catalogue, e.g. simd-loop, kleidiai; no model, so no cost share)**:
+- **Which candidates are kept**: 
+  Identify Execution Candidates (role, type, shape):
+    Filter for unique operator candidates defined by their role, data type, and tensor shape to prevent redundant benchmarking of identical kernels.Skip operators too small to time reliably to eliminate measurement noise.
+  Rank Candidates by Time Share (Not Count):
+    Rank operators using estimated execution time rather than raw layer or call counts.Operators with higher time share are more critical to benchmark, as they contribute more to overall execution time.
+    Feel free to customize your ranking metric based on the model/kernel's characteristics, for example: For memory-bound decode, estimate time share based on weight bytes accessed per token.For MoE experts, scale memory/compute weight by the active routing fraction per token (e.g., top-$k$ active experts).
+  Apply Pareto Tail Cut (90% Cumulative Share per Group):
+    Group candidates by (model, quantization type).
+    Within each group, rank candidates by share, calculate cumulative share relative to the group total, and retain operators until the running total first reaches or crosses 90%.
+    Drop all remaining long-tail operators beyond the crossing point.
+  Provide Audit Trail & Context:
+    List all dropped operators explicitly for transparency.
+    State explicitly whether the time share is estimated or measured.
+
+**Library (operators come from a kernel catalogue)**:
 
 - **Distinct**: one candidate per (operation, dtype/layout, ISA feature); other tile sizes or parameter values of the same kernel are workloads or const axes, not new operators.
 - **Runnable**: its ISA (SVE, SVE2, SME2 ...) exists on a target machine; list the rest as "needs <ISA>" instead of dropping them.
