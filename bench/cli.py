@@ -5,6 +5,8 @@ Usage:
                       [--workload-axes axis=value,...] [--isa <isa>] [--baseline-author <author>]
     armbench collect-baselines --root <path> (--dataset <name> | --definition <name> | --baseline-author <author>)
                       [--isa <isa>]
+    armbench bench-author --root <path> (--author <name> | --dataset <name>) [--op-type/--definition/--isa ...]
+    armbench retime   --root <path> --dataset <name> --isa <isa> --index <extracted.json> --pass-id <id> --out <file>
     armbench summary  --root <path>
     armbench list-definitions --root <path>
     armbench list-solutions   --root <path> [--definition <name>]
@@ -20,6 +22,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
+from bench import retime
 from bench.benchmark import Benchmark, BenchmarkConfig
 from bench.data import TraceSet
 from contracts import BASELINE_AUTHORS, ISA_TABLE, REFERENCE_SCALAR_AUTHORS, baseline_author_for
@@ -158,6 +161,28 @@ def cmd_bench_author(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_retime(args: argparse.Namespace) -> int:
+    """Re-time the solutions an index lists (and optionally other authors') against baselines collected
+    fresh in an isolated copy of the root; see bench/retime.py."""
+    root = retime.isolated_root(args.root)
+    print(f"isolated root: {root}")
+    ts = TraceSet.from_path(root)
+    if args.index:
+        defs, jobs = retime.jobs_from_index(json.loads(Path(args.index).read_text()), args.extra_authors)
+    else:
+        defs, jobs = retime.jobs_from_authors(ts, args.author, args.dataset, args.extra_authors)
+        if not defs:
+            raise SystemExit(f"no solutions of {args.author} for dataset {args.dataset!r} under {args.root}")
+    baseline_author = baseline_author_of(ts, args.baseline_author, args.isa, dataset=args.dataset)
+    bench = Benchmark(ts, BenchmarkConfig(baseline_author=baseline_author, definitions=defs))
+    try:
+        retime.retime(ts, bench, baseline_author, defs, jobs, args.pass_id, Path(args.out),
+                      dataset=args.dataset, isa=args.isa)
+    finally:
+        bench.close()
+    return 0
+
+
 def cmd_collect_baselines(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
     baseline_author = baseline_author_of(ts, args.baseline_author, args.isa,
@@ -257,6 +282,27 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Tier the run stands for; picks the per-isa baseline where a dataset has one.")
     ba.add_argument("--dump-traces", action="store_true", help="Also persist the traces (default: report only).")
     ba.set_defaults(func=cmd_bench_author)
+
+    rt = sub.add_parser(
+        "retime",
+        help="Re-time stored solutions against freshly collected baselines (isolated root) and write one "
+             "JSON-lines record each: geomean speedup, per-workload min_ns, the speedup originally reported.",
+    )
+    rt.add_argument("--dataset", required=True, choices=sorted(BASELINE_AUTHORS))
+    rt.add_argument("--isa", required=True, choices=sorted(ISA_TABLE), help="Tier of this machine.")
+    which = rt.add_mutually_exclusive_group(required=True)
+    which.add_argument("--index", type=Path,
+                       help="extracted.json from scripts/retime/extract_run_solutions.py: the solutions it wrote.")
+    which.add_argument("--author", nargs="+",
+                       help="Re-time every solution of these authors (of --dataset) in the warehouse.")
+    rt.add_argument("--extra-authors", nargs="*", default=[],
+                    help="Also re-time these authors on the same definitions, as controls. 'autovec' is not "
+                         "looked up: it is the dataset's scalar starting point compiled like an agent candidate.")
+    rt.add_argument("--pass-id", required=True, help="Label stored with every record; a rerun skips its done jobs.")
+    rt.add_argument("--out", required=True, type=Path, help="JSON-lines file the records are appended to.")
+    rt.add_argument("--baseline-author", default=None,
+                    help="Default: the baseline of --dataset on --isa (contracts.baseline_author_for).")
+    rt.set_defaults(func=cmd_retime)
 
     cb = sub.add_parser(
         "collect-baselines",

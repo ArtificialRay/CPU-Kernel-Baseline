@@ -8,7 +8,7 @@ session did when the agent compiled it (the dataset's KernelSession
 .make_solution: harness files from the reference solution, -O3 and the isa's
 march). The Solution is written under
 <root>/solutions/<dataset>/<author>/<op_type>/<definition>.json, with
-author = "<prefix><cell>", so `bench.cli` / scripts/retime/retime_solutions.py can
+author = "<prefix><cell>", so `python -m bench.cli bench-author` / `retime` can
 run it against the current baselines.
 
     python3 scripts/retime/extract_run_solutions.py --runs runs-sve --root bench-trace \\
