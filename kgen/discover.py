@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 from .errors import KgenError
@@ -26,6 +27,7 @@ def run_plugin(plugin: Path, argv: list[str]) -> dict:
     if spec is None or spec.loader is None:
         raise KgenError(f"{plugin} is not a python file")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module   # dataclasses and pickle look the module up by name
     spec.loader.exec_module(module)
     if not hasattr(module, "discover"):
         raise KgenError(f"{plugin} must define discover(argv: list[str]) -> dict")
