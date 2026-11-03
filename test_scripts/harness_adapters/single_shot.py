@@ -11,9 +11,10 @@ from bench.data.trace_set import TraceSet
 from contracts import BASELINE_AUTHORS
 from eval.single_shot import run_single_shot
 from eval.mcp_client import attach
+from quota_errors import is_hard_quota_error
 from skills.launch.launch_session import RemoteTarget
 
-from .base import REPO_ROOT, HarnessAdapter, Job
+from .base import REPO_ROOT, HarnessAdapter, Job, QUOTA_EXIT_CODE
 
 class SingleShotAdapter(HarnessAdapter):
     """One completion per sample, no tools (eval/single_shot.py::run_single_shot).
@@ -55,6 +56,7 @@ class SingleShotAdapter(HarnessAdapter):
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         definition = self.trace_set.definitions[job.name]
+        quota_hit = False
         try:
             result = run_single_shot(
                 definition=definition,
@@ -70,6 +72,7 @@ class SingleShotAdapter(HarnessAdapter):
                 verbose=True,
             )
         except Exception as e:  # noqa: BLE001 — surfaced as a failed job, not a crash
+            quota_hit = is_hard_quota_error(e)
             result = {
                 "status": "ERROR",
                 "error": str(e),
@@ -77,10 +80,14 @@ class SingleShotAdapter(HarnessAdapter):
                 "results": [],
             }
         log_path.write_text(json.dumps(result, indent=2))
-        # rc drives bench_fleet's retry loop, so it means "infra broke" only:
-        # failed samples ARE the measurement, and retrying would redraw them
-        # and skew the pass rate.
+        if quota_hit:
+            return QUOTA_EXIT_CODE
+        # A definition where every sample fails is still a measurement;
+        # only an evaluator error marks the job as failed.
         return 1 if result.get("status") == "ERROR" else 0
+
+    def quota_exceeded(self, log_path: Path, return_code: int) -> bool:
+        return return_code == QUOTA_EXIT_CODE
 
     def cleanup(self) -> None:
         self.mcp_client.close()

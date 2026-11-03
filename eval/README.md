@@ -101,7 +101,7 @@ Run `python3 test_scripts/bench_fleet.py --help` for the full list.
 | `--min-iterations` | `15` | Floor: the model is told not to stop earlier |
 | `--samples` | `3` | `single-shot` only: independent generations per definition. Failed samples are kept, so the pass rate is part of the result. |
 | `--temperature` | `1.0` | `single-shot` only |
-| `--retries` | `3` | Retries for transient infrastructure failures |
+| `--retries` | `3` | Retries only when the OS temporarily cannot start the harness process; model/API errors stay with the harness |
 | `--on-demand` | off | On-demand instead of spot, when a fresh instance is provisioned |
 
 Two more knobs live outside the command line:

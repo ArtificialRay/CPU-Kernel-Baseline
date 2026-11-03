@@ -58,8 +58,8 @@ from mcp_app.agent_tools.isa import isa_satisfies
 # run script's own directory on sys.path[0] automatically (same idiom
 # skills/launch/launch_session.py uses for its sibling remote.py).
 from harness_adapters import (
-    HarnessAdapter, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, NanobotAdapter,
-    OwnHarnessAdapter, SingleShotAdapter, Job,
+    HarnessAdapter, HarnessLaunchError, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, NanobotAdapter,
+    OwnHarnessAdapter, SingleShotAdapter, Job, QUOTA_EXIT_CODE,
 )
 
 DEFINITIONS_DIR = REPO_ROOT / "bench-trace" / "definitions"
@@ -79,26 +79,6 @@ class FleetRunError(RuntimeError):
 
 class QuotaExceeded(FleetRunError):
     """The harness account is out of quota; retrying jobs cannot help."""
-
-
-QUOTA_EXIT_CODE = 75
-
-
-def _claude_quota_exceeded(log_path: Path) -> bool:
-    """Recognize the structured Claude CLI result, including when CLI exits 0."""
-    try:
-        with log_path.open() as stream:
-            for line in stream:
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if (event.get("api_error_status") == 429
-                        and event.get("api_error") == "usage_limit_reached"):
-                    return True
-    except OSError:
-        pass
-    return False
 
 
 def _free_local_port() -> int:
@@ -435,25 +415,32 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             ran_jobs.append(job)
             log_path = log_dir / f"{dataset}_{isa}_{job.name}.log"
             attempt = 0
+            quota_hit = False
             while True:
                 print(f"=== [{time.strftime('%H:%M:%S')}] starting job: {job.name} "
                       f"(attempt {attempt + 1}/{args.retries + 1}) ===")
-                with WatchdogKeeper(instance, args.watchdog_minutes):
-                    rc = adapter.run_job(job, endpoint=prepared["endpoint"], author=author, log_path=log_path)
-                quota_hit = args.harness == "claude-code" and _claude_quota_exceeded(log_path)
-                if quota_hit:
+                try:
+                    with WatchdogKeeper(instance, args.watchdog_minutes):
+                        rc = adapter.run_job(
+                            job, endpoint=prepared["endpoint"], author=author, log_path=log_path,
+                        )
+                except HarnessLaunchError as exc:
+                    if attempt < args.retries:
+                        print(f"  WARNING: could not start {job.name}: {exc}; retrying",
+                              file=sys.stderr)
+                        time.sleep(min(2 ** attempt, 10))
+                        attempt += 1
+                        continue
+                    log_path.write_text(f"Harness process could not start: {exc}\n")
+                    rc = 1
+                    print(f"  ERROR: could not start {job.name} after {attempt + 1} "
+                          f"attempt(s): {exc}", file=sys.stderr)
                     break
-                if rc == 0:
-                    break
-                if attempt >= args.retries:
-                    print(f"  ERROR: job {job.name}'s process exited {rc} after "
-                          f"{attempt + 1} attempt(s) — giving up, see {log_path}", file=sys.stderr)
-                    break
-                print(f"  WARNING: job {job.name}'s process exited {rc} on attempt "
-                      f"{attempt + 1} — retrying ({args.retries - attempt} retries left)",
-                      file=sys.stderr)
-                log_path.rename(log_path.with_suffix(log_path.suffix + f".attempt{attempt + 1}"))
-                attempt += 1
+                quota_hit = adapter.quota_exceeded(log_path, rc)
+                if rc != 0 and not quota_hit:
+                    print(f"  ERROR: job {job.name}'s process exited {rc}; "
+                          f"see {log_path}", file=sys.stderr)
+                break
             print(f"=== [{time.strftime('%H:%M:%S')}] job {job.name} finished -> {log_path} ===")
             sync_job_artifacts(
                 instance, args.remote_root, dataset, author, job, local_results_dir,
@@ -462,15 +449,13 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             wandb_log_job(job.name, dataset, isa, args, author, local_results_dir)
             if quota_hit:
                 raise QuotaExceeded(
-                    f"Claude Code usage limit reached during {job.name}; stopped the batch "
+                    f"{args.harness} account quota exhausted during {job.name}; stopped the batch "
                     f"without starting further jobs. See {log_path}"
                 )
             if rc != 0:
                 failed_jobs.append(job.name)
 
         print(f"All jobs done. Logs in {log_dir}")
-        if hasattr(adapter, "cleanup"):
-            adapter.cleanup()
 
         incomplete = [
             j.name for j in jobs
@@ -490,6 +475,11 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
                 f"incomplete trajectories={incomplete}"
             )
     finally:
+        if hasattr(adapter, "cleanup"):
+            try:
+                adapter.cleanup()
+            except Exception as e:  # noqa: BLE001 — retain the job's original failure
+                print(f"  WARNING: adapter cleanup failed: {e}", file=sys.stderr)
         for job in ran_jobs:
             adapter.cleanup_workspace(job)
         stop_tunnel(prepared)
@@ -692,6 +682,8 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
             for start in range(0, len(names), args.batch_size):
                 if not _wait_for_memory(args.min_free_memory_gb, stop):
                     return
+                if stop.is_set():
+                    return
                 chunk = names[start:start + args.batch_size]
                 rc = _run_chunk_subprocess(args, ds, chunk, author)
                 if rc == QUOTA_EXIT_CODE:
@@ -813,7 +805,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "to. Empty = every definition matching --dataset, except the ones "
                         "tagged e2e:<model>, which run only when named here.")
     p.add_argument("--retries", type=int, default=3,
-                   help="Retries for transient infra failures. Total attempts = retries+1.")
+                   help="Retries only when the OS temporarily cannot start a harness process. "
+                        "Model/API errors are handled within the harness. Default: 3.")
     p.add_argument("--author", default=None, help="Override the computed author (advanced).")
     p.add_argument("--label", default=None, help="Override the computed instance label (advanced).")
     p.add_argument("--instance", default=None, help="EC2 instance type override.")
@@ -862,9 +855,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     args = p.parse_args(argv)
 
     if (args.batch_size < 1 or args.max_rounds < 1 or args.max_parallel_datasets < 1
+            or args.retries < 0
             or args.min_free_memory_gb < 0):
         p.error("--batch-size, --max-rounds and --max-parallel-datasets must be positive; "
-                "--min-free-memory-gb must be nonnegative")
+                "--retries and --min-free-memory-gb must be nonnegative")
     if len(args.dataset) != len(set(args.dataset)):
         p.error("--dataset values must be distinct")
 

@@ -32,6 +32,7 @@ from contracts import AGENT_KERNEL_FILENAME, REFERENCE_SCALAR_AUTHORS
 from eval.evaluator import _ISA_PROMPT_INFO
 from eval.llm_call import call_llm
 from eval.llm_providers import resolve_completion_kwargs
+from quota_errors import is_hard_quota_error
 
 if TYPE_CHECKING:
     from eval.mcp_client import MCPKernelClient
@@ -189,6 +190,8 @@ def run_single_shot(
             message = call_llm(completion_kwargs)
             code = extract_kernel_code(getattr(message, "content", "") or "")
         except Exception as e:  # noqa: BLE001 — one bad draw must not kill the batch
+            if is_hard_quota_error(e):
+                raise
             row["error"] = f"{type(e).__name__}: {e}"
             results.append(row)
             if verbose:

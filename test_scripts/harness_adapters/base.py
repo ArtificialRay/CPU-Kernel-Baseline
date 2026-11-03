@@ -3,6 +3,7 @@ and run_and_tee()."""
 
 from __future__ import annotations
 
+import errno
 import subprocess
 import sys
 from contextlib import AbstractContextManager, nullcontext
@@ -11,9 +12,14 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+from quota_errors import QUOTA_EXIT_CODE, log_has_hard_quota_error
 
 load_dotenv()
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class HarnessLaunchError(RuntimeError):
+    """The OS temporarily could not start the harness process."""
 
 
 @dataclass
@@ -31,16 +37,23 @@ def run_and_tee(
     given, is the child's complete environment (None = inherit ours). stdin is
     /dev/null: every harness here takes its prompt as an argument, and a
     non-interactive child must not wait on, or consume, the driver's stdin."""
-    with log_path.open("w") as log_fh, subprocess.Popen(
-        cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-    ) as proc:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            log_fh.write(line)
-        proc.wait()
-        return proc.returncode
+    with log_path.open("w") as log_fh:
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            )
+        except OSError as exc:
+            if exc.errno == errno.EAGAIN:
+                raise HarnessLaunchError(str(exc)) from exc
+            raise
+        with proc:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                log_fh.write(line)
+            proc.wait()
+            return proc.returncode
 
 
 class HarnessAdapter:
@@ -58,6 +71,10 @@ class HarnessAdapter:
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         raise NotImplementedError
+
+    def quota_exceeded(self, log_path: Path, return_code: int) -> bool:
+        """Adapters may override this for their own structured error format."""
+        return log_has_hard_quota_error(log_path)
 
     def prepare_workspace(self, job: Job) -> AbstractContextManager[Optional[Path]]:
         return nullcontext(None)
