@@ -71,8 +71,8 @@ Only needed in specific cases, set in `.env` or the shell.
 | `NCNN_ROOT`, `LLAMA_CPP_ROOT` | Point the local `bench/` harness at an existing ncnn / llama.cpp checkout |
 | `ARMBENCH_NOTEPAD=1` | Give the `own` harness's agent a persistent scratchpad tool |
 | `ARMBENCH_CC_JOB_ROOT` | Parent of the per-job working directories `--harness claude-code` creates (default: the system temp dir); must be outside this repo |
-| `OPENROUTER_API_KEY` | Used by `scripts/bench_loop_agent.py` |
 | `WANDB_INSTANCE_TYPE` | Label recorded on runs logged with `--wandb` |
+| `NANOBOT_CONFIG_BASE` | set your own nanobot config address if `--harness nanobot` |
 
 ## Timing protocol
 
@@ -102,12 +102,3 @@ anything against it, which means that changing any of the four values
 re-collects the baselines on every instance. With `bench.cli`, run
 `collect-baselines` again; until then `bench` reports no speedup rather than
 one against the old baseline.
-
-## nanobot model and provider
-
-`--harness nanobot` reads its base config from
-`skills/nanobot/nanobot-kernel-session/config.json` by default. Passing
-`--model` alone only overrides `agents.defaults.model` — the provider (and
-its API key) still comes from that checked-in config, so switching to a
-model from a different provider needs its own base config. Set
-`NANOBOT_CONFIG_BASE` in `.env` (see `.env.example`) to point at one instead.
