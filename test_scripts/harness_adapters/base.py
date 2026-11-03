@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 class Job:
     name: str
     prompt: str
+    op_type: str = ""
 
 
 def run_and_tee(

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
@@ -15,11 +15,6 @@ from .claude_code import ClaudeCodeAdapter
 
 CLINE_SKILL_FILE = REPO_ROOT / "skills" / "cline" / "cline-kernel-session" / "SKILL.md"
 CLINE_MCP_SERVER_NAME = "cpu-kernel-baseline"
-# Same one-shared-directory reasoning as CODEX_WORKSPACE_DIR (see its
-# comment) — cwd for cline's own sandboxed shell/file tools, not for the
-# system prompt (that goes via `-s`, not an auto-loaded file), wiped and
-# recreated fresh by ClineAdapter.prepare_workspace() before each run.
-CLINE_WORKSPACE_DIR = Path.home() / ".cline-fleet" / "workspace"
 
 class ClineAdapter(HarnessAdapter):
     name = "cline"
@@ -88,6 +83,5 @@ class ClineAdapter(HarnessAdapter):
 
     @contextmanager
     def prepare_workspace(self, job: Job):
-        shutil.rmtree(CLINE_WORKSPACE_DIR, ignore_errors=True)
-        CLINE_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-        yield CLINE_WORKSPACE_DIR
+        with tempfile.TemporaryDirectory(prefix=f"cline-job-{job.name}-") as job_dir:
+            yield Path(job_dir)

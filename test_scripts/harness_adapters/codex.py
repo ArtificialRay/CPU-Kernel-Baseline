@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
@@ -19,9 +19,6 @@ CODEX_SKILL_FILE = REPO_ROOT / "skills" / "codex" / "codex-kernel-session" / "SK
 # TOML table key for mcp_servers.<name> in codex's `-c` override — matches the
 # mcpServers key ClaudeCodeAdapter uses, just for readability across harness logs.
 CODEX_MCP_SERVER_NAME = "cpu-kernel-baseline"
-# One permanent `--cd` root shared by every codex job, wiped and rewritten
-# by CodexAdapter.prepare_workspace() before each run.
-CODEX_WORKSPACE_DIR = Path.home() / ".codex-fleet" / "workspace"
 # Arbitrary id for the optional custom `model_providers.<id>` entry
 # CodexAdapter builds from OPENAI_API_BASE/OPENAI_API_KEY (see its run_job()).
 CODEX_DOTENV_PROVIDER_NAME = "dotenv-openai-compatible"
@@ -101,12 +98,8 @@ class CodexAdapter(HarnessAdapter):
 
     @contextmanager
     def prepare_workspace(self, job: Job):
-        """Wipe and rewrite the one shared CODEX_WORKSPACE_DIR before every
-        run_job() call (every attempt, every job) — nothing accumulates
-        between runs. No cleanup_workspace() override needed: the directory is
-        reused indefinitely, and the next prepare_workspace() wipes it
-        again before its own run anyway."""
-        shutil.rmtree(CODEX_WORKSPACE_DIR, ignore_errors=True)
-        CODEX_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-        (CODEX_WORKSPACE_DIR / "AGENTS.md").write_text(self.skill_text)
-        yield CODEX_WORKSPACE_DIR
+        """Give every attempt its own empty cwd, safe for parallel queues."""
+        with tempfile.TemporaryDirectory(prefix=f"codex-job-{job.name}-") as job_dir:
+            workspace = Path(job_dir)
+            (workspace / "AGENTS.md").write_text(self.skill_text)
+            yield workspace
