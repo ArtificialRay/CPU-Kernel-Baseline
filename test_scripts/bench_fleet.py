@@ -558,44 +558,6 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
     return subprocess.run(cmd, check=False).returncode
 
 
-def _available_memory_bytes() -> Optional[tuple[int, int]]:
-    """Read WSL/Linux available and total memory when procfs is present."""
-    values: dict[str, int] = {}
-    meminfo = Path("/proc/meminfo")
-    if not meminfo.exists():
-        return None
-    with meminfo.open() as stream:
-        for line in stream:
-            key, _, value = line.partition(":")
-            if key in ("MemAvailable", "MemTotal"):
-                values[key] = int(value.split()[0]) * 1024
-    return values["MemAvailable"], values["MemTotal"]
-
-
-def _wait_for_memory(reserve_gb: float, stop: threading.Event) -> bool:
-    """Hold new chunks until the local machine has the requested free reserve."""
-    reserve = int(reserve_gb * 1024**3)
-    warned = False
-    while not stop.is_set():
-        memory = _available_memory_bytes()
-        if memory is None:
-            return True
-        available, total = memory
-        if total <= reserve:
-            raise FleetRunError(
-                f"--min-free-memory-gb={reserve_gb} is at least this host's "
-                f"MemTotal ({total / 1024**3:.1f} GiB)"
-            )
-        if available >= reserve:
-            return True
-        if not warned:
-            print(f"  MEMORY: {available / 1024**3:.1f} GiB available; waiting for "
-                  f"{reserve_gb:.1f} GiB before starting another chunk", file=sys.stderr)
-            warned = True
-        stop.wait(10)
-    return False
-
-
 def run_until_complete(args: argparse.Namespace) -> list[str]:
     """Keep resuming across every --dataset — parallel dataset queues,
     cost-sorted within each dataset — until every matching definition has a
@@ -680,8 +642,6 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
         def run_dataset(ds: str) -> None:
             names = per_ds_incomplete[ds]
             for start in range(0, len(names), args.batch_size):
-                if not _wait_for_memory(args.min_free_memory_gb, stop):
-                    return
                 if stop.is_set():
                     return
                 chunk = names[start:start + args.batch_size]
@@ -840,9 +800,6 @@ def main(argv: Optional[list[str]] = None) -> None:
                    help="--until-complete: chunk size per dataset per round.")
     p.add_argument("--max-parallel-datasets", type=int, default=2,
                    help="--until-complete: maximum simultaneously running dataset queues. Default: 2.")
-    p.add_argument("--min-free-memory-gb", type=float, default=4.0,
-                   help="--until-complete: wait before starting a chunk until the local host has "
-                        "this much MemAvailable. Default: 4 GiB.")
     p.add_argument("--wandb", action="store_true",
                    help="Log every job to Weights & Biases (needs `pip install wandb`). Off by "
                         "default.")
@@ -855,10 +812,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     args = p.parse_args(argv)
 
     if (args.batch_size < 1 or args.max_rounds < 1 or args.max_parallel_datasets < 1
-            or args.retries < 0
-            or args.min_free_memory_gb < 0):
+            or args.retries < 0):
         p.error("--batch-size, --max-rounds and --max-parallel-datasets must be positive; "
-                "--retries and --min-free-memory-gb must be nonnegative")
+                "--retries must be nonnegative")
     if len(args.dataset) != len(set(args.dataset)):
         p.error("--dataset values must be distinct")
 
