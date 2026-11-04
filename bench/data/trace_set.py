@@ -1,6 +1,6 @@
 """TraceSet — the in-memory warehouse over an arm-bench dataset root.
 
-Mirrors flashinfer-bench's TraceSet structure. A pure warehouse: it loads, indexes, queries (get_baseline_solution /
+A pure warehouse: it loads, indexes, queries (get_baseline_solution /
 get_baseline_min_ns), and persists (add_traces). The benchmark run loops live
 in bench/benchmark.py (Benchmark); bench/cli.py dispatches into that.
 """
