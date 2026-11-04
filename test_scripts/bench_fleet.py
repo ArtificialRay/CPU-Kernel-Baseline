@@ -61,6 +61,7 @@ from harness_adapters import (
     HarnessAdapter, HarnessLaunchError, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, NanobotAdapter,
     OwnHarnessAdapter, SingleShotAdapter, Job, QUOTA_EXIT_CODE,
 )
+from harness_adapters.sandbox import check_file_sandbox
 
 DEFINITIONS_DIR = REPO_ROOT / "bench-trace" / "definitions"
 
@@ -327,6 +328,11 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     adapter: HarnessAdapter
     model = args.model
     local_port = _free_local_port()
+    if args.file_sandbox == "bwrap" and args.harness in ("own", "single-shot"):
+        raise FleetRunError(
+            f"--file-sandbox bwrap cannot contain the in-process {args.harness} harness; "
+            "use an external CLI harness or --file-sandbox off"
+        )
     if args.harness == "claude-code":
         adapter = ClaudeCodeAdapter(model=args.model)
     elif args.harness == "codex":
@@ -339,6 +345,14 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             model = adapter.model
     elif args.harness not in ("own", "single-shot"):
         raise ValueError(f"Unknown --harness {args.harness!r}")
+    if args.file_sandbox == "bwrap":
+        try:
+            check_file_sandbox(adapter.sandbox_runtime_paths())
+        except RuntimeError as exc:
+            if hasattr(adapter, "cleanup"):
+                adapter.cleanup()
+            raise FleetRunError(f"File sandbox preflight failed: {exc}") from exc
+    adapter.file_sandbox = args.file_sandbox
     isa = args.isa
     author = args.author or compute_author(args.harness, model, isa)
     label = args.label or launch_session._label_for(dataset, author)
@@ -524,6 +538,7 @@ def _run_chunk_subprocess(
         "--harness", args.harness, "--dataset", dataset, "--isa", args.isa,
         "--min-iterations", str(args.min_iterations),
         "--retries", str(args.retries),
+        "--file-sandbox", args.file_sandbox,
         "--author", author, "--label", label,
         "--remote-root", args.remote_root, "--remote-port", str(args.remote_port),
         "--definitions", json.dumps(definitions),
@@ -770,6 +785,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--retries", type=int, default=3,
                    help="Retries only when the OS temporarily cannot start a harness process. "
                         "Model/API errors are handled within the harness. Default: 3.")
+    p.add_argument("--file-sandbox", choices=("off", "bwrap"), default=None,
+                   help="Isolate each external harness CLI job with Bubblewrap on Linux. "
+                        "Only its workspace, private state, and required runtime files are visible. "
+                        "Default on Linux: bwrap for external CLIs; off otherwise.")
     p.add_argument("--author", default=None, help="Override the computed author (advanced).")
     p.add_argument("--label", default=None, help="Override the computed instance label (advanced).")
     p.add_argument("--instance", default=None, help="EC2 instance type override.")
@@ -810,6 +829,11 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "one group.")
     p.add_argument("--skip-final-teardown", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(argv)
+    if args.file_sandbox is None:
+        args.file_sandbox = (
+            "bwrap" if sys.platform == "linux" and args.harness not in ("own", "single-shot")
+            else "off"
+        )
 
     if (args.batch_size < 1 or args.max_rounds < 1 or args.max_parallel_instances < 1
             or args.retries < 0):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -14,6 +15,7 @@ from contracts import CLIENT_TOOL_TIMEOUT_S, check_client_tool_timeout
 
 from .base import REPO_ROOT, HarnessAdapter, Job, run_and_tee
 from .claude_code import ClaudeCodeAdapter
+from .sandbox import FileSandbox
 
 CODEX_SKILL_FILE = REPO_ROOT / "skills" / "codex" / "codex-kernel-session" / "SKILL.md"
 # TOML table key for mcp_servers.<name> in codex's `-c` override — matches the
@@ -94,7 +96,15 @@ class CodexAdapter(HarnessAdapter):
             if self.model:
                 cmd += ["-m", self.model]
             cmd.append(job.prompt)
-            return run_and_tee(cmd, log_path=log_path, env=child_env)
+            sandbox = None
+            if self.file_sandbox == "bwrap":
+                credentials = Path.home() / ".codex" / "auth.json"
+                home_files = ((credentials, ".codex/auth.json"),) if credentials.exists() else ()
+                sandbox = FileSandbox(
+                    workspace=workspace, runtime_paths=self.sandbox_runtime_paths(),
+                    home_files=home_files,
+                )
+            return run_and_tee(cmd, log_path=log_path, env=child_env, sandbox=sandbox)
 
     @contextmanager
     def prepare_workspace(self, job: Job):
@@ -103,3 +113,7 @@ class CodexAdapter(HarnessAdapter):
             workspace = Path(job_dir)
             (workspace / "AGENTS.md").write_text(self.skill_text)
             yield workspace
+
+    def sandbox_runtime_paths(self) -> tuple[Path, ...]:
+        binary = Path(shutil.which("codex") or "codex").resolve()
+        return (binary.parent.parent,)

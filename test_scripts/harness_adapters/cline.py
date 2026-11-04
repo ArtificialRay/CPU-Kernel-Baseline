@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ from typing import Optional
 
 from .base import REPO_ROOT, HarnessAdapter, Job, run_and_tee
 from .claude_code import ClaudeCodeAdapter
+from .sandbox import FileSandbox
 
 CLINE_SKILL_FILE = REPO_ROOT / "skills" / "cline" / "cline-kernel-session" / "SKILL.md"
 CLINE_MCP_SERVER_NAME = "cpu-kernel-baseline"
@@ -81,7 +83,20 @@ class ClineAdapter(HarnessAdapter):
                     "--json",
                     job.prompt,
                 ]
-                return run_and_tee(cmd, log_path=log_path)
+                sandbox = None
+                if self.file_sandbox == "bwrap":
+                    sandbox = FileSandbox(
+                        workspace=workspace, runtime_paths=self.sandbox_runtime_paths(),
+                        writable_paths=(state,),
+                    )
+                return run_and_tee(cmd, log_path=log_path, sandbox=sandbox)
+
+    def sandbox_runtime_paths(self) -> tuple[Path, ...]:
+        binary = Path(shutil.which("cline") or "cline").resolve()
+        for parent in binary.parents:
+            if (parent / "bin" / "node").exists() and (parent / "lib" / "node_modules").exists():
+                return (parent / "bin" / "node", binary.parent)
+        raise RuntimeError(f"Cannot locate Cline's Node runtime above {binary}")
 
     def _provider_id(self) -> str:
         """`openai-compatible` hits /v1/chat/completions, which rejects
