@@ -15,11 +15,11 @@ Usage:
     python3 test_scripts/bench_fleet.py --harness cline \\
         --dataset ncnn --isa sve2 --model gpt-5.6-luna
 
-    # Resume across multiple datasets until every definition in both is
-    # confirmed complete, self-healing a stalled/wedged instance along the
-    # way:
+    # Resume across multiple datasets, processing them in order and running
+    # chunks for each dataset on up to two instances:
     python3 test_scripts/bench_fleet.py --harness claude-code \\
-        --dataset ncnn llama.cpp --isa sve2 --model sonnet --until-complete
+        --dataset ncnn llama.cpp --isa sve2 --model sonnet --until-complete \\
+        --max-parallel-instances 2
 """
 
 from __future__ import annotations
@@ -512,7 +512,9 @@ class WatchdogKeeper:
         self.stopped.set()
 
 
-def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: list[str], author: str) -> int:
+def _run_chunk_subprocess(
+    args: argparse.Namespace, dataset: str, definitions: list[str], author: str, label: str,
+) -> int:
     """One round's chunk = one fresh `bench_fleet.py` subprocess with no --until-complete.
     Deliberately call a subprocess enable each chunk gets its own process, so that what
     happened in the subprocess (e.g. a wedged SSH tunnel, a leaked adapter thread) never
@@ -522,7 +524,7 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         "--harness", args.harness, "--dataset", dataset, "--isa", args.isa,
         "--min-iterations", str(args.min_iterations),
         "--retries", str(args.retries),
-        "--author", author,
+        "--author", author, "--label", label,
         "--remote-root", args.remote_root, "--remote-port", str(args.remote_port),
         "--definitions", json.dumps(definitions),
         # This is a single-pass invocation of this same script (see this
@@ -544,8 +546,6 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         cmd += ["--local-results-dir", args.local_results_dir]
     if args.sync_solutions:
         cmd.append("--sync-solutions")
-    if args.label:
-        cmd += ["--label", args.label]
     if args.wandb:
         cmd += ["--wandb", "--wandb-project", args.wandb_project]
         if args.wandb_entity:
@@ -559,31 +559,23 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
 
 
 def run_until_complete(args: argparse.Namespace) -> list[str]:
-    """Keep resuming across every --dataset — parallel dataset queues,
-    cost-sorted within each dataset — until every matching definition has a
-    confirmed-complete local trajectory (a "submit" turn) or --max-rounds is
-    hit.
-    Per-dataset stall detection: zero progress in a round only triggers
-    a health probe (launch_session.is_instance_reachable) then distinguish if
-    one instance is reachable, if not, start a fresh box
-    Generalized to any --harness/model.
-    
-    Returns the instance label for every --dataset, so main() can scope its
-    final teardown to just these instances instead of tearing down every
-    instance provisioning/provision.py knows about."""
+    """Resume each dataset with a bounded pool of instance workers.
+
+    A definition keeps the same worker across rounds so its remote checkpoint
+    remains available. Workers run their own chunks serially and sync results
+    by definition; different workers run concurrently. Datasets use the same
+    pool in sequence, keeping the instance count within the configured limit.
+    """
     datasets = args.dataset
-    # Resolve --model up front
     model = args.model or ADAPTER_CLASSES[args.harness].default_model()
     author = args.author or compute_author(args.harness, model, args.isa)
-    # support label override or create label on my own
-    labels = [args.label or launch_session._label_for(ds, author) for ds in datasets]
+    base_label = args.label or launch_session._label_for(datasets[0], author)
+    worker_limit = args.max_parallel_instances
     local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
-    prev_incomplete_count: dict[str, Optional[int]] = {ds: None for ds in datasets}
     adapter_cls = ADAPTER_CLASSES[args.harness]
-    max_iterations = args.max_iterations
     jobs_by_dataset = {
         ds: build_jobs(
-            ds, args.isa, args.definitions, args.min_iterations, max_iterations,
+            ds, args.isa, args.definitions, args.min_iterations, args.max_iterations,
             adapter_cls.prompt_template, adapter_cls.template_args,
         )
         for ds in datasets
@@ -598,85 +590,96 @@ def run_until_complete(args: argparse.Namespace) -> list[str]:
                     "their agent-runs paths would collide"
                 )
 
-    for round_num in range(1, args.max_rounds + 1):
-        per_ds_incomplete = {
-            ds: sorted(
-                (j.name for j in jobs_by_dataset[ds]
-                 if not _trajectory_complete(local_results_dir, j.name, args.min_iterations)),
-                key=lambda n: (_cost_proxy(n), n),
-            )
-            for ds in datasets
-        } # filter all definition that has completed before by searching on local trajcetory directory
-        if not any(per_ds_incomplete.values()):
-            print(f"=== [{time.strftime('%H:%M:%S')}] ALL COMPLETE at round {round_num} ===")
-            return labels
+    used_labels: set[str] = set()
+    for ds in datasets:
+        # Partition the full job list once. Filtering to incomplete jobs before
+        # assignment would move a resumed job to another instance.
+        ordered = sorted(jobs_by_dataset[ds], key=lambda j: (_cost_proxy(j.name), j.name))
+        worker_count = min(worker_limit, len(ordered))
+        if not worker_count:
+            continue
+        lanes = [[job.name for job in ordered[i::worker_count]]
+                 for i in range(worker_count)]
+        labels = [base_label if i == 0 else f"{base_label}-worker-{i + 1}"
+                  for i in range(worker_count)]
+        previous_counts: list[Optional[int]] = [None] * worker_count
 
-        print(
-            f"=== [{time.strftime('%H:%M:%S')}] round {round_num}/{args.max_rounds}: "
-            + ", ".join(f"{ds}={len(v)} incomplete" for ds, v in per_ds_incomplete.items())
-        )
+        for round_num in range(1, args.max_rounds + 1):
+            incomplete_lanes = [
+                [name for name in lane
+                 if not _trajectory_complete(local_results_dir, name, args.min_iterations)]
+                for lane in lanes
+            ]
+            remaining = sum(len(names) for names in incomplete_lanes)
+            if remaining == 0:
+                print(f"=== [{time.strftime('%H:%M:%S')}] {ds}: ALL COMPLETE "
+                      f"at round {round_num} ===")
+                break
+            print(f"=== [{time.strftime('%H:%M:%S')}] {ds}: round "
+                  f"{round_num}/{args.max_rounds}, {remaining} incomplete "
+                  f"across {worker_count} instance slot(s) ===")
 
-        # stall detection: same incomplete count as last round only triggers
-        # a health probe — an unreachable instance gets torn down for a
-        # fresh box, a reachable one is left alone (just slow).
-        for ds in datasets:
-            n = len(per_ds_incomplete[ds])
-            if n > 0 and prev_incomplete_count[ds] == n:
-                label = args.label or launch_session._label_for(ds, author)
-                if launch_session.is_instance_reachable(label):
-                    print(f"  STALLED but {label}'s instance is still reachable "
-                          f"(still {n} incomplete) — leaving it running", file=sys.stderr)
-                else:
-                    print(f"  UNREACHABLE: {label}'s instance isn't responding "
-                          f"(still {n} incomplete) — tearing down to force a fresh box", file=sys.stderr)
-                    try:
-                        launch_session._teardown(label)
-                    except Exception as e:  # noqa: BLE001 — best-effort, next round just re-provisions
-                        print(f"  WARNING: teardown failed for {label}: {e}", file=sys.stderr)
-            prev_incomplete_count[ds] = n
+            for i, names in enumerate(incomplete_lanes):
+                count = len(names)
+                if count and previous_counts[i] == count:
+                    label = labels[i]
+                    if launch_session.is_instance_reachable(label):
+                        print(f"  STALLED but {label} is reachable "
+                              f"({count} incomplete); leaving it running", file=sys.stderr)
+                    else:
+                        print(f"  UNREACHABLE: {label} ({count} incomplete); "
+                              "tearing down for reprovisioning", file=sys.stderr)
+                        try:
+                            launch_session._teardown(label)
+                        except Exception as e:  # noqa: BLE001 — retry provisioning next round
+                            print(f"  WARNING: teardown failed for {label}: {e}", file=sys.stderr)
+                previous_counts[i] = count
 
-        # One serial queue per dataset. Different datasets may progress at
-        # once, but each child keeps its own instance label and MCP session.
-        stop = threading.Event()
+            stop = threading.Event()
 
-        def run_dataset(ds: str) -> None:
-            names = per_ds_incomplete[ds]
-            for start in range(0, len(names), args.batch_size):
-                if stop.is_set():
-                    return
-                chunk = names[start:start + args.batch_size]
-                rc = _run_chunk_subprocess(args, ds, chunk, author)
-                if rc == QUOTA_EXIT_CODE:
+            def run_lane(i: int) -> None:
+                label = labels[i]
+                names = incomplete_lanes[i]
+                for start in range(0, len(names), args.batch_size):
+                    if stop.is_set():
+                        return
+                    chunk = names[start:start + args.batch_size]
+                    rc = _run_chunk_subprocess(args, ds, chunk, author, label)
+                    if rc == QUOTA_EXIT_CODE:
+                        stop.set()
+                        raise QuotaExceeded(
+                            f"{ds}: harness quota exhausted; stopping new chunks"
+                        )
+                    if rc != 0:
+                        print(f"  WARNING: {ds} chunk on {label} exited {rc}; "
+                              "its incomplete jobs remain eligible next round",
+                              file=sys.stderr)
+
+            active = [i for i, names in enumerate(incomplete_lanes) if names]
+            used_labels.update(labels[i] for i in active)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(active)) as executor:
+                futures = [executor.submit(run_lane, i) for i in active]
+                try:
+                    for future in concurrent.futures.as_completed(futures):
+                        future.result()
+                except Exception:
                     stop.set()
-                    raise QuotaExceeded(f"{ds}: harness quota exhausted; stopping new chunks in all queues")
-                if rc != 0:
-                    print(f"  WARNING: {ds} chunk exited {rc}; its incomplete jobs "
-                          "remain eligible next round", file=sys.stderr)
+                    raise
 
-        active = [ds for ds in datasets if per_ds_incomplete[ds]]
-        workers = min(args.max_parallel_datasets, len(active))
-        if args.harness == "cline" and workers > 1:
-            # Cline's auth and MCP registration are global CLI state.
-            print("  WARNING: Cline uses global auth/MCP settings; running one dataset "
-                  "queue at a time", file=sys.stderr)
-            workers = 1
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=workers
-        ) as executor:
-            futures = [executor.submit(run_dataset, ds) for ds in active]
-            try:
-                for future in concurrent.futures.as_completed(futures):
-                    future.result()
-            except Exception:
-                stop.set()
-                raise
-
-    still_incomplete = {ds: len(v) for ds, v in per_ds_incomplete.items() if v}
-    print(
-        f"=== [{time.strftime('%H:%M:%S')}] giving up after {args.max_rounds} round(s) "
-        f"— still incomplete: {still_incomplete} ===", file=sys.stderr,
-    )
-    raise FleetRunError(f"Still incomplete after {args.max_rounds} rounds: {still_incomplete}")
+            if all(_trajectory_complete(local_results_dir, job.name, args.min_iterations)
+                   for job in ordered):
+                print(f"=== [{time.strftime('%H:%M:%S')}] {ds}: ALL COMPLETE "
+                      f"after round {round_num} ===")
+                break
+        else:
+            still_incomplete = [
+                job.name for job in ordered
+                if not _trajectory_complete(local_results_dir, job.name, args.min_iterations)
+            ]
+            raise FleetRunError(
+                f"{ds}: still incomplete after {args.max_rounds} rounds: {still_incomplete}"
+            )
+    return sorted(used_labels)
 
 
 def wandb_log_job(name, dataset, isa, args, author, local_results_dir) -> None:
@@ -738,7 +741,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                    choices=["claude-code", "cline", "codex", "nanobot", "own", "single-shot"])
     p.add_argument("--dataset", required=True, nargs="+", choices=["ncnn", "simd-loop", "llama.cpp", "kleidiai"],
                    help="One or more datasets (space-separated). More than one requires "
-                        "--until-complete, which interleaves them round-robin.")
+                        "--until-complete, which processes them in order.")
     p.add_argument("--isa", default="sve", choices=["neon", "sve", "sve2", "sme2", "portable"])
     p.add_argument("--model", default=None,
                    help="model override. claude-code: passed as --model to the CLI "
@@ -787,19 +790,16 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "<definition>.json file. Prefer a remote _best when present; ignore "
                         "_current. Off by default.")
     p.add_argument("--until-complete", action="store_true",
-                   help="Keep resuming — across every --dataset with independent queues, "
-                        "cost-sorted cheapest-first within each — until every matching "
-                        "definition has a confirmed-complete trajectory or --max-rounds is hit. "
-                        "Each round re-execs this script per (dataset, chunk) as a fresh "
-                        "subprocess (see run_until_complete()'s docstring). A dataset that makes "
-                        "zero progress in a round has its instance checked; an unreachable "
-                        "instance is torn down before the next round.")
+                   help="Resume until each definition has a confirmed-complete trajectory. "
+                        "Datasets run in order; within one dataset, jobs stay assigned to "
+                        "instance workers across rounds. Each chunk runs in a fresh subprocess.")
     p.add_argument("--max-rounds", type=int, default=8,
                    help="--until-complete only: give up after this many rounds.")
     p.add_argument("--batch-size", type=int, default=3,
-                   help="--until-complete: chunk size per dataset per round.")
-    p.add_argument("--max-parallel-datasets", type=int, default=2,
-                   help="--until-complete: maximum simultaneously running dataset queues. Default: 2.")
+                   help="--until-complete: jobs per chunk on each instance worker. Default: 3.")
+    p.add_argument("--max-parallel-instances", type=int, default=1,
+                   help="--until-complete: maximum instances managed by this command. "
+                        "Default: 1; use 2 or more to run chunks in parallel.")
     p.add_argument("--wandb", action="store_true",
                    help="Log every job to Weights & Biases (needs `pip install wandb`). Off by "
                         "default.")
@@ -811,9 +811,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--skip-final-teardown", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(argv)
 
-    if (args.batch_size < 1 or args.max_rounds < 1 or args.max_parallel_datasets < 1
+    if (args.batch_size < 1 or args.max_rounds < 1 or args.max_parallel_instances < 1
             or args.retries < 0):
-        p.error("--batch-size, --max-rounds and --max-parallel-datasets must be positive; "
+        p.error("--batch-size, --max-rounds and --max-parallel-instances must be positive; "
                 "--retries must be nonnegative")
     if len(args.dataset) != len(set(args.dataset)):
         p.error("--dataset values must be distinct")
@@ -827,10 +827,6 @@ def main(argv: Optional[list[str]] = None) -> None:
                 print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
                 launch_session._teardown(label)
             return
-        if args.label and len(args.dataset) > 1:
-            p.error("--label can't be fixed across multiple --dataset values under --until-complete "
-                     "— each dataset needs its own instance label; omit --label and let it be "
-                     "computed per dataset.")
         labels = run_until_complete(args)
         if not args.skip_final_teardown:
             for label in labels:

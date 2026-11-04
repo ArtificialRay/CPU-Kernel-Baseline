@@ -52,26 +52,36 @@ class ClineAdapter(HarnessAdapter):
             )
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
-        auth_cmd = ["cline", "auth", "-p", self._provider_id(), "-k", self.api_key, "-m", self.model]
-        if self._provider_id() == "openai-compatible":
-            auth_cmd += ["-b", self.base_url]
-        subprocess.run(auth_cmd, check=True, capture_output=True, text=True)
-        subprocess.run(
-            ["cline", "mcp", "add", CLINE_MCP_SERVER_NAME, endpoint,
-             "--transport", "streamable-http", "--yes"],
-            check=True, capture_output=True, text=True,
-        )
-        with self.prepare_workspace(job) as workspace:
-            cmd = [
-                "cline",
-                "-c", str(workspace),
-                "-s", self.skill_text,
-                "-m", self.model,
-                "--auto-approve", "true",
-                "--json",
-                job.prompt,
+        # The CLI stores auth and named MCP servers in its configuration.
+        # Each job gets private CLI state so another instance worker cannot
+        # replace this job's MCP endpoint under CLINE_MCP_SERVER_NAME.
+        with tempfile.TemporaryDirectory(prefix=f"cline-state-{job.name}-") as state_dir:
+            state = Path(state_dir)
+            cli = [
+                "cline", "--config", str(state / "config"),
+                "--data-dir", str(state / "data"),
             ]
-            return run_and_tee(cmd, log_path=log_path)
+            auth_cmd = [*cli, "auth", "-p", self._provider_id(),
+                        "-k", self.api_key, "-m", self.model]
+            if self._provider_id() == "openai-compatible":
+                auth_cmd += ["-b", self.base_url]
+            subprocess.run(auth_cmd, check=True, capture_output=True, text=True)
+            subprocess.run(
+                [*cli, "mcp", "add", CLINE_MCP_SERVER_NAME, endpoint,
+                 "--transport", "streamable-http", "--yes"],
+                check=True, capture_output=True, text=True,
+            )
+            with self.prepare_workspace(job) as workspace:
+                cmd = [
+                    *cli,
+                    "-c", str(workspace),
+                    "-s", self.skill_text,
+                    "-m", self.model,
+                    "--auto-approve", "true",
+                    "--json",
+                    job.prompt,
+                ]
+                return run_and_tee(cmd, log_path=log_path)
 
     def _provider_id(self) -> str:
         """`openai-compatible` hits /v1/chat/completions, which rejects
