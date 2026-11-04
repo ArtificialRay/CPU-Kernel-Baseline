@@ -11,6 +11,7 @@ QUOTA_EXIT_CODE = 75
 _HARD_QUOTA_CODES = {
     "usage_limit_reached",
     "usage_limit_exceeded",
+    "model_requires_usage_credits",
     "insufficient_quota",
     "billing_hard_limit_reached",
     "credit_balance_exhausted",
