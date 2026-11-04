@@ -31,15 +31,15 @@ you.
 - If the target ISA is `portable`, your kernel must NOT use any hand-written NEON/SVE intrinsics, `arm_neon.h`/`arm_sve.h`, or SIMD vector types (e.g. `float32x4_t`) . Please optimize via plain C/C++ 
 
 ### NEVER USE OPENMP PARALLELIZATION
-- Kernel implementation that use OpenMp will be rejected by the evaluator
+- Kernel implementations that use OpenMP will be rejected by the evaluator
 
-### KERNEL ARE ALWAYRS RUN AT REMOTE INSTANCE
-- Remote instance has all dependencies installed, check dependency at local helps nothing but consume your budget
+### KERNELS ALWAYS RUN ON THE REMOTE INSTANCE
+- The remote instance has all dependencies installed; checking dependencies locally only consumes your budget
 
 ### Useful guidelines at optimization
 - feel free to call builtin `write` tool to write anything you find it is interesting in the optimize process, e.g. `disassemble` output, `evaluate` logs, or your own notes.
 - feel free to call builtin `read` tool to read any resource you wrote in the optimize process
-- disassemble is a good friend to inpsect if SIMD really helps improving performance, or if you are not sure why your optimization is not working as expected. It can help you understand the generated assembly code and identify potential bottlenecks or inefficiencies.
+- disassemble is a good friend to inspect whether SIMD really helps improving performance, or if you are not sure why your optimization is not working as expected. It can help you understand the generated assembly code and identify potential bottlenecks or inefficiencies.
 
 ## SKILL referenced:
 **KernelWiki** is a useful skill for you to optimize kernel in GPU. Although you are required to optimize kernel in CPU, you can still apply similar optimization techniques if it is applicable. You can use it as a reference, but you are FORBIDDEN to copy the code from it.

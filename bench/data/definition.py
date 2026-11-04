@@ -13,7 +13,7 @@ from .utils import BaseModelWithDocstrings, NonEmptyString, NonNegativeInt
 
 
 class ScratchBufSpec(BaseModelWithDocstrings):
-    """A scratch buffer allocated by the harness for simd-loop kernels."""
+    """A scratch buffer SimdLoopDataset allocates for a simd-loop kernel."""
     name: NonEmptyString
     dtype: NonEmptyString
 
@@ -90,7 +90,8 @@ class Definition(BaseModelWithDocstrings):
 
     name: NonEmptyString
     op_type: NonEmptyString
-    """General compute category — drives `solutions/<dataset>/_harness/<op_type>.cpp` lookup."""
+    """General compute category; names the `armbench_entry_<op_type>` symbol and the
+    definitions/solutions/workloads/traces subdirectory."""
     axes: Dict[NonEmptyString, AxisSpec]
     inputs: Dict[NonEmptyString, TensorSpec]
     outputs: Dict[NonEmptyString, TensorSpec]

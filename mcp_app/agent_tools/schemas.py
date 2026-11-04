@@ -15,8 +15,8 @@ _CHECK_PROGRESS_SCHEMA = {
         "\"best_metrics\": {...}, \"best_code\": \"...\"}. When it does: "
         "your FIRST two calls for this definition must be compile(best_code) "
         "then evaluate() on the result — even though you already know the "
-        "score — before doing anything else, to help you re-establish this"
-        "session's own notion of \"best so far\",You don't need to track version "
+        "score — before doing anything else, to help you re-establish this "
+        "session's own notion of \"best so far\". You don't need to track version "
         "numbers yourself — compile() always tells you which version it "
         "assigned."
     ),

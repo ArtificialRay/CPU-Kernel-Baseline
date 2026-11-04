@@ -1,7 +1,5 @@
-// bench/datasets/_ncnn_lib/_mat_factory.cpp
-//
-// Python ↔ ncnn::Mat bridge. compile.py always concatenates this source into
-// the solution.so build, so Python (via ctypes) and the armbench_entry_*
+// Python ↔ ncnn::Mat bridge. NcnnBuilder compiles this source into every ncnn
+// baseline .so, so Python (via ctypes) and the armbench_entry_*
 // shim (C++) operate on the same ncnn::Mat ABI — no cross-.so vtable risk.
 //
 // Layout convention: 3D Mat is (c, h, w). 1D Mat is (w,). Float32 by default;
@@ -18,7 +16,7 @@
 
 extern "C" {
 
-// ── Mat construction ─────────────────────────────────────────────────────
+// Mat construction
 
 // Create a 3D Mat (c, h, w) and copy `data` (c*h*w float32, C-major) into it.
 // Returns an opaque pointer that Python keeps until armbench_ncnn_mat_destroy.
@@ -64,8 +62,7 @@ void* armbench_ncnn_mat_create_1d(int w, const float* data)
     return m;
 }
 
-// ── int8 (quantized) Mat construction ────────────────────────────────────
-// Same layouts as the float32 factories above, at elemsize=1u.
+// int8 (quantized) Mat construction: same layouts as the float32 factories above, at elemsize=1u.
 
 // Create a 3D int8 Mat (c, h, w) and copy `data` (c*h*w int8, C-major) into it.
 void* armbench_ncnn_mat_create_3d_i8(int w, int h, int c, const int8_t* data)
@@ -106,8 +103,8 @@ void* armbench_ncnn_mat_create_1d_i8(int w, const int8_t* data)
     return m;
 }
 
-// Create an empty Mat (no allocation). Used for output blob — the harness's
-// armbench_entry_conv2d calls .create() on it once output dims are known.
+// Create an empty Mat (no allocation). Used for output blob — the solution's
+// armbench_entry_<op> calls .create() on it once output dims are known.
 void* armbench_ncnn_mat_create_empty()
 {
     return new ncnn::Mat();
@@ -118,7 +115,7 @@ void armbench_ncnn_mat_destroy(void* m_v)
     delete reinterpret_cast<ncnn::Mat*>(m_v);
 }
 
-// ── Mat introspection (for output readback) ──────────────────────────────
+// Mat introspection (for output readback)
 
 int armbench_ncnn_mat_dims(void* m_v)
 { return reinterpret_cast<ncnn::Mat*>(m_v)->dims; }
@@ -188,9 +185,7 @@ int armbench_ncnn_mat_read_3d_i8(void* m_v, int8_t* out)
     return 0;
 }
 
-// ── Option construction ──────────────────────────────────────────────────
-
-// Default Option matching today's make_opt() in starter/ncnn/ncnn_helpers.h:
+// Default Option for every ncnn baseline:
 //   num_threads=1, no packing, no fp16/bf16, no sgemm/winograd shortcuts.
 void* armbench_ncnn_option_create_default()
 {

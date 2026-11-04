@@ -1,27 +1,11 @@
 #!/usr/bin/env python3
-"""Log one fleet job to Weights & Biases (comprehensive).
+"""Log one fleet job to Weights & Biases: one run per definition.
 
-Imported directly by test_scripts/bench_fleet.py (log_run_to_wandb()) —
-not invoked as a subprocess. See analysis/README.md for what every field
-below means and where to find it on the W&B run page.
-
-Parses the trajectory (`trajectory.jsonl`, written by mcp_app's
-TrajectoryWriter — same format regardless of which harness drove the
-session) into one rich W&B run per definition:
-
-  per-evaluate (the metric curve = the spaghetti line):
-    time/cycle speedup, best-so-far, ipc, cache-misses, max abs/rel error, status
-  run summary:
-    best_speedup, best_version + iteration it was found, starting (v1/scalar)
-    speedup, weak-baseline signal (baseline-vs-scalar), iters-to-1x,
-    iters-to-plateau, error taxonomy, baseline hash
-  tables/artifacts:
-    winning kernel (browsable) + techniques used per version, and a versioned
-    'kernel' artifact bundling every vN.cpp (+ vN.s if disassembled) + trajectory
-
-One W&B run per definition; group all defs of a sweep under one `group` and tag
-by model/dataset/isa/author so every teammate's runs merge into one shared
-project. No-ops safely if wandb isn't installed, or if there's nothing to log.
+Imported by test_scripts/bench_fleet.py (log_run_to_wandb()). Parses the
+trajectory (`trajectory.jsonl`, written by mcp_app's TrajectoryWriter, same
+format for every harness) into a per-evaluate metric curve, a run summary,
+a per-version kernels table and a `kernel` artifact. See analysis/README.md
+for every field. No-ops if wandb isn't installed or there's nothing to log.
 """
 from __future__ import annotations
 
@@ -80,7 +64,7 @@ def parse_trajectory(path: Path):
     The metric curve is driven by the perf rows, but the taxonomy (how many
     evals passed / were numerically wrong / crashed / timed out) and the
     numerical-error signal come from the correctness rows too — so we collect
-    EVERY evaluate row's status here, not just the ones carrying a speedup.
+    every evaluate row's status here, not just the ones carrying a speedup.
 
     Returns (perf rows, per-version best speedup, ordered compile statuses,
              ordered evaluate statuses, per-version worst (abs, rel) error).
@@ -88,7 +72,7 @@ def parse_trajectory(path: Path):
     rows = []
     ver_best = {}          # "vN" -> best speedup seen for it
     compile_status = []    # ordered compile statuses (for error taxonomy)
-    eval_status = []       # ordered statuses of EVERY evaluate row (all modes)
+    eval_status = []       # ordered statuses of every evaluate row (all modes)
     ver_err = {}           # "vN" -> (worst max_abs_error, worst max_rel_error)
     cur_ver = None
     best = 0.0
@@ -179,9 +163,8 @@ def log_run_to_wandb(
     entity: Optional[str] = None,
     group: Optional[str] = None,
 ) -> None:
-    """Log one definition's run to W&B. Never raises: the caller
-    (bench_fleet.py) wraps this in a try/except so a wandb hiccup never
-    aborts the batch."""
+    """Log one definition's run to W&B. May raise; bench_fleet.py wraps the
+    call so a wandb failure never aborts the batch."""
     try:
         import wandb
     except ImportError:
@@ -214,17 +197,14 @@ def log_run_to_wandb(
         },
     )
 
-    # ── per-evaluate curve ────────────────────────────────────────────────────
-    # step is the record's total tool-call index for this definition,
-    # compile/disassemble/submit included, which is different to `i`: number of evaluate
-    # tool call with speedup provided
+    # step = the record's tool-call index (compile/disassemble/submit included);
+    # `iteration` = index among speedup-bearing evaluate calls only.
     for i, r in enumerate(rows, 1):
         prev = rows[i - 2]["best_so_far"] if i > 1 else 0.0
         wandb.log({"iteration": i, "marginal_gain": round(r["best_so_far"] - prev, 5),
                    **{k: v for k, v in r.items() if v is not None and k not in ("status", "version", "turn")}},
                   step=r["turn"])
 
-    # ── derived summary ───────────────────────────────────────────────────────
     speeds = [r["time_speedup"] for r in rows]
     best = max(speeds) if speeds else None
     starting = speeds[0] if speeds else None                    # v1 = reference-scalar candidate
@@ -233,8 +213,8 @@ def log_run_to_wandb(
     iters_1x = next((i for i, r in enumerate(rows, 1) if r["best_so_far"] >= 1.0), None)
     iters_plateau = next((i for i, r in enumerate(rows, 1)
                           if best and r["best_so_far"] >= 0.98 * best), None)
-    # taxonomy over EVERY evaluate row (both correctness + perf modes), so
-    # numerical-wrong / crashed / timed-out attempts are actually counted.
+    # taxonomy over every evaluate row (correctness + perf modes), so
+    # numerical-wrong / crashed / timed-out attempts are counted.
     tax = Counter(s for s in eval_status if s)
     ctax = Counter(compile_status)
     worst_abs = max((e[0] for e in ver_err.values() if e[0] is not None), default=None)
@@ -247,7 +227,7 @@ def log_run_to_wandb(
         "n_evaluations": len(eval_status),            # total evaluate calls (all modes)
         "final_status": (eval_status[-1] if eval_status else None),
         "starting_speedup": starting,                 # scalar-ref vs baseline
-        "baseline_vs_scalar": base_vs_scalar,         # >1 = baseline faster than naive; ~1 = WEAK baseline
+        "baseline_vs_scalar": base_vs_scalar,         # >1 = baseline faster than naive; ~1 = weak baseline
         "weak_baseline": (base_vs_scalar is not None and base_vs_scalar < 2.0),
         "iters_to_parity": iters_1x,
         "iters_to_plateau": iters_plateau,
@@ -260,7 +240,6 @@ def log_run_to_wandb(
         "worst_max_rel_error": worst_rel,
     })
 
-    # ── winning kernel + techniques-per-version + artifact ────────────────────
     if traj and traj.exists():
         best_cpp, best_sp, ver = find_best_kernel(traj, ver_best)
         cpps = sorted(traj.parent.glob("v*.cpp"),
@@ -292,11 +271,8 @@ def log_run_to_wandb(
 
 
 def _cli_main() -> int:
-    """Thin manual-backfill entry point: `python analysis/wandb_log_run.py
-    --name ... --results-dir ...` re-logs one already-finished job. Not used
-    by bench_fleet.py (which calls log_run_to_wandb() directly) — this is
-    for manually re-running or debugging the W&B logging for one definition
-    after the fact."""
+    """Manual backfill: re-log one finished job
+    (`python analysis/wandb_log_run.py --name ... --results-dir ...`)."""
     import argparse
 
     p = argparse.ArgumentParser(description=__doc__)

@@ -1,5 +1,5 @@
-"""Kernel-session contracts shared by eval/, mcp_app/, skills/, and bench/.
-config is in <REPO-ROOT>/config/kernel_contracts.yaml with 
+"""Kernel-session contracts shared by eval/, mcp_app/, skills/, and bench/,
+loaded from config/kernel_contracts.yaml.
 """
 
 from __future__ import annotations
@@ -78,9 +78,7 @@ EVAL_DEFINITION_OVERRIDES: dict[str, dict] = {
 }
 
 # Disallowed-source-pattern policy for agent-submitted kernel.cpp — consumed
-# by mcp_app/agent_tools/base.py::_disallowed_source_patterns(), never by
-# bench/ (see config/kernel_contracts.yaml's disallowed_source_patterns
-# comment for why this lives here and not in bench/config.py).
+# by mcp_app/agent_tools/base.py::_disallowed_source_patterns(), never by bench/.
 _DISALLOWED_SOURCE_PATTERNS: dict = _load()["disallowed_source_patterns"]
 DISALLOWED_SOURCE_PATTERNS_DEFAULT: list[str] = list(_DISALLOWED_SOURCE_PATTERNS["default"])
 DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE: dict[str, list[str]] = {
@@ -93,8 +91,8 @@ DISALLOWED_SOURCE_PATTERNS_BY_DATASET: dict[str, list[str]] = {
     ds: list(patterns) for ds, patterns in _DISALLOWED_SOURCE_PATTERNS.get("by_dataset", {}).items()
 }
 
-# eval/evaluator.py::run_agentic_eval's litellm turn loop (completion timeout,
-# temperature, retry budget) and eval/mcp_client.py's MCP session (per-call timeouts) — raw dicts, same treatment as EVAL_DEFAULTS above.
+# eval/'s litellm turn loop (completion timeout, temperature, retry budget) and
+# eval/mcp_client.py's MCP session (per-call timeouts) — raw dicts, like EVAL_DEFAULTS.
 AGENT_LOOP_DEFAULTS: dict = dict(_load()["tool_call_loop"])
 MCP_CLIENT_DEFAULTS: dict = dict(_load()["tool_call_loop"]["mcp_client"])
 

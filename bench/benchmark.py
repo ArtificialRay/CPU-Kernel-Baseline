@@ -1,12 +1,12 @@
 """Benchmark — orchestration over (Definition × Solution × Workload).
 
-Mirrors flashinfer-bench's `Benchmark` / `run_all`. Owns the build registry
-lifecycle (builds during runs, frees in `close()`), and is the single place that
-decides candidate-vs-baseline: `is_baseline = (solution.author == baseline_author)`,
+Mirrors flashinfer-bench's `Benchmark`. Owns the build registry lifecycle
+(builds during runs, frees in `close()`), and is the single place that decides
+candidate-vs-baseline: `is_baseline = (solution.author == baseline_author)`,
 threaded into the runner and on to `BuilderRegistry.build(...)`.
 
 `bench/cli.py` constructs a Benchmark and dispatches into it; `TraceSet` stays a
-pure warehouse (load/query/persist), no longer hosting the run loops.
+pure warehouse (load/query/persist).
 """
 
 from __future__ import annotations
@@ -28,8 +28,6 @@ class Benchmark:
         self._ts = trace_set
         self._config = config or BenchmarkConfig()
         self._registry = BuilderRegistry.get_instance()
-
-    # ── core ──────────────────────────────────────────────────────────────────
 
     def _is_baseline(self, solution: Solution) -> bool:
         return solution.author == self._config.baseline_author
@@ -53,8 +51,6 @@ class Benchmark:
         if dump_traces:
             self._ts.add_traces(traces)
         return traces
-
-    # ── CLI-facing entry points (absorbed from TraceSet.cli_*) ─────────────────
 
     def bench(
         self,
@@ -96,37 +92,9 @@ class Benchmark:
             all_traces.extend(self.run_solution(def_obj, baseline, wls, dump_traces=dump_traces))
         return all_traces
 
-    def run_all(self, *, dump_traces: bool = True, resume: bool = False) -> TraceSet:
-        """Run every selected Solution against every selected Definition's Workloads."""
-        cfg = self._config
-        seen: set = set()
-        if resume:
-            for traces in self._ts.traces.values():
-                for t in traces:
-                    seen.add((t.definition, t.solution, t.workload.uuid))
-
-        for def_name, def_obj in self._ts.definitions.items():
-            if cfg.definitions is not None and def_name not in cfg.definitions:
-                continue
-            wls = self._ts.get_workloads(def_name)
-            if not wls:
-                continue
-            for s in self._ts.get_solutions_for(def_name):
-                if cfg.solutions is not None and s.name not in cfg.solutions:
-                    continue
-                run_wls = wls
-                if resume:
-                    run_wls = [w for w in wls if (def_name, s.name, w.uuid) not in seen]
-                if not run_wls:
-                    continue
-                self.run_solution(def_obj, s, run_wls, dump_traces=dump_traces)
-        return self._ts
-
     def close(self) -> None:
         """Free all cached build dirs."""
         self._registry.cleanup()
-
-    # ── helpers ────────────────────────────────────────────────────────────────
 
     def _filtered_workloads(
         self, def_name: str, workload_filter: Optional[Dict[str, int]]

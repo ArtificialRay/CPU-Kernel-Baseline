@@ -1,6 +1,6 @@
 """resolve_tools — dataset-to-KernelSession dispatch.
 
-A 4th dataset added later needs only one new entry here.
+A new dataset needs only one new entry here.
 """
 
 from __future__ import annotations

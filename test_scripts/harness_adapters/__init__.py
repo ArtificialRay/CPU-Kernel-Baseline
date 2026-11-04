@@ -1,10 +1,6 @@
-"""harness_adapters — per-harness HarnessAdapter implementations used by
-bench_fleet.py's shared driver. Split out from bench_fleet.py itself so the
-orchestration (compute author/label once, provision, prepare_session,
-retry/log/sync loop) stays separate from what's genuinely harness-specific:
-how each harness is invoked, how it connects to the MCP endpoint, its own
-retry quirks. One module per harness; this package re-exports them all, so
-`from harness_adapters import ClaudeCodeAdapter, Job, ...` keeps working.
+"""harness_adapters — one HarnessAdapter per harness for bench_fleet.py's
+shared driver: how each harness is invoked, connects to the MCP endpoint, and
+its own retry quirks. The driver owns provisioning and the retry/log/sync loop.
 """
 
 from .base import HarnessAdapter, Job, run_and_tee

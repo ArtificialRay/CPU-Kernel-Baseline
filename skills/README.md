@@ -27,7 +27,7 @@ Nanobot also has a `README.md`, the operator-facing guide for wiring it to a
 session by hand; read this document first, then that one. Claude Code, Codex
 and Cline need no manual wiring: `test_scripts/bench_fleet.py --harness <name>`
 starts the session, points the harness at it and hands it the skill (see
-`test_scripts/harness_adapters.py`).
+`test_scripts/harness_adapters/`).
 
 ## 2. Start an mcp_app session
 
@@ -162,5 +162,5 @@ instance(s) regardless of which side provisioned it.
 
 Fanning a batch of definitions out across N instances means running N
 independent copies of `launch`/`sync-results` today (one pair per instance)
-— see the harness skill's own "Optimizing many definitions" section for how
-work is batched across definitions within a single session.
+— see the harness skill's "ONE DEFINITION AT A TIME" rule for how a single
+session works through its definitions.

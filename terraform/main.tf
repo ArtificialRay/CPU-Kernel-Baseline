@@ -22,7 +22,7 @@ provider "aws" {
 variable "workspace_account_ids" {
   description = <<-EOT
     Terraform workspace -> id of the AWS account that workspace lives in, e.g.
-    {"default" = "111111111111", "scs-lti-l3" = "222222222222"}.
+    {"default" = "111111111111", "my-workspace" = "222222222222"}.
 
     A workspace isolates state, not credentials. Run one workspace's state
     under another account's AWS_PROFILE and terraform finds none of its
@@ -31,8 +31,7 @@ variable "workspace_account_ids" {
 
     Once this map is non-empty the provider only accepts the account listed for
     the current workspace, and a workspace with no entry is an error rather
-    than an unguarded run. Empty (the default) keeps the old behaviour: no
-    check. Set it via TF_VAR_workspace_account_ids so account ids stay out of
+    than an unguarded run. Empty (the default): no check. Set it via TF_VAR_workspace_account_ids so account ids stay out of
     the repo.
   EOT
   type        = map(string)
@@ -47,7 +46,7 @@ variable "instances" {
 
     IMPORTANT: every apply against this config MUST be scoped with
     -target=aws_instance.labeled["<label>"] (and the matching null_resource.deploy
-    target) — provisioning/provision.py already always does this. 
+    target) — provisioning/provision.py always does this.
   EOT
   type        = map(string)
   default     = {}
@@ -62,7 +61,7 @@ variable "on_demand" {
 variable "mac_host_ids" {
   description = <<-EOT
     label -> id of an ALREADY-ALLOCATED Dedicated Host to place that label's
-    EC2 Mac instance on (e.g. {"ncnn-sme2" = "h-029b7735a4392cedc"}).
+    EC2 Mac instance on (e.g. {"ncnn-sme2" = "h-0123456789abcdef0"}).
 
     Required for every mac label: this config only CONSUMES host ids, it never
     allocates or releases hosts.
@@ -83,10 +82,9 @@ variable "security_group_id" {
 
 variable "namespace" {
   description = <<-EOT
-    Suffix for the account-global names this config creates (security group,
-    key pairs), so several Terraform states — e.g. one per git worktree — can
-    coexist in one AWS account without InvalidGroup.Duplicate. Empty keeps
-    the original "kernel-testing-sg". Set via TF_VAR_namespace, e.g. "sweep".
+    Suffix for the account-global key-pair names this config creates, so
+    several Terraform states — e.g. one per git worktree — can coexist in one
+    AWS account. Set via TF_VAR_namespace, e.g. "sweep".
   EOT
   type        = string
   default     = ""
@@ -173,9 +171,7 @@ resource "aws_key_pair" "labeled" {
 }
 
 # ---------------------------------------------------------------------------
-# Instances — one per label in var.instances. Replaces the old fixed
-# aws_instance.kernel_testing ("c7g") / aws_instance.c8g pair: any number of
-# instances, of any instance type, one per concurrent benchmarking job.
+# Instances — one per label in var.instances, one per concurrent job.
 # ---------------------------------------------------------------------------
 
 resource "aws_instance" "labeled" {
@@ -200,7 +196,7 @@ resource "aws_instance" "labeled" {
   host_id   = local.is_mac[each.key] ? lookup(var.mac_host_ids, each.key, null) : null
   subnet_id = try(data.aws_subnet.mac[each.key].id, null)
 
-  # terminate all non-spot instance(with true shutdown but not stop the instance)
+  # Non-spot instances terminate, not stop, on an OS-initiated shutdown.
   instance_initiated_shutdown_behavior = (var.on_demand || local.is_mac[each.key]) ? "terminate" : null
 
   # Installs clang-18 + llvm-objdump and creates ~/arm-bench
@@ -230,13 +226,9 @@ resource "aws_instance" "labeled" {
 }
 
 # ---------------------------------------------------------------------------
-# Deploy: wait for each instance's own bootstrap to finish.
-# Source sync (allow-listed to RSYNC_ALLOWLIST — bench/, bench-trace/,
-# mcp_app/, requirements.txt) and the dataset builds happen afterward, from
-# provisioning/provision.py's own rsync_to()/run() calls once this resource
-# completes — not here, so there's a single place that decides what gets
-# synced instead of this resource's own separate deny-list rsync drifting
-# out of sync with RSYNC_ALLOWLIST.
+# Deploy: wait for each instance's own bootstrap to finish. Source sync
+# (RSYNC_ALLOWLIST) and dataset builds happen afterward in
+# provisioning/provision.py, the single place that decides what gets synced.
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "deploy" {

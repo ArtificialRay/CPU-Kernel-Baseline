@@ -7,8 +7,10 @@ For scalar-output loops:  res_out → single scalar value written by the kernel.
 For array-output loops:   res_out → pre-allocated array of N elements (the output buffer).
 For inplace-sort loops:   res_out is unused; the first ptr (data) is sorted in-place.
 
-Adapter metadata is read from Definition.simd_loop_meta (set by gen_simd_loop_harness.py).
-No hard-coded per-loop registries — just the definition JSON.
+Multi-axis loops (simd_loop_meta.axes_order) pass one int64 per axis instead of n.
+
+Adapter metadata is read from Definition.simd_loop_meta (set by
+scripts/gen_simd_loop_harness.py).
 """
 
 from __future__ import annotations
@@ -33,8 +35,6 @@ _DTYPE_MAP: dict[str, Any] = {
 }
 
 
-# ── Context ───────────────────────────────────────────────────────────────────
-
 @dataclass
 class SimdLoopContext:
     entry_args: Tuple[Any, ...]
@@ -42,8 +42,6 @@ class SimdLoopContext:
     res_buf:    np.ndarray    # result buffer: scalar (1-elem), array (N-elem), or inplace ref
     _n:         int = 0       # user-visible output length; 0 → use full res_buf
 
-
-# ── Adapter ───────────────────────────────────────────────────────────────────
 
 class SimdLoopDataset:
     """Adapter for simd-loop baseline kernels.
@@ -74,13 +72,12 @@ class SimdLoopDataset:
         meta = definition.simd_loop_meta
         pad = int(meta.array_pad)
 
-        # Derive output dtype from Definition.outputs
         out_spec = next(iter(definition.outputs.values()))
         result_dtype = _DTYPE_MAP[out_spec.dtype.value]
         output_is_array = out_spec.shape is not None
 
-        # ── Multi-axis loops (m/n/k): pass each axis as a separate int64 ───────
-        # ABI: armbench_entry(in1, ..., int64_t axis0, axis1, ..., void* res_out)
+        # Multi-axis loops (m/n/k):
+        # armbench_entry(in1, ..., int64_t axis0, axis1, ..., void* res_out)
         if meta.axes_order:
             arrays = [np.ascontiguousarray(np_inputs[name]) for name in definition.inputs]
             # Recover concrete axis sizes from three sources, in precedence order:

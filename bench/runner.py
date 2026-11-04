@@ -3,14 +3,12 @@
 Thin compile-and-dispatch shell. Given a (Definition, Solution, [Workload]) tuple
 this module compiles + dlopens the solution, binds the kernel + reference, then
 hands each workload to a pluggable `Evaluator` (bench/evaluators/) which owns the
-correctness + performance protocol. The runner itself no longer knows how an
-evaluation is scored — only how to build the artifacts the evaluator needs.
+correctness + performance protocol.
 
-Responsibilities that stay here (per-solution, around the evaluator):
+Responsibilities here (per-solution, around the evaluator):
   - compile once (BuilderRegistry), fan a COMPILE_ERROR trace to every workload
     on failure;
-  - dlopen + bind `armbench_entry_<op>` + pick the dataset adapter → `BoundKernel`
-    (`_bind_kernel` is the single chokepoint for the deferred multi-dataset work);
+  - dlopen + bind `armbench_entry_<op>` + pick the dataset adapter → `BoundKernel`;
   - exec the Definition.reference → `ref_run`;
   - snapshot the Environment; wrap each evaluator result into a Trace.
 
@@ -48,15 +46,12 @@ from bench.runtime.isolation import SubprocessCrashed, SubprocessTimeout, run_in
 logger = logging.getLogger(__name__)
 
 
-# ── Top-level entry ──────────────────────────────────────────────────────────
-
 def run_solution_on_workloads(
     definition: Definition,
     solution: Solution,
     workloads: List[Workload],
     *,
-    is_baseline: bool = False,                # baseline path (NcnnBuilder + ncnn adapter)
-                                              # vs candidate path (CandidateBuilder + raw adapter)
+    is_baseline: bool = False,                # selects builder + adapter (see _bind_kernel)
     cfg: Optional[EvalConfig] = None,         # evaluation knobs (tolerances, timing, perf)
     trace_set: Optional[Any] = None,          # for baseline cycles/ns lookup → speedup
     solutions_root: Optional[Path] = None,    # kept for API symmetry; resolved via the registry
@@ -127,14 +122,11 @@ def _run_solution_on_workloads_direct(
             f"not '{definition.name}'"
         )
 
-    # ── Safety check: single-thread assumption (see bench/runtime/timing.py) ──
     _check_single_thread_safety(solution)
 
-    # ── Environment snapshot (constant across all workloads) ──
     env = _current_environment(cpu_pinned=cfg.cpu)
     timestamp = datetime.now(timezone.utc).isoformat()
 
-    # ── Compile once, reuse across workloads ──
     try:
         compiled = BuilderRegistry.get_instance().build(definition, solution, is_baseline)
     except (CompileError, FileNotFoundError, NotImplementedError) as e:
@@ -146,7 +138,6 @@ def _run_solution_on_workloads_direct(
             for w in workloads
         ]
 
-    # ── Dlopen + bind kernel + reference closure (once per compile) ──
     try:
         kernel = _bind_kernel(definition, solution, is_baseline, compiled)
         ref_run = _compile_reference(definition)
@@ -158,7 +149,6 @@ def _run_solution_on_workloads_direct(
             for w in workloads
         ]
 
-    # ── Per-workload loop: delegate to the resolved evaluator ──
     evaluator = resolve_evaluator(definition)
     traces: List[Trace] = []
     for wl in workloads:
@@ -171,8 +161,6 @@ def _run_solution_on_workloads_direct(
 
     return traces
 
-
-# ── Kernel binding (the deferred-#2 chokepoint) ──────────────────────────────
 
 def _bind_kernel(
     definition: Definition, solution: Solution, is_baseline: bool, compiled: Any
@@ -209,15 +197,12 @@ def _bind_kernel(
     return BoundKernel(entry=entry, adapter=adapter, op_type=definition.op_type)
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
 def _check_single_thread_safety(solution: Solution) -> None:
     """Refuse to time a solution that asks for multi-threaded execution.
 
-    Today's ncnn make_opt() locks num_threads=1; only an unusual Solution would
-    set OMP_NUM_THREADS > 1 in its environment. We check that env var as the
-    canonical signal. If a Solution genuinely needs multi-thread, see the
-    note in bench/runtime/timing.py.
+    The ncnn default Option (_mat_factory.cpp) locks num_threads=1; we check
+    OMP_NUM_THREADS as the canonical signal. See the note in
+    bench/runtime/timing.py.
     """
     n = os.environ.get("OMP_NUM_THREADS")
     if n and n.isdigit() and int(n) > 1:

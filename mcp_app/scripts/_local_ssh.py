@@ -1,8 +1,7 @@
 """Minimal SSH/rsync helpers used only by mcp_app/smoke_test_driver.py.
 
 mcp_app and skills/ never import from each other, so this doesn't reuse
-skills/launch/remote.py's RemoteTarget. A handful of plain functions, not a
-reusable class, because smoke_test_driver.py is a single linear loop.
+skills/launch/remote.py's RemoteTarget.
 """
 
 from __future__ import annotations
@@ -19,16 +18,11 @@ def _ssh_base_args(key_file: str) -> list[str]:
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=10",
-        # The long-lived MCP session (ssh_spawn_args) can sit with zero
-        # protocol traffic for many minutes at a time while evaluate()/
-        # submit() crunch on the remote side — with no keepalive, a
-        # connection silently dropped by some idle-TCP-timeout in the
-        # network path (home router/NAT, not the AWS instance — sshd
-        # restarts/OOM were ruled out separately) goes undetected for a
-        # very long time (client just hangs) or forever. These two options
-        # send an active probe every 15s and give up after 3 misses (45s),
-        # both keeping the connection alive and detecting a truly dead one
-        # quickly instead of hanging or waiting on OS-level TCP timeouts.
+        # The long-lived MCP session (ssh_spawn_args) can sit with no traffic
+        # for minutes while evaluate() runs remotely, and an idle-TCP timeout
+        # in the network path (router/NAT) then drops it silently. Probe every
+        # 15s and give up after 3 misses (45s): keeps the connection alive and
+        # detects a dead one instead of hanging.
         "-o", "ServerAliveInterval=15",
         "-o", "ServerAliveCountMax=3",
     ]
@@ -43,7 +37,7 @@ def run_remote(
     host: str, user: str, key_file: str, remote_cmd: str, timeout: int = 120,
 ) -> tuple[int, str, str]:
     """Blocking SSH exec + capture. Used for the baseline-collection check script
-    and per-definition `bench.cli collect-baselines` calls in driver.py."""
+    and per-definition `bench.cli collect-baselines` calls in smoke_test_driver.py."""
     result = subprocess.run(
         ["ssh", *ssh_spawn_args(host, user, key_file, remote_cmd)],
         capture_output=True, text=True, timeout=timeout,

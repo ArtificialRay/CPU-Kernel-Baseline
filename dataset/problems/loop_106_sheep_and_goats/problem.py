@@ -17,7 +17,7 @@ METADATA = {
     "tags": ['sve2'],
 }
 
-# Data struct definition — shown to the LLM for context
+# Data struct definition — parsed by scripts/gen_simd_loop_harness.py
 STRUCT_DEF = r"""
 struct loop_106_data {
   uint32_t *restrict a;
@@ -27,7 +27,7 @@ struct loop_106_data {
 };
 """
 
-# Scalar reference implementation — the LLM's task is to optimize this
+# Scalar reference implementation
 SCALAR_CODE = r"""
 static void inner_loop_106(struct loop_106_data *restrict input) {
   uint32_t *restrict a = input->a;
@@ -40,7 +40,7 @@ static void inner_loop_106(struct loop_106_data *restrict input) {
   }
 """
 
-# Prompt template (used by generate_samples.py and run_benchmark.py)
+# Prompt template
 SYSTEM_PROMPT = """You are an expert AArch64 SIMD programmer. Your task is to write an optimized
 implementation of a given loop kernel for {isa_desc}.
 Preserve the exact function signature. The `res` checksum field must match
@@ -64,11 +64,11 @@ Scalar implementation to optimize:
 Write an optimized {isa_upper} implementation. Output only the C function.
 """
 
-# Input sizes for edge-case correctness testing at submit time.
+# Input sizes for edge-case correctness testing.
 # Empty list = skip (loop uses non-SIZE parameters or fixed dimensions).
 EDGE_SIZES = [0, 1, 3, 199, 201]
 
-# Input sizes for performance measurement at submit time and via perf() tool.
+# Input sizes for performance measurement.
 # Scored against the largest size. Empty list = skip.
 PERF_SIZES = [30000, 100000]
 PERF_SIZES_C8G = [100000, 400000]  # DRAM-bound on Graviton4 (64MB L3)

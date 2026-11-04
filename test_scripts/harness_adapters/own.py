@@ -16,18 +16,13 @@ from skills.launch.launch_session import RemoteTarget
 from .base import REPO_ROOT, HarnessAdapter, Job
 
 class OwnHarnessAdapter(HarnessAdapter):
-    """This repo's own litellm agent loop (eval/evaluator.py::run_agentic_eval),
-    formerly driven standalone by eval/run_benchmark.py. Unlike
-    ClaudeCodeAdapter/NanobotAdapter, there's no external CLI subprocess to
-    spawn — run_agentic_eval() already expects an already-connected MCP
-    client and runs entirely in-process, so run_job() just calls it
-    directly against one MCPKernelClient shared across every job in the
-    batch (mcp_app's KernelSession is designed to serve many definitions
-    off one long-lived connection — see eval/mcp_client.py's docstring)."""
+    """This repo's own litellm agent loop (eval/evaluator.py::run_agentic_eval).
+    No CLI subprocess: run_job() calls it in-process against one
+    MCPKernelClient shared across every job in the batch."""
 
     name = "own"
-    # run_agentic_eval() builds its own system prompt from the Definition object directly and never reads job.prompt,
-    # so this is a harmless placeholder, not a real template.
+    # Placeholder: run_agentic_eval() builds its prompts from the Definition
+    # and never reads job.prompt.
     prompt_template = "%s"
     template_args = 1
 

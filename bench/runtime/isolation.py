@@ -7,8 +7,7 @@ pathologically slow, hang outright, or crash (e.g. a stack-overflowing
 `alloca`) — none of which a same-process caller can defend against: a Python
 signal handler can't preempt a tight native loop, and a native crash takes
 the whole interpreter down with it, including a long-lived caller like
-mcp_app's MCP server (see the incident that motivated this module —
-harness_trajs/nanobot/ncnn_sve_conv2d_w8a8ch_kh1_kw1_sh1_sw1_dh1_dw1_p0.log).
+mcp_app's MCP server.
 
 `run_in_subprocess` is the one generic primitive both callers wrap
 themselves in: run `target` in a spawned child, enforce a hard wall-clock

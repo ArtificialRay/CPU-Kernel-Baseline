@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Audit every simd-loop baseline-sve solution ON THIS BOX at the sve tier.
+"""Audit every simd-loop baseline-sve solution on this box at the sve tier.
 
 For each simd-loop definition: does a baseline-sve solution exist, does it
-compile (with resolve_native_march, then with extra march variants to
+compile (with its own flags, then with extra -march variants to
 classify SVE2-only / matrix-extension kernels), does the Python reference run,
 and does the compiled baseline pass correctness against the reference.
 Prints a per-loop table + category summary. Run from the repo root on a
@@ -85,7 +85,7 @@ def main():
         k = "no solution" if not r["solution"] else ("compile fail" if r["compile"] == "FAIL" else f"eval {r['eval']}")
         cats.setdefault(k, []).append(r["loop"])
     for k, v in cats.items(): print(f"{k}: {len(v)} {v}")
-    json.dump(rows, open(ROOT / "simd_audit.json", "w"), indent=1)  # noqa: all loops audited
+    json.dump(rows, open(ROOT / "simd_audit.json", "w"), indent=1)
 
 if __name__ == "__main__":
     main()

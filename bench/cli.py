@@ -1,14 +1,12 @@
-"""armbench CLI. Thin argparse layer over TraceSet methods.
+"""armbench CLI. Thin argparse layer over Benchmark / TraceSet.
 
 Usage:
-    armbench bench    --root <path> --definition <name> --solution <name>
-                      [--workload-axes axis=value,...]
-    armbench summary  --root <path>
-    armbench list-definitions --root <path>
-    armbench list-solutions   --root <path> [--definition <name>]
-
-The actual orchestration lives on `TraceSet.cli_*`. This file is the
-plumbing: parse argv, load TraceSet, dispatch.
+    armbench --root <path> bench --definition <name> --solution <name>
+                                 [--workload-axes axis=value,...]
+    armbench --root <path> collect-baselines [--definition <name>]
+    armbench --root <path> summary
+    armbench --root <path> list-definitions
+    armbench --root <path> list-solutions [--definition <name>]
 """
 
 from __future__ import annotations
@@ -24,8 +22,6 @@ from bench.benchmark import Benchmark, BenchmarkConfig
 from bench.config import DEFAULT_BASELINE_AUTHOR
 from bench.data import TraceSet
 
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _default_root() -> Path:
     """Default warehouse root: arm-bench/bench-trace/.
@@ -52,8 +48,6 @@ def _parse_axes_filter(s: Optional[str]) -> Optional[Dict[str, int]]:
     return out
 
 
-# ── Subcommand dispatchers ───────────────────────────────────────────────────
-
 def cmd_bench(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
     bench = Benchmark(ts, BenchmarkConfig(baseline_author=args.baseline_author))
@@ -65,7 +59,6 @@ def cmd_bench(args: argparse.Namespace) -> int:
         )
     finally:
         bench.close()
-    # One-line per trace summary
     for t in traces:
         ev = t.evaluation
         if ev is None:
@@ -103,7 +96,7 @@ def cmd_collect_baselines(args: argparse.Namespace) -> int:
     n_pass = sum(1 for t in traces if t.is_successful())
     print(f"\n{len(traces)} traces produced ({n_pass} PASSED, {len(traces) - n_pass} other).")
     if n_pass == 0:
-        # Producing traces isn't success on its own 
+        # Producing traces isn't success on its own
         return 1
     return 0
 
@@ -136,8 +129,6 @@ def cmd_list_solutions(args: argparse.Namespace) -> int:
         print(f"  {s.name:<60}  def={s.definition}  author={s.author}  dataset={s.dataset.value}")
     return 0
 
-
-# ── argparse ─────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="armbench", description="arm-bench CPU kernel benchmark CLI")

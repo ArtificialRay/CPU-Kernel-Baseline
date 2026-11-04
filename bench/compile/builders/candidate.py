@@ -1,10 +1,8 @@
 """CandidateBuilder — the shared raw-`float*` path for every solution no
 framework-specific builder wants: all candidates, plus any dataset whose true
 baseline also has no framework dependency of its own (e.g. kleidiai — see
-SupportedDatasets.KLEIDIAI).
-
-CandidateBuilder is for solution where each solution embeds its own binding in its sources (armbench_entry_<op> is
-defined in the solution's own files) 
+SupportedDatasets.KLEIDIAI). Each solution embeds its own
+`armbench_entry_<op>` binding in its sources.
 """
 
 from __future__ import annotations
@@ -25,12 +23,8 @@ class CandidateBuilder(Builder):
         super().__init__(build_dir_name="armbench-cand")
 
     def can_build(self, solution: Solution, is_baseline: bool) -> bool:
-        """Unconditional fallback — see registry.py's _BUILDER_PRIORITY: this
-        builder is tried last, after every dataset with its own
-        framework-specific builder (ncnn's true baseline, simd-loop,
-        llama.cpp) has already had first refusal and declined. No dataset
-        enumeration needed here — a new no-framework dataset is picked up
-        automatically, with zero changes to this file."""
+        """Unconditional fallback: tried last in registry.py's
+        _BUILDER_PRIORITY, after every framework-specific builder declined."""
         return True
 
     def build(self, definition: Definition, solution: Solution) -> CompileResult:

@@ -69,14 +69,9 @@ def _validate_label(label: str) -> str:
 
 
 def default_label(isa: str | None, dataset: str, instance_type: str) -> str:
-    """label defaults to f'{dataset}-{isa}' when both are known — concatenating
-    both, not just dataset alone, matters: two jobs on the *same* dataset but
-    *different* isa (e.g. ncnn+sve vs ncnn+sve2) need distinct instances too,
-    since different isa already implies a different instance_type. Falls back
-    to isa alone, then to the tier implied by instance_type, when dataset/isa
-    aren't given — reproducing the old one-instance-per-tier default when
-    nothing more specific is available.
-    """
+    """f'{dataset}-{isa}' when both are known (same dataset on different isas
+    needs distinct instances), else isa alone, else the tier implied by
+    instance_type."""
     if dataset and isa:
         return f"{dataset}-{isa}"
     if isa:
@@ -180,9 +175,8 @@ def _tf(*args, capture: bool = False, extra_env: dict | None = None) -> subproce
 @contextlib.contextmanager
 def _tf_lock():
     """Serialise terraform apply/destroy across concurrent driver processes.
-    Terraform's own local state lock allows only one instance to provision/teardown
-    while other intances fail with "Error acquiring the state lock", this lock makes
-    instance handlings to a FIFO queue."""
+    Terraform's own state lock makes concurrent callers fail ("Error acquiring
+    the state lock"); this one makes them wait their turn instead."""
     lock_path = TERRAFORM_DIR / ".armbench.lock"
     with open(lock_path, "w") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
@@ -225,11 +219,8 @@ def _run_dataset_build(handle: InstanceHandle, dataset: str, config: dict) -> bo
     darwin = handle.instance_type.startswith("mac")
     for step in steps:
         label = step["label"]
-        # "cmd" is the Linux command and stays the only one most steps need.
-        # A step that cannot run as-is on macOS carries a "cmd_darwin" override
-        # instead of the Linux command being rewritten to suit both: the Linux
-        # path runs on every campaign and the Apple-silicon one is rare, so the
-        # duplication is cheaper than any regression risk to the common path.
+        # A step that cannot run as-is on macOS carries a "cmd_darwin" override,
+        # so the common Linux command never has to be rewritten to suit both.
         cmd = step.get("cmd_darwin", step["cmd"]) if darwin else step["cmd"]
         print(f"[provision]   {label}...")
         rc, _, err = handle.run(cmd, timeout=step.get("timeout", 300))
@@ -274,14 +265,10 @@ def _linux_dep_steps() -> list[tuple[str, str, int]]:
     return [
         (
             "disable unattended-upgrades",
-            # Ubuntu's apt-daily-upgrade.timer fires once a day at a randomized
-            # time and, when it happens to include openssh-server, restarts
-            # ssh.service — which kills every established SSH session (and
-            # whatever long-running eval/mcp_app.server process is using it)
-            # with no clean FIN the client can detect, so it hangs forever
-            # instead of erroring out. agent benchmarking sessions can run for
-            # many minutes, squarely in the blast radius of a daily timer, so
-            # disable it up front rather than discover it mid-run.
+            # Ubuntu's daily apt-daily-upgrade.timer can upgrade openssh-server
+            # and restart ssh.service, killing every SSH session (and the
+            # mcp_app.server using it) with no clean FIN, so the client hangs
+            # forever. Long agent sessions are squarely in that window.
             "sudo systemctl disable --now unattended-upgrades.service "
             "apt-daily.timer apt-daily-upgrade.timer "
             "apt-daily.service apt-daily-upgrade.service 2>/dev/null; true",
@@ -304,7 +291,7 @@ def _linux_dep_steps() -> list[tuple[str, str, int]]:
 
 
 # Both tiers run bench/ and mcp_app/ out of the same uv-managed venv, same
-# path and same Python — see InstanceHandle.python. 
+# path and same Python — see InstanceHandle.python.
 _UV_MAC = "/opt/homebrew/bin/uv"
 _UV_LINUX = "~/.local/bin/uv"
 _VENV_PYTHON = "~/venv/bin/python3"
@@ -347,11 +334,8 @@ _BREW = "/opt/homebrew/bin/brew"
 def _macos_dep_steps() -> list[tuple[str, str, int]]:
     """macOS counterpart of _linux_dep_steps.
 
-    Every Linux step fails here, and quietly: apt-get and systemctl do not
-    exist, `pip3 install --break-system-packages` is rejected by the AMI's
-    python 3.9.6, and kernel.perf_event_paranoid is not a macOS sysctl oid.
-    Since _install_deps only warns, that left a box that looked provisioned and
-    failed at the first eval.
+    Every Linux step fails here, and quietly (_install_deps only warns): no
+    apt-get/systemctl, and kernel.perf_event_paranoid is not a macOS sysctl.
 
     The AMI already ships the Apple clang we compile with, so this installs
     only what is missing: cmake for the dataset builds, and a uv-managed venv
@@ -370,7 +354,7 @@ def _macos_dep_steps() -> list[tuple[str, str, int]]:
         ),
         (
             "brew packages",
-            # llvm is for llvm-objdump, use for both apple m4 and amazon gravitons
+            # llvm provides llvm-objdump
             f"{_BREW} list --formula cmake uv llvm >/dev/null 2>&1 || "
             f"{_BREW} install cmake uv llvm",
             900,
@@ -393,24 +377,6 @@ def _install_deps(handle: InstanceHandle) -> None:
             print(f"[provision] WARNING: {label} failed: {err[:200]}")
 
 
-def ensure_env_ready(handle: InstanceHandle) -> None:
-    """Make sure ~/venv satisfies requirements.txt on a REUSED instance.
-    Only the Python steps run (not apt/brew). Raises on any failure, so a
-    broken env surfaces here with a reason instead of mid-eval.
-    """
-    handle.rsync_to(str(REPO_ROOT), "~/arm-bench", paths=["requirements.txt"])
-    if handle.instance_type.startswith("mac"):
-        steps = _venv_steps(_UV_MAC)
-    else:
-        steps = [_uv_install_step(), *_venv_steps(_UV_LINUX)]
-    for label, cmd, timeout in steps:
-        rc, _, err = handle.run(cmd, timeout=timeout)
-        if rc != 0:
-            raise RuntimeError(
-                f"Python env not ready on {handle.host}: {label} failed (rc={rc}): {err[:300]}"
-            )
-
-
 def provision(
     label: str,
     instance_type: str = "c7g.large",
@@ -424,7 +390,6 @@ def provision(
 
     Unconditional — always runs terraform apply (idempotent against unchanged
     Terraform state) even if a reachable instance for this label is already up.
-    Most callers want get_or_provision() instead; this is the raw primitive.
 
     Args:
         label: Arbitrary name identifying this instance — see module docstring
@@ -552,28 +517,6 @@ def get_running_instance(label: str) -> InstanceHandle | None:
     )
 
 
-def get_or_provision(
-    label: str, instance_type: str, dataset: str = "", on_demand: bool = False
-) -> InstanceHandle:
-    """
-    Return an existing reachable instance under this label, or provision a new one.
-
-    Args:
-        label: Arbitrary name identifying this instance — see module docstring.
-        instance_type: EC2 instance type, e.g. "c7g.large", "c8g.xlarge".
-        dataset: Dataset name — ensured ready on the returned instance either way.
-        on_demand: Only takes effect when you want a long-run job.
-    """
-    handle = get_running_instance(label)
-    if handle and _is_reachable(handle, attempts=3):
-        print(f"[provision] Reusing existing instance at {handle.host} (label={label!r})")
-        ensure_env_ready(handle)
-        if dataset:
-            ensure_dataset_ready(handle, dataset)
-        return handle
-    return provision(label, instance_type, dataset=dataset, on_demand=on_demand)
-
-
 # EC2 Mac boots far slower than the Linux tiers: a fresh mac-m4.metal took
 # 6m49s from LaunchTime to its first accepted SSH connection, so the 300s
 # Linux default times out every time — after terraform has created the
@@ -601,8 +544,9 @@ def _wait_for_ssh(handle: InstanceHandle, max_wait: int | None = None, interval:
 
 
 def _is_reachable(handle: InstanceHandle, attempts: int = 3, retry_wait: int = 10) -> bool:
-    """One `echo ok` probe per attempt. The reuse-vs-provision decisions pass attempts>1: a
-    single failed probe there sends a healthy instance into terraform so one transient SSH blip must not decide it."""
+    """One `echo ok` probe per attempt. Reuse-vs-provision decisions pass
+    attempts>1 so one transient SSH blip can't send a healthy instance into
+    terraform."""
     for attempt in range(attempts):
         try:
             rc, _, _ = handle.run("echo ok", timeout=15)
@@ -619,7 +563,7 @@ def _update_config(mutate):
     """Read-modify-write eval_config.json under an exclusive file lock, so
     concurrent bench_fleet.py processes (one per label) can't clobber each
     other's writes with a stale read (each process only touches its own
-    label's key"""
+    label's key)."""
     EVAL_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     EVAL_CONFIG_PATH.touch(exist_ok=True)
     with open(EVAL_CONFIG_PATH, "r+") as f:
@@ -691,9 +635,7 @@ if __name__ == "__main__":
     if args.status:
         status()
     elif args.teardown:
-        # --label given: destroy just that one instance. Omitted: tear down
-        # every label eval_config.json knows about (old "destroy everything"
-        # behavior, kept as an explicit opt-in).
+        # --label omitted: tear down every label eval_config.json knows about.
         teardown(args.label)
     else:
         instance_type = args.instance or (ISA_INSTANCE_MAP.get(args.isa, "c7g.large") if args.isa else "c7g.large")

@@ -36,7 +36,7 @@ apt-get install -y clang-18 llvm-18
 update-alternatives --install /usr/bin/clang        clang        /usr/bin/clang-18        100
 update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-18 100
 
-# Create workspace (terraform will rsync the sources here)
+# Create workspace (provisioning/provision.py rsyncs the sources here)
 mkdir -p /home/ubuntu/arm-bench
 chown ubuntu:ubuntu /home/ubuntu/arm-bench
 

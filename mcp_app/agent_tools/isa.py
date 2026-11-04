@@ -24,17 +24,14 @@ from typing import NamedTuple
 
 from contracts import ISA_TABLE
 
-# isa name -> (march flag, isa_features, target_hardware label), from contracts.py
-# (shared with provisioning/provision.py etc.) plus a local
-# "portable" alias: same -march as neon (armv8-a mandates NEON); the "no
-# hand-written SIMD" constraint is a PROMPT concern (nanobot skill), not a
-# compile flag, so "portable" isn't a real hardware tier in contracts.yaml.
+# isa name -> (march flag, isa_features, target_hardware labels), from contracts.ISA_TABLE.
 _ISA_MARCH: dict[str, tuple[str, list[str], list[str]]] = {
     isa: (spec.march, spec.features, spec.labels) for isa, spec in ISA_TABLE.items()
 }
-# Same compile flags as neon (armv8-a mandates NEON), but its own generic
-# target_hardware label — "portable" solutions aren't claiming NEON-specific
-# intent, just whatever the compiler auto-vectorizes.
+# "portable" isn't a hardware tier in kernel_contracts.yaml: its "no hand-written
+# SIMD" rule is a prompt/source-policy concern, not a compile flag. Same flags as
+# neon (armv8-a mandates NEON), but a generic target_hardware label — portable
+# solutions claim only what the compiler auto-vectorizes.
 _ISA_MARCH["portable"] = (ISA_TABLE["neon"].march, list(ISA_TABLE["neon"].features), ["aarch64"])
 
 # isa name -> /proc/cpuinfo "Features" tokens that must ALL be present.
@@ -166,8 +163,8 @@ def detected_solution_features(cpuinfo_path: Path = Path("/proc/cpuinfo")) -> se
 
 def isa_satisfies(required: list[str], isa: str) -> bool:
     """True if `isa`'s declared kernel_contracts.yaml feature set covers every
-    token in `required` (typically a Solution's spec.isa_features). This is a safety
-    check before running a real instance and the check is from yaml
+    token in `required` (typically a Solution's spec.isa_features). Static
+    check, usable before any instance exists.
     """
     if isa not in _ISA_MARCH:
         raise ValueError(f"Unknown isa {isa!r}. Supported: {sorted(_ISA_MARCH)}")
@@ -175,8 +172,8 @@ def isa_satisfies(required: list[str], isa: str) -> bool:
 
 
 def isa_satisfies_on_host(required: list[str], *, cpuinfo_path: Path = Path("/proc/cpuinfo")) -> bool:
-    """True if THIS machine's live-detected features (detected_solution_features)
-    cover every token in `required`. Real hardware check that detect features from the hardware directly
+    """True if this machine's live-detected features (detected_solution_features)
+    cover every token in `required`.
     """
     return set(required) <= detected_solution_features(cpuinfo_path)
 

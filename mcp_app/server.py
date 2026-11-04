@@ -1,6 +1,6 @@
 """mcp_app.server — the MCP server process: one per (instance, dataset) session.
 
-Registers compile/evaluate/disassemble/submit as MCP tools and the session's
+Registers check_progress/compile/evaluate/disassemble as MCP tools and the session's
 trajectory files as MCP Resources (mcp_app/resources.py), backed by
 mcp_app/agent_tools's in-process KernelSession (this process runs directly on
 the target instance). `compile` takes `definition` as a per-call argument —
@@ -45,10 +45,10 @@ from .session import SessionConfig, build_tools
 if TYPE_CHECKING:
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
-# compile()/evaluate() run synchronously and can take minutes, set a tool call ping to notify agent that the tool is still running
+# compile()/evaluate() run synchronously and can take minutes; ping the client
+# this often so an in-flight call doesn't look dead.
 TOOL_CALL_PING_INTERVAL_S = 120
 
-# Debug-log truncation: 
 ARG_LOG_TRUNCATE_CHARS = 300
 RESULT_LOG_TRUNCATE_CHARS = 2000
 
@@ -89,9 +89,8 @@ def build_server(tools: KernelSessionLike) -> Server:
 
     @server.call_tool()
     async def _call_tool(name: str, arguments: dict) -> dict[str, Any]:
-        # Run the (synchronous, potentially long-running) dispatch off the event
-        # loop so pings can still go out while it's in flight — dispatch_tool_call
-        # itself stays untouched, it doesn't need to know about sessions/pings.
+        # Run the synchronous dispatch off the event loop so pings can still go
+        # out while it's in flight.
         _elog(f"[mcp_app.server] tool call: {name}({_truncate_repr(arguments, ARG_LOG_TRUNCATE_CHARS)})")
         started = time.monotonic()
         session = server.request_context.session

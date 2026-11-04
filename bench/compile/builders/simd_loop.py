@@ -37,9 +37,6 @@ class SimdLoopBuilder(Builder):
         op_type = definition.op_type
         build_dir, sources_dir = self._make_build_dir(solution)
         try:
-            # The harness is fused into the solution sources (loop_NNN.h /
-            # loop_NNN.cpp), the same way the ncnn baseline ships its own
-            # binding.cpp. The builder just compiles the solution's own sources.
             harness_h_name   = f"{op_type}.h"
             harness_cpp_name = f"{op_type}.cpp"
             fused_harness_h   = next((s for s in solution.sources if s.path == harness_h_name), None)

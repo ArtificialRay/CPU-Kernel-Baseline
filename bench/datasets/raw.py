@@ -26,8 +26,7 @@ _C_UINT16_P = ctypes.POINTER(ctypes.c_uint16)
 # Per-tensor (numpy dtype, ctypes pointer type) for each DType this ABI supports.
 # Output is always float32 (every current Definition declares float32 outputs).
 # bfloat16/float16 have no ctypes equivalent — passed as raw 16-bit-pattern
-# pointers; the compiled kernel reinterprets the bits itself (see
-# candidate_binding_templates).
+# pointers; the compiled kernel reinterprets the bits itself.
 _DTYPE_TO_NP_AND_PTR: Dict[DType, Tuple[Any, Any]] = {
     DType.FLOAT32: (np.float32, _C_FLOAT_P),
     DType.FLOAT16: (np.float16, _C_UINT16_P),
@@ -53,8 +52,8 @@ def _compute_output_shape(definition: Definition, np_inputs: Dict[str, Any]) -> 
     shapes), and scalar inputs (pad_top, pad_left, …), then eval()s each
     constraint expression to get derived axes (H_out, W_out, …).
 
-    Works for operators with no constraints too (batchnorm, gemm): once step 2
-    populates ns from input shapes, output axes are already present.
+    Works for operators with no constraints too (batchnorm, gemm): output axes
+    are then already present from the input shapes.
     """
     ns: Dict[str, Any] = dict(definition.const_axes)
     for tname, tspec in definition.inputs.items():
@@ -82,14 +81,11 @@ class RawDataset:
         armbench_entry_<op>(float* primary, float* output,
                             float* rest...,
                             int var_dim_0, int var_dim_1, ...)
-    Tensor order follows definition.inputs (non-scalars); var dims are taken
-    from the primary input's shape template in definition order.
+    Tensor order follows definition.inputs (non-scalars); var dims are each
+    distinct var axis in the tensors' shape templates, in first-seen order.
     """
 
     name = "raw"
-
-    def __init__(self) -> None:
-        pass
 
     def wrap_inputs(
         self,
@@ -103,7 +99,7 @@ class RawDataset:
         if out_shape is None:
             out_shape = _compute_output_shape(definition, np_inputs)
 
-        # Tensor inputs in definition order; scalars (shape is None) are skipped
+        # Scalars (shape is None) are skipped
         tensor_specs = [(n, s) for n, s in definition.inputs.items() if s.shape is not None]
 
         arrays: List[Optional[np.ndarray]] = []

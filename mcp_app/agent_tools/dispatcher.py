@@ -2,9 +2,9 @@
 KernelSession by looking up which dataset a call's `definition` belongs to.
 
 Composition, not inheritance: see KernelSessionLike's docstring (base.py) for
-why this does NOT subclass KernelSession. `mcp_app/server.py` needs no
-changes to use this — it only ever calls the methods declared on
-KernelSessionLike, which this class satisfies structurally.
+why this does not subclass KernelSession. `mcp_app/server.py` only calls
+the methods declared on KernelSessionLike, which this class satisfies
+structurally.
 """
 
 from __future__ import annotations

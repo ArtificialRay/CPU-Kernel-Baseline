@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Push local arm-bench/ + CPU-Kernel-Baseline/ncnn/ to a running instance.
-# Mirrors the rsync logic of provisioning/provision.py (provision + provision_codebase).
+# Push the local repo to ~/arm-bench on a running instance (exclude-based;
+# provisioning/provision.py uses config/rsync_allowlist.json instead).
 #
 # Usage:
 #   ./sync_remote.sh                    # sync to the "c7g" label (default)
@@ -42,9 +42,7 @@ rsync -avz "${EXTRA[@]}" -e "$SSH_OPTS" \
   --exclude=__pycache__ --exclude='*.pyc' \
   "$REPO_ROOT/" "$USER_NAME@$HOST:arm-bench/"
 
-# Root-level requirements.txt lives at CPU-Kernel-Baseline/requirements.txt
-# (not under arm-bench/). Push it to the remote home so `pip3 install -r
-# ~/requirements.txt` works after sync.
+# If the parent directory has a requirements.txt, push it to the remote home.
 REQS="$REPO_ROOT/../requirements.txt"
 if [[ -f "$REQS" ]]; then
     echo "[sync] requirements.txt -> $USER_NAME@$HOST:~/requirements.txt"

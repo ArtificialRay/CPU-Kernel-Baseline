@@ -1,6 +1,6 @@
 """TrajectoryWriter — per-session append-only audit trail for one agent loop.
 
-Layout under `agent-runs-mcp/<def_name>/`:
+Layout under `<run_dir>/<def_name>/`:
     trajectory.jsonl   — one JSON line per turn, written immediately after each tool call
     v1.cpp             — full source for compile version 1
     v2.cpp             — full source for compile version 2 (etc.)
@@ -9,9 +9,8 @@ Layout under `agent-runs-mcp/<def_name>/`:
 
 The version/turn counters are internal to TrajectoryWriter, seeded from
 whatever's already in trajectory.jsonl on construction (see
-`_scan_resume_state`) so a new process picking up an existing run_dir continues numbering 
-instead of colliding with files an earlier session already wrote. Convenient for kernel 
-checkpoint restart
+`_scan_resume_state`) so a new process picking up an existing run_dir continues
+numbering instead of colliding with files an earlier session already wrote.
 """
 
 from __future__ import annotations
@@ -35,8 +34,7 @@ class TrajectoryWriter:
     def read_records(traj_path: Path) -> list[dict]:
         """Parse every line of an existing trajectory.jsonl into dicts (empty
         list if the file doesn't exist yet). Shared by `_scan_resume_state`
-        and `KernelSession.check_progress` (base.py) so both read the same
-        file the same way instead of duplicating the parse loop."""
+        and `KernelSession.check_progress` (base.py)."""
         if not traj_path.exists():
             return []
         return [
@@ -115,12 +113,6 @@ class TrajectoryWriter:
 
     def close(self) -> None:
         self._fh.close()
-
-    def __enter__(self) -> "TrajectoryWriter":
-        return self
-
-    def __exit__(self, *_: Any) -> None:
-        self.close()
 
 
 __all__ = ["TrajectoryWriter"]

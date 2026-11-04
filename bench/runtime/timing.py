@@ -1,6 +1,6 @@
 """In-process kernel timing.
 
-Port of the LOOP_DECL pattern from arm-bench/common/loops.h:
+Port of the LOOP_DECL pattern from the C++ harness's common/loops.h:
 
     LOOP_START()
     for _w in range(warmup):    inner()       # untimed warmup
@@ -27,9 +27,8 @@ CPU pinning uses os.sched_setaffinity on Linux; on other platforms the call
 is silently a no-op (timing still works, just noisier).
 
 NOTE: this timer assumes the kernel runs with num_threads=1. Multi-threaded
-kernels need a different pinning strategy and aren't supported yet —
-bench/runner.py refuses to time a Solution whose dataset config asks for
-more threads.
+kernels need a different pinning strategy and aren't supported —
+bench/runner.py refuses to run when OMP_NUM_THREADS > 1.
 """
 
 from __future__ import annotations
@@ -67,7 +66,7 @@ class TimingResult:
     aborted_at: Optional[int] = None
     """If watchdog tripped, the rep index at which we stopped; samples_ns may be short."""
 
-    # ── Hardware perf counters (per single kernel invocation; None if unavailable) ──
+    # Hardware perf counters (per single kernel invocation; None if unavailable).
     # Amortized mean over the timed loop (aggregate / total_iters). A per-rep min
     # would be preferable but needs rdpmc, unavailable on Graviton/Nitro.
     cycles: Optional[int] = None

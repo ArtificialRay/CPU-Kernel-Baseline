@@ -20,7 +20,6 @@ from contracts import (
     DISALLOWED_SOURCE_PATTERNS_BY_ISA,
     DISALLOWED_SOURCE_PATTERNS_BY_OP_TYPE,
     DISALLOWED_SOURCE_PATTERNS_DEFAULT,
-    REFERENCE_SCALAR_FILENAME,
 )
 
 from . import isa as isa_mod
@@ -93,7 +92,7 @@ class KernelSession(ABC):
         self._isa = isa
         self._instance_label = instance_label
         # Hard per-definition ceiling on trajectory-recorded tool calls
-        # (compile/evaluate/disassemble/submit) 
+        # (compile/evaluate/disassemble).
         self._max_iterations = max_iterations
 
         # definition name -> {definition, trajectory, turn, last_compile, best_compile}
@@ -103,17 +102,12 @@ class KernelSession(ABC):
         # MCP session (server.request_context.session, one per client
         # connection) -> set of definitions *that session* has itself
         # compile()'d. Purely a resource-visibility scope for
-        # mcp_app/resources.py
+        # mcp_app/resources.py.
         self._session_definitions: dict[Any, set[str]] = {}
 
     @property
     def _definition(self) -> "Definition":
-        """The Definition object for the currently active definition.
-
-        Kept as a property (rather than renaming every subclass reference) so
-        `ncnn.py`/`simd_loop.py`/`llama_cpp.py` — which only ever read
-        `self._definition`, never assign it — need no changes.
-        """
+        """The Definition object for the currently active definition."""
         if self._active_definition is None:
             raise RuntimeError(
                 "no definition selected — call compile(definition=..., code=...) first"
@@ -121,8 +115,8 @@ class KernelSession(ABC):
         return self._definitions[self._active_definition]["definition"]
 
     def _get_or_create_definition(self, definition_name: str) -> dict:
-        """Memory-side bookkeeping and validate baseline solution's isa_features to 
-        ensure the baseline solution could be compiled in this instance
+        """Per-definition bookkeeping; also checks this host provides the
+        baseline solution's isa_features, so a speedup can be computed.
 
         Returns the existing per-definition state dict if this definition was
         already touched this session (nothing is reset), otherwise resolves
@@ -155,7 +149,7 @@ class KernelSession(ABC):
                 f"Definition {definition_name!r}'s baseline ({baseline.author!r}) "
                 f"requires isa_features={baseline.spec.isa_features!r}, but this "
                 f"session was started with --isa {self._isa!r}, which doesn't "
-                "provide them, so a speedup could never be computed for this definition." 
+                "provide them, so a speedup could never be computed for this definition. "
                 "Skip it, or rerun this session with an isa that provides those features."
             )
 
@@ -198,8 +192,7 @@ class KernelSession(ABC):
         thread — so e.g. two compile() calls for different definitions
         issued in the same turn can race on self._active_definition with no
         error either way, and a subsequent evaluate()/disassemble()/submit()
-        would then silently act on whichever one won the race. See
-        SKILL.md's "Ground rules: one definition at a time".
+        would then silently act on whichever one won the race.
         """
         if definition != self._active_definition:
             return {
@@ -213,8 +206,7 @@ class KernelSession(ABC):
         return None
 
     def _check_iteration_budget(self, state: dict) -> Optional[dict]:
-        """Hard ceiling on trajectory-recorded tool calls for one definition.
-        """
+        """Hard ceiling on trajectory-recorded tool calls for one definition."""
         if self._max_iterations is not None and state["turn"] >= self._max_iterations:
             return {
                 "status": "MAX_ITERATIONS_EXCEEDED",
@@ -277,7 +269,7 @@ class KernelSession(ABC):
         evaluate()/disassemble() — so it can never be used to browse an
         unrelated definition's history the way list_resources() could.
 
-        Only reports the best-so-far *submitted* version
+        Only reports the best-so-far *submitted* version.
         """
         traj_path = self._run_dir / definition / "trajectory.jsonl"
         best_submit: Optional[dict] = None
@@ -303,7 +295,7 @@ class KernelSession(ABC):
         is_new = definition not in self._definitions
         state = self._get_or_create_definition(definition)
         if is_new:
-            # lazliy collect baseline for new definition
+            # Lazily collect the baseline the first time a definition is seen.
             from . import baseline_readiness
             baseline_readiness.ensure_baseline_collected(
                 self._trace_set, definition, self._bench_cfg,
@@ -355,7 +347,6 @@ class KernelSession(ABC):
             "source_file": source_file,
         }
 
-        # Write _current.json to bench-trace/solutions/
         self._write_solution_json(solution, suffix="_current")
 
         state["trajectory"].write_turn(
@@ -382,12 +373,13 @@ class KernelSession(ABC):
         collected). self._bench_cfg already has collect_perf_counters=True
         (bench/config.py's default) — nothing to vary per call.
 
-        Greedy submit: if there is a new best version existed, auto-submit it by record the metrics to trajectory,
-        implementation to solution, and evaluation result to evaluation trace
+        Greedy submit: a new best version is auto-submitted (metrics to the
+        trajectory, the solution to bench-trace/solutions/, its traces to the
+        trace set).
 
         `definition` must match whoever was actually last compile()'d (see
         _check_definition_arg's docstring for why), and `version` must match
-        that definition's last compiled version
+        that definition's last compiled version.
         """
         mismatch = self._check_definition_arg(definition)
         if mismatch is not None:
@@ -433,7 +425,7 @@ class KernelSession(ABC):
             })
             cs = perf.get("cycle_speedup_geomean")
             ts = perf.get("time_speedup_geomean")
-            # if there is not cycle_speedup(for mac-m4.metal)，will fall back to time-speedup-geomean
+            # No cycle counters (e.g. mac-m4.metal): rank by time speedup instead.
             rank = cs if cs is not None else ts
             if rank is not None:
                 if (state["best_compile"] is None
@@ -645,5 +637,4 @@ class KernelSession(ABC):
 
 __all__ = [
     "KernelSession", "KernelSessionLike", "ASM_TRUNCATE_LINES",
-    "REFERENCE_SCALAR_FILENAME",
 ]

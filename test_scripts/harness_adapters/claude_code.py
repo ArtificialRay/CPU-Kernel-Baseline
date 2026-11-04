@@ -46,7 +46,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
         'Optimize the "%s" kernel definition (dataset: %s, baseline solution source: %s) '
         'in ISA %s. You must spend at least %s tool calls but not exceed %s tool calls to '
         'explore genuinely different optimization attempts before you are allowed to submit. '
-        'once you hit that ceiling, stop iterating and submit your best version immediately, '
+        'Once you hit that ceiling, stop iterating and submit your best version immediately, '
         'since every iteration spends real model API budget. Follow the ground rules and '
         'workflow in your system prompt.'
     )
@@ -101,8 +101,8 @@ class ClaudeCodeAdapter(HarnessAdapter):
     @contextmanager
     def prepare_workspace(self, job: Job):
         """Fresh, empty working directory for one run_job() call, outside
-        this repo, removed again afterwards. So non of benchmarking scaffold or
-        dataset would be seen."""
+        this repo (so the agent sees none of the scaffold or dataset), removed
+        afterwards."""
         root = os.environ.get(CLAUDE_JOB_ROOT_ENV) or None
         if root is not None:
             root_path = Path(root).expanduser().resolve()

@@ -38,7 +38,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-# ── perf_event ABI constants (from linux/perf_event.h) ────────────────────────
+# perf_event ABI constants (from linux/perf_event.h)
 
 PERF_TYPE_HARDWARE = 0
 PERF_COUNT_HW_CPU_CYCLES = 0
@@ -125,8 +125,6 @@ class PerfCounters:
         self._fds: list[int] = []
         self._leader = -1
 
-    # ── open / close ──────────────────────────────────────────────────────────
-
     def _perf_event_open(self, attr: perf_event_attr, group_fd: int) -> int:
         # syscall(nr, attr*, pid=0 (this process), cpu=-1 (any), group_fd, flags=0)
         return self._libc.syscall(
@@ -174,8 +172,6 @@ class PerfCounters:
         self._fds = []
         self._leader = -1
 
-    # ── control (whole group via leader) ──────────────────────────────────────
-
     def reset(self) -> None:
         fcntl.ioctl(self._leader, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP)
 
@@ -184,8 +180,6 @@ class PerfCounters:
 
     def disable(self) -> None:
         fcntl.ioctl(self._leader, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP)
-
-    # ── read ──────────────────────────────────────────────────────────────────
 
     def read(self) -> CounterTotals:
         """Read the group leader. Layout (read_format = GROUP|ENABLED|RUNNING):
@@ -227,8 +221,6 @@ class PerfCounters:
             instructions=scaled["instructions"],
             cache_misses=scaled["cache_misses"],
         )
-
-    # ── context manager sugar ──────────────────────────────────────────────────
 
     def __enter__(self) -> "PerfCounters":
         return self

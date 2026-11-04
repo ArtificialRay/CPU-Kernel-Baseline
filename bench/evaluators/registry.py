@@ -4,9 +4,7 @@ Mirrors flashinfer-bench's registry: iterate the specialized evaluators, the
 first whose `can_evaluate(definition)` is True wins; >1 match is an error
 (evaluators must be mutually exclusive); none → `DefaultEvaluator`.
 
-`_EVALUATORS` starts empty — only DefaultEvaluator exists today. Future
-specialized evaluators (sampling, low-bit) register here with no runner change;
-that is the payoff for moving evaluation out of the runner.
+Specialized evaluators register in `_EVALUATORS` with no runner change.
 """
 
 from __future__ import annotations
@@ -21,7 +19,6 @@ from .sqnr import SqnrEvaluator
 
 _EVALUATORS: List[Type[Evaluator]] = [
     SqnrEvaluator,  # `correctness:sqnr`-tagged defs (e.g. q8_0 MoE)
-    # add specialized evaluators here
 ]
 
 

@@ -107,8 +107,7 @@ def _cost_proxy(name: str) -> int:
     """Crude workload-size proxy: product of the integers in the
     definition name (pooling/1x1 convs sort first, kh7_kw7 mid, big gemms
     last), so a --until-complete resume yields fast sanity-check data
-    early and defers the slowest evals to the tail. Ported from
-    analysis/resume_sweep.sh's cost()."""
+    early and defers the slowest evals to the tail."""
     prod = 1
     for x in re.findall(r"\d+", name):
         prod *= max(int(x), 1)
@@ -490,10 +489,7 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
     subprocess rather than an in-process call to run_fleet(): each chunk
     gets its own process, so a wedged SSH tunnel, a leaked adapter thread,
     or any other state a previous chunk didn't clean up perfectly can never
-    carry into the next one. This is the same crash-isolation property
-    analysis/resume_sweep.sh got from re-invoking this script fresh per
-    chunk in bash — just parametrized here instead of hand-rolled per
-    sweep."""
+    carry into the next one."""
     cmd = [
         sys.executable, str(Path(__file__).resolve()),
         "--harness", args.harness, "--dataset", dataset, "--isa", args.isa,
