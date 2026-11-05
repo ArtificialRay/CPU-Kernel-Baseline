@@ -160,9 +160,8 @@ def check(root: Path, name: str, static_only: bool = False, isa: str | None = No
     (the baseline in particular) was skipped. The execution legs (reference, reference-scalar, baseline) run on
     `num_selected_workloads` randomly chosen workloads, all of them by default; static always reads every file."""
     legs = []
-    # phase 1: static check, files parse (`bench/data` models), names/paths/tags follow convention, workload axes exist in the
-   # definition, solution entry_point matches its sources. 
-   # `--static-only` stops here.
+    # Phase 1: validate files, names, paths, tags, axes, and entry points.
+    # `--static-only` stops here.
     static, definition, workloads, solutions = static_leg(Path(root), name)
     legs.append(static)
     if static.status == FAIL or static_only:

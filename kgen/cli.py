@@ -10,7 +10,7 @@
   python -m kgen autovec --isa sve2 (--definitions N... | --tag T) [--max-slowdown 2]
 
 `add` lints a file the agent wrote and places it under --root (default bench-trace) at the conventional path
-`check` and `show` read the warehouse; 
+`check` and `show` read the warehouse;
 `discover` finds a framework's operators from its model, accept plugins only;
 `collect` writes the shapes a model run produces as candidate workloads (`add workload --max-count` picks from them);
 `capture` gives workloads real inputs from a model run;

@@ -8,7 +8,7 @@ description: Define a brand-new op type as a bench-trace Definition JSON with kg
 Design a Definition JSON for a new operator, then place it with `python -m kgen add definition`.
 
 **This skill writes the structural schema only.** Workloads are added afterward with
-`/gen-workload`; solutions with `/gen-candidate-solution` and `/gen-baseline-solution`. 
+`/gen-workload`; solutions with `/gen-candidate-solution` and `/gen-baseline-solution`.
 
 The `reference` inside the definition is a correctness oracle, not a workload.
 
@@ -86,7 +86,7 @@ literals (the string cannot see axis names).
 
 ## Workflow
 
-### Step 0: Find the operators 
+### Step 0: Find the operators
 
 Write a `discover` plugin if you think you need it. Then run it:
 
@@ -98,12 +98,12 @@ The plugin defines `discover(argv) -> dict` (read a GGUF header, trace a torchvi
 
 **Framework (operators come from a model)**; record the model as a `model:` tag:
 
-- **Which operators are candidates**: 
+- **Which operators are candidates**:
   Graph Execution Only: Covers only the real executed graph (excluding unused layers like MTP heads, or lookup-only tensors like untied embeddings).
   bench-trace Compatibility: Expressed as a definition supported by bench-trace (supported dtypes/layouts, explicitly listing unsupported elements under "not covered").
   No Redundancy: Excludes anything already defined in bench-trace.
 
-- **Which candidates are kept**: 
+- **Which candidates are kept**:
   Identify Execution Candidates (role, type, shape):
     Filter for unique operator candidates defined by their role, data type, and tensor shape to prevent redundant benchmarking of identical kernels.Skip operators too small to time reliably to eliminate measurement noise.
   Rank Candidates by Time Share (Not Count):

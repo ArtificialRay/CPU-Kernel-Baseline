@@ -2,27 +2,23 @@
 # skills/, bench/). Loaded once by contracts.py at the repo root.
 #
 # These are not per-machine settings and not secrets — they're naming/mapping
-# conventions that every dataset's AgentTools/KernelSession implementation
-# (eval/agent_tools/* and mcp_app/agent_tools/*) must agree on. Keeping them
-# here instead of duplicated Python literals is what prevents Path 1 and
-# Path 3 from silently disagreeing about e.g. which author a dataset's
-# baseline lives under.
+# conventions that eval/ and every mcp_app/agent_tools/* KernelSession must
+# agree on. Keeping them here instead of duplicated Python literals keeps the
+# evaluation paths from silently disagreeing about e.g. which author a
+# dataset's baseline lives under.
 
 # Fixed filenames every dataset's harness/solution machinery relies on.
 contracts:
   # The file every agent-submitted kernel is written to, regardless of dataset.
   agent_kernel_filename: "kernel.cpp"
   # The file an agent's unoptimized starting-point kernel is exposed as
-  # (MCP resource name in mcp_app; also the file eval/'s AgentTools shows the
-  # agent as its starter code).
+  # (its MCP resource name in mcp_app).
   reference_scalar_filename: "reference-scalar-kernel.cpp"
 
 # dataset -> the Solution.author tag for that dataset's reference/starting-point
 # scalar kernel (what an agent begins from, NOT the speedup baseline below).
 # simd-loop intentionally uses "reference" instead of "reference-scalar" — a
-# historical naming difference from before the "reference-scalar" convention
-# was adopted for ncnn/llama.cpp, not a typo. See eval/evaluator.py's original
-# comment on this distinction.
+# naming difference, not a typo.
 reference_scalar_authors:
   ncnn: "reference-scalar"
   llama.cpp: "reference-scalar"
@@ -39,8 +35,8 @@ baseline_authors_default:
   llama.cpp: "baseline-llamacpp-arm"
   kleidiai: "baseline-kleidiai-arm"
 
-# For dataset that has multiple baseline authors that provides different baseline implementations
-# for different isa, we can override the baseline author for that dataset by isa here. 
+# dataset -> isa -> baseline author, for datasets with a separate baseline
+# implementation per isa tier.
 baseline_authors_by_isa:
   simd-loop:
     sve2: "baseline-sve2"
@@ -54,13 +50,13 @@ eval_defaults:
 # "auto": Auto-tunes `inner_iters` per (definition, workload) to target `target_sample_ns`.
 #
 # A fixed `inner_iters` fails because kernel runtimes vary wildly (2.5 µs to 683 ms)
-# and iteration count alters cache behavior (e.g., 2.3x throughput on Apple silicon 
+# and iteration count alters cache behavior (e.g., 2.3x throughput on Apple silicon
 # at 1000 vs 1 iter due to hot working sets).
 #
 # To ensure fair comparisons, a candidate is timed with its baseline's
 # `inner_iters`.
 #
-# NOTE: warmup, repeat, inner_iters and target_sample_ns together are the
+# warmup, repeat, inner_iters and target_sample_ns together are the
 # timing protocol, the same for every target. Each trace records the protocol
 # it was measured with, and a baseline measured with another one is
 # re-collected instead of reused -- so changing a value here retires the
@@ -111,36 +107,24 @@ eval_definition_overrides:
     # abs_tol/rel_tol stay at the tight 1e-3 default -- only the match-ratio
     # bar is lowered. This definition's KleidiAI SME2 baseline (f16
     # throughout) showed matched_ratio 0.9672-0.9821 across all 14
-    # workloads on real hardware
+    # workloads on real hardware.
     required_matched_ratio: 0.95
-  # No hand-set min_sqnr_db overrides remain: every KleidiAI correctness:sqnr definition is gated by its
-  # workloads' baseline_sqnr_db tags (`kgen calibrate --author baseline-kleidiai-arm --baseline-author
-  # baseline-kleidiai-arm`, run on the machine that matches the baseline's ISA).
-  # Integer-in/integer-out requantized GEMM (no dequantization noise): output values are int8 levels carried
-  # as float32. The baseline folds the fp32 bias into an int32 accumulator-grid bias and multiplies by the
-  # folded scale, so ~0.4% of elements land one level off the float reference (round-half-even ties / bias
-  # grid), measured on the synthetic tensors. abs_tol 0.5 counts every off-by-one element as a mismatch and
-  # the 0.99 ratio budgets 1% of them, so a wrong rounding mode (tens of percent off by one) is rejected.
+  # SQNR floors come from calibrated workload tags. Requantized GEMM permits
+  # one-level rounding differences in fewer than 1% of elements.
   gemm_qai8_qsi8cx_sme2_n256_k512:
     abs_tol: 0.5
     required_matched_ratio: 0.99
-  # bf16-truncated fp32 gemm (no dequantization, so element tolerance rather than SQNR). abs_tol is
-  # set just above the worst |diff| measured for the baseline (inputs are uuid-seeded, so the 13
-  # workloads are deterministic): NEON bf16 baseline 0.0865 -> 0.09.
-  # Every baseline element is within abs_tol (worst measured |diff| 0.0865), so the gemm default's 2% matched
-  # budget and loose rel_tol are not needed: rel_tol 1e-3 and matched 1.0 make abs_tol the real bound.
+  # NEON bf16 baseline's worst measured absolute error is 0.0865.
   gemm_f32_bf16_n512_k512:
     abs_tol: 0.09
     rel_tol: 1.0e-3
     required_matched_ratio: 1.0
-  # gemm_bf16 (SME2 baseline), measured on mac-m4: worst |diff| 0.0835 over its 15 workloads -> 0.09.
+  # SME2 bf16 baseline's worst measured absolute error is 0.0835.
   gemm_bf16_n512_k512:
     abs_tol: 0.09
     rel_tol: 1.0e-3
     required_matched_ratio: 1.0
-  # Integer-exact accumulation then float(acc)*C_scale + bias: the baseline differs from the reference by
-  # fp32 rounding only (worst measured rel diff 1.2e-7), so rel_tol 1e-5 leaves 100x headroom while still
-  # rejecting a wrong element; no matched budget.
+  # Integer accumulation differs from the reference only by fp32 rounding.
   gemm_u8_f32_sme2_n256_k512:
     abs_tol: 1.0e-3
     rel_tol: 1.0e-5
@@ -168,7 +152,7 @@ isa:
     # dotprod/i8mm are orthogonal CPU features (not a higher isa tier) —
     # confirmed present in /proc/cpuinfo's Features line (asimddp, i8mm/
     # svei8mm) on a real c7g.xlarge. vl256 marks Graviton3's SVE
-    # implementation as 256-bit wide 
+    # implementation as 256-bit wide.
     features: ["sve", "dotprod", "i8mm", "vl256"]
     labels: ["graviton3", "aarch64-sve"]
     instance_type: "c7g.xlarge"
@@ -177,7 +161,7 @@ isa:
     # sve2 is a strict superset of sve, so a solution declaring
     # isa_features=["sve"] must be satisfiable under sve2 too. dotprod/i8mm
     # confirmed present on a real c8g.xlarge the same way as sve above.
-    # No vl256: Graviton4's SVE2 measures 128-bit wide on real hardware
+    # No vl256: Graviton4's SVE2 measures 128-bit wide on real hardware.
     features: ["sve", "sve2", "dotprod", "i8mm"]
     labels: ["graviton4", "aarch64-sve2"]
     instance_type: "c8g.xlarge"
@@ -224,8 +208,7 @@ disallowed_source_patterns:
     - '\bvfork\s*\('
     - '\bclone\s*\('
   # op_type -> pattern list REPLACING (not adding to) `default` for that
-  # op_type. Empty for now (nothing has ever needed this) — kept so the
-  # capability isn't lost in the move out of bench/config.py.
+  # op_type. Empty for now.
   by_op_type: {}
   # isa -> pattern list ADDED ON TOP of `default` (and any by_op_type
   # override) when a session's isa matches. SVE/SVE2 intrinsics already fail
@@ -276,9 +259,9 @@ tool_call_loop:
   # `temperature` kwarg outright — skip setting it for these rather than
   # relying solely on the runtime BadRequestError-drop-and-retry fallback.
   models_without_temperature: ["opus-4-7", "opus-4-8"]
-  # Model strings (substring match) that must NOT be sent tool_choice=required.
-  # So that the model could produce both a text block and a thinking block in the same turn,
-  # Enforce the model to reasoning and not just calling tools
+  # Model strings (substring match) that must NOT be sent tool_choice=required,
+  # so they can emit text and thinking blocks in the same turn (reason, not
+  # only call tools).
   models_without_forced_tool_use: ["claude", "anthropic/"]
   # Model strings (substring match) that 400 outright on any tool-calling
   # request through /v1/chat/completions when reasoning is enabled
