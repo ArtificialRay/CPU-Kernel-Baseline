@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Compile one author's solutions into shared objects and write the override manifest that
-e2e/adapters/llamacpp/override/ loads at runtime.
+e2e/override/ loads at runtime.
 
 The input is bench-trace/solutions/<dataset>/<author>/gemm/*.json -- what the MCP server
 persisted (and `bench_fleet.py --sync-solutions` pulled back) for each definition the agent
@@ -46,7 +46,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 from contracts import _isa_table  # noqa: E402  (config/kernel_contracts.yaml isa table)
 from e2e.common.build import compile_shared, undefined_symbols  # noqa: E402

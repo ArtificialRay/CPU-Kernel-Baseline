@@ -17,7 +17,7 @@ Target: llama.cpp **v0.4.1** (commit `b29c606`).
 ## Usage
 
 ```sh
-e2e/adapters/llamacpp/override/apply.sh /path/to/llama.cpp          # once per checkout
+e2e/override/apply.sh /path/to/llama.cpp          # once per checkout
 cmake -B build -DGGML_CPU_REPACK=OFF -DGGML_CPU_KLEIDIAI=OFF ...   # see "repack / KleidiAI"
 cmake --build build -j
 ARMBENCH_OVERRIDES=/abs/manifest.json ARMBENCH_OVERRIDE_LOG=1 build/bin/llama-bench -m model.gguf ...

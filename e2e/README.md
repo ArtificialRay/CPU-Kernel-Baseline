@@ -10,7 +10,7 @@ measure tokens/s and perplexity.
 One command, run after each agent run:
 
 ```
-python -m e2e evaluate --model qwen3.5-4b --author AUTHOR --label BOX --rows-abi
+python -m e2e evaluate --model qwen3.5-4b --author AUTHOR --rows-abi
                                                              # kernel_set -> deploy -> measure -> report
 ```
 
@@ -23,35 +23,36 @@ box, name it: `python -m e2e evaluate --model qwen3.5-4b --steps measure --perpl
 `--steps a,b` works for every step, so any single step can be run on its own. The agent runs themselves stay
 with `test_scripts/bench_fleet.py`.
 
-Nothing in here starts a box: provision one with `provisioning/provision.py` (or let `bench_fleet.py`
-do it), and give its label to `deploy`.
+The box is looked up in `provisioning/eval_config.json` under the label `e2e-<model>-<isa>` (`--label` picks
+another). Nothing here starts one unless you pass `--provision` to `deploy`, which creates it through
+`provisioning/provision.py` (an instance of the `--isa` tier, with the `llama.cpp-e2e` tree built); without the
+flag a missing box is an error that names the command. Tearing it down stays with
+`provisioning/provision.py --teardown --label ...`.
 
 The steps are plain Python, so they can be driven without the command line too:
 
 ```python
 from e2e.context import E2EContext, Options
-from e2e.adapters.registry import resolve_adapter
+from e2e.steps import run_kernel_set
 
-adapter = resolve_adapter("llamacpp")                       # LlamaCppAdapter
-adapter.kernel_set(E2EContext.create("llamacpp", "qwen3.5-4b", "sve2"), Options(author="my-author", rows_abi=True))
+run_kernel_set(E2EContext.create("llamacpp", "qwen3.5-4b", "sve2"), Options(author="my-author", rows_abi=True))
 ```
 
 ```
 e2e/
   cli.py  context.py  errors.py          # the command, the run context + options, StepFailed
-  adapters/base.py  registry.py          # FrameworkAdapter: the step loop (skip / box / fail); resolve_adapter(name)
-  common/                                # framework-neutral functions the adapters call:
+  steps.py                               # the four steps and the loop (skip / box / fail)
+  kernel_set.py  deploy.py  measure.py   # what is ggml-specific: names, rows ABI and manifest; the box tree and
+  report.py  report_from_log.py          #   the model; llama-bench / llama-perplexity; the results table
+  override/  build_agent.sh              # the ggml-cpu hook, and the script that builds with it
+  common/                                # plain functions the steps call:
                                          #   solutions (read an author's solutions back), guards (is this the kernel
                                          #   set you meant), build (compile a .so, undefined-symbol check),
-                                         #   box (find the registered Graviton box)
-  adapters/llamacpp/adapter.py           # LlamaCppAdapter: one method per step, over the modules below
-  adapters/llamacpp/                     # what is ggml-specific:
-                                         #   kernel_set (names, rows ABI, manifest), deploy, measure, report
-                                         #   (+ report_from_log); override/ is the ggml-cpu hook, build_agent.sh builds with it
+                                         #   box (the Graviton box, through provisioning/)
 ```
 
-A new framework is a new adapter: name its steps, write the ones that are about its own model format and
-runtime, and call `e2e.common` for the rest.
+llama.cpp is the only framework so far, so there is no adapter layer; when a second one shows what differs, the
+steps are where to split.
 
 Everything here works on the `llama.cpp` dataset with the packed-ggml gemm
 definitions (`gemm_ggml_<type>_n<N>_k<K>`, tagged `e2e:<model>`). Models are
@@ -106,7 +107,7 @@ Per model, once. These are not e2e steps; they are the scripts that stay in `scr
    workloads, `reference-scalar` and `baseline-llamacpp-arm` solutions; templates in `kquant_templates.py`):
    `python3 scripts/e2e/gen_qwen35_definitions.py inventory.json --model-tag qwen3.5-4b`
 3. **Real activations.** Run the override build with `ARMBENCH_DUMP_DIR` set (see
-   `e2e/adapters/llamacpp/override/README.md`), then
+   `e2e/override/README.md`), then
    `python3 scripts/e2e/dump_to_workloads.py --dump <dir> --root bench-trace`
 4. **Calibrate** the SQNR floors on the eval box:
    `python3 scripts/e2e/calibrate_sqnr_floor.py --tag e2e:qwen3.5-4b`
@@ -120,7 +121,7 @@ Per model, once. These are not e2e steps; they are the scripts that stay in `scr
    override manifest is written. The guards fail the command when the set isn't the one you meant (a stale set
    is the failure mode): `--reference-author PREV --expect-changed DEF... --expect-count N --forbid REGEX`.
    `--author reference-scalar --rows-abi` builds the control set that must reproduce stock perplexity.
-3. **Deploy and measure**. `deploy` builds the pinned tools tree on an already-provisioned box (`--label`),
+3. **Deploy and measure**. `deploy` builds the pinned tools tree on the box (`--label`, or `--provision` to create it),
    fetches the model, and with `--agent-build` derives the override build (`build_agent.sh`). `measure`
    (on the box) runs llama-bench for each build, interleaved and repeated, and with `--perplexity FILE`
    llama-perplexity as the quality check; `report` renders the table (`report_from_log` rebuilds the results

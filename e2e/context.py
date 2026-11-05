@@ -76,7 +76,8 @@ class Options:
     march: str | None = None
 
     # evaluate: deploy
-    label: str | None = None              # provisioning/eval_config.json instance label
+    label: str | None = None              # provisioning/eval_config.json instance label; default e2e-<model>-<isa>
+    provision: bool = False               # create the box if none is registered under the label (spends money)
     agent_build: bool = False
 
     # evaluate: measure (runs on the box) and report

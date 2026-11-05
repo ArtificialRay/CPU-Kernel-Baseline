@@ -1,6 +1,6 @@
 """python -m e2e evaluate ...
 
-  python -m e2e evaluate --model qwen3.5-4b --author AUTHOR --label BOX [--agent-build] [--rows-abi]
+  python -m e2e evaluate --model qwen3.5-4b --author AUTHOR [--label BOX] [--agent-build] [--rows-abi]
 
 evaluate (after each agent run) kernel_set -> deploy -> measure -> report
 
@@ -17,16 +17,15 @@ import argparse
 import sys
 from pathlib import Path
 
-from .adapters.registry import resolve_adapter
 from .context import DEFAULT_FRAMEWORK, E2EContext, Options
+from .steps import STEPS, run_steps
 
 COMMANDS = ("evaluate",)
 
 
-def build_parser(command: str, framework: str = DEFAULT_FRAMEWORK) -> argparse.ArgumentParser:
-    adapter = resolve_adapter(framework)
-    names = [s.name for s in adapter.evaluate_steps]
-    p = argparse.ArgumentParser(prog=f"e2e {command}", description=" -> ".join(names))
+def build_parser() -> argparse.ArgumentParser:
+    names = [s.name for s in STEPS]
+    p = argparse.ArgumentParser(prog="e2e evaluate", description=" -> ".join(names))
     p.add_argument("--model", required=True, help="key in config/e2e_models.json")
     p.add_argument("--isa", default="sve2")
     p.add_argument("--run-dir", default=None, help="default: e2e-runs/<framework>-<model>-<isa>")
@@ -48,7 +47,8 @@ def build_parser(command: str, framework: str = DEFAULT_FRAMEWORK) -> argparse.A
     k.add_argument("--cxx", default="clang++-18")
     k.add_argument("--march", default=None)
     d = p.add_argument_group("deploy")
-    d.add_argument("--label", default=None, help="instance label in provisioning/eval_config.json")
+    d.add_argument("--label", default=None, help="instance label in provisioning/eval_config.json (default: e2e-<model>-<isa>)")
+    d.add_argument("--provision", action="store_true", help="create the box if none is registered under the label (spends money)")
     d.add_argument("--agent-build", action="store_true", help="also build the override-enabled tree")
     m = p.add_argument_group("measure (on the box) / report")
     m.add_argument("--llama-dir", default="~/llama.cpp-e2e")
@@ -68,19 +68,14 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)   # never lose progress lines to a pipe buffer
     argv = list(sys.argv[1:] if argv is None else argv)
-    framework = DEFAULT_FRAMEWORK
-    if argv[:1] == ["--framework"] and len(argv) >= 2:
-        framework, argv = argv[1], argv[2:]
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
         print(__doc__, file=sys.stderr if argv and argv[0] not in ("-h", "--help") else sys.stdout)
         return 0 if not argv or argv[0] in ("-h", "--help") else 2
-    command = argv[0]
-    args = build_parser(command, framework).parse_args(argv[1:])
+    args = build_parser().parse_args(argv[1:])
     fields = {k: v for k, v in vars(args).items() if k in Options.__dataclass_fields__}
     fields["steps"] = args.steps.split(",") if args.steps else None
-    options = Options(**fields)
-    ctx = E2EContext.create(framework, args.model, args.isa, args.run_dir, args.force)
-    return getattr(resolve_adapter(framework), command)(ctx, options)
+    ctx = E2EContext.create(DEFAULT_FRAMEWORK, args.model, args.isa, args.run_dir, args.force)
+    return run_steps(ctx, Options(**fields))
 
 
 if __name__ == "__main__":

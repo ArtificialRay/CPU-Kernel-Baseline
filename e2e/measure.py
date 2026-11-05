@@ -24,7 +24,7 @@ quietly measuring the no-override build.
 
 Each build is name -> path-to-cmake-build-dir (must contain bin/llama-bench).
 An override name -> manifest.json sets ARMBENCH_OVERRIDES for that build only
-(see e2e/adapters/llamacpp/override/README.md). Builds are run interleaved
+(see e2e/override/README.md). Builds are run interleaved
 (stock, agent, stock, agent, ...) so thermal/turbo drift hits both equally.
 """
 from __future__ import annotations
