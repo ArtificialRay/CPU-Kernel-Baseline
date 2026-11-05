@@ -77,7 +77,7 @@ class RawDataset:
     conv2d). entry_args carries fully-typed ctypes objects — no fn.argtypes
     needed in the runner.
 
-    ABI convention (matches gen_candidate_bindings.py output):
+    ABI convention:
         armbench_entry_<op>(float* primary, float* output,
                             float* rest...,
                             int var_dim_0, int var_dim_1, ...)
