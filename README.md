@@ -1,10 +1,10 @@
 # CPU-Kernel-Baseline
 
-A benchmark for LLM agents that write optimized AArch64 SIMD kernels (NEON, SVE,
+A benchmark environment for LLM agents that write optimized AArch64 SIMD kernels (NEON, SVE,
 SVE2, SME2). Each task is a kernel with a reference implementation, workloads
 taken from real models, and an expert implementation to beat. The agent compiles,
 tests and profiles its kernel on the target machine through MCP tools. A kernel
-scores only if it is correct on every workload; its score is the speedup over the
+scores only if it is correct on every workload, and its score is the speedup over the
 expert implementation.
 
 | Source | Kernels | Definitions |
