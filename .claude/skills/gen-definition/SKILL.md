@@ -94,7 +94,7 @@ Write a `discover` plugin if you think you need it. Then run it:
 python -m kgen discover plugin.py [--out inventory.json] [-- plugin args]
 ```
 
-The plugin defines `discover(argv) -> dict` (read a GGUF header, trace a torchvision model, parse an ONNX graph, list a library's micro-kernels or loop sources ...). kgen only loads it and checks the result is a JSON object; what the dict holds is yours to decide. `e2e/adapters/llamacpp/inventory.py` is an example. Both a framework and a library may use a plugin; the criteria differ. Have the plugin apply them and report what it dropped and why.
+The plugin defines `discover(argv) -> dict` (read a GGUF header, trace a torchvision model, parse an ONNX graph, list a library's micro-kernels or loop sources ...). kgen only loads it and checks the result is a JSON object; what the dict holds is yours to decide. `plugins/llamacpp/inventory.py` is an example. Both a framework and a library may use a plugin; the criteria differ. Have the plugin apply them and report what it dropped and why.
 
 **Framework (operators come from a model)**; record the model as a `model:` tag:
 

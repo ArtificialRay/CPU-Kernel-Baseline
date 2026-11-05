@@ -18,7 +18,7 @@ inputs it was measured on.
                           tag="e2e:qwen3.5-4b")             # or: python -m kgen calibrate --author ... --baseline-author ... --tag ...
 
 Nothing here is specific to one framework: which author is the reference and which is the
-baseline comes from the caller (e2e passes its adapter's reference_author / baseline_author).
+baseline comes from the caller (the caller passes both).
 """
 from __future__ import annotations
 

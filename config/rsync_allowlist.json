@@ -6,7 +6,6 @@
     "bench-trace/workloads",
     "bench-trace/tensors",
     "e2e",
-    "scripts/e2e",
     "mcp_app",
     "requirements.txt",
     "contracts.py",

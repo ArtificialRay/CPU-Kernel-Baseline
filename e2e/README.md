@@ -7,7 +7,7 @@ perplexity.
 ## Before you run it
 
 - **Definitions** tagged `e2e:<model>` in `bench-trace/` (the model is a key of `config/e2e_models.json`).
-  The scripts in `scripts/e2e/` make them for a new model.
+  For a new model, `plugins/llamacpp/` (`kgen discover`) and the `gen-definition` skill make them.
 - **Agent solutions** under `bench-trace/solutions/llama.cpp/<author>/gemm/`: run the agents with
   `test_scripts/bench_fleet.py --dataset llama.cpp --definitions "<names>" --sync-solutions ...`.
 - **A Graviton box** registered in `provisioning/eval_config.json` under the label `e2e-<model>-<isa>`
