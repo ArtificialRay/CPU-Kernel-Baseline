@@ -58,6 +58,18 @@ any AArch64 machine, SVE on Graviton3, SVE2 on Graviton4, SME2 on Apple M4. An S
 kernel run on a Mac fails with `RUNTIME_ERROR ... SIGILL`.
 `python -m bench.cli list-definitions` and `list-solutions` show what there is to run.
 
+## Add your kernel
+
+A kernel optimization task splits four artifacts in `bench-trace/`: 
+- **Definition** : shapes, dtypes and a Python reference
+- **Workloads** :concrete sizes and how to generate the inputs
+- **Reference-scalar solution** : plain C++, the agent's starting point 
+- **baseline solution** : the library's own kernel that agent need to beat. 
+
+To discover, build, and check one kernel, KernelShift provides `kgen`: a CLI toolkit that enable agent to automatically adding new kernel based on your need. All you need is to use any coding agent and ask it to follow `gen-*` skills in [`.claude/skills/`](.claude/skills/) which drive these CLI commands.
+
+Every command, the loader and plugin contracts and the checks: [`kgen/README.md`](kgen/README.md).
+
 ## Run an agent
 
 `test_scripts/bench_fleet.py` starts an EC2 instance for the ISA, runs the agent on
@@ -137,9 +149,6 @@ explicit `--file-sandbox bwrap` is rejected for them.
   [`mcp_app/README.md`](mcp_app/README.md); commands: [`skills/README.md`](skills/README.md).
 - **Inside llama.cpp:** splice agent GEMM kernels into llama.cpp and measure tokens/s and
   perplexity: [`e2e/README.md`](e2e/README.md).
-- **Add a kernel:** the `gen-definition`, `gen-workload`, `gen-candidate-solution` and
-  `gen-baseline-solution` skills in [`.claude/skills/`](.claude/skills/) walk an agent
-  through it.
 
 ## More documentation
 
