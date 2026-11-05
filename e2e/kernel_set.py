@@ -20,8 +20,9 @@ extra fields here (framework, embeddable, ...) are for the people and tools read
 
 Which definitions are built: those carrying an `e2e:<model>` tag in bench-trace/definitions/ (the
 tag, not the name, says a definition belongs to an e2e set). `kernel="all"` builds every one of them
-that the author submitted; `kernel=NAME` builds just that one. Of those, only definitions named
-gemm_<type>_n<N>_k<K> with a q4_K / q5_K / q6_K type are spliceable (packed ABI); the others are
+that the author submitted; `kernel=NAME` builds just that one. Nothing is read from a definition's
+name: N and K are its const axes, the ggml type is the `layout` of its B input in the workloads
+(`ggml_q4_K`). Of those, only q4_K / q5_K / q6_K gemms are spliceable (packed ABI); the others are
 listed under "skipped" with a reason, as is a kernel that calls ggml's own routines.
 
   build_kernel_set("claude-code-claude-fable-5-1-sve2", "~/e2e/manifest.json", isa="sve2")
@@ -55,7 +56,7 @@ from e2e.common.build import compile_shared, undefined_symbols  # noqa: E402
 from e2e.common.guards import check_guards  # noqa: E402
 from e2e.common.solutions import SOLUTIONS, load_author, source_text, unsubmitted  # noqa: E402
 
-NAME_RX = re.compile(r"^gemm_(q[456]_K)_n(\d+)_k(\d+)$")
+SPLICEABLE_TYPES = ("q4_K", "q5_K", "q6_K")   # the types the override hook has a kernel path for
 FRAMEWORK = "llamacpp"
 
 
@@ -110,23 +111,33 @@ def undefined_ggml_symbols(so: Path) -> list:
     return undefined_symbols(so, "ggml_")
 
 
-def embeddable(name: str) -> tuple[bool, str]:
-    """Can the override hook splice a kernel for this definition into llama.cpp, and if
-    not, why. Only the packed ggml block-row gemms can be: the hook matches a mul_mat by
-    (ggml type, K, N) and hands the kernel the raw block rows."""
-    if NAME_RX.match(name):
-        return True, ""
-    return False, "not a packed ggml gemm of a type the hook has a kernel for (q4_K / q5_K / q6_K)"
-
-
-def e2e_definitions(definitions_root: Path) -> set[str]:
-    """Names of the definitions under `definitions_root` that carry an `e2e:<model>` tag."""
-    tagged = set()
-    for f in sorted(Path(definitions_root).glob("*/*.json")):
+def e2e_definitions(root: Path) -> dict:
+    """{definition name: {"type", "N", "K"}} for the definitions under the warehouse `root` that carry an
+    `e2e:<model>` tag. "type" is the ggml type from the layout of the B input in the definition's
+    workloads (None if there is none); N and K are the definition's const axes (None if not const)."""
+    found = {}
+    for f in sorted((Path(root) / "definitions").glob("*/*.json")):
         d = json.loads(f.read_text())
-        if any(t.startswith("e2e:") for t in d.get("tags", [])):
-            tagged.add(d["name"])
-    return tagged
+        if not any(t.startswith("e2e:") for t in d.get("tags", [])):
+            continue
+        axes = d.get("axes", {})
+        wl = Path(root) / "workloads" / d["op_type"] / f"{d['name']}.jsonl"
+        first = next((json.loads(line) for line in wl.open() if line.strip()), {}) if wl.exists() else {}
+        layout = first.get("inputs", {}).get("B", {}).get("layout", "")
+        found[d["name"]] = {"type": layout[len("ggml_"):] if layout.startswith("ggml_") else None,
+                            "N": axes.get("N", {}).get("value"), "K": axes.get("K", {}).get("value")}
+    return found
+
+
+def embeddable(info: dict) -> tuple[bool, str]:
+    """Can the override hook splice a kernel for this definition into llama.cpp, and if not, why.
+    Only the packed ggml block-row gemms can be: the hook matches a mul_mat by (ggml type, K, N)
+    and hands the kernel the raw block rows."""
+    if info["type"] not in SPLICEABLE_TYPES:
+        return False, f"ggml type {info['type']!r} is not one the hook has a kernel for ({' / '.join(SPLICEABLE_TYPES)})"
+    if not isinstance(info["N"], int) or not isinstance(info["K"], int):
+        return False, "N and K are not both const axes of the definition"
+    return True, ""
 
 
 def digest(text: str) -> str:
@@ -139,16 +150,16 @@ def compile_so(cxx: str, march: str, build: Path, so: Path):
     return compile_shared(cxx, march, build, [build / "kernel.cpp", build / "gemm.cpp"], so)
 
 
-def build_kernels(solutions: dict, author: str, out_dir: Path, march: str, *, selected: set,
+def build_kernels(solutions: dict, author: str, out_dir: Path, march: str, *, selected: dict,
                   rows_abi: bool = False, cxx: str = "clang++-18"):
     kernels, skipped = [], []
     for name, sol in sorted(solutions.items()):
         if name not in selected:
             skipped.append({"definition": name, "reason": "not selected (no e2e:<model> tag, or not the --kernel asked for)"}); continue
-        ok, why = embeddable(name)
+        ok, why = embeddable(selected[name])
         if not ok:
             skipped.append({"definition": name, "embeddable": False, "reason": why}); continue
-        qtype, N, K = (lambda m: (m.group(1), int(m.group(2)), int(m.group(3))))(NAME_RX.match(name))
+        qtype, N, K = selected[name]["type"], selected[name]["N"], selected[name]["K"]
         build = out_dir / "build" / name
         build.mkdir(parents=True, exist_ok=True)
 
@@ -220,10 +231,10 @@ def build_kernel_set(
     march = march or _isa_table()[isa].march
 
     solutions = load_author(dataset, author, solutions_root)
-    tagged = e2e_definitions(Path(solutions_root).parent / "definitions")
+    tagged = e2e_definitions(Path(solutions_root).parent)
     if kernel != "all" and kernel not in tagged:
-        raise StepFailed(f"--kernel {kernel!r} is not a definition tagged e2e:<model> in {Path(solutions_root).parent / 'definitions'}")
-    selected = tagged if kernel == "all" else {kernel}
+        raise StepFailed(f"--kernel {kernel!r} is not a definition tagged e2e:<model> under {Path(solutions_root).parent}")
+    selected = tagged if kernel == "all" else {kernel: tagged[kernel]}
     kernels, skipped = build_kernels(solutions, author, out_dir, march, selected=selected, rows_abi=rows_abi, cxx=cxx)
     manifest = {"framework": FRAMEWORK, "isa": isa, "march": march, "author": author,
                 "kernels": kernels, "skipped": skipped}
