@@ -1,9 +1,5 @@
-"""Checks that a built kernel set is the one you meant to build.
-
-A manifest built from hand-assembled or stale solution files can silently hold the *old*
-kernels: every later check still passes (the shapes are all intercepted, the perplexity looks
-plausible) because nothing about the splice is wrong -- it is faithfully running the wrong
-sources, and that costs a whole measurement run to notice. These fail fast instead."""
+"""Checks that a built kernel set is the one you meant to build (count, changed / unchanged
+against a reference author, forbidden source patterns)."""
 from __future__ import annotations
 
 import re

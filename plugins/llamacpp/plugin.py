@@ -4,8 +4,8 @@
 Archived generator (it produced the gemm_ggml_* definitions in the dataset). Logic is unchanged; only the interface is
 kgen's: discover(argv) writes into a staging directory and the files go into the warehouse through `kgen add`.
 
-Input is the inventory JSON of a GGUF (python -m e2e prepare --steps inventory, the output of
-e2e/adapters/llamacpp/inventory.py run as a kgen discover plugin, or any file in that format). For every
+Input is the inventory JSON of a GGUF (the output of
+plugins/llamacpp/inventory.py run as a kgen discover plugin, or any file in that format). For every
 (quant, N, K) matmul shape above --min-share it writes, under --out-dir:
   definitions/gemm/gemm_<tag>_n<N>_k<K>.json         (packed ggml block ABI)
   workloads/gemm/gemm_<tag>_n<N>_k<K>.jsonl          (M = --m-values, B = bytes of the ggml type)

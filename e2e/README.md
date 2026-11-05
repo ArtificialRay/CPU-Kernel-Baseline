@@ -1,128 +1,54 @@
 # End-to-end: agent kernels inside llama.cpp
 
-The rest of the benchmark measures one kernel at a time. This directory answers
-the follow-up question: take a real model, let the agent optimize the matmuls
-that dominate its CPU inference, splice those kernels back into llama.cpp, and
-measure tokens/s and perplexity.
+The rest of the benchmark measures one kernel at a time. `e2e` answers the follow-up question: take the
+kernels an agent wrote for a real model's matmuls, splice them into llama.cpp, and measure tokens/s and
+perplexity.
 
-## Entry point and layout
+## Before you run it
 
-Two commands:
+- **Definitions** tagged `e2e:<model>` in `bench-trace/` (the model is a key of `config/e2e_models.json`).
+  For a new model, `plugins/llamacpp/` (`kgen discover`) and the `gen-definition` skill make them.
+- **Agent solutions** under `bench-trace/solutions/llama.cpp/<author>/gemm/`: run the agents with
+  `test_scripts/bench_fleet.py --dataset llama.cpp --definitions "<names>" --sync-solutions ...`.
+- **A Graviton box** registered in `provisioning/eval_config.json` under the label `e2e-<model>-<isa>`
+  (`--label` picks another), or let `deploy` create it with `--provision`.
 
-```
-python -m e2e prepare  --model qwen3.5-4b                    # once per model:  inventory -> calibrate
-python -m e2e evaluate --model qwen3.5-4b --author AUTHOR --label BOX --rows-abi
-                                                             # after each agent run:  kernel_set -> deploy -> measure -> report
-```
-
-A step whose artifact is already in `e2e-runs/<framework>-<model>-<isa>/` is skipped (`--force`
-redoes it). The steps that have to run on the Graviton box (`calibrate`, `measure`) are
-only printed by default; on the box, name them: `python -m e2e evaluate --model qwen3.5-4b
---steps measure --perplexity wiki.test.raw`. `--steps a,b` works for every step, so any single step
-can be run on its own. The agent runs themselves stay with `test_scripts/bench_fleet.py`.
-
-Nothing in here starts a box: provision one with `provisioning/provision.py` (or let `bench_fleet.py`
-do it), and give its label to `deploy`.
-
-The steps are plain Python, so they can be driven without the command line too:
-
-```python
-from e2e.context import E2EContext, Options
-from e2e.adapters.registry import resolve_adapter
-
-adapter = resolve_adapter("llamacpp")                       # LlamaCppAdapter
-adapter.kernel_set(E2EContext.create("llamacpp", "qwen3.5-4b", "sve2"), Options(author="my-author", rows_abi=True))
-```
+## Usage
 
 ```
-e2e/
-  cli.py  context.py  errors.py          # the two commands, the run context + options, StepFailed
-  adapters/base.py  registry.py          # FrameworkAdapter: the step loop (skip / box / fail) and the steps every
-                                         #   framework shares (calibrate); resolve_adapter(name)
-  common/                                # framework-neutral functions the adapters call:
-                                         #   solutions (read an author's solutions back), guards (is this the kernel
-                                         #   set you meant), build (compile a .so, undefined-symbol check),
-                                         #   box (find the registered Graviton box)
-  adapters/llamacpp/adapter.py           # LlamaCppAdapter: one method per step, over the modules below
-  adapters/llamacpp/                     # what is ggml-specific:
-                                         #   kernel_set (names, rows ABI, manifest), deploy, measure, report
-                                         #   (+ report_from_log); override/ is the ggml-cpu hook, build_agent.sh builds with it
+python -m e2e evaluate --model qwen3.5-4b --author AUTHOR --rows-abi
 ```
 
-A new framework is a new adapter: set `reference_author` / `baseline_author`, name its steps, write the
-ones that are about its own model format and runtime, and call `e2e.common` for the rest.
+`evaluate` runs four steps in order. Add `--steps a,b` to run only some of them; a step whose result is
+already in `e2e-runs/llamacpp-<model>-<isa>/` is skipped (`--force` redoes it).
 
-Everything here works on the `llama.cpp` dataset with the packed-ggml gemm
-definitions (`gemm_ggml_<type>_n<N>_k<K>`, tagged `e2e:<model>`). Models are
-listed in `config/e2e_models.json`; the runtime is pinned in
-`config/dataset_builds.json` (`llama.cpp` for kernel evaluation,
-`llama.cpp-e2e` for the full tools tree), both at the same release so a kernel
-is scored and spliced against the same ggml.
+| Step | What it does | Main options |
+|---|---|---|
+| `kernel_set` | Compiles the author's submitted kernels into shared objects and writes the manifest that tells llama.cpp which matmuls to replace. | `--author` (required), `--kernel all\|NAME`, `--rows-abi`, `--reference-author` with `--expect-changed`, `--expect-same`, `--expect-count`, `--forbid` |
+| `deploy` | On the box: builds the pinned llama.cpp tools tree, downloads the model, and with `--agent-build` builds the variant with the replacement hook. | `--label`, `--provision`, `--agent-build` |
+| `measure` | **Runs on the box** (printed, not run, from elsewhere): llama-bench for each build, interleaved and repeated, and llama-perplexity. | `--perplexity FILE`, `--threads`, `--pp`, `--tg`, `--reps`, `--fa` |
+| `report` | Prints throughput, speedup and perplexity of the builds as one table. If the results file is missing it is rebuilt from `--log`, the output `measure` printed. | `--baseline`, `--log` |
 
-## The kernel ABI
+- `--kernel all` (default) uses every submitted definition tagged `e2e:<model>`; `--kernel NAME` just that one.
+- `--rows-abi` lets the hook split a matmul's rows across ggml's threads.
+- The guards compare the set with a previous author's: `--reference-author PREV --expect-changed DEF...`
+  fails if a kernel you meant to change is byte-identical to PREV's.
+- Control run: `--author reference-scalar --rows-abi` builds the scalar set, which should reproduce stock perplexity.
 
-Each definition hands the kernel ggml's own block rows, so a submitted kernel
-can be spliced into llama.cpp with no data conversion:
+On the box:
 
-```c
-int armbench_entry_gemm(const uint16_t* A_bf16, float* out, const uint8_t* B_blocks, int M);
+```
+python -m e2e evaluate --model qwen3.5-4b --steps measure --perplexity wiki.test.raw
 ```
 
-`B` is uint8 `[N, K/256 * sizeof(block)]` (144 / 176 / 210 bytes per 256
-elements for Q4_K / Q5_K / Q6_K, 34 per 32 for Q8_0); `N` and `K` are baked
-into the binding. Workloads sweep `M` over decode-sized batches. The
-`reference-scalar` solution is a scalar port of ggml's `vec_dot` and is the
-agent's starting point; `baseline-llamacpp-arm` calls `ggml_mul_mat` on the
-same blocks and is the speedup baseline. Candidates may not call ggml routines
-themselves (`config/kernel_contracts.yaml`, `by_dataset`).
+`deploy` only creates a box with `--provision`; tearing one down stays with
+`provisioning/provision.py --teardown --label ...`.
 
-## Correctness gate
+## What is compared
 
-Quantized kernels are checked by SQNR (`correctness:sqnr`), and three things
-together keep a numerically lossy kernel from passing:
+Three builds: 
+- **stock**: llamacpp default setting on this e2e model 
+- **norepack**: llamacpp with ggml's repack and KleidiAI paths off
+- **agent**: the norepack configuration plus the override hook, which replaces only the matmuls listed in the manifest with the agent's kernels
 
-1. **Real activations.** `{"type": "tensor", "path": ...}` workload inputs load
-   activations captured from the model (`bench-trace/tensors/`, `kgen capture`). A real hidden
-   state has a few channels one to two orders of magnitude larger than the
-   rest; random inputs hide any kernel that quantizes activations per row
-   instead of per block.
-2. **Realistic weights.** `ggml_q*` byte layouts are generated by drawing
-   Gaussian weights and quantizing them the way ggml does
-   (`bench/runtime/inputs.py`), so the Q4_K/Q5_K min term carries the share
-   of the value it does in a real GGUF.
-3. **A floor relative to the reference.** `calibrate.py` writes each
-   workload's `baseline_sqnr_db` tag; the evaluator then fails a candidate more
-   than `EvalConfig.sqnr_margin_db` (default 1 dB) below it. Uncalibrated
-   workloads keep the absolute `min_sqnr_db` floor.
-
-## Pipeline
-
-1. **Inventory** (`prepare`, step `inventory`, which reads the GGUF header with `e2e/adapters/llamacpp/inventory.py`) the model's matmuls from the GGUF header; only the first
-   64 MiB is downloaded (`--gguf-head FILE` uses a local one).
-2. **Definitions and solutions**, not an e2e step: `python -m kgen discover plugins/llamacpp/plugin.py -- --inventory <run dir>/inventory.json
-   --model-tag M --out-dir DIR` writes every shape above `--min-share` into `DIR` (definitions, workloads,
-   `reference-scalar` and `baseline-llamacpp-arm` solutions; kernel text from `plugins/llamacpp/kquant_templates.py`),
-   and `python -m kgen add definition|workload|solution FILE` puts them into `bench-trace/` (see `plugins/README.md`).
-   Check them with `python -m kgen check <definition> --static-only`.
-3. **Real activations**, not an e2e step: `python -m kgen capture pytorch --loader load.py --source "<provenance>" --tag e2e:M`
-   runs the model in PyTorch (`load.py` defines `load() -> (model, batches)` and `adapters()`, which says how a model's layers become a definition's inputs) and gives the workloads of the
-   tagged definitions the inputs of their Linear layers. Do it before step 4: a calibrated floor is only valid for
-   the inputs it was measured on.
-4. **Calibrate** (`calibrate`, on the eval box) the SQNR floors of the model's `e2e:<model>` definitions.
-5. **Agent runs** with the usual driver. A whole-dataset sweep skips `e2e:` definitions, so name them:
-   `test_scripts/bench_fleet.py --dataset llama.cpp --isa sve2 --definitions "<names>" --sync-solutions ...`
-6. **Kernel set** (`evaluate`, step `kernel_set`). `--sync-solutions` put each submitted `<definition>.json` in
-   `bench-trace/solutions/llama.cpp/<author>/gemm/`; they are compiled exactly as the harness did and the
-   override manifest is written. The guards fail the command when the set isn't the one you meant (a stale set
-   is the failure mode): `--reference-author PREV --expect-changed DEF... --expect-count N --forbid REGEX`.
-   `--author reference-scalar --rows-abi` builds the control set that must reproduce stock perplexity.
-7. **Deploy and measure**. `deploy` builds the pinned tools tree on an already-provisioned box (`--label`),
-   fetches the model, and with `--agent-build` derives the override build (`build_agent.sh`). `measure`
-   (on the box) runs llama-bench for each build, interleaved and repeated, and with `--perplexity FILE`
-   llama-perplexity as the quality check; `report` renders the table (`report_from_log` rebuilds the results
-   from the streamed log if the JSON was lost).
-
-Three builds are compared: **stock** (upstream, what users run), **norepack**
-(upstream with ggml's repack and KleidiAI paths off, the dispatch path the
-agent kernels replace) and **agent** (norepack plus the override hook). The
-norepack row isolates the kernel effect from ggml's interleaved fast path.
+Details of the hook: `e2e/override/README.md`.

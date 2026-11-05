@@ -30,7 +30,7 @@ there wins over the file it overrides.
 |---|---|
 | `config/kernel_contracts.yaml` | Kernel evaluation parameters: op-type correctness/timing overrides, disallowed source patterns, ISA→march mapping, baseline authors |
 | `config/dataset_builds.json` | Step-by-step clone/build of each dataset's native lib (ncnn, ggml) on a remote instance, plus the pinned llama.cpp tools tree for the end-to-end runs |
-| `config/e2e_models.json` | Models for the end-to-end tokens/s runs (`scripts/e2e/`) |
+| `config/e2e_models.json` | Models for the end-to-end tokens/s runs (`e2e/`) |
 | `config/rsync_allowlist.json` | Repo paths synced to instances before a session (override once with `RSYNC_ALLOWLIST` in `.env`) |
 
 ## 3. Written by the tools (do not edit by hand)

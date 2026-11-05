@@ -269,7 +269,7 @@ def _load_tensor_input(name: str, rel: str, shape, np_dtype) -> np.ndarray:
     if not path.exists():
         raise FileNotFoundError(
             f"tensor input '{name}' missing: {path} (regenerate with "
-            f"python -m e2e prepare, or re-pull bench-trace)"
+            f"python -m kgen capture pytorch, or re-pull bench-trace)"
         )
     arr = np.load(path)
     if tuple(arr.shape) != tuple(shape):

@@ -8,7 +8,7 @@ writes the framework-specific pieces at run time.
 | Plugin | Produces | Needs |
 |---|---|---|
 | `simd_loop/plugin.py` | simd-loop definitions, workloads, reference/autovec/baseline-sve/sve2/sme2 solutions (`sme2-kernel:*` tags, M4 streaming entry, n%256 padding bindings) | `dataset/problems/`, `loops/`, clang |
-| `llamacpp/plugin.py` | packed-ggml `gemm_ggml_*` definitions, workloads, reference-scalar and baseline-llamacpp-arm solutions | an inventory JSON (run `e2e/adapters/llamacpp/inventory.py` as a discover plugin) |
+| `llamacpp/plugin.py` | packed-ggml `gemm_ggml_*` definitions, workloads, reference-scalar and baseline-llamacpp-arm solutions | an inventory JSON (run `plugins/llamacpp/inventory.py` as a discover plugin) |
 
 ```bash
 python -m kgen discover plugins/simd_loop/plugin.py --out report.json -- --out-dir /tmp/stage --loops loop_216

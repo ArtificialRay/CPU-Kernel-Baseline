@@ -15,12 +15,7 @@ def compile_shared(cxx: str, march: str, include_dir: Path, sources: list, so: P
 
 
 def undefined_symbols(so: Path, prefix: str) -> list[str]:
-    """Symbols starting with `prefix` that the shared object expects someone else to provide.
-
-    A kernel that calls the framework's own routine compiles and runs inside the evaluation
-    harness (which links the framework) -- and so scores ~1.00x, being the baseline. Loaded
-    on its own by the framework's override hook the symbol does not resolve, and the loader
-    then disables every override, not just that kernel's. Catch it before it gets there."""
+    """Symbols starting with `prefix` that the shared object expects someone else to provide."""
     try:
         out = subprocess.run(["nm", "-D", "-u", str(so)], capture_output=True, text=True).stdout
     except FileNotFoundError:

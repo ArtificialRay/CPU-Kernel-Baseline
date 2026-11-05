@@ -1,5 +1,5 @@
 """What one e2e run is about: which framework, which model, which ISA, where its artifacts
-live, and the options of the steps. Kept free of heavy imports so it loads on any box."""
+live, and the options of the steps."""
 from __future__ import annotations
 
 import json
@@ -19,17 +19,9 @@ def load_models() -> dict:
 
 @dataclass(frozen=True)
 class RunDir:
-    """File names inside one run directory, so no step hard-codes them."""
+    """File names inside one run directory."""
 
     root: Path
-
-    @property
-    def gguf_head(self) -> Path:
-        return self.root / "head.bin"
-
-    @property
-    def inventory(self) -> Path:
-        return self.root / "inventory.json"
 
     @property
     def manifest(self) -> Path:
@@ -63,21 +55,15 @@ class E2EContext:
 
 @dataclass
 class Options:
-    """Everything the steps take beyond the context. Flat on purpose: each field is one
-    command-line flag of `prepare` / `evaluate`, and a step reads only the ones it needs."""
+    """Everything the steps take beyond the context; each field is a command-line flag of `evaluate`."""
 
     steps: list[str] | None = None        # None: every local step; the box-side ones are only printed
     root: Path = REPO / "bench-trace"     # the warehouse the steps read and write
 
-    # prepare
-    gguf_head: str | None = None          # a local GGUF header; downloaded when omitted
-
     # evaluate: kernel_set
     author: str | None = None             # whose bench-trace/solutions/<dataset>/<author>/ to compile
     rows_abi: bool = False
-    only: list[str] | None = None
-    only_types: list[str] | None = None
-    only_roles: list[str] | None = None
+    kernel: str = "all"                   # "all": every definition tagged e2e:<--model>; or one definition name
     reference_author: str | None = None   # guards: compare against this author's solutions
     expect_count: int | None = None
     expect_changed: list[str] = field(default_factory=list)
@@ -87,7 +73,8 @@ class Options:
     march: str | None = None
 
     # evaluate: deploy
-    label: str | None = None              # provisioning/eval_config.json instance label
+    label: str | None = None              # provisioning/eval_config.json instance label; default e2e-<model>-<isa>
+    provision: bool = False               # create the box if none is registered under the label (spends money)
     agent_build: bool = False
 
     # evaluate: measure (runs on the box) and report
@@ -101,3 +88,4 @@ class Options:
     perplexity: str | None = None         # text file for llama-perplexity; omitted: no quality check
     ppl_chunks: int = 64
     baseline: str = "stock"
+    log: str | None = None                # report: measure's printed output, to rebuild a missing results file

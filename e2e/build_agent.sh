@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build_agent.sh <llama.cpp-e2e dir> — derive the override-enabled "agent" build from the
 # pinned e2e tree (config/dataset_builds.json "llama.cpp-e2e" clones it; build-stock is the baseline).
-#   build-agent: ggml-cpu override hook applied (e2e/adapters/llamacpp/override/apply.sh) and repack/KleidiAI
+#   build-agent: ggml-cpu override hook applied (e2e/override/apply.sh) and repack/KleidiAI
 #                OFF so every 2-D mul_mat reaches the hook (on NEON+i8mm stock ggml repacks q4_K
 #                whenever N % 8 == 0 and the repacked tensors never hit ggml_compute_forward's switch).
 #   build-norepack: stock code, repack/KleidiAI OFF — the fair "same kernels ggml would use without

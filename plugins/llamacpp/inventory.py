@@ -4,16 +4,17 @@ report, per (tensor role, quant type, shape), how many layers use it and what
 share of the per-token weight-byte traffic it carries (decode on a 4B model is
 memory-bound, so byte share ~= time share for the mul_mat kernels).
 
-Only the header is needed, so a partial download works:
+A kgen discover plugin. Only the header is needed, so a partial download works:
     curl -L -r 0-67108863 -o q4km_head.bin \
       https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
-    python -m e2e prepare --model qwen3.5-4b --gguf-head q4km_head.bin --steps inventory
+    python -m kgen discover plugins/llamacpp/inventory.py --out inventory.json -- --gguf-head q4km_head.bin
 
 The JSON lists the unique mul_mat shapes (type, N, K) with their per-token
 byte share; `plugins/llamacpp/plugin.py` consumes it.
 """
 from __future__ import annotations
 
+import argparse
 import collections
 import json
 import re
@@ -127,3 +128,10 @@ def build_inventory(gguf, json_out=None) -> dict:
             json.dump(inventory, f, indent=1)
         print(f"wrote {json_out} ({len(inv)} mul_mat shapes" + (f", {len(moe)} mul_mat_id expert shapes NOT covered)" if moe else ")"))
     return inventory
+
+
+def discover(argv: list[str]) -> dict:
+    """kgen plugin entry: the inventory of the GGUF header named by --gguf-head."""
+    ap = argparse.ArgumentParser(prog="llamacpp inventory plugin")
+    ap.add_argument("--gguf-head", required=True, help="a GGUF file, or its first 64 MiB")
+    return build_inventory(ap.parse_args(argv).gguf_head)
