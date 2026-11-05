@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Render a measure.py results JSON as one results table.
 
-Speed and perplexity come from the same binaries in one run, so they belong in one table:
-a speedup is only meaningful next to what it cost in model quality.
-
     render_report("e2e_results.json", baseline="stock")      # or: python -m e2e evaluate --steps report
 """
 from __future__ import annotations
@@ -23,8 +20,7 @@ def medians(samples):
 
 def render_report(results, baseline: str = "stock") -> str:
     """The table of a measure() results file (a path, or the dict measure() returned):
-    throughput, speedup vs `baseline`, and perplexity, in one place because a speedup only
-    means something next to what it cost in model quality."""
+    throughput, speedup vs `baseline`, and perplexity."""
     lines: list[str] = []
     say = lines.append
     d = results if isinstance(results, dict) else json.loads(Path(results).read_text())

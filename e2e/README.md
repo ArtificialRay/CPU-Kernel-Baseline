@@ -24,17 +24,16 @@ already in `e2e-runs/llamacpp-<model>-<isa>/` is skipped (`--force` redoes it).
 
 | Step | What it does | Main options |
 |---|---|---|
-| `kernel_set` | Compiles the author's submitted kernels into shared objects and writes the manifest that tells llama.cpp which matmuls to replace. Fails if the set is not the one you meant. | `--author` (required), `--kernel all\|NAME`, `--rows-abi`, `--reference-author` with `--expect-changed`, `--expect-same`, `--expect-count`, `--forbid` |
+| `kernel_set` | Compiles the author's submitted kernels into shared objects and writes the manifest that tells llama.cpp which matmuls to replace. | `--author` (required), `--kernel all\|NAME`, `--rows-abi`, `--reference-author` with `--expect-changed`, `--expect-same`, `--expect-count`, `--forbid` |
 | `deploy` | On the box: builds the pinned llama.cpp tools tree, downloads the model, and with `--agent-build` builds the variant with the replacement hook. | `--label`, `--provision`, `--agent-build` |
-| `measure` | **Run it on the box** (printed, not run, from elsewhere): llama-bench for each build, interleaved and repeated, and llama-perplexity as the quality check. | `--perplexity FILE`, `--threads`, `--pp`, `--tg`, `--reps`, `--fa` |
+| `measure` | **Runs on the box** (printed, not run, from elsewhere): llama-bench for each build, interleaved and repeated, and llama-perplexity. | `--perplexity FILE`, `--threads`, `--pp`, `--tg`, `--reps`, `--fa` |
 | `report` | Prints throughput, speedup and perplexity of the builds as one table. | `--baseline` |
 
-- `--kernel all` (default) uses every submitted definition tagged `e2e:<model>`; `--kernel NAME` just that one with name `NAME`.
+- `--kernel all` (default) uses every submitted definition tagged `e2e:<model>`; `--kernel NAME` just that one.
 - `--rows-abi` lets the hook split a matmul's rows across ggml's threads.
 - The guards compare the set with a previous author's: `--reference-author PREV --expect-changed DEF...`
-  fails if a kernel you meant to change is byte-identical to PREV's, so a stale set is caught before the
-  long `measure` step.
-- Control run: `--author reference-scalar --rows-abi` builds the scalar set, which must reproduce stock perplexity.
+  fails if a kernel you meant to change is byte-identical to PREV's.
+- Control run: `--author reference-scalar --rows-abi` builds the scalar set, which should reproduce stock perplexity.
 
 On the box:
 

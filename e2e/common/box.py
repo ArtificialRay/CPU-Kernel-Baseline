@@ -1,9 +1,5 @@
-"""The Graviton box a step drives over SSH, through provisioning/.
-
-e2e keeps one box per (model, isa) under the label `e2e-<model>-<isa>` (or the label given on the
-command line). provisioning/provision.py records every instance in provisioning/eval_config.json;
-this only asks it for the one under the label. A box is created only when `create` is true, which the
-command line sets with `--provision` -- nothing here spends money otherwise."""
+"""The Graviton box a step drives over SSH, looked up through provisioning/ by its label
+(`e2e-<model>-<isa>` unless `--label` is given)."""
 from __future__ import annotations
 
 from e2e.errors import StepFailed
@@ -13,8 +9,7 @@ def get_box(label: str, *, create_isa: str | None = None):
     """The InstanceHandle (provisioning/remote.py) of the box under `label`.
 
     If there is none and `create_isa` is given, one for that ISA's instance type is provisioned first
-    (spot, with the llama.cpp-e2e tree built). Otherwise a missing box is an error naming the command."""
-    # Imported here: provisioning pulls in terraform/dotenv helpers that a local step never needs.
+    (with the llama.cpp-e2e tree built); otherwise a missing box is an error."""
     from provisioning.provision import get_running_instance, provision
     box = get_running_instance(label)
     if box is not None:

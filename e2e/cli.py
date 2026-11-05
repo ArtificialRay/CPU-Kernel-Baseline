@@ -4,12 +4,8 @@
 
 evaluate (after each agent run) kernel_set -> deploy -> measure -> report
 
-Before the first run the model's definitions, real activations and calibrated SQNR gate are
-made by the scripts in scripts/e2e (see e2e/README.md); this command starts from the agents' submitted solutions.
-
-The step that needs the Graviton box (measure) is printed, not run, unless
-named with --steps: on the box, `python -m e2e evaluate --model M --steps measure ...` runs
-just that one. Everything else runs where the command runs.
+The measure step needs the Graviton box: it is printed, not run, unless named with --steps.
+On the box, `python -m e2e evaluate --model M --steps measure ...` runs just that step.
 """
 from __future__ import annotations
 
@@ -54,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--pp", type=int, default=512)
     m.add_argument("--tg", type=int, default=128)
     m.add_argument("--reps", type=int, default=5)
-    m.add_argument("--fa", choices=["on", "off"], default="off", help="flash attention; never left to auto")
+    m.add_argument("--fa", choices=["on", "off"], default="off", help="flash attention")
     m.add_argument("--ub", type=int, default=None)
     m.add_argument("--perplexity", default=None, help="text file for llama-perplexity (the quality check)")
     m.add_argument("--ppl-chunks", type=int, default=64)
@@ -64,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(line_buffering=True)   # never lose progress lines to a pipe buffer
+        sys.stdout.reconfigure(line_buffering=True)
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
         print(__doc__, file=sys.stderr if argv and argv[0] not in ("-h", "--help") else sys.stdout)

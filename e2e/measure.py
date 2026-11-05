@@ -1,31 +1,15 @@
 #!/usr/bin/env python3
-"""End-to-end tokens/s measurement for the Qwen3.5-4B experiment.
+"""End-to-end tokens/s measurement: llama-bench (prompt processing pp and text generation tg)
+for one or more llama.cpp builds on the same box and model, repeated and interleaved across builds.
+Writes one JSON with every raw sample plus median/min summaries, and optionally runs
+llama-perplexity on a text file for each build.
 
-Runs llama-bench (prompt processing pp and text generation tg) for one or more
-llama.cpp builds on the SAME box and model, repeats each configuration, and
-writes one JSON with every raw sample plus median/min summaries so the paper
-table can be regenerated. Optionally runs llama-perplexity on a small text as
-the acceptance check that overridden kernels did not change the model's output
-quality (the per-kernel harness already checks numerical correctness per
-workload; this is the belt-and-braces end-to-end check).
+Run it on the Graviton box (`python3 -m e2e evaluate --steps measure ...`); it calls measure() with
+the stock / norepack / agent builds under ~/llama.cpp-e2e and the run directory's manifest.json as
+the agent's override (see e2e/override/README.md).
 
-Run it on the c8g box (the repo checkout there), e.g.
-  python3 -m e2e evaluate --model qwen3.5-4b --steps measure --threads 4 16 --pp 512 --tg 128 \
-      --reps 5 --fa off [--perplexity ~/wiki.test.raw]
-which calls measure() with the stock / norepack / agent builds under ~/llama.cpp-e2e and the
-run directory's manifest.json as the agent's override.
-
-fa is required: llama-bench's default (auto) picks flash attention on, which is
-~1.6x slower than off on Graviton and silently changes every prefill ratio.
-Before any timing, every build with --overrides is run once with
-ARMBENCH_OVERRIDE_LOG=1 and must hit every mul_mat shape in its manifest; all
-override runs set ARMBENCH_OVERRIDE_STRICT=1 so a dlopen failure aborts instead of
-quietly measuring the no-override build.
-
-Each build is name -> path-to-cmake-build-dir (must contain bin/llama-bench).
-An override name -> manifest.json sets ARMBENCH_OVERRIDES for that build only
-(see e2e/override/README.md). Builds are run interleaved
-(stock, agent, stock, agent, ...) so thermal/turbo drift hits both equally.
+Before any timing, every build that has an override is run once with ARMBENCH_OVERRIDE_LOG=1 and
+must hit every mul_mat shape in its manifest. Override runs set ARMBENCH_OVERRIDE_STRICT=1.
 """
 from __future__ import annotations
 
@@ -57,7 +41,6 @@ def llama_bench(bench_bin: Path, model: Path, threads: int, pp: int, tg: int, en
     if ub:
         cmd += ["-ub", str(ub)]
     out = run(cmd, env=env)
-    # llama-bench prints a JSON array (possibly preceded by log lines on stderr only)
     start = out.find("[")
     return json.loads(out[start:])
 
@@ -91,17 +74,16 @@ def measure(
     threads=(4,), pp: int = 512, tg: int = 128, reps: int = 5, fa: str, ub: int | None = None,
     perplexity: Path | None = None, ppl_chunks: int = 64, out: Path = Path("e2e_results.json"),
 ) -> dict:
-    """llama-bench (pp / tg) and optionally llama-perplexity for every build, interleaved, on THIS
-    machine (it has to be the Graviton box); writes the raw samples and summary to `out` and returns them.
+    """llama-bench (pp / tg) and optionally llama-perplexity for every build, interleaved, on this
+    machine; writes the raw samples and summary to `out` and returns them.
 
     builds      name -> cmake build dir (must contain bin/llama-bench)
     overrides   name -> manifest.json for the builds that run the ARMBENCH_OVERRIDES hook
     env         name -> {KEY: VALUE} extra environment for one build (e.g. the single-thread ablation
                 {"agent1t": {"ARMBENCH_OVERRIDE_THREADS": "1"}})
-    fa          "on" / "off", passed to llama-bench and llama-perplexity; never left to auto
+    fa          "on" / "off", passed to llama-bench and llama-perplexity (llama-bench's own default is auto)
     ub          micro-batch size (-ub); llama.cpp's default (512) if None
-    perplexity  text file for llama-perplexity (the quality check); ppl_chunks: 64 resolves
-                sub-1% differences, 8 only catches catastrophic regressions
+    perplexity  text file for llama-perplexity; ppl_chunks is how many chunks of it to score
     """
     model, out, threads = Path(model), Path(out), list(threads)
     builds = {name: {"dir": Path(path).expanduser(), "manifest": None, "env": {}} for name, path in builds.items()}
@@ -165,7 +147,7 @@ def measure(
         out.write_text(json.dumps(result, indent=1))
         return result
 
-    result = dump({})   # bench results are safe on disk before the (slow, optional) quality check
+    result = dump({})
     print(f"wrote {out} (bench only)", flush=True)
 
     ppl = {}
@@ -185,7 +167,7 @@ def measure(
                 output = p.stdout + p.stderr
                 line = [l for l in output.splitlines() if "estimate" in l.lower() or "PPL" in l or "Final" in l]
                 ppl[name] = (line[-1] if line else output[-300:]).strip() if p.returncode == 0 else f"FAILED rc={p.returncode}: {output[-300:].strip()}"
-            except Exception as e:  # never lose the bench results to the quality check
+            except Exception as e:
                 ppl[name] = f"FAILED: {e}"
             print(f"perplexity {name}: {ppl[name]}", flush=True)
         result = dump(ppl)

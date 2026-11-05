@@ -7,9 +7,6 @@ that does the work (kernel_set, deploy, measure, report). The loop:
   * only prints the command for a step that has to run on the Graviton box, unless it was
     asked for explicitly with `opts.steps` -- run on the box, that is how it gets run;
   * stops at the first failing step.
-
-What comes before an e2e run (which operators the model uses, the definitions, real
-activations, the calibrated SQNR gate) is not done here; see e2e/README.md.
 """
 from __future__ import annotations
 

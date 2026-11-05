@@ -1,5 +1,5 @@
 """What one e2e run is about: which framework, which model, which ISA, where its artifacts
-live, and the options of the steps. Kept free of heavy imports so it loads on any box."""
+live, and the options of the steps."""
 from __future__ import annotations
 
 import json
@@ -19,7 +19,7 @@ def load_models() -> dict:
 
 @dataclass(frozen=True)
 class RunDir:
-    """File names inside one run directory, so no step hard-codes them."""
+    """File names inside one run directory."""
 
     root: Path
 
@@ -55,8 +55,7 @@ class E2EContext:
 
 @dataclass
 class Options:
-    """Everything the steps take beyond the context. Flat on purpose: each field is one
-    command-line flag of `evaluate`, and a step reads only the ones it needs."""
+    """Everything the steps take beyond the context; each field is a command-line flag of `evaluate`."""
 
     steps: list[str] | None = None        # None: every local step; the box-side ones are only printed
     root: Path = REPO / "bench-trace"     # the warehouse the steps read and write

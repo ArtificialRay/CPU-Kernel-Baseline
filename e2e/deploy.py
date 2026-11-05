@@ -8,8 +8,6 @@ With agent_build it also derives the override-enabled "agent" build via e2e/buil
 rsynced to the box together with e2e/override/.
 
   deploy("e2e-qwen3.5-4b-sve2", "qwen3.5-4b", "sve2", agent_build=True)    # or: python -m e2e evaluate --steps deploy ...
-
-Nothing here launches an instance unless `provision` is set.
 """
 from __future__ import annotations
 
