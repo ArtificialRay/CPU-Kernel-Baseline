@@ -55,7 +55,7 @@ llama.cpp is the only framework so far, so there is no adapter layer; when a sec
 steps are where to split.
 
 Everything here works on the `llama.cpp` dataset with the packed-ggml gemm
-definitions (`gemm_ggml_<type>_n<N>_k<K>`, tagged `e2e:<model>`). Models are
+definitions (`gemm_<type>_n<N>_k<K>`, tagged `e2e:<model>`). Models are
 listed in `config/e2e_models.json`; the runtime is pinned in
 `config/dataset_builds.json` (`llama.cpp` for kernel evaluation,
 `llama.cpp-e2e` for the full tools tree), both at the same release so a kernel
@@ -118,7 +118,8 @@ Per model, once. These are not e2e steps; they are the scripts that stay in `scr
    `test_scripts/bench_fleet.py --dataset llama.cpp --isa sve2 --definitions "<names>" --sync-solutions ...`
 2. **Kernel set** (`evaluate`, step `kernel_set`). `--sync-solutions` put each submitted `<definition>.json` in
    `bench-trace/solutions/llama.cpp/<author>/gemm/`; they are compiled exactly as the harness did and the
-   override manifest is written. The guards fail the command when the set isn't the one you meant (a stale set
+   override manifest is written. `--kernel all` (default) takes every definition tagged `e2e:<model>`
+   that the author submitted, `--kernel NAME` just that one (attribution runs). The guards fail the command when the set isn't the one you meant (a stale set
    is the failure mode): `--reference-author PREV --expect-changed DEF... --expect-count N --forbid REGEX`.
    `--author reference-scalar --rows-abi` builds the control set that must reproduce stock perplexity.
 3. **Deploy and measure**. `deploy` builds the pinned tools tree on the box (`--label`, or `--provision` to create it),

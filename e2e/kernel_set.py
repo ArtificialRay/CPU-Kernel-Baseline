@@ -10,7 +10,7 @@ submitted, or a hand-written / reference-scalar set. Each solution carries its o
 
   {"framework":"llamacpp", "isa":..., "march":..., "author":...,
    "kernels":[{"op":"mul_mat","type":"q4_K","K":2560,"N":9216,
-               "so":".../gemm_ggml_q4_K_n9216_k2560.so",
+               "so":".../gemm_q4_K_n9216_k2560.so",
                "symbol":"armbench_entry_gemm","abi":"entry",
                "embeddable":true, "definition":..., "version":...}],
    "skipped":[{"definition":..., "embeddable":false, "reason":...}, ...]}
@@ -18,15 +18,16 @@ submitted, or a hand-written / reference-scalar set. Each solution carries its o
 The hook reads op/type/K/N/so/symbol/abi/symbol_rows/threads and skips every other key, so the
 extra fields here (framework, embeddable, ...) are for the people and tools reading the manifest.
 
-Only definitions named gemm_ggml_<type>_n<N>_k<K> are spliceable (packed ABI); others are
+Which definitions are built: those carrying an `e2e:<model>` tag in bench-trace/definitions/ (the
+tag, not the name, says a definition belongs to an e2e set). `kernel="all"` builds every one of them
+that the author submitted; `kernel=NAME` builds just that one. Of those, only definitions named
+gemm_<type>_n<N>_k<K> with a q4_K / q5_K / q6_K type are spliceable (packed ABI); the others are
 listed under "skipped" with a reason, as is a kernel that calls ggml's own routines.
 
   build_kernel_set("claude-code-claude-fable-5-1-sve2", "~/e2e/manifest.json", isa="sve2")
   build_kernel_set("reference-scalar", "~/e2e/refscalar/manifest.json", rows_abi=True)
   # or: python -m e2e evaluate --steps kernel_set --author A --rows-abi ...
-  only_types=["q4_K"]   (attribution runs: restrict to one quant type)
-  only_roles=["ffn"]    (substring match on definition name)
-  only=[NAME, ...]      (exact definition names)
+  kernel="gemm_q4_K_n9216_k2560"   (attribution runs: splice a single kernel)
 
 Guards, checked after the manifest is built (KernelSet.guard_failures lists what did not hold;
 the evaluate command fails on them):
@@ -49,11 +50,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 from contracts import _isa_table  # noqa: E402  (config/kernel_contracts.yaml isa table)
+from e2e.errors import StepFailed  # noqa: E402
 from e2e.common.build import compile_shared, undefined_symbols  # noqa: E402
 from e2e.common.guards import check_guards  # noqa: E402
 from e2e.common.solutions import SOLUTIONS, load_author, source_text, unsubmitted  # noqa: E402
 
-NAME_RX = re.compile(r"^gemm_ggml_(q[456]_K)_n(\d+)_k(\d+)$")
+NAME_RX = re.compile(r"^gemm_(q[456]_K)_n(\d+)_k(\d+)$")
 FRAMEWORK = "llamacpp"
 
 
@@ -108,20 +110,23 @@ def undefined_ggml_symbols(so: Path) -> list:
     return undefined_symbols(so, "ggml_")
 
 
-FLAT_QUANT_RX = re.compile(r"^gemm_(q4_k_m|q5_k|q6_k|q8_0)_n\d+_k\d+$")
-
-
 def embeddable(name: str) -> tuple[bool, str]:
     """Can the override hook splice a kernel for this definition into llama.cpp, and if
     not, why. Only the packed ggml block-row gemms can be: the hook matches a mul_mat by
     (ggml type, K, N) and hands the kernel the raw block rows."""
     if NAME_RX.match(name):
         return True, ""
-    if name.startswith("gemm_ggml_"):
-        return False, "packed ggml gemm of a type the hook has no kernel for (q4_K/q5_K/q6_K only)"
-    if FLAT_QUANT_RX.match(name):
-        return False, "flat-quant ABI (separate quant / scales / mins tensors), not ggml block rows"
-    return False, "not a packed-ABI gemm definition"
+    return False, "not a packed ggml gemm of a type the hook has a kernel for (q4_K / q5_K / q6_K)"
+
+
+def e2e_definitions(definitions_root: Path) -> set[str]:
+    """Names of the definitions under `definitions_root` that carry an `e2e:<model>` tag."""
+    tagged = set()
+    for f in sorted(Path(definitions_root).glob("*/*.json")):
+        d = json.loads(f.read_text())
+        if any(t.startswith("e2e:") for t in d.get("tags", [])):
+            tagged.add(d["name"])
+    return tagged
 
 
 def digest(text: str) -> str:
@@ -134,20 +139,16 @@ def compile_so(cxx: str, march: str, build: Path, so: Path):
     return compile_shared(cxx, march, build, [build / "kernel.cpp", build / "gemm.cpp"], so)
 
 
-def build_kernels(solutions: dict, author: str, out_dir: Path, march: str, *, only=None, only_types=None,
-                  only_roles=None, rows_abi: bool = False, cxx: str = "clang++-18"):
+def build_kernels(solutions: dict, author: str, out_dir: Path, march: str, *, selected: set,
+                  rows_abi: bool = False, cxx: str = "clang++-18"):
     kernels, skipped = [], []
     for name, sol in sorted(solutions.items()):
+        if name not in selected:
+            skipped.append({"definition": name, "reason": "not selected (no e2e:<model> tag, or not the --kernel asked for)"}); continue
         ok, why = embeddable(name)
         if not ok:
             skipped.append({"definition": name, "embeddable": False, "reason": why}); continue
         qtype, N, K = (lambda m: (m.group(1), int(m.group(2)), int(m.group(3))))(NAME_RX.match(name))
-        if only and name not in only:
-            skipped.append({"definition": name, "reason": "filtered by --only"}); continue
-        if only_types and qtype not in only_types:
-            skipped.append({"definition": name, "reason": "filtered by --only-types"}); continue
-        if only_roles and not any(r in name for r in only_roles):
-            skipped.append({"definition": name, "reason": "filtered by --only-roles"}); continue
         build = out_dir / "build" / name
         build.mkdir(parents=True, exist_ok=True)
 
@@ -195,14 +196,15 @@ class KernelSet:
 
 def build_kernel_set(
     author: str, out: Path, *, isa: str = "sve2", dataset: str = "llama.cpp",
-    solutions_root: Path = SOLUTIONS, only=None, only_types=None, only_roles=None,
+    solutions_root: Path = SOLUTIONS, kernel: str = "all",
     cxx: str = "clang++-18", march: str | None = None, rows_abi: bool = False,
     expect_count: int | None = None, reference_author: str | None = None,
     expect_changed=(), expect_same=(), forbid=(),
 ) -> KernelSet:
     """Compile `author`'s solutions into shared objects and write the override manifest to `out`.
 
-    only / only_types / only_roles   restrict to exact definition names / ggml types / name substrings
+    kernel           "all": every definition tagged `e2e:<model>` that the author submitted; or one
+                     definition name (it must carry an e2e tag)
     march            override the ISA's -march (e.g. -march=armv8.6-a+i8mm+bf16 to reproduce a
                      Graviton run locally on an Apple-silicon Mac)
     rows_abi         recompile each kernel with N as a runtime thread_local and export
@@ -218,8 +220,11 @@ def build_kernel_set(
     march = march or _isa_table()[isa].march
 
     solutions = load_author(dataset, author, solutions_root)
-    kernels, skipped = build_kernels(solutions, author, out_dir, march, only=only, only_types=only_types,
-                                     only_roles=only_roles, rows_abi=rows_abi, cxx=cxx)
+    tagged = e2e_definitions(Path(solutions_root).parent / "definitions")
+    if kernel != "all" and kernel not in tagged:
+        raise StepFailed(f"--kernel {kernel!r} is not a definition tagged e2e:<model> in {Path(solutions_root).parent / 'definitions'}")
+    selected = tagged if kernel == "all" else {kernel}
+    kernels, skipped = build_kernels(solutions, author, out_dir, march, selected=selected, rows_abi=rows_abi, cxx=cxx)
     manifest = {"framework": FRAMEWORK, "isa": isa, "march": march, "author": author,
                 "kernels": kernels, "skipped": skipped}
     out.write_text(json.dumps(manifest, indent=1))

@@ -33,8 +33,7 @@ def run_kernel_set(ctx: E2EContext, opts: Options):
     from .kernel_set import build_kernel_set
     result = build_kernel_set(
         require(opts.author, "--author", "kernel_set"), ctx.run.manifest, isa=ctx.isa,
-        solutions_root=opts.root / "solutions", only=opts.only, only_types=opts.only_types,
-        only_roles=opts.only_roles, cxx=opts.cxx, march=opts.march, rows_abi=opts.rows_abi,
+        solutions_root=opts.root / "solutions", kernel=opts.kernel, cxx=opts.cxx, march=opts.march, rows_abi=opts.rows_abi,
         expect_count=opts.expect_count, reference_author=opts.reference_author,
         expect_changed=opts.expect_changed, expect_same=opts.expect_same, forbid=opts.forbid)
     if result.guard_failures:
