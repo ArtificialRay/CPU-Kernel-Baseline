@@ -273,8 +273,7 @@ plugins/                        # Archived kgen discover plugins that generated 
   simd_loop/plugin.py           # simd-loop harnesses + bench-trace artifacts (needs dataset/problems, loops/, clang)
   llamacpp/plugin.py            # packed-ggml gemm definitions/workloads/solutions from an inventory JSON
 
-scripts/
-  test_reference_scalars.py     # Correctness smoke-test for all reference-scalar solutions
+scripts/retime/                 # extract_run_solutions.py / fetch_wandb_runs.py: stored agent kernels for `bench.cli retime`
 
 case-study/                     # Per-definition optimization write-ups
 terraform/                      # Graviton EC2 Terraform config
@@ -313,7 +312,7 @@ python -m bench.cli bench --definition conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1
 
 ### Correctness smoke-test
 ```bash
-python scripts/test_reference_scalars.py      # should print all workloads PASSED
+python -m bench.cli bench-author --dataset ncnn   # every starting-point solution of a dataset (add --isa for simd-loop); all workloads should PASS
 ```
 
 ### Baseline inclusion check (on the tier's machine)

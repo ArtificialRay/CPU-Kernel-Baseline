@@ -1149,7 +1149,8 @@ def _write_workloads(info: LoopInfo) -> None:
 
 # Baseline solution authors. Both compile the SAME kernel source; they differ
 # only in compile flags, giving two baselines per loop:
-#   reference — honest scalar (auto-vectorization disabled): the speedup denominator.
+#   reference — scalar source at -O2 with no -march, as published in the dataset (the
+#               compiler may auto-vectorize to Neon, never to SVE): the speedup denominator.
 #   autovec   — same source, let the compiler auto-vectorize: the "free compiler" ceiling.
 # `-march=native` was unreliable at detecting SVE on Graviton3 (clang emitted
 # "SVE vector type cannot be used in a target without sve" even though the
@@ -1158,8 +1159,8 @@ def _write_workloads(info: LoopInfo) -> None:
 _SOLUTION_AUTHORS = [
     {
         "author": "reference",
-        "compile_flags": ["-O2", "-std=c++14", "-fno-vectorize", "-fno-slp-vectorize"],
-        "desc": "Scalar reference (auto-vectorization disabled)",
+        "compile_flags": ["-O2", "-std=c++14"],
+        "desc": "Scalar reference (-O2, no -march; Neon auto-vectorization may apply, no SVE)",
     },
     {
         "author": "autovec",
