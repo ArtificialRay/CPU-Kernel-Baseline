@@ -47,7 +47,7 @@ $ python -m bench.cli summary
 workload and times it. No AWS account or agent is involved.
 
 ```console
-$ python -m bench.cli bench --definition loop_001 --solution reference_loop_001
+$ python -m bench.cli bench --definition loop_001 --solution reference_loop_001 --dataset simd-loop --isa sve
   6bfe094b  PASSED  min=9.08us  p5=9.15us  max_abs=0.00e+00  max_rel=0.00e+00
   06735e72  PASSED  min=43.30us  p5=43.82us  max_abs=0.00e+00  max_rel=0.00e+00
   ...

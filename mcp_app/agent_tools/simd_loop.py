@@ -7,9 +7,8 @@ lifted from the session's baseline solution for the definition
 loop kernel — not the harness boilerplate.
 
 Same contract shape as the ncnn dataset (`inner_<op_type>` behind a fused
-harness); the differences are the dataset enum, the author the harness is
-lifted from, and dropping any `-fno-vectorize` flags so the candidate is
-allowed to vectorize.
+harness); the differences are the dataset enum, the baseline author to lift
+the harness from (typically "reference", the scalar baseline).
 """
 
 from __future__ import annotations
@@ -33,10 +32,10 @@ class SIMDLoopKernelSession(KernelSession):
         """Wrap agent-written kernel.cpp into a Solution alongside the fused harness.
 
         Harness files (loop_NNN.h + loop_NNN.cpp) are lifted from the baseline
-        solution. compile_flags/isa_features/target_hardware are derived from
-        the session's explicit isa; its -O*/-march=/-fno-vectorize/
-        -fno-slp-vectorize flags are dropped so the candidate can vectorize
-        with -O3 + the requested isa's march.
+        reference solution. compile_flags/isa_features/target_hardware are
+        derived from the session's explicit isa; the reference's -O*/-march=
+        flags are dropped so the candidate builds with -O3 + the requested
+        isa's march.
         """
         ref_author = self._bench_cfg.baseline_author
         ref = self._trace_set.get_baseline_solution(self._definition.name, ref_author)
@@ -62,9 +61,7 @@ class SIMDLoopKernelSession(KernelSession):
 
         base_flags = [
             f for f in ref.spec.compile_flags
-            if not f.startswith("-O")
-            and not f.startswith("-march=")
-            and f not in ("-fno-vectorize", "-fno-slp-vectorize")
+            if not f.startswith("-O") and not f.startswith("-march=")
         ]
         compile_flags = ["-O3", march, *base_flags]
 

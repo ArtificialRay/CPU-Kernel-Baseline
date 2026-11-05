@@ -194,7 +194,10 @@ bench/                          # Local harness Python package
     registry.py                 # resolve_evaluator() — first-match dispatch
   runner.py                     # compile-once → BoundKernel → evaluator per workload
   benchmark.py                  # Benchmark orchestration (build lifecycle, candidate-vs-baseline)
-  cli.py                        # CLI entry points (bench, list-definitions, list-solutions)
+  cli.py                        # Offline-evaluation entry point: bench, bench-author, retime, collect-baselines,
+                                #   summary, list-definitions, list-solutions
+  autovec.py                    # autovec_build: a dataset's scalar starting point compiled exactly like an agent candidate
+  retime.py                     # retime(): re-time stored solutions against fresh baselines in an isolated root
   config.py                     # BenchmarkConfig + EvalConfig (tolerances, source patterns)
   data/
     definition.py               # Definition + SimdLoopMeta + DType (incl. unsigned)
@@ -310,11 +313,26 @@ python scripts/bench_loop_agent.py --loop loop_001 --max-turns 6 --model openrou
 ```
 
 ### Validate via CLI (bench/cli.py)
+The speedup baseline is taken from the run's dataset (`contracts.baseline_author_for(dataset, isa)`);
+pass `--isa` where a dataset has one baseline per tier (simd-loop), or `--baseline-author` to override.
 ```bash
 python -m bench.cli list-definitions          # list all definitions
-python -m bench.cli bench --definition loop_001 --solution reference-scalar_loop_001
+python -m bench.cli bench --definition loop_001 --solution reference_loop_001 --dataset simd-loop --isa sve
 python -m bench.cli bench --definition conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2 \
-  --solution reference-scalar_conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2
+  --solution reference-scalar_conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2 --dataset ncnn
+
+# every solution of one author, each against its own dataset's baseline (a dataset's reference smoke test)
+python -m bench.cli bench-author --dataset simd-loop --isa sve            # author defaults to that dataset's reference
+python -m bench.cli bench-author --author reference-scalar --dataset ncnn
+
+# baselines for one dataset / definition (there is no default dataset any more)
+python -m bench.cli collect-baselines --dataset simd-loop --isa sve
+
+# re-time agent kernels under the current timing protocol, in an isolated root with freshly collected baselines;
+# --author or --index (extracted.json of scripts/retime/extract_run_solutions.py) picks the solutions, and
+# --extra-authors autovec adds the scalar starting point compiled like an agent candidate (any dataset)
+python -m bench.cli retime --dataset simd-loop --isa sve --author retime__<cell> \
+  --extra-authors autovec --pass-id a1 --out retime-a1.jsonl
 ```
 
 ### Correctness smoke-test
