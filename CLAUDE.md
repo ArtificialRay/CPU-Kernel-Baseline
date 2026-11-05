@@ -232,8 +232,7 @@ eval/                           # In-repo litellm agent loop (Path 1)
                                  #   for any provider/field left out or if this file is absent
 
 provisioning/                   # Terraform/EC2 lifecycle shared by all three paths (Path 1's
-                                 #   eval/evaluator.py, Path 3's skills/launch/launch_session.py,
-                                 #   and scripts/gen-workload/collect_workloads_llm.py) — invoked
+                                 #   eval/evaluator.py and Path 3's skills/launch/launch_session.py) — invoked
                                  #   only via subprocess by skills/launch/ (zero imports from
                                  #   eval/ or provisioning/), imported directly elsewhere
   provision.py                  # Terraform lifecycle for Graviton EC2 instances
@@ -273,12 +272,11 @@ test_scripts/                   # Batch-fleet entry point, shared across all thr
                                  #   OwnHarnessAdapter) — what's genuinely harness-specific: how
                                  #   each is invoked, how it connects to the MCP endpoint
 
-scripts/
-  gen_definitions.py            # Regenerate ncnn definitions+workloads from test files
-  gen_simd_loop_harness.py      # Code-gen all simd-loop harnesses + bench-trace artifacts
-  bench_loop_agent.py           # Local iterative LLM agent (Path 2)
-  test_reference_scalars.py     # Correctness smoke-test for all reference-scalar solutions
-  check_baseline_vs_autovec.py  # Inclusion check: flags baselines >2x slower than the autovec starting point
+plugins/                        # Archived kgen discover plugins that generated what is already in the dataset
+  simd_loop/plugin.py           # simd-loop harnesses + bench-trace artifacts (needs dataset/problems, loops/, clang)
+  llamacpp/plugin.py            # packed-ggml gemm definitions/workloads/solutions from an inventory JSON
+
+scripts/retime/                 # extract_run_solutions.py / fetch_wandb_runs.py: stored agent kernels for `bench.cli retime`
 
 case-study/                     # Per-definition optimization write-ups
 terraform/                      # Graviton EC2 Terraform config
@@ -307,11 +305,6 @@ python3 test_scripts/bench_fleet.py --harness own \
     --dataset ncnn --isa sve2 --model anthropic/claude-opus-4-6 --definitions loop_001
 ```
 
-### Local iterative LLM agent (Path 2 — run on target machine for real timing)
-```bash
-python scripts/bench_loop_agent.py --loop loop_001 --max-turns 6 --model openrouter/anthropic/claude-opus-4-6
-```
-
 ### Validate via CLI (bench/cli.py)
 The speedup baseline is taken from the run's dataset (`contracts.baseline_author_for(dataset, isa)`);
 pass `--isa` where a dataset has one baseline per tier (simd-loop), or `--baseline-author` to override.
@@ -337,13 +330,13 @@ python -m bench.cli retime --dataset simd-loop --isa sve --author retime__<cell>
 
 ### Correctness smoke-test
 ```bash
-python scripts/test_reference_scalars.py      # should print all workloads PASSED
+python -m bench.cli bench-author --dataset ncnn   # every starting-point solution of a dataset (add --isa for simd-loop); all workloads should PASS
 ```
 
 ### Baseline inclusion check (on the tier's machine)
 ```bash
 # flags every baseline more than 2x slower than the scalar starting point auto-vectorized for --isa
-python3 scripts/check_baseline_vs_autovec.py --dataset simd-loop --isa sve
+python3 -m kgen autovec --isa sve --tag simd-loop
 ```
 
 ### MCP session (Path 3)
@@ -359,8 +352,7 @@ python3 launch_session.py launch --isa sve --dataset ncnn
 
 ### Regenerate definitions/workloads
 ```bash
-python scripts/gen_simd_loop_harness.py       # simd-loop (idempotent)
-python scripts/gen_definitions.py             # ncnn definitions + workloads
+python -m kgen discover plugins/simd_loop/plugin.py -- --out-dir /tmp/stage   # then kgen add each file; see plugins/README.md
 ```
 
 ### Sync local code to remote instance

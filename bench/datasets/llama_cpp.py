@@ -1,7 +1,7 @@
 """llama.cpp dataset adapter: numpy ↔ ggml-ready buffers via ctypes.
 
 Every llama.cpp baseline ships a self-contained binding.cpp (see
-`scripts/gen_baseline_solution.py`) whose entry has one generic ABI:
+the gen-baseline-solution skill) whose entry has one generic ABI:
 
     int armbench_entry_<op_type>(const void* const* inputs,
                                  void*              output,

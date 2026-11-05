@@ -45,7 +45,7 @@ class SimdLoopBuilder(Builder):
                 raise FileNotFoundError(
                     f"simd-loop solution '{solution.name}' is missing its fused harness "
                     f"sources ({harness_h_name} + {harness_cpp_name}). "
-                    f"Re-run scripts/gen_simd_loop_harness.py to regenerate the solution."
+                    f"Regenerate the solution with plugins/simd_loop/plugin.py (see plugins/README.md)."
                 )
 
             solution_src_paths = self._materialize_sources(solution, sources_dir)

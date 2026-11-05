@@ -70,7 +70,7 @@ def _gen_ggml_kquant_rows(shape: tuple, layout: str, rng: np.random.Generator) -
     quants do. Under the old uniform draw `dmin/d` was 1.0 and mins averaged 37, which
     made the min term a minor correction and hid any kernel that mishandled it. The
     2026-09-21 Fable kernels did mishandle it (int8 block sums under a batch-shared
-    exponent) and the harness could not see it; see scripts/e2e/README.md.
+    exponent) and the harness could not see it; see e2e/README.md.
 
     Quantizing real weights reproduces the true relationship for free: per 32-element
     sub-block take min/max, step = (max-min)/levels, and let the repack helpers do
@@ -269,7 +269,7 @@ def _load_tensor_input(name: str, rel: str, shape, np_dtype) -> np.ndarray:
     if not path.exists():
         raise FileNotFoundError(
             f"tensor input '{name}' missing: {path} (regenerate with "
-            f"scripts/e2e/dump_to_workloads.py, or re-pull bench-trace)"
+            f"python -m e2e prepare, or re-pull bench-trace)"
         )
     arr = np.load(path)
     if tuple(arr.shape) != tuple(shape):

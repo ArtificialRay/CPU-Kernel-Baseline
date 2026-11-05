@@ -109,15 +109,27 @@ eval_definition_overrides:
     # throughout) showed matched_ratio 0.9672-0.9821 across all 14
     # workloads on real hardware.
     required_matched_ratio: 0.95
-  # Tighter-than-global-default min_sqnr_db for correctness:sqnr definitions
-  # whose real KleidiAI baseline measures well above the 20.0 global default.
+  # SQNR floors come from calibrated workload tags. Requantized GEMM permits
+  # one-level rounding differences in fewer than 1% of elements.
+  gemm_qai8_qsi8cx_sme2_n256_k512:
+    abs_tol: 0.5
+    required_matched_ratio: 0.99
+  # NEON bf16 baseline's worst measured absolute error is 0.0865.
+  gemm_f32_bf16_n512_k512:
+    abs_tol: 0.09
+    rel_tol: 1.0e-3
+    required_matched_ratio: 1.0
+  # SME2 bf16 baseline's worst measured absolute error is 0.0835.
   gemm_bf16_n512_k512:
-    min_sqnr_db: 45.0
-  gemm_qs4cx_sme2_n256_k512:
-    min_sqnr_db: 40.0
-  gemm_qs4c32_n256_k512:
-    min_sqnr_db: 30.0
-  # FP32 GEMV reduction over n (up to 521K): FP32 accumulation deviates from the FP64 ref by ~1.4e-3 rel.
+    abs_tol: 0.09
+    rel_tol: 1.0e-3
+    required_matched_ratio: 1.0
+  # Integer accumulation differs from the reference only by fp32 rounding.
+  gemm_u8_f32_sme2_n256_k512:
+    abs_tol: 1.0e-3
+    rel_tol: 1.0e-5
+    required_matched_ratio: 1.0
+  # FP32 GEMV reduction over n (up to 521K). FP32 accumulation deviates from FP64 ref by ~1.4e-3 rel.
   loop_216:
     abs_tol: 2.0e-3
     rel_tol: 1.0e-2

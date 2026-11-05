@@ -77,3 +77,5 @@ arm-bench/
 .claude/settings.local.json
 wandb/
 eval/llm_providers.json
+# e2e pipeline run directories (e2e/context.py)
+e2e-runs/
