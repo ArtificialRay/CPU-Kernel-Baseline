@@ -55,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--perplexity", default=None, help="text file for llama-perplexity (the quality check)")
     m.add_argument("--ppl-chunks", type=int, default=64)
     m.add_argument("--baseline", default="stock", help="report: the build speedups are relative to")
+    m.add_argument("--log", default=None, help="report: measure's printed output, to rebuild a missing results file")
     return p
 
 

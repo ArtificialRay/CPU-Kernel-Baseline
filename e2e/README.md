@@ -27,7 +27,7 @@ already in `e2e-runs/llamacpp-<model>-<isa>/` is skipped (`--force` redoes it).
 | `kernel_set` | Compiles the author's submitted kernels into shared objects and writes the manifest that tells llama.cpp which matmuls to replace. | `--author` (required), `--kernel all\|NAME`, `--rows-abi`, `--reference-author` with `--expect-changed`, `--expect-same`, `--expect-count`, `--forbid` |
 | `deploy` | On the box: builds the pinned llama.cpp tools tree, downloads the model, and with `--agent-build` builds the variant with the replacement hook. | `--label`, `--provision`, `--agent-build` |
 | `measure` | **Runs on the box** (printed, not run, from elsewhere): llama-bench for each build, interleaved and repeated, and llama-perplexity. | `--perplexity FILE`, `--threads`, `--pp`, `--tg`, `--reps`, `--fa` |
-| `report` | Prints throughput, speedup and perplexity of the builds as one table. | `--baseline` |
+| `report` | Prints throughput, speedup and perplexity of the builds as one table. If the results file is missing it is rebuilt from `--log`, the output `measure` printed. | `--baseline`, `--log` |
 
 - `--kernel all` (default) uses every submitted definition tagged `e2e:<model>`; `--kernel NAME` just that one.
 - `--rows-abi` lets the hook split a matmul's rows across ggml's threads.
@@ -51,4 +51,4 @@ Three builds:
 - **norepack**: llamacpp with ggml's repack and KleidiAI paths off
 - **agent**: the norepack configuration plus the override hook, which replaces only the matmuls listed in the manifest with the agent's kernels
 
-Details of the hook: `e2e/override/README.md`. `report_from_log.py` rebuilds the results from the streamed log if the results JSON was lost.
+Details of the hook: `e2e/override/README.md`.

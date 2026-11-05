@@ -61,8 +61,13 @@ def run_measure(ctx: E2EContext, opts: Options) -> dict:
 
 
 def run_report(ctx: E2EContext, opts: Options) -> str:
-    """Throughput, speedup and perplexity of the measured builds, as one table."""
+    """Throughput, speedup and perplexity of the measured builds, as one table. Without a results
+    file it is rebuilt from the measure output given with --log."""
     from .report import render_report
+    if not ctx.run.results.exists():
+        from .report_from_log import results_from_log
+        results_from_log(require(opts.log, "--log (measure's output) when there is no results file", "report"),
+                         ctx.run.results, model=ctx.model_config["file"], pp=opts.pp, tg=opts.tg)
     text = render_report(ctx.run.results, opts.baseline)
     print(text)
     return text

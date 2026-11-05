@@ -88,3 +88,4 @@ class Options:
     perplexity: str | None = None         # text file for llama-perplexity; omitted: no quality check
     ppl_chunks: int = 64
     baseline: str = "stock"
+    log: str | None = None                # report: measure's printed output, to rebuild a missing results file
