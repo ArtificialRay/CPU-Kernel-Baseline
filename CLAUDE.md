@@ -269,8 +269,11 @@ test_scripts/                   # Batch-fleet entry point, shared across all thr
                                  #   OwnHarnessAdapter) — what's genuinely harness-specific: how
                                  #   each is invoked, how it connects to the MCP endpoint
 
+plugins/                        # Archived kgen discover plugins that generated what is already in the dataset
+  simd_loop/plugin.py           # simd-loop harnesses + bench-trace artifacts (needs dataset/problems, loops/, clang)
+  llamacpp/plugin.py            # packed-ggml gemm definitions/workloads/solutions from an inventory JSON
+
 scripts/
-  gen_simd_loop_harness.py      # Code-gen all simd-loop harnesses + bench-trace artifacts
   test_reference_scalars.py     # Correctness smoke-test for all reference-scalar solutions
 
 case-study/                     # Per-definition optimization write-ups
@@ -332,7 +335,7 @@ python3 launch_session.py launch --isa sve --dataset ncnn
 
 ### Regenerate definitions/workloads
 ```bash
-python scripts/gen_simd_loop_harness.py       # simd-loop (idempotent)
+python -m kgen discover plugins/simd_loop/plugin.py -- --out-dir /tmp/stage   # then kgen add each file; see plugins/README.md
 ```
 
 ### Sync local code to remote instance

@@ -17,7 +17,7 @@ METADATA = {
     "tags": ['sme2', 'streaming', 'matmul', 'dot-product', 'fp64'],
 }
 
-# Data struct definition — parsed by scripts/gen_simd_loop_harness.py
+# Data struct definition — parsed by plugins/simd_loop/plugin.py
 STRUCT_DEF = r"""
 struct loop_201_data {
   uint64_t m;

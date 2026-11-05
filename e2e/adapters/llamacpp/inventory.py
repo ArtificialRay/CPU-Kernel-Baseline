@@ -10,7 +10,7 @@ Only the header is needed, so a partial download works:
     python -m e2e prepare --model qwen3.5-4b --gguf-head q4km_head.bin --steps inventory
 
 The JSON lists the unique mul_mat shapes (type, N, K) with their per-token
-byte share; `scripts/gen_llamacpp_gemm.py` consumes it.
+byte share; `plugins/llamacpp/plugin.py` consumes it.
 """
 from __future__ import annotations
 

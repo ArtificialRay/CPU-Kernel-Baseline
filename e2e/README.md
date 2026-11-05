@@ -99,9 +99,10 @@ together keep a numerically lossy kernel from passing:
 
 1. **Inventory** (`prepare`, step `inventory`, which reads the GGUF header with `e2e/adapters/llamacpp/inventory.py`) the model's matmuls from the GGUF header; only the first
    64 MiB is downloaded (`--gguf-head FILE` uses a local one).
-2. **Definitions and solutions**, not an e2e step: `python scripts/gen_llamacpp_gemm.py --inventory <run dir>/inventory.json
-   --model-tag M` writes every shape above `--min-share` into `bench-trace/` (definitions, workloads,
-   `reference-scalar` and `baseline-llamacpp-arm` solutions; kernel text from `scripts/llamacpp_kquant_templates.py`).
+2. **Definitions and solutions**, not an e2e step: `python -m kgen discover plugins/llamacpp/plugin.py -- --inventory <run dir>/inventory.json
+   --model-tag M --out-dir DIR` writes every shape above `--min-share` into `DIR` (definitions, workloads,
+   `reference-scalar` and `baseline-llamacpp-arm` solutions; kernel text from `plugins/llamacpp/kquant_templates.py`),
+   and `python -m kgen add definition|workload|solution FILE` puts them into `bench-trace/` (see `plugins/README.md`).
    Check them with `python -m kgen check <definition> --static-only`.
 3. **Real activations**, not an e2e step: `python -m kgen capture pytorch --loader load.py --source "<provenance>" --tag e2e:M`
    runs the model in PyTorch (`load.py` defines `load() -> (model, batches)` and `adapters()`, which says how a model's layers become a definition's inputs) and gives the workloads of the

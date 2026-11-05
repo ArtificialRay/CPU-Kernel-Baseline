@@ -17,7 +17,7 @@ METADATA = {
     "tags": ['sve2', 'fp64'],
 }
 
-# Data struct definition — parsed by scripts/gen_simd_loop_harness.py
+# Data struct definition — parsed by plugins/simd_loop/plugin.py
 STRUCT_DEF = r"""
 struct loop_028_data {
   double *restrict input1;

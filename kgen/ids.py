@@ -24,5 +24,5 @@ def uuid_md5_def_axes(def_name: str, axes: dict) -> str:
 
 
 def uuid_simd_loop(loop_id: str, n: int, source: str) -> str:
-    """uuid5 of a simd-loop id, its N and where the workload came from (gen_simd_loop_harness)."""
+    """uuid5 of a simd-loop id, its N and where the workload came from (plugins/simd_loop/plugin.py)."""
     return uuid.uuid5(uuid.NAMESPACE_DNS, f"{loop_id}_N{n}_{source}").hex

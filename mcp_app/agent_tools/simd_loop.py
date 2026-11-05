@@ -44,7 +44,7 @@ class SIMDLoopKernelSession(KernelSession):
             raise ValueError(
                 f"No '{ref_author}' baseline solution for definition "
                 f"{self._definition.name!r} in TraceSet — cannot build simd-loop "
-                "candidate harness. Run scripts/gen_simd_loop_harness.py to generate it."
+                "candidate harness. Generate it with plugins/simd_loop/plugin.py (see plugins/README.md) and add it with kgen add solution."
             )
 
         harness = [s for s in ref.sources if s.path != AGENT_KERNEL_FILENAME]

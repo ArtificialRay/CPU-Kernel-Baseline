@@ -10,7 +10,7 @@ For inplace-sort loops:   res_out is unused; the first ptr (data) is sorted in-p
 Multi-axis loops (simd_loop_meta.axes_order) pass one int64 per axis instead of n.
 
 Adapter metadata is read from Definition.simd_loop_meta (set by
-scripts/gen_simd_loop_harness.py).
+plugins/simd_loop/plugin.py).
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ class SimdLoopDataset:
         if definition.simd_loop_meta is None:
             raise NotImplementedError(
                 f"SimdLoopDataset: definition for {op_type!r} missing simd_loop_meta. "
-                "Re-run scripts/gen_simd_loop_harness.py to regenerate definitions."
+                "Regenerate the definition with plugins/simd_loop/plugin.py (see plugins/README.md)."
             )
         meta = definition.simd_loop_meta
         pad = int(meta.array_pad)
