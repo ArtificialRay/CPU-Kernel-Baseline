@@ -15,6 +15,7 @@ from typing import Optional
 from contracts import CLIENT_TOOL_TIMEOUT_S, check_client_tool_timeout
 
 from .base import REPO_ROOT, HarnessAdapter, Job, run_and_tee
+from .sandbox import FileSandbox
 
 # Overridable so a run can supply its own base config. `--model` alone is not
 # enough to switch models across providers: the adapter overrides only
@@ -128,7 +129,17 @@ class NanobotAdapter(HarnessAdapter):
                 "nanobot", "agent", "--logs", "-m", job.prompt,
                 "-w", str(workspace), "-c", str(self.config_path), "--session", session,
             ]
-            return run_and_tee(cmd, log_path=log_path)
+            sandbox = None
+            if self.file_sandbox == "bwrap":
+                sandbox = FileSandbox(
+                    workspace=workspace, runtime_paths=self.sandbox_runtime_paths(),
+                    readable_paths=(self.config_path,),
+                )
+            return run_and_tee(cmd, log_path=log_path, sandbox=sandbox)
+
+    def sandbox_runtime_paths(self) -> tuple[Path, ...]:
+        binary = Path(shutil.which("nanobot") or "nanobot").resolve()
+        return (binary.parent.parent,)
 
     def _job_ws(self, job: Job) -> Path:
         """Workspace path for `job`, keyed by both author and definition.

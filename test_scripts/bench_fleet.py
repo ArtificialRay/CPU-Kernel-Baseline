@@ -15,22 +15,24 @@ Usage:
     python3 test_scripts/bench_fleet.py --harness cline \\
         --dataset ncnn --isa sve2 --model gpt-5.6-luna
 
-    # Resume across multiple datasets until every definition in both is
-    # confirmed complete, self-healing a stalled/wedged instance along the
-    # way:
+    # Resume across multiple datasets, processing them in order and running
+    # chunks for each dataset on up to two instances:
     python3 test_scripts/bench_fleet.py --harness claude-code \\
-        --dataset ncnn llama.cpp --isa sve2 --model sonnet --until-complete
+        --dataset ncnn llama.cpp --isa sve2 --model sonnet --until-complete \\
+        --max-parallel-instances 2
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import json
 import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -47,7 +49,7 @@ import analysis.wandb_log_run as wandb_log_run
 # logic instead of re-deriving it, the same way eval/mcp_client.py already
 # imports its public functions.
 import skills.launch.launch_session as launch_session
-from skills.launch.launch_session import RemoteTarget, prepare_session, stop_tunnel, sync_results
+from skills.launch.launch_session import prepare_session, stop_tunnel, sync_results
 from bench.config import EvalConfig
 from contracts import ISA_INSTANCE_MAP, baseline_author_for
 from mcp_app.agent_tools.isa import isa_satisfies
@@ -56,12 +58,12 @@ from mcp_app.agent_tools.isa import isa_satisfies
 # run script's own directory on sys.path[0] automatically (same idiom
 # skills/launch/launch_session.py uses for its sibling remote.py).
 from harness_adapters import (
-    HarnessAdapter, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, NanobotAdapter,
-    OwnHarnessAdapter, SingleShotAdapter, Job,
+    HarnessAdapter, HarnessLaunchError, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, NanobotAdapter,
+    OwnHarnessAdapter, SingleShotAdapter, Job, QUOTA_EXIT_CODE,
 )
+from harness_adapters.sandbox import check_file_sandbox
 
 DEFINITIONS_DIR = REPO_ROOT / "bench-trace" / "definitions"
-EVAL_CONFIG_PATH = REPO_ROOT / "provisioning" / "eval_config.json"
 
 # For run_until_complete()'s round planner only — it needs each harness's
 # prompt_template/template_args.
@@ -70,6 +72,14 @@ ADAPTER_CLASSES = {
     "nanobot": NanobotAdapter, "own": OwnHarnessAdapter,
     "single-shot": SingleShotAdapter,
 }
+
+
+class FleetRunError(RuntimeError):
+    """A batch stopped before every requested job completed."""
+
+
+class QuotaExceeded(FleetRunError):
+    """The harness account is out of quota; retrying jobs cannot help."""
 
 
 def _free_local_port() -> int:
@@ -244,7 +254,7 @@ def build_jobs(
             continue
         args = (name, dataset, baseline_author, isa, min_iterations, max_iterations)
         prompt = prompt_template % args[:template_args]
-        jobs.append(Job(name=name, prompt=prompt))
+        jobs.append(Job(name=name, prompt=prompt, op_type=d["op_type"]))
 
     if e2e_skipped:
         print(
@@ -318,6 +328,11 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
     adapter: HarnessAdapter
     model = args.model
     local_port = _free_local_port()
+    if args.file_sandbox == "bwrap" and args.harness in ("own", "single-shot"):
+        raise FleetRunError(
+            f"--file-sandbox bwrap cannot contain the in-process {args.harness} harness; "
+            "use an external CLI harness or --file-sandbox off"
+        )
     if args.harness == "claude-code":
         adapter = ClaudeCodeAdapter(model=args.model)
     elif args.harness == "codex":
@@ -330,6 +345,14 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             model = adapter.model
     elif args.harness not in ("own", "single-shot"):
         raise ValueError(f"Unknown --harness {args.harness!r}")
+    if args.file_sandbox == "bwrap":
+        try:
+            check_file_sandbox(adapter.sandbox_runtime_paths())
+        except RuntimeError as exc:
+            if hasattr(adapter, "cleanup"):
+                adapter.cleanup()
+            raise FleetRunError(f"File sandbox preflight failed: {exc}") from exc
+    adapter.file_sandbox = args.file_sandbox
     isa = args.isa
     author = args.author or compute_author(args.harness, model, isa)
     label = args.label or launch_session._label_for(dataset, author)
@@ -382,6 +405,7 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             samples=args.samples, temperature=args.temperature,
         )
     ran_jobs: list[Job] = []
+    failed_jobs: list[str] = []
     try:
         if not jobs:
             print(
@@ -405,38 +429,47 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
             ran_jobs.append(job)
             log_path = log_dir / f"{dataset}_{isa}_{job.name}.log"
             attempt = 0
+            quota_hit = False
             while True:
                 print(f"=== [{time.strftime('%H:%M:%S')}] starting job: {job.name} "
                       f"(attempt {attempt + 1}/{args.retries + 1}) ===")
-                with WatchdogKeeper(instance, args.watchdog_minutes):
-                    rc = adapter.run_job(job, endpoint=prepared["endpoint"], author=author, log_path=log_path)
-                if rc == 0:
+                try:
+                    with WatchdogKeeper(instance, args.watchdog_minutes):
+                        rc = adapter.run_job(
+                            job, endpoint=prepared["endpoint"], author=author, log_path=log_path,
+                        )
+                except HarnessLaunchError as exc:
+                    if attempt < args.retries:
+                        print(f"  WARNING: could not start {job.name}: {exc}; retrying",
+                              file=sys.stderr)
+                        time.sleep(min(2 ** attempt, 10))
+                        attempt += 1
+                        continue
+                    log_path.write_text(f"Harness process could not start: {exc}\n")
+                    rc = 1
+                    print(f"  ERROR: could not start {job.name} after {attempt + 1} "
+                          f"attempt(s): {exc}", file=sys.stderr)
                     break
-                if attempt >= args.retries:
-                    print(f"  ERROR: job {job.name}'s process exited {rc} after "
-                          f"{attempt + 1} attempt(s) — giving up, see {log_path}", file=sys.stderr)
-                    break
-                print(f"  WARNING: job {job.name}'s process exited {rc} on attempt "
-                      f"{attempt + 1} — retrying ({args.retries - attempt} retries left)",
-                      file=sys.stderr)
-                log_path.rename(log_path.with_suffix(log_path.suffix + f".attempt{attempt + 1}"))
-                attempt += 1
+                quota_hit = adapter.quota_exceeded(log_path, rc)
+                if rc != 0 and not quota_hit:
+                    print(f"  ERROR: job {job.name}'s process exited {rc}; "
+                          f"see {log_path}", file=sys.stderr)
+                break
             print(f"=== [{time.strftime('%H:%M:%S')}] job {job.name} finished -> {log_path} ===")
-            sync_job_results(label, author, job.name, local_results_dir)
+            sync_job_artifacts(
+                instance, args.remote_root, dataset, author, job, local_results_dir,
+                sync_solutions=args.sync_solutions,
+            )
             wandb_log_job(job.name, dataset, isa, args, author, local_results_dir)
+            if quota_hit:
+                raise QuotaExceeded(
+                    f"{args.harness} account quota exhausted during {job.name}; stopped the batch "
+                    f"without starting further jobs. See {log_path}"
+                )
+            if rc != 0:
+                failed_jobs.append(job.name)
 
         print(f"All jobs done. Logs in {log_dir}")
-        if hasattr(adapter, "cleanup"):
-            adapter.cleanup()
-
-        if args.sync_solutions:
-            print(f"Syncing bench-trace/solutions/ back from {instance.target.host}...")
-            try:
-                instance.target.rsync_from(
-                    f"{args.remote_root}/bench-trace/solutions/", REPO_ROOT / "bench-trace" / "solutions",
-                )
-            except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
-                print(f"  WARNING: sync-solutions failed: {e}", file=sys.stderr)
 
         incomplete = [
             j.name for j in jobs
@@ -450,7 +483,17 @@ def run_fleet(args: argparse.Namespace, dataset: str) -> str:
                 f"last checkpointed version (see mcp_app/agent_tools/trajectory.py). Results already "
                 f"synced above reflect progress up to that point.", file=sys.stderr,
             )
+        if failed_jobs or incomplete:
+            raise FleetRunError(
+                f"Batch incomplete: failed processes={failed_jobs}, "
+                f"incomplete trajectories={incomplete}"
+            )
     finally:
+        if hasattr(adapter, "cleanup"):
+            try:
+                adapter.cleanup()
+            except Exception as e:  # noqa: BLE001 — retain the job's original failure
+                print(f"  WARNING: adapter cleanup failed: {e}", file=sys.stderr)
         for job in ran_jobs:
             adapter.cleanup_workspace(job)
         stop_tunnel(prepared)
@@ -483,19 +526,20 @@ class WatchdogKeeper:
         self.stopped.set()
 
 
-def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: list[str], author: str) -> None:
-    """One round's chunk = one fresh `bench_fleet.py` subprocess (plain,
-    non-until-complete invocation of this same script). Deliberately a
-    subprocess rather than an in-process call to run_fleet(): each chunk
-    gets its own process, so a wedged SSH tunnel, a leaked adapter thread,
-    or any other state a previous chunk didn't clean up perfectly can never
-    carry into the next one."""
+def _run_chunk_subprocess(
+    args: argparse.Namespace, dataset: str, definitions: list[str], author: str, label: str,
+) -> int:
+    """One round's chunk = one fresh `bench_fleet.py` subprocess with no --until-complete.
+    Deliberately call a subprocess enable each chunk gets its own process, so that what
+    happened in the subprocess (e.g. a wedged SSH tunnel, a leaked adapter thread) never
+    affects the next chunk."""
     cmd = [
         sys.executable, str(Path(__file__).resolve()),
         "--harness", args.harness, "--dataset", dataset, "--isa", args.isa,
         "--min-iterations", str(args.min_iterations),
         "--retries", str(args.retries),
-        "--author", author,
+        "--file-sandbox", args.file_sandbox,
+        "--author", author, "--label", label,
         "--remote-root", args.remote_root, "--remote-port", str(args.remote_port),
         "--definitions", json.dumps(definitions),
         # This is a single-pass invocation of this same script (see this
@@ -517,8 +561,6 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         cmd += ["--local-results-dir", args.local_results_dir]
     if args.sync_solutions:
         cmd.append("--sync-solutions")
-    if args.label:
-        cmd += ["--label", args.label]
     if args.wandb:
         cmd += ["--wandb", "--wandb-project", args.wandb_project]
         if args.wandb_entity:
@@ -528,97 +570,131 @@ def _run_chunk_subprocess(args: argparse.Namespace, dataset: str, definitions: l
         # a custom --wandb-group.
         cmd += ["--wandb-group", args.wandb_group or f"{args.harness}-{args.isa}-{time.strftime('%Y%m%d')}"]
     print(f"=== [{time.strftime('%H:%M:%S')}] chunk: {dataset} ({len(definitions)} def(s)) ===")
-    subprocess.run(cmd, check=False)
+    return subprocess.run(cmd, check=False).returncode
 
 
 def run_until_complete(args: argparse.Namespace) -> list[str]:
-    """Keep resuming across every --dataset — interleaved round-robin,
-    cost-sorted within each dataset — until every matching definition has a
-    confirmed-complete local trajectory (a "submit" turn) or --max-rounds is
-    hit.
-    Per-dataset stall detection: zero progress in a round only triggers
-    a health probe (launch_session.is_instance_reachable) then distinguish if
-    one instance is reachable, if not, start a fresh box
-    Generalized to any --harness/model.
-    
-    Returns the instance label for every --dataset, so main() can scope its
-    final teardown to just these instances instead of tearing down every
-    instance provisioning/provision.py knows about."""
+    """Resume each dataset with a bounded pool of instance workers.
+
+    A definition keeps the same worker across rounds so its remote checkpoint
+    remains available. Workers run their own chunks serially and sync results
+    by definition; different workers run concurrently. Datasets use the same
+    pool in sequence, keeping the instance count within the configured limit.
+    """
     datasets = args.dataset
-    # Resolve --model up front
     model = args.model or ADAPTER_CLASSES[args.harness].default_model()
     author = args.author or compute_author(args.harness, model, args.isa)
-    # support label override or create label on my own
-    labels = [args.label or launch_session._label_for(ds, author) for ds in datasets]
+    base_label = args.label or launch_session._label_for(datasets[0], author)
+    worker_limit = args.max_parallel_instances
     local_results_dir = Path(args.local_results_dir or (REPO_ROOT / f"agent-runs-{author}"))
-    prev_incomplete_count: dict[str, Optional[int]] = {ds: None for ds in datasets}
     adapter_cls = ADAPTER_CLASSES[args.harness]
-    max_iterations = args.max_iterations
-
-    for round_num in range(1, args.max_rounds + 1):
-        per_ds_incomplete = {
-            ds: sorted(
-                (j.name for j in build_jobs(
-                    ds, args.isa, args.definitions, args.min_iterations, max_iterations,
-                    adapter_cls.prompt_template, adapter_cls.template_args,
-                 )
-                 if not _trajectory_complete(local_results_dir, j.name, args.min_iterations)),
-                key=lambda n: (_cost_proxy(n), n),
-            )
-            for ds in datasets
-        } # filter all definition that has completed before by searching on local trajcetory directory
-        if not any(per_ds_incomplete.values()):
-            print(f"=== [{time.strftime('%H:%M:%S')}] ALL COMPLETE at round {round_num} ===")
-            return labels
-
-        print(
-            f"=== [{time.strftime('%H:%M:%S')}] round {round_num}/{args.max_rounds}: "
-            + ", ".join(f"{ds}={len(v)} incomplete" for ds, v in per_ds_incomplete.items())
+    jobs_by_dataset = {
+        ds: build_jobs(
+            ds, args.isa, args.definitions, args.min_iterations, args.max_iterations,
+            adapter_cls.prompt_template, adapter_cls.template_args,
         )
+        for ds in datasets
+    }
+    seen_names: dict[str, str] = {}
+    for ds, jobs in jobs_by_dataset.items():
+        for job in jobs:
+            previous = seen_names.setdefault(job.name, ds)
+            if previous != ds:
+                raise FleetRunError(
+                    f"Definition {job.name!r} occurs in both {previous} and {ds}; "
+                    "their agent-runs paths would collide"
+                )
 
-        # stall detection: same incomplete count as last round only triggers
-        # a health probe — an unreachable instance gets torn down for a
-        # fresh box, a reachable one is left alone (just slow).
-        for ds in datasets:
-            n = len(per_ds_incomplete[ds])
-            if n > 0 and prev_incomplete_count[ds] == n:
-                label = args.label or launch_session._label_for(ds, author)
-                if launch_session.is_instance_reachable(label):
-                    print(f"  STALLED but {label}'s instance is still reachable "
-                          f"(still {n} incomplete) — leaving it running", file=sys.stderr)
-                else:
-                    print(f"  UNREACHABLE: {label}'s instance isn't responding "
-                          f"(still {n} incomplete) — tearing down to force a fresh box", file=sys.stderr)
-                    try:
-                        launch_session._teardown(label)
-                    except Exception as e:  # noqa: BLE001 — best-effort, next round just re-provisions
-                        print(f"  WARNING: teardown failed for {label}: {e}", file=sys.stderr)
-            prev_incomplete_count[ds] = n
+    used_labels: set[str] = set()
+    for ds in datasets:
+        # Partition the full job list once. Filtering to incomplete jobs before
+        # assignment would move a resumed job to another instance.
+        ordered = sorted(jobs_by_dataset[ds], key=lambda j: (_cost_proxy(j.name), j.name))
+        worker_count = min(worker_limit, len(ordered))
+        if not worker_count:
+            continue
+        lanes = [[job.name for job in ordered[i::worker_count]]
+                 for i in range(worker_count)]
+        labels = [base_label if i == 0 else f"{base_label}-worker-{i + 1}"
+                  for i in range(worker_count)]
+        previous_counts: list[Optional[int]] = [None] * worker_count
 
-        # round-robin --batch-size-sized chunks across datasets (each already
-        # cost-sorted cheapest-first), so cheap defs from every dataset get
-        # exercised early instead of draining one dataset before starting
-        # the next.
-        idx = {ds: 0 for ds in datasets}
-        active = [ds for ds in datasets if per_ds_incomplete[ds]]
-        while active:
-            for ds in list(active):
-                names = per_ds_incomplete[ds]
-                chunk = names[idx[ds]:idx[ds] + args.batch_size]
-                if not chunk:
-                    active.remove(ds)
-                    continue
-                idx[ds] += len(chunk)
-                _run_chunk_subprocess(args, ds, chunk, author)
-                if idx[ds] >= len(names):
-                    active.remove(ds)
+        for round_num in range(1, args.max_rounds + 1):
+            incomplete_lanes = [
+                [name for name in lane
+                 if not _trajectory_complete(local_results_dir, name, args.min_iterations)]
+                for lane in lanes
+            ]
+            remaining = sum(len(names) for names in incomplete_lanes)
+            if remaining == 0:
+                print(f"=== [{time.strftime('%H:%M:%S')}] {ds}: ALL COMPLETE "
+                      f"at round {round_num} ===")
+                break
+            print(f"=== [{time.strftime('%H:%M:%S')}] {ds}: round "
+                  f"{round_num}/{args.max_rounds}, {remaining} incomplete "
+                  f"across {worker_count} instance slot(s) ===")
 
-    still_incomplete = {ds: len(v) for ds, v in per_ds_incomplete.items() if v}
-    print(
-        f"=== [{time.strftime('%H:%M:%S')}] giving up after {args.max_rounds} round(s) "
-        f"— still incomplete: {still_incomplete} ===", file=sys.stderr,
-    )
-    return labels
+            for i, names in enumerate(incomplete_lanes):
+                count = len(names)
+                if count and previous_counts[i] == count:
+                    label = labels[i]
+                    if launch_session.is_instance_reachable(label):
+                        print(f"  STALLED but {label} is reachable "
+                              f"({count} incomplete); leaving it running", file=sys.stderr)
+                    else:
+                        print(f"  UNREACHABLE: {label} ({count} incomplete); "
+                              "tearing down for reprovisioning", file=sys.stderr)
+                        try:
+                            launch_session._teardown(label)
+                        except Exception as e:  # noqa: BLE001 — retry provisioning next round
+                            print(f"  WARNING: teardown failed for {label}: {e}", file=sys.stderr)
+                previous_counts[i] = count
+
+            stop = threading.Event()
+
+            def run_lane(i: int) -> None:
+                label = labels[i]
+                names = incomplete_lanes[i]
+                for start in range(0, len(names), args.batch_size):
+                    if stop.is_set():
+                        return
+                    chunk = names[start:start + args.batch_size]
+                    rc = _run_chunk_subprocess(args, ds, chunk, author, label)
+                    if rc == QUOTA_EXIT_CODE:
+                        stop.set()
+                        raise QuotaExceeded(
+                            f"{ds}: harness quota exhausted; stopping new chunks"
+                        )
+                    if rc != 0:
+                        print(f"  WARNING: {ds} chunk on {label} exited {rc}; "
+                              "its incomplete jobs remain eligible next round",
+                              file=sys.stderr)
+
+            active = [i for i, names in enumerate(incomplete_lanes) if names]
+            used_labels.update(labels[i] for i in active)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(active)) as executor:
+                futures = [executor.submit(run_lane, i) for i in active]
+                try:
+                    for future in concurrent.futures.as_completed(futures):
+                        future.result()
+                except Exception:
+                    stop.set()
+                    raise
+
+            if all(_trajectory_complete(local_results_dir, job.name, args.min_iterations)
+                   for job in ordered):
+                print(f"=== [{time.strftime('%H:%M:%S')}] {ds}: ALL COMPLETE "
+                      f"after round {round_num} ===")
+                break
+        else:
+            still_incomplete = [
+                job.name for job in ordered
+                if not _trajectory_complete(local_results_dir, job.name, args.min_iterations)
+            ]
+            raise FleetRunError(
+                f"{ds}: still incomplete after {args.max_rounds} rounds: {still_incomplete}"
+            )
+    return sorted(used_labels)
 
 
 def wandb_log_job(name, dataset, isa, args, author, local_results_dir) -> None:
@@ -639,27 +715,39 @@ def wandb_log_job(name, dataset, isa, args, author, local_results_dir) -> None:
         print(f"  WARNING: wandb logging failed for {name} (non-fatal): {e}", file=sys.stderr)
 
 
-def sync_job_results(label: str, author: str, definition: str, local_results_dir: Path) -> None:
-    """Best-effort: a sync failure never aborts the rest of the batch."""
-    if not EVAL_CONFIG_PATH.exists():
-        print(f"  WARNING: {EVAL_CONFIG_PATH} not found — skipping sync-results for "
-              f"{definition}", file=sys.stderr)
-        return
-    config = json.loads(EVAL_CONFIG_PATH.read_text())
-    inst = config.get("instances", {}).get(label, {})
-    host = inst.get("host", "")
-    if not host:
-        print(f"  WARNING: no host recorded for label={label} in {EVAL_CONFIG_PATH} — "
-              f"skipping sync-results for {definition}", file=sys.stderr)
-        return
+def sync_job_artifacts(
+    instance, remote_root: str, dataset: str, author: str, job: Job,
+    local_results_dir: Path, *, sync_solutions: bool,
+) -> None:
+    """Pull this job's trajectory and, optionally, its best solution."""
     try:
         sync_results(
-            RemoteTarget(host=host, user=inst.get("user", "ubuntu"),
-                         key_file=inst.get("key_file", "~/.ssh/id_rsa")),
-            author, definition=definition, local_results_dir=local_results_dir,
+            instance.target, author, definition=job.name,
+            remote_root=remote_root, local_results_dir=local_results_dir,
         )
     except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
-        print(f"  WARNING: sync-results failed for {definition}: {e}", file=sys.stderr)
+        print(f"  WARNING: sync-results failed for {job.name}: {e}", file=sys.stderr)
+
+    if not sync_solutions:
+        return
+    remote_dir = f"{remote_root}/bench-trace/solutions/{dataset}/{author}/{job.op_type}"
+    local_dir = REPO_ROOT / "bench-trace" / "solutions" / dataset / author / job.op_type
+    canonical_name = f"{job.name}.json"
+    try:
+        # submit() normally renames _best to the canonical name. If both are
+        # present after an interrupted submit, _best is the newer candidate.
+        for filename in (f"{job.name}_best.json", canonical_name):
+            remote_file = f"{remote_dir}/{filename}"
+            rc, _, _ = instance.target.run(f"test -f {remote_file}", timeout=15)
+            if rc != 0:
+                continue
+            local_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=local_dir) as staging_dir:
+                instance.target.rsync_from(remote_file, staging_dir)
+                (Path(staging_dir) / filename).replace(local_dir / canonical_name)
+            return
+    except Exception as e:  # noqa: BLE001 — best-effort, never abort the batch
+        print(f"  WARNING: sync-solutions failed for {job.name}: {e}", file=sys.stderr)
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -668,7 +756,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                    choices=["claude-code", "cline", "codex", "nanobot", "own", "single-shot"])
     p.add_argument("--dataset", required=True, nargs="+", choices=["ncnn", "simd-loop", "llama.cpp", "kleidiai"],
                    help="One or more datasets (space-separated). More than one requires "
-                        "--until-complete, which interleaves them round-robin.")
+                        "--until-complete, which processes them in order.")
     p.add_argument("--isa", default="sve", choices=["neon", "sve", "sve2", "sme2", "portable"])
     p.add_argument("--model", default=None,
                    help="model override. claude-code: passed as --model to the CLI "
@@ -695,7 +783,12 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "to. Empty = every definition matching --dataset, except the ones "
                         "tagged e2e:<model>, which run only when named here.")
     p.add_argument("--retries", type=int, default=3,
-                   help="Retries for transient infra failures. Total attempts = retries+1.")
+                   help="Retries only when the OS temporarily cannot start a harness process. "
+                        "Model/API errors are handled within the harness. Default: 3.")
+    p.add_argument("--file-sandbox", choices=("off", "bwrap"), default=None,
+                   help="Isolate each external harness CLI job with Bubblewrap on Linux. "
+                        "Only its workspace, private state, and required runtime files are visible. "
+                        "Default on Linux: bwrap for external CLIs; off otherwise.")
     p.add_argument("--author", default=None, help="Override the computed author (advanced).")
     p.add_argument("--label", default=None, help="Override the computed instance label (advanced).")
     p.add_argument("--instance", default=None, help="EC2 instance type override.")
@@ -712,23 +805,20 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "baselines are collected and during every job, so it only fires once the driver is gone. 0 "
                         "cancels it. Default: 120")
     p.add_argument("--sync-solutions", action="store_true",
-                   help="After all jobs finish, also pull bench-trace/solutions/ back from the "
-                        "remote instance (not bench-trace/traces/ — that data's already in "
-                        "agent-runs-<author>/). Off by default; every harness writes solutions "
-                        "to the remote bench-trace regardless of this flag.")
+                   help="After each job, pull only its best solution to the local canonical "
+                        "<definition>.json file. Prefer a remote _best when present; ignore "
+                        "_current. Off by default.")
     p.add_argument("--until-complete", action="store_true",
-                   help="Keep resuming — across every --dataset, interleaved round-robin, "
-                        "cost-sorted cheapest-first within each — until every matching "
-                        "definition has a confirmed-complete trajectory or --max-rounds is hit. "
-                        "Each round re-execs this script per (dataset, chunk) as a fresh "
-                        "subprocess (see run_until_complete()'s docstring). A dataset that makes "
-                        "zero progress in a round has its instance torn down before the next "
-                        "round, forcing a fresh box.")
+                   help="Resume until each definition has a confirmed-complete trajectory. "
+                        "Datasets run in order; within one dataset, jobs stay assigned to "
+                        "instance workers across rounds. Each chunk runs in a fresh subprocess.")
     p.add_argument("--max-rounds", type=int, default=8,
                    help="--until-complete only: give up after this many rounds.")
     p.add_argument("--batch-size", type=int, default=3,
-                   help="--until-complete with multiple --dataset values only: round-robin "
-                        "chunk size per dataset per round.")
+                   help="--until-complete: jobs per chunk on each instance worker. Default: 3.")
+    p.add_argument("--max-parallel-instances", type=int, default=1,
+                   help="--until-complete: maximum instances managed by this command. "
+                        "Default: 1; use 2 or more to run chunks in parallel.")
     p.add_argument("--wandb", action="store_true",
                    help="Log every job to Weights & Biases (needs `pip install wandb`). Off by "
                         "default.")
@@ -739,24 +829,39 @@ def main(argv: Optional[list[str]] = None) -> None:
                         "one group.")
     p.add_argument("--skip-final-teardown", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(argv)
+    if args.file_sandbox is None:
+        args.file_sandbox = (
+            "bwrap" if sys.platform == "linux" and args.harness not in ("own", "single-shot")
+            else "off"
+        )
 
-    if not args.until_complete:
-        if len(args.dataset) != 1:
-            p.error("multiple --dataset values require --until-complete")
-        label = run_fleet(args, args.dataset[0])
+    if (args.batch_size < 1 or args.max_rounds < 1 or args.max_parallel_instances < 1
+            or args.retries < 0):
+        p.error("--batch-size, --max-rounds and --max-parallel-instances must be positive; "
+                "--retries must be nonnegative")
+    if len(args.dataset) != len(set(args.dataset)):
+        p.error("--dataset values must be distinct")
+
+    try:
+        if not args.until_complete:
+            if len(args.dataset) != 1:
+                p.error("multiple --dataset values require --until-complete")
+            label = run_fleet(args, args.dataset[0])
+            if not args.skip_final_teardown:
+                print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
+                launch_session._teardown(label)
+            return
+        labels = run_until_complete(args)
         if not args.skip_final_teardown:
-            print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
-            launch_session._teardown(label)
-        return
-    if args.label and len(args.dataset) > 1:
-        p.error("--label can't be fixed across multiple --dataset values under --until-complete "
-                 "— each dataset needs its own instance label; omit --label and let it be "
-                 "computed per dataset.")
-    labels = run_until_complete(args)
-    if not args.skip_final_teardown:
-        for label in labels:
-            print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
-            launch_session._teardown(label)
+            for label in labels:
+                print(f"=== [{time.strftime('%H:%M:%S')}] Tearing down {label}...")
+                launch_session._teardown(label)
+    except QuotaExceeded as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(QUOTA_EXIT_CODE) from exc
+    except FleetRunError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

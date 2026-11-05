@@ -6,20 +6,17 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
 from .base import REPO_ROOT, HarnessAdapter, Job, run_and_tee
 from .claude_code import ClaudeCodeAdapter
+from .sandbox import FileSandbox
 
 CLINE_SKILL_FILE = REPO_ROOT / "skills" / "cline" / "cline-kernel-session" / "SKILL.md"
 CLINE_MCP_SERVER_NAME = "cpu-kernel-baseline"
-# Same one-shared-directory reasoning as CODEX_WORKSPACE_DIR (see its
-# comment) — cwd for cline's own sandboxed shell/file tools, not for the
-# system prompt (that goes via `-s`, not an auto-loaded file), wiped and
-# recreated fresh by ClineAdapter.prepare_workspace() before each run.
-CLINE_WORKSPACE_DIR = Path.home() / ".cline-fleet" / "workspace"
 
 class ClineAdapter(HarnessAdapter):
     name = "cline"
@@ -57,26 +54,49 @@ class ClineAdapter(HarnessAdapter):
             )
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
-        auth_cmd = ["cline", "auth", "-p", self._provider_id(), "-k", self.api_key, "-m", self.model]
-        if self._provider_id() == "openai-compatible":
-            auth_cmd += ["-b", self.base_url]
-        subprocess.run(auth_cmd, check=True, capture_output=True, text=True)
-        subprocess.run(
-            ["cline", "mcp", "add", CLINE_MCP_SERVER_NAME, endpoint,
-             "--transport", "streamable-http", "--yes"],
-            check=True, capture_output=True, text=True,
-        )
-        with self.prepare_workspace(job) as workspace:
-            cmd = [
-                "cline",
-                "-c", str(workspace),
-                "-s", self.skill_text,
-                "-m", self.model,
-                "--auto-approve", "true",
-                "--json",
-                job.prompt,
+        # The CLI stores auth and named MCP servers in its configuration.
+        # Each job gets private CLI state so another instance worker cannot
+        # replace this job's MCP endpoint under CLINE_MCP_SERVER_NAME.
+        with tempfile.TemporaryDirectory(prefix=f"cline-state-{job.name}-") as state_dir:
+            state = Path(state_dir)
+            cli = [
+                "cline", "--config", str(state / "config"),
+                "--data-dir", str(state / "data"),
             ]
-            return run_and_tee(cmd, log_path=log_path)
+            auth_cmd = [*cli, "auth", "-p", self._provider_id(),
+                        "-k", self.api_key, "-m", self.model]
+            if self._provider_id() == "openai-compatible":
+                auth_cmd += ["-b", self.base_url]
+            subprocess.run(auth_cmd, check=True, capture_output=True, text=True)
+            subprocess.run(
+                [*cli, "mcp", "add", CLINE_MCP_SERVER_NAME, endpoint,
+                 "--transport", "streamable-http", "--yes"],
+                check=True, capture_output=True, text=True,
+            )
+            with self.prepare_workspace(job) as workspace:
+                cmd = [
+                    *cli,
+                    "-c", str(workspace),
+                    "-s", self.skill_text,
+                    "-m", self.model,
+                    "--auto-approve", "true",
+                    "--json",
+                    job.prompt,
+                ]
+                sandbox = None
+                if self.file_sandbox == "bwrap":
+                    sandbox = FileSandbox(
+                        workspace=workspace, runtime_paths=self.sandbox_runtime_paths(),
+                        writable_paths=(state,),
+                    )
+                return run_and_tee(cmd, log_path=log_path, sandbox=sandbox)
+
+    def sandbox_runtime_paths(self) -> tuple[Path, ...]:
+        binary = Path(shutil.which("cline") or "cline").resolve()
+        for parent in binary.parents:
+            if (parent / "bin" / "node").exists() and (parent / "lib" / "node_modules").exists():
+                return (parent / "bin" / "node", binary.parent)
+        raise RuntimeError(f"Cannot locate Cline's Node runtime above {binary}")
 
     def _provider_id(self) -> str:
         """`openai-compatible` hits /v1/chat/completions, which rejects
@@ -88,6 +108,5 @@ class ClineAdapter(HarnessAdapter):
 
     @contextmanager
     def prepare_workspace(self, job: Job):
-        shutil.rmtree(CLINE_WORKSPACE_DIR, ignore_errors=True)
-        CLINE_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-        yield CLINE_WORKSPACE_DIR
+        with tempfile.TemporaryDirectory(prefix=f"cline-job-{job.name}-") as job_dir:
+            yield Path(job_dir)

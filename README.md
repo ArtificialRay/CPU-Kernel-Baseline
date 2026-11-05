@@ -123,6 +123,13 @@ A kernel's result is the highest `time_speedup_geomean` among its passing evalua
 also logs each run to Weights & Biases (fields described in
 [`analysis/README.md`](analysis/README.md)).
 
+On Linux, external CLI harnesses (`claude-code`, `codex`, `cline`, `nanobot`)
+run in a per-job **Bubblewrap filesystem sandbox** by default. Install `bwrap`
+on the driver host to enable Bubblewrap.
+For `nanobot` only, if Bubblewrap is enabled. nanobot CLI should not be installed in local repository environment, but in global environment
+`own` and `single-shot` run inside the driver process and default to off;
+explicit `--file-sandbox bwrap` is rejected for them.
+
 ## Other ways to use it
 
 - **Your own agent harness:** `python3 skills/launch/launch_session.py launch --isa <isa> --dataset <dataset> --author <name>`

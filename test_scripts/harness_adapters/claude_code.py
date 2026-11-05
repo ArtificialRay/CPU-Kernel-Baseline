@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ from typing import Optional
 from contracts import CLIENT_TOOL_TIMEOUT_S, check_client_tool_timeout
 
 from .base import REPO_ROOT, HarnessAdapter, Job, run_and_tee
+from .sandbox import FileSandbox
 
 # Claude Code's --mcp-config takes the per-server tool timeout in milliseconds.
 CLAUDE_MCP_TOOL_TIMEOUT_MS = int(CLIENT_TOOL_TIMEOUT_S * 1000)
@@ -24,15 +26,14 @@ CLAUDE_MCP_SERVER_NAME = "cpu-kernel-baseline"
 # (default: the system temp dir). Must be outside this repo — see
 # ClaudeCodeAdapter.prepare_workspace().
 CLAUDE_JOB_ROOT_ENV = "ARMBENCH_CC_JOB_ROOT"
-# Everything a claude-code job may do: this session's MCP tools, plus file
-# tools confined to its own working directory. `--permission-mode dontAsk`
-# denies whatever is not listed here, including any path outside cwd.
+# Legacy permission rules when Bubblewrap is disabled. In the filesystem
+# sandbox, file visibility is set by mounts instead of path-specific rules.
 CLAUDE_ALLOWED_TOOLS = (
     f"mcp__{CLAUDE_MCP_SERVER_NAME}", "ListMcpResourcesTool", "ReadMcpResourceTool",
     "Read(./**)", "Write(./**)", "Edit(./**)", "Glob(./**)", "Grep(./**)",
 )
-# Dropped from the model's tool list altogether (dontAsk would deny them
-# anyway): shell, network, sub-agents, and anything that outlives the job.
+# Bubblewrap still shares network access for the model API and MCP. Keep
+# shell, web, sub-agent, and persistent tools unavailable to Claude Code.
 CLAUDE_DISALLOWED_TOOLS = (
     "Bash", "Task", "Agent", "WebFetch", "WebSearch", "NotebookEdit",
     "Skill", "SendMessage", "ListAgents", "Workflow", "Monitor",
@@ -79,8 +80,6 @@ class ClaudeCodeAdapter(HarnessAdapter):
                     "claude", "-p",
                     "--mcp-config", str(mcp_config_path),
                     "--strict-mcp-config",
-                    "--permission-mode", "dontAsk",
-                    "--allowedTools", *CLAUDE_ALLOWED_TOOLS,
                     "--disallowedTools", *CLAUDE_DISALLOWED_TOOLS,
                     "--settings", json.dumps({"autoMemoryEnabled": False}),
                     "--append-system-prompt", self.system_prompt,
@@ -88,13 +87,27 @@ class ClaudeCodeAdapter(HarnessAdapter):
                     "--output-format", "stream-json",
                     "--verbose",
                 ]
+                if self.file_sandbox == "bwrap":
+                    cmd += ["--permission-mode", "bypassPermissions"]
+                else:
+                    cmd += ["--permission-mode", "dontAsk",
+                            "--allowedTools", *CLAUDE_ALLOWED_TOOLS]
                 if self.model:
                     cmd += ["--model", self.model]
                 cmd.append(job.prompt)
                 # Auto-memory is off twice over (the setting above and this
                 # variable): notes written by one job must never reach another.
                 env = {**os.environ, "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
-                return run_and_tee(cmd, log_path=log_path, cwd=workspace, env=env)
+                sandbox = None
+                if self.file_sandbox == "bwrap":
+                    credentials = Path.home() / ".claude" / ".credentials.json"
+                    home_files = ((credentials, ".claude/.credentials.json"),) if credentials.exists() else ()
+                    sandbox = FileSandbox(
+                        workspace=workspace, runtime_paths=self.sandbox_runtime_paths(),
+                        readable_paths=(mcp_config_path,), home_files=home_files,
+                    )
+                return run_and_tee(cmd, log_path=log_path, cwd=workspace, env=env,
+                                   sandbox=sandbox)
         finally:
             mcp_config_path.unlink(missing_ok=True)
 
@@ -118,3 +131,6 @@ class ClaudeCodeAdapter(HarnessAdapter):
             prefix=f"cc-job-{job.name}-", dir=root, ignore_cleanup_errors=True,
         ) as job_dir:
             yield Path(job_dir)
+
+    def sandbox_runtime_paths(self) -> tuple[Path, ...]:
+        return (Path(shutil.which("claude") or "claude").resolve(),)

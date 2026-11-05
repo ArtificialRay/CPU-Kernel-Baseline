@@ -11,9 +11,10 @@ from bench.data.trace_set import TraceSet
 from contracts import BASELINE_AUTHORS, MCP_CLIENT_DEFAULTS, check_client_tool_timeout
 from eval.evaluator import run_agentic_eval
 from eval.mcp_client import attach
+from quota_errors import is_hard_quota_error
 from skills.launch.launch_session import RemoteTarget
 
-from .base import REPO_ROOT, HarnessAdapter, Job
+from .base import REPO_ROOT, HarnessAdapter, Job, QUOTA_EXIT_CODE
 
 class OwnHarnessAdapter(HarnessAdapter):
     """This repo's own litellm agent loop (eval/evaluator.py::run_agentic_eval).
@@ -44,6 +45,7 @@ class OwnHarnessAdapter(HarnessAdapter):
 
     def run_job(self, job: Job, *, endpoint: str, author: str, log_path: Path) -> int:
         definition = self.trace_set.definitions[job.name]
+        quota_hit = False
         try:
             result = run_agentic_eval(
                 definition=definition,
@@ -58,6 +60,7 @@ class OwnHarnessAdapter(HarnessAdapter):
                 verbose=True,
             )
         except Exception as e:  # noqa: BLE001 — surfaced as a failed job, not a crash
+            quota_hit = is_hard_quota_error(e)
             result = {
                 "status": "ERROR",
                 "error": str(e),
@@ -65,7 +68,12 @@ class OwnHarnessAdapter(HarnessAdapter):
                 "version_history": [],
             }
         log_path.write_text(json.dumps(result, indent=2))
+        if quota_hit:
+            return QUOTA_EXIT_CODE
         return 0 if result.get("status") == "PASSED" else 1
+
+    def quota_exceeded(self, log_path: Path, return_code: int) -> bool:
+        return return_code == QUOTA_EXIT_CODE
 
     def cleanup(self) -> None:
         self.mcp_client.close()

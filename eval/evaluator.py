@@ -21,6 +21,7 @@ import litellm
 from contracts import AGENT_KERNEL_FILENAME, AGENT_LOOP_DEFAULTS, REFERENCE_SCALAR_AUTHORS
 from eval.llm_call import call_llm
 from eval.llm_providers import resolve_completion_kwargs
+from quota_errors import is_hard_quota_error
 
 if TYPE_CHECKING:
     from eval.mcp_client import MCPKernelClient
@@ -369,6 +370,8 @@ def run_agentic_eval(
                     msg = call_llm(completion_kwargs)
                     break
                 except litellm.RateLimitError as e:
+                    if is_hard_quota_error(e):
+                        raise
                     wait = AGENT_LOOP_DEFAULTS["retry_base_wait_s"] * (2 ** _retry)
                     if verbose:
                         print(f"  [rate limit] sleeping {wait}s: {e}")

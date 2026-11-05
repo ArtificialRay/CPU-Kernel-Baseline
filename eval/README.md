@@ -84,7 +84,7 @@ python3 test_scripts/bench_fleet.py --harness single-shot --model anthropic/clau
 available for `single-shot`, which never submits):
 ```bash
 python3 test_scripts/bench_fleet.py --harness own --model anthropic/claude-opus-4-8 \
-    --dataset ncnn llama.cpp --isa sve --until-complete
+    --dataset ncnn llama.cpp --isa sve --until-complete --max-parallel-instances 2
 ```
 
 ## Options that matter here
@@ -101,7 +101,9 @@ Run `python3 test_scripts/bench_fleet.py --help` for the full list.
 | `--min-iterations` | `15` | Floor: the model is told not to stop earlier |
 | `--samples` | `3` | `single-shot` only: independent generations per definition. Failed samples are kept, so the pass rate is part of the result. |
 | `--temperature` | `1.0` | `single-shot` only |
-| `--retries` | `3` | Retries for transient infrastructure failures |
+| `--retries` | `3` | Retries only when the OS temporarily cannot start the harness process; model/API errors stay with the harness |
+| `--batch-size` | `3` | Jobs per chunk, run serially on one instance worker |
+| `--max-parallel-instances` | `1` | Maximum instance workers in this command; different chunks run concurrently when raised. Datasets run in order and reuse the worker pool. |
 | `--on-demand` | off | On-demand instead of spot, when a fresh instance is provisioned |
 
 Two more knobs live outside the command line:
