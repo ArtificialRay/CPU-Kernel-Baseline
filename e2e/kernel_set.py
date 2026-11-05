@@ -18,15 +18,16 @@ submitted, or a hand-written / reference-scalar set. Each solution carries its o
 The hook reads op/type/K/N/so/symbol/abi/symbol_rows/threads and skips every other key, so the
 extra fields here (framework, embeddable, ...) are for the people and tools reading the manifest.
 
-Which definitions are built: those carrying an `e2e:<model>` tag in bench-trace/definitions/ (the
-tag, not the name, says a definition belongs to an e2e set). `kernel="all"` builds every one of them
-that the author submitted; `kernel=NAME` builds just that one. Nothing is read from a definition's
+Which definitions are built: those carrying the tag `e2e:<model>` of the model being evaluated in
+bench-trace/definitions/ (the tag, not the name, says a definition belongs to an e2e set). Definitions
+of another model are left out. `kernel="all"` builds every one of them that the author submitted; `kernel=NAME` builds just that one
+(it must carry the same tag). Nothing is read from a definition's
 name: N and K are its const axes, the ggml type is the `layout` of its B input in the workloads
 (`ggml_q4_K`). Of those, only q4_K / q5_K / q6_K gemms are spliceable (packed ABI); the others are
 listed under "skipped" with a reason, as is a kernel that calls ggml's own routines.
 
-  build_kernel_set("claude-code-claude-fable-5-1-sve2", "~/e2e/manifest.json", isa="sve2")
-  build_kernel_set("reference-scalar", "~/e2e/refscalar/manifest.json", rows_abi=True)
+  build_kernel_set("claude-code-claude-fable-5-1-sve2", "~/e2e/manifest.json", model="qwen3.5-4b", isa="sve2")
+  build_kernel_set("reference-scalar", "~/e2e/refscalar/manifest.json", model="qwen3.5-4b", rows_abi=True)
   # or: python -m e2e evaluate --steps kernel_set --author A --rows-abi ...
   kernel="gemm_q4_K_n9216_k2560"   (attribution runs: splice a single kernel)
 
@@ -111,14 +112,14 @@ def undefined_ggml_symbols(so: Path) -> list:
     return undefined_symbols(so, "ggml_")
 
 
-def e2e_definitions(root: Path) -> dict:
-    """{definition name: {"type", "N", "K"}} for the definitions under the warehouse `root` that carry an
-    `e2e:<model>` tag. "type" is the ggml type from the layout of the B input in the definition's
+def e2e_definitions(root: Path, model: str) -> dict:
+    """{definition name: {"type", "N", "K"}} for the definitions under the warehouse `root` that carry the
+    tag `e2e:<model>`. "type" is the ggml type from the layout of the B input in the definition's
     workloads (None if there is none); N and K are the definition's const axes (None if not const)."""
     found = {}
     for f in sorted((Path(root) / "definitions").glob("*/*.json")):
         d = json.loads(f.read_text())
-        if not any(t.startswith("e2e:") for t in d.get("tags", [])):
+        if f"e2e:{model}" not in d.get("tags", []):
             continue
         axes = d.get("axes", {})
         wl = Path(root) / "workloads" / d["op_type"] / f"{d['name']}.jsonl"
@@ -155,7 +156,7 @@ def build_kernels(solutions: dict, author: str, out_dir: Path, march: str, *, se
     kernels, skipped = [], []
     for name, sol in sorted(solutions.items()):
         if name not in selected:
-            skipped.append({"definition": name, "reason": "not selected (no e2e:<model> tag, or not the --kernel asked for)"}); continue
+            skipped.append({"definition": name, "reason": "not selected (no e2e tag of this model, or not the --kernel asked for)"}); continue
         ok, why = embeddable(selected[name])
         if not ok:
             skipped.append({"definition": name, "embeddable": False, "reason": why}); continue
@@ -206,7 +207,7 @@ class KernelSet:
 
 
 def build_kernel_set(
-    author: str, out: Path, *, isa: str = "sve2", dataset: str = "llama.cpp",
+    author: str, out: Path, *, model: str, isa: str = "sve2", dataset: str = "llama.cpp",
     solutions_root: Path = SOLUTIONS, kernel: str = "all",
     cxx: str = "clang++-18", march: str | None = None, rows_abi: bool = False,
     expect_count: int | None = None, reference_author: str | None = None,
@@ -214,8 +215,9 @@ def build_kernel_set(
 ) -> KernelSet:
     """Compile `author`'s solutions into shared objects and write the override manifest to `out`.
 
-    kernel           "all": every definition tagged `e2e:<model>` that the author submitted; or one
-                     definition name (it must carry an e2e tag)
+    model            key of config/e2e_models.json; only definitions tagged `e2e:<model>` are considered
+    kernel           "all": every such definition that the author submitted; or one definition name
+                     that must carry the tag `e2e:<model>`
     march            override the ISA's -march (e.g. -march=armv8.6-a+i8mm+bf16 to reproduce a
                      Graviton run locally on an Apple-silicon Mac)
     rows_abi         recompile each kernel with N as a runtime thread_local and export
@@ -231,9 +233,9 @@ def build_kernel_set(
     march = march or _isa_table()[isa].march
 
     solutions = load_author(dataset, author, solutions_root)
-    tagged = e2e_definitions(Path(solutions_root).parent)
+    tagged = e2e_definitions(Path(solutions_root).parent, model)
     if kernel != "all" and kernel not in tagged:
-        raise StepFailed(f"--kernel {kernel!r} is not a definition tagged e2e:<model> under {Path(solutions_root).parent}")
+        raise StepFailed(f"--kernel {kernel!r} is not a definition tagged e2e:{model} under {Path(solutions_root).parent}")
     selected = tagged if kernel == "all" else {kernel: tagged[kernel]}
     kernels, skipped = build_kernels(solutions, author, out_dir, march, selected=selected, rows_abi=rows_abi, cxx=cxx)
     manifest = {"framework": FRAMEWORK, "isa": isa, "march": march, "author": author,

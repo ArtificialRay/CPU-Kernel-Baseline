@@ -32,7 +32,7 @@ def run_kernel_set(ctx: E2EContext, opts: Options):
     """Compile an author's submitted solutions into the override manifest, then check the guards."""
     from .kernel_set import build_kernel_set
     result = build_kernel_set(
-        require(opts.author, "--author", "kernel_set"), ctx.run.manifest, isa=ctx.isa,
+        require(opts.author, "--author", "kernel_set"), ctx.run.manifest, model=ctx.model, isa=ctx.isa,
         solutions_root=opts.root / "solutions", kernel=opts.kernel, cxx=opts.cxx, march=opts.march, rows_abi=opts.rows_abi,
         expect_count=opts.expect_count, reference_author=opts.reference_author,
         expect_changed=opts.expect_changed, expect_same=opts.expect_same, forbid=opts.forbid)
