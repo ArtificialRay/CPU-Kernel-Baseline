@@ -1,4 +1,4 @@
-# CPU-Kernel-Baseline
+# KernelShift
 
 A benchmark environment for LLM agents that write optimized AArch64 SIMD kernels (NEON, SVE,
 SVE2, SME2). Each task is a kernel with a reference implementation, workloads
