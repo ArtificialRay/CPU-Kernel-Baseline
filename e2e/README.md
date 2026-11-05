@@ -7,19 +7,21 @@ measure tokens/s and perplexity.
 
 ## Entry point and layout
 
-Two commands:
+One command, run after each agent run:
 
 ```
-python -m e2e prepare  --model qwen3.5-4b                    # once per model:  inventory -> calibrate
 python -m e2e evaluate --model qwen3.5-4b --author AUTHOR --label BOX --rows-abi
-                                                             # after each agent run:  kernel_set -> deploy -> measure -> report
+                                                             # kernel_set -> deploy -> measure -> report
 ```
+
+What comes before (the model's kernel inventory, definitions, real activations, calibrated SQNR gate) is
+made by the scripts that stay in `scripts/e2e/`, see [Before the first run](#before-the-first-run).
 
 A step whose artifact is already in `e2e-runs/<framework>-<model>-<isa>/` is skipped (`--force`
-redoes it). The steps that have to run on the Graviton box (`calibrate`, `measure`) are
-only printed by default; on the box, name them: `python -m e2e evaluate --model qwen3.5-4b
---steps measure --perplexity wiki.test.raw`. `--steps a,b` works for every step, so any single step
-can be run on its own. The agent runs themselves stay with `test_scripts/bench_fleet.py`.
+redoes it). The step that has to run on the Graviton box (`measure`) is only printed by default; on the
+box, name it: `python -m e2e evaluate --model qwen3.5-4b --steps measure --perplexity wiki.test.raw`.
+`--steps a,b` works for every step, so any single step can be run on its own. The agent runs themselves stay
+with `test_scripts/bench_fleet.py`.
 
 Nothing in here starts a box: provision one with `provisioning/provision.py` (or let `bench_fleet.py`
 do it), and give its label to `deploy`.
@@ -36,9 +38,8 @@ adapter.kernel_set(E2EContext.create("llamacpp", "qwen3.5-4b", "sve2"), Options(
 
 ```
 e2e/
-  cli.py  context.py  errors.py          # the two commands, the run context + options, StepFailed
-  adapters/base.py  registry.py          # FrameworkAdapter: the step loop (skip / box / fail) and the steps every
-                                         #   framework shares (calibrate); resolve_adapter(name)
+  cli.py  context.py  errors.py          # the command, the run context + options, StepFailed
+  adapters/base.py  registry.py          # FrameworkAdapter: the step loop (skip / box / fail); resolve_adapter(name)
   common/                                # framework-neutral functions the adapters call:
                                          #   solutions (read an author's solutions back), guards (is this the kernel
                                          #   set you meant), build (compile a .so, undefined-symbol check),
@@ -49,8 +50,8 @@ e2e/
                                          #   (+ report_from_log); override/ is the ggml-cpu hook, build_agent.sh builds with it
 ```
 
-A new framework is a new adapter: set `reference_author` / `baseline_author`, name its steps, write the
-ones that are about its own model format and runtime, and call `e2e.common` for the rest.
+A new framework is a new adapter: name its steps, write the ones that are about its own model format and
+runtime, and call `e2e.common` for the rest.
 
 Everything here works on the `llama.cpp` dataset with the packed-ggml gemm
 definitions (`gemm_ggml_<type>_n<N>_k<K>`, tagged `e2e:<model>`). Models are
@@ -82,7 +83,7 @@ Quantized kernels are checked by SQNR (`correctness:sqnr`), and three things
 together keep a numerically lossy kernel from passing:
 
 1. **Real activations.** `{"type": "tensor", "path": ...}` workload inputs load
-   activations captured from the model (`bench-trace/tensors/`, `kgen capture`). A real hidden
+   activations captured from the model (`bench-trace/tensors/`, `scripts/e2e/dump_to_workloads.py`). A real hidden
    state has a few channels one to two orders of magnitude larger than the
    rest; random inputs hide any kernel that quantizes activations per row
    instead of per block.
@@ -90,33 +91,36 @@ together keep a numerically lossy kernel from passing:
    Gaussian weights and quantizing them the way ggml does
    (`bench/runtime/inputs.py`), so the Q4_K/Q5_K min term carries the share
    of the value it does in a real GGUF.
-3. **A floor relative to the reference.** `calibrate.py` writes each
+3. **A floor relative to the reference.** `scripts/e2e/calibrate_sqnr_floor.py` writes each
    workload's `baseline_sqnr_db` tag; the evaluator then fails a candidate more
    than `EvalConfig.sqnr_margin_db` (default 1 dB) below it. Uncalibrated
    workloads keep the absolute `min_sqnr_db` floor.
 
+## Before the first run
+
+Per model, once. These are not e2e steps; they are the scripts that stay in `scripts/e2e/`:
+
+1. **Inventory** the model's matmuls from the GGUF header (a partial download is enough):
+   `python3 scripts/e2e/qwen35_inventory.py q4km_head.bin --json inventory.json`
+2. **Definitions and solutions** for every shape above `--min-share`, written into `bench-trace/` (definitions,
+   workloads, `reference-scalar` and `baseline-llamacpp-arm` solutions; templates in `kquant_templates.py`):
+   `python3 scripts/e2e/gen_qwen35_definitions.py inventory.json --model-tag qwen3.5-4b`
+3. **Real activations.** Run the override build with `ARMBENCH_DUMP_DIR` set (see
+   `e2e/adapters/llamacpp/override/README.md`), then
+   `python3 scripts/e2e/dump_to_workloads.py --dump <dir> --root bench-trace`
+4. **Calibrate** the SQNR floors on the eval box:
+   `python3 scripts/e2e/calibrate_sqnr_floor.py --tag e2e:qwen3.5-4b`
+
 ## Pipeline
 
-1. **Inventory** (`prepare`, step `inventory`, which reads the GGUF header with `e2e/adapters/llamacpp/inventory.py`) the model's matmuls from the GGUF header; only the first
-   64 MiB is downloaded (`--gguf-head FILE` uses a local one).
-2. **Definitions and solutions**, not an e2e step: `python -m kgen discover plugins/llamacpp/plugin.py -- --inventory <run dir>/inventory.json
-   --model-tag M --out-dir DIR` writes every shape above `--min-share` into `DIR` (definitions, workloads,
-   `reference-scalar` and `baseline-llamacpp-arm` solutions; kernel text from `plugins/llamacpp/kquant_templates.py`),
-   and `python -m kgen add definition|workload|solution FILE` puts them into `bench-trace/` (see `plugins/README.md`).
-   Check them with `python -m kgen check <definition> --static-only`.
-3. **Real activations**, not an e2e step: `python -m kgen capture pytorch --loader load.py --source "<provenance>" --tag e2e:M`
-   runs the model in PyTorch (`load.py` defines `load() -> (model, batches)` and `adapters()`, which says how a model's layers become a definition's inputs) and gives the workloads of the
-   tagged definitions the inputs of their Linear layers. Do it before step 4: a calibrated floor is only valid for
-   the inputs it was measured on.
-4. **Calibrate** (`calibrate`, on the eval box) the SQNR floors of the model's `e2e:<model>` definitions.
-5. **Agent runs** with the usual driver. A whole-dataset sweep skips `e2e:` definitions, so name them:
+1. **Agent runs** with the usual driver. A whole-dataset sweep skips `e2e:` definitions, so name them:
    `test_scripts/bench_fleet.py --dataset llama.cpp --isa sve2 --definitions "<names>" --sync-solutions ...`
-6. **Kernel set** (`evaluate`, step `kernel_set`). `--sync-solutions` put each submitted `<definition>.json` in
+2. **Kernel set** (`evaluate`, step `kernel_set`). `--sync-solutions` put each submitted `<definition>.json` in
    `bench-trace/solutions/llama.cpp/<author>/gemm/`; they are compiled exactly as the harness did and the
    override manifest is written. The guards fail the command when the set isn't the one you meant (a stale set
    is the failure mode): `--reference-author PREV --expect-changed DEF... --expect-count N --forbid REGEX`.
    `--author reference-scalar --rows-abi` builds the control set that must reproduce stock perplexity.
-7. **Deploy and measure**. `deploy` builds the pinned tools tree on an already-provisioned box (`--label`),
+3. **Deploy and measure**. `deploy` builds the pinned tools tree on an already-provisioned box (`--label`),
    fetches the model, and with `--agent-build` derives the override build (`build_agent.sh`). `measure`
    (on the box) runs llama-bench for each build, interleaved and repeated, and with `--perplexity FILE`
    llama-perplexity as the quality check; `report` renders the table (`report_from_log` rebuilds the results

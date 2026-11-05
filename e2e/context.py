@@ -24,14 +24,6 @@ class RunDir:
     root: Path
 
     @property
-    def gguf_head(self) -> Path:
-        return self.root / "head.bin"
-
-    @property
-    def inventory(self) -> Path:
-        return self.root / "inventory.json"
-
-    @property
     def manifest(self) -> Path:
         return self.root / "manifest.json"
 
@@ -64,13 +56,10 @@ class E2EContext:
 @dataclass
 class Options:
     """Everything the steps take beyond the context. Flat on purpose: each field is one
-    command-line flag of `prepare` / `evaluate`, and a step reads only the ones it needs."""
+    command-line flag of `evaluate`, and a step reads only the ones it needs."""
 
     steps: list[str] | None = None        # None: every local step; the box-side ones are only printed
     root: Path = REPO / "bench-trace"     # the warehouse the steps read and write
-
-    # prepare
-    gguf_head: str | None = None          # a local GGUF header; downloaded when omitted
 
     # evaluate: kernel_set
     author: str | None = None             # whose bench-trace/solutions/<dataset>/<author>/ to compile

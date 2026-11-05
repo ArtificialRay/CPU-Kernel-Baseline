@@ -1,9 +1,7 @@
 """The framework-specific half of the e2e pipeline, and the loop that drives it.
 
-A framework is one class. Its `prepare_steps` / `evaluate_steps` name the steps of the two
-commands; each step is the method of that name (`run_step` looks it up), so a framework
-implements the steps it has and inherits the ones every framework shares (see `calibrate`,
-which is written once from e2e.common). The loop here is the same for every framework:
+A framework is one class. Its `evaluate_steps` name the steps of the command; each step is the
+method of that name (`run_step` looks it up). The loop here is the same for every framework:
 
   * a step whose artifact already exists is skipped (ctx.force redoes it);
   * a step that has to run on the Graviton box is only printed as a command unless it was
@@ -11,8 +9,11 @@ which is written once from e2e.common). The loop here is the same for every fram
   * the first failing step stops the command.
 
 The logic that does not depend on the framework -- reading solutions back, the guards on a
-built kernel set, compiling a shared object, calibrating the SQNR gate, finding the box --
-lives in e2e.common as plain functions, so an adapter calls them rather than inherits them.
+built kernel set, compiling a shared object, finding the box -- lives in e2e.common as plain
+functions, so an adapter calls them rather than inherits them.
+
+What comes before an e2e run (which operators the model uses, the definitions, real activations,
+the calibrated SQNR gate) is done by the scripts in scripts/e2e, not here; see e2e/README.md.
 
 The interface is deliberately this coarse: llama.cpp is the only framework so far, and a
 finer split drawn from one implementation would be a guess. Split it when a second
@@ -21,13 +22,11 @@ framework shows what differs.
 from __future__ import annotations
 
 import shlex
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 from ..context import E2EContext, Options
-from kgen.errors import KgenError
 from ..errors import StepFailed
 
 
@@ -40,38 +39,11 @@ class Step:
 
 class FrameworkAdapter(ABC):
     name: str
-    prepare_steps: tuple[Step, ...]
     evaluate_steps: tuple[Step, ...]
-
-    # Which solutions the SQNR gate is calibrated against (used by the default `calibrate` step):
-    # the reference implementation whose own score sets the floor, and the baseline the
-    # evaluator scores speedup against.
-    reference_author: str = "reference-scalar"
-    baseline_author: str
 
     def run_step(self, step: str, ctx: E2EContext, opts: Options) -> None:
         """Do one step (the method of that name); raise StepFailed when it cannot continue."""
         getattr(self, step)(ctx, opts)
-
-    @abstractmethod
-    def fetch_header(self, model_config: dict, dest: Path) -> Path:
-        """Download just enough of the model file for the inventory step."""
-
-    # -- steps every framework shares: written once here, from the functions in e2e.common ----
-
-    def calibrate(self, ctx: E2EContext, opts: Options) -> None:
-        """What the reference implementation scores on each workload of the model's `e2e:<model>`
-        definitions, so the SQNR gate is relative to it. Runs kernels, so on the box."""
-        from kgen.calibrate import calibrate_sqnr_floors
-        _, problems = calibrate_sqnr_floors(
-            opts.root, author=self.reference_author, baseline_author=self.baseline_author,
-            tag=f"e2e:{ctx.model}")
-        if problems:
-            raise StepFailed(f"{problems} workload(s) could not be calibrated")
-
-    def prepare(self, ctx: E2EContext, opts: Options) -> int:
-        """Once per model: define its kernel set and calibrate the correctness gate."""
-        return self.run_group("prepare", self.prepare_steps, ctx, opts)
 
     def evaluate(self, ctx: E2EContext, opts: Options) -> int:
         """After each agent run: compile the kernels, splice them into the model, measure."""
@@ -100,7 +72,7 @@ class FrameworkAdapter(ABC):
             print(f"[e2e] {step.name}")
             try:
                 self.run_step(step.name, ctx, opts)
-            except (StepFailed, KgenError) as e:
+            except StepFailed as e:
                 print(f"[e2e] {step.name} failed: {e}", flush=True)
                 return 1
         if to_run_on_the_box:

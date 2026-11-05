@@ -2,14 +2,11 @@
 options into the arguments of a function from the sibling modules, which do the work."""
 from __future__ import annotations
 
-import urllib.request
 from pathlib import Path
 
 from ...context import E2EContext, Options
 from ...errors import StepFailed
 from ..base import FrameworkAdapter, Step
-
-HEADER_BYTES = 64 * 1024 * 1024    # the GGUF header (metadata + tensor table) fits well inside this
 
 
 def require(value, option: str, step: str):
@@ -20,32 +17,13 @@ def require(value, option: str, step: str):
 
 class LlamaCppAdapter(FrameworkAdapter):
     name = "llamacpp"
-    reference_author = "reference-scalar"          # a scalar port of ggml's own vec_dot
-    baseline_author = "baseline-llamacpp-arm"      # calls ggml_mul_mat on the same blocks
 
-    prepare_steps = (
-        Step("inventory", outputs=lambda ctx: [ctx.run.inventory]),
-        Step("calibrate", box=True),
-    )
     evaluate_steps = (
         Step("kernel_set", outputs=lambda ctx: [ctx.run.manifest]),
         Step("deploy"),
         Step("measure", box=True, outputs=lambda ctx: [ctx.run.results]),
         Step("report"),
     )
-
-    # -- prepare: once per model ---------------------------------------------------------
-
-    def inventory(self, ctx: E2EContext, opts: Options) -> dict:
-        """Per-tensor weight traffic of the model, from its GGUF header."""
-        from .inventory import build_inventory
-        head = opts.gguf_head
-        if head is None:
-            head = ctx.run.gguf_head
-            if not Path(head).exists():
-                print(f"  fetching the GGUF header of {ctx.model} -> {head}")
-                self.fetch_header(ctx.model_config, Path(head))
-        return build_inventory(head, ctx.run.inventory)
 
     # -- evaluate: after each agent run ---------------------------------------------------
 
@@ -88,13 +66,3 @@ class LlamaCppAdapter(FrameworkAdapter):
         text = render_report(ctx.run.results, opts.baseline)
         print(text)
         return text
-
-    # -- model file ------------------------------------------------------------------------
-
-    def fetch_header(self, model_config: dict, dest: Path) -> Path:
-        url = f"https://huggingface.co/{model_config['repo']}/resolve/main/{model_config['file']}"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        request = urllib.request.Request(url, headers={"Range": f"bytes=0-{HEADER_BYTES - 1}"})
-        with urllib.request.urlopen(request) as response, open(dest, "wb") as out:
-            out.write(response.read())
-        return dest
