@@ -1,11 +1,11 @@
 """armbench CLI. Thin argparse layer over Benchmark / TraceSet.
 
 Usage:
-    armbench bench    --root <path> --definition <name> --solution <name>
-                      [--workload-axes axis=value,...] [--isa <isa>] [--baseline-author <author>]
-    armbench collect-baselines --root <path> (--dataset <name> | --definition <name> | --baseline-author <author>)
-                      [--isa <isa>]
-    armbench bench-author --root <path> (--author <name> | --dataset <name>) [--op-type/--definition/--isa ...]
+    armbench bench    --root <path> --definition <name> --solution <name> (--dataset <name> | --baseline-author <author>)
+                      [--workload-axes axis=value,...] [--isa <isa>]
+    armbench collect-baselines --root <path> (--dataset <name> | --baseline-author <author>)
+                      [--definition <name>] [--isa <isa>]
+    armbench bench-author --root <path> --dataset <name> [--author <name>] [--op-type/--definition/--isa ...]
     armbench retime   --root <path> --dataset <name> --isa <isa> --index <extracted.json> --pass-id <id> --out <file>
     armbench summary  --root <path>
     armbench list-definitions --root <path>
@@ -25,7 +25,7 @@ from typing import Dict, Optional
 from bench import retime
 from bench.benchmark import Benchmark, BenchmarkConfig
 from bench.data import TraceSet
-from contracts import BASELINE_AUTHORS, ISA_TABLE, REFERENCE_SCALAR_AUTHORS, baseline_author_for
+from contracts import BASELINE_AUTHORS, BASELINE_AUTHORS_BY_ISA, ISA_TABLE, REFERENCE_SCALAR_AUTHORS, baseline_author_for
 
 
 def _default_root() -> Path:
@@ -53,31 +53,26 @@ def _parse_axes_filter(s: Optional[str]) -> Optional[Dict[str, int]]:
     return out
 
 
-def baseline_author_of(
-    ts: TraceSet, explicit: Optional[str], isa: Optional[str], *,
-    dataset: Optional[str] = None, definition: Optional[str] = None, solution: Optional[str] = None,
-) -> str:
-    """Automatically deduce the author whose solutions are the speedup baseline of a run if `--baseline-author`
-    is not explicitly declared
+def require_isa_for(datasets, isa: Optional[str]) -> None:
+    """A dataset with a different baseline per isa must not silently fall back to its default."""
+    needing = sorted(set(datasets) & set(BASELINE_AUTHORS_BY_ISA))
+    if needing and not isa:
+        raise SystemExit(f"--isa is required for dataset {', '.join(needing)}: its baseline differs per isa "
+                         f"(choose from {sorted(ISA_TABLE)}), or pass --baseline-author")
+
+
+def baseline_author_of(explicit: Optional[str], isa: Optional[str], dataset: Optional[str]) -> str:
+    """The author whose solutions are the speedup baseline of a run: `--baseline-author` if given, else the
+    baseline of the explicitly passed `--dataset` on `--isa`. The dataset is never inferred.
     """
     if explicit:
         return explicit
-    candidates = ts.solutions.get(definition, []) if definition else []
-    if dataset is None and solution is not None:
-        match = [s for s in candidates if s.name == solution]
-        if not match:
-            raise SystemExit(f"no solution {solution!r} for definition {definition!r}")
-        dataset = match[0].dataset.value
-    if dataset is None and candidates:
-        datasets = sorted({s.dataset.value for s in candidates})
-        if len(datasets) == 1:
-            dataset = datasets[0]
     if dataset is None:
-        raise SystemExit("cannot tell the dataset of this run: pass --baseline-author, or --dataset "
-                         "(or --definition for collect-baselines)")
+        raise SystemExit("cannot tell the baseline of this run: pass --baseline-author, or --dataset")
     if dataset not in BASELINE_AUTHORS:
         raise SystemExit(f"dataset {dataset!r} has no baseline author in config/kernel_contracts.yaml; "
                          f"pass --baseline-author (datasets with one: {sorted(BASELINE_AUTHORS)})")
+    require_isa_for([dataset], isa)
     author = baseline_author_for(dataset, isa)
     print(f"baseline author: {author}  (dataset {dataset}" + (f", isa {isa}" if isa else "") + ")")
     return author
@@ -87,8 +82,7 @@ def baseline_author_of(
 
 def cmd_bench(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
-    baseline_author = baseline_author_of(ts, args.baseline_author, args.isa,
-                                         definition=args.definition, solution=args.solution)
+    baseline_author = baseline_author_of(args.baseline_author, args.isa, args.dataset)
     bench = Benchmark(ts, BenchmarkConfig(baseline_author=baseline_author))
     try:
         traces = bench.bench(
@@ -118,11 +112,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
 
 
 def cmd_bench_author(args: argparse.Namespace) -> int:
-    """Run every solution of one author and report which pass: the smoke test for a reference set,
-    or for any author whose solutions span datasets."""
-    author = args.author or (REFERENCE_SCALAR_AUTHORS.get(args.dataset) if args.dataset else None)
+    """Run every solution of one author in one dataset and report which pass: the smoke test for a reference set."""
+    if not args.dataset:
+        raise SystemExit("pass --dataset (never inferred from the author)")
+    author = args.author or REFERENCE_SCALAR_AUTHORS.get(args.dataset)
     if not author:
-        raise SystemExit("pass --author, or --dataset to take that dataset's reference-scalar author")
+        raise SystemExit(f"dataset {args.dataset!r} has no reference-scalar author: pass --author")
+    require_isa_for([args.dataset], args.isa)
     ts = TraceSet.from_path(args.root)
     bench = Benchmark(ts)       # every solution gets its own dataset's baseline author, see run_author
     try:
@@ -173,7 +169,7 @@ def cmd_retime(args: argparse.Namespace) -> int:
         defs, jobs = retime.jobs_from_authors(ts, args.author, args.dataset, args.extra_authors)
         if not defs:
             raise SystemExit(f"no solutions of {args.author} for dataset {args.dataset!r} under {args.root}")
-    baseline_author = baseline_author_of(ts, args.baseline_author, args.isa, dataset=args.dataset)
+    baseline_author = baseline_author_of(args.baseline_author, args.isa, args.dataset)
     bench = Benchmark(ts, BenchmarkConfig(baseline_author=baseline_author, definitions=defs))
     try:
         retime.retime(ts, bench, baseline_author, defs, jobs, args.pass_id, Path(args.out),
@@ -185,8 +181,7 @@ def cmd_retime(args: argparse.Namespace) -> int:
 
 def cmd_collect_baselines(args: argparse.Namespace) -> int:
     ts = TraceSet.from_path(args.root)
-    baseline_author = baseline_author_of(ts, args.baseline_author, args.isa,
-                                         dataset=args.dataset, definition=args.definition)
+    baseline_author = baseline_author_of(args.baseline_author, args.isa, args.dataset)
     cfg = BenchmarkConfig(
         baseline_author=baseline_author,
         definitions=[args.definition] if args.definition else None,
@@ -252,6 +247,9 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("bench", help="Run a Solution against a Definition's workloads.")
     b.add_argument("--definition", required=True, help="Definition name.")
     b.add_argument("--solution", required=True, help="Solution name.")
+    b.add_argument("--dataset", default=None, choices=sorted(BASELINE_AUTHORS),
+                   help="Dataset of the solution, whose baseline is the speedup reference. "
+                        "Required unless --baseline-author is given.")
     b.add_argument(
         "--workload-axes", default=None,
         help="Filter workloads, e.g. 'N=1,H=56,W=56'. Only matching workloads are run.",
@@ -269,12 +267,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     ba = sub.add_parser(
         "bench-author",
-        help="Run every solution of one author on its definition's workloads and report pass/fail "
-             "(reference smoke test; an author may span datasets).",
+        help="Run every solution of one author in one dataset on its definition's workloads and report "
+             "pass/fail (reference smoke test).",
     )
     ba.add_argument("--author", default=None,
-                    help="Solution author. Default with --dataset: that dataset's reference-scalar author.")
-    ba.add_argument("--dataset", default=None, choices=sorted(BASELINE_AUTHORS), help="Only this dataset's solutions.")
+                    help="Solution author. Default: --dataset's reference-scalar author.")
+    ba.add_argument("--dataset", required=True, choices=sorted(BASELINE_AUTHORS), help="Only this dataset's solutions.")
     ba.add_argument("--op-type", default=None, help="Only definitions of this op_type.")
     ba.add_argument("--definition", default=None, help="Only this definition.")
     ba.add_argument("--workload-axes", default=None, help="Filter workloads, e.g. 'M=1'.")
@@ -311,9 +309,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cb.add_argument("--baseline-author", default=None,
                     help="Author folder under solutions/<dataset>/ to treat as baseline. Default: the "
-                         "baseline of --dataset (or of --definition's dataset) on --isa.")
+                         "baseline of --dataset on --isa.")
     cb.add_argument("--dataset", default=None, choices=sorted(BASELINE_AUTHORS),
-                    help="Dataset whose baseline to collect; not needed with --definition.")
+                    help="Dataset whose baseline to collect. Required unless --baseline-author is given.")
     cb.add_argument("--isa", default=None, choices=sorted(ISA_TABLE),
                     help="Tier the baselines are collected on; only matters for datasets with a per-isa baseline.")
     cb.add_argument("--definition", default=None,

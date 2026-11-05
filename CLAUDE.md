@@ -317,9 +317,9 @@ The speedup baseline is taken from the run's dataset (`contracts.baseline_author
 pass `--isa` where a dataset has one baseline per tier (simd-loop), or `--baseline-author` to override.
 ```bash
 python -m bench.cli list-definitions          # list all definitions
-python -m bench.cli bench --definition loop_001 --solution reference_loop_001 --isa sve
+python -m bench.cli bench --definition loop_001 --solution reference_loop_001 --dataset simd-loop --isa sve
 python -m bench.cli bench --definition conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2 \
-  --solution reference-scalar_conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2
+  --solution reference-scalar_conv2d_depthwise_fp32_kh5_kw5_sh2_sw2_dh1_dw1_p2 --dataset ncnn
 
 # every solution of one author, each against its own dataset's baseline (a dataset's reference smoke test)
 python -m bench.cli bench-author --dataset simd-loop --isa sve            # author defaults to that dataset's reference

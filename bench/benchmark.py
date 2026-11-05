@@ -108,6 +108,52 @@ class Benchmark:
             all_traces.extend(self.run_solution(def_obj, baseline, wls, dump_traces=dump_traces))
         return all_traces
 
+    def run_author(
+        self,
+        author: str,
+        *,
+        dataset: Optional[str] = None,
+        op_type: Optional[str] = None,
+        definition: Optional[str] = None,
+        workload_filter: Optional[Dict[str, int]] = None,
+        isa: Optional[str] = None,
+        dump_traces: bool = False,
+    ) -> List[AuthorResult]:
+        """Run every Solution of `author` (optionally narrowed) against its own dataset's baseline author.
+
+        Failures and skips are reported in the returned AuthorResults, never raised, so one broken
+        solution does not hide the rest."""
+        solutions = [
+            s for sols in self._ts.solutions.values() for s in sols
+            if s.author == author
+            and (dataset is None or s.dataset.value == dataset)
+            and (definition is None or s.definition == definition)
+        ]
+        results: List[AuthorResult] = []
+        for s in sorted(solutions, key=lambda s: (s.dataset.value, s.name)):
+            d = self._ts.get_definition(s.definition)
+            if d is None:
+                results.append(AuthorResult(s, [], skipped=f"definition {s.definition!r} not found"))
+                continue
+            if op_type is not None and d.op_type != op_type:
+                continue
+            wls = self._filtered_workloads(s.definition, workload_filter)
+            if not wls:
+                results.append(AuthorResult(s, [], skipped="no workloads"))
+                continue
+            try:
+                if s.dataset.value not in BASELINE_AUTHORS:
+                    raise KeyError(f"dataset {s.dataset.value!r} has no baseline author in config/kernel_contracts.yaml")
+                traces = self.run_solution(
+                    d, s, wls, dump_traces=dump_traces,
+                    baseline_author=baseline_author_for(s.dataset.value, isa),
+                )
+            except Exception as e:
+                results.append(AuthorResult(s, [], error=f"{type(e).__name__}: {e}"))
+                continue
+            results.append(AuthorResult(s, traces))
+        return results
+
     def close(self) -> None:
         """Free all cached build dirs."""
         self._registry.cleanup()
