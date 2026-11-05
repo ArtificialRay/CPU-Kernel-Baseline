@@ -11,6 +11,9 @@ the starting point is rebuilt with its own flags plus the tier's march, both are
 under the same EvalConfig, and slowdown = geomean(baseline min_ns) / geomean(autovec min_ns). The worst single
 workload is reported too, since a geomean can hide one bad point.
 
+This is the build the 2x inclusion check means. bench/autovec.py's `autovec` is a different one, compiled like an
+agent candidate (-O3).
+
 Run it on the tier's own machine (aarch64):
 
     python -m kgen autovec --definitions loop_001 loop_002 --isa sve

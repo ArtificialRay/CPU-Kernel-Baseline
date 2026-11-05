@@ -1,8 +1,10 @@
 """The autovectorized control: a dataset's scalar starting point, compiled with auto-vectorized sve/sve2/sme,
 which exactly like an agent candidate.
 
-`candidate_compile_flags` repeats the sessions' rule; bench/test_autovec.py compares it with each
-session's `make_solution`, so a change on either side fails there.
+`candidate_compile_flags` repeats the sessions' rule, so keep it in step with each session's `make_solution`.
+
+Not the build `kgen autovec` times for the 2x baseline inclusion check: that one keeps the starting point's own
+flags and only adds the tier's march. Both use the author name `autovec`.
 """
 
 from __future__ import annotations

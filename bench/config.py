@@ -20,6 +20,7 @@ from contracts import BASELINE_AUTHORS, EVAL_DEFAULTS, EVAL_DEFINITION_OVERRIDES
 
 # ── Defaults (single source of truth: config/kernel_contracts.yaml) ───────────
 
+# ncnn only: a config that names no baseline scores every dataset against this. Other datasets must pass their own.
 DEFAULT_BASELINE_AUTHOR = BASELINE_AUTHORS["ncnn"]
 DEFAULT_WARMUP = EVAL_DEFAULTS["warmup"]
 DEFAULT_REPEAT = EVAL_DEFAULTS["repeat"]
